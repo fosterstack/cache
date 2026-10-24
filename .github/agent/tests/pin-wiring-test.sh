@@ -817,12 +817,12 @@ steps='d["jobs"]["allowlist"]["steps"]'
 pick='[s for s in '"$steps"' if (s.get("run") or "").startswith("python3 .github/agent/bin/check-action-pins.py")][0]'
 case_ the-real-hygiene      ok  ""
 # REQ-CI-005: a floored suite's step may call the counting runner instead of `bash PATH`; exactly that form is read back to the plain line, anything else is judged as unknown text
-CW="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]"
+CW="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/inspector-gate-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh')][0]"
 CF="python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json"
 case_ count-step-wrapped-ok         ok  "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
 case_ count-step-devnull-added      bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh </dev/null'"
-case_ count-step-devnull-kept       ok  "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/verify-release-guide-test.sh </dev/null'][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null'"
-case_ count-step-devnull-dropped    bad "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/verify-release-guide-test.sh </dev/null'][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh'"
+case_ count-step-devnull-kept       ok  "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/verify-release-guide-test.sh </dev/null', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null')][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null'"
+case_ count-step-devnull-dropped    bad "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/verify-release-guide-test.sh </dev/null', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null')][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh'"
 case_ count-step-name-not-path      bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/inspector-gate-test.sh'"
 case_ count-step-other-path         bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/install-scanner-test.sh'"
 case_ count-step-unfloored-name     bad "w = $CW; w['run'] = '$CF zz-not-floored-test.sh bin/zz-not-floored-test.sh'"
@@ -847,16 +847,16 @@ case_ push-paths-ignore     bad "d['on']['push']['paths-ignore'] = ['**']"
 case_ step-shell-override   bad "$pick['shell'] = \"bash -c 'true' {0}\""
 case_ job-defaults-shell    bad "d['jobs']['allowlist']['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ workflow-defaults     bad "d['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
-case_ wiring-step-removed   bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/pin-wiring-test.sh']"
+case_ wiring-step-removed   bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash .github/agent/tests/pin-wiring-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-wiring-test.sh .github/agent/tests/pin-wiring-test.sh')]"
 case_ bash-env-on-step      bad "$pick['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ bash-env-on-job       bad "d['jobs']['allowlist']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ path-on-workflow      bad "d['env'] = {'PATH': '/tmp/fake:/usr/bin'}"
 case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
-case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
-case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
-case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
+case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
+case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
+case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -919,12 +919,23 @@ for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowl
 sys.exit(1)
 PYF
 }
+actual_of() { python3 - "$here/.github/workflows/ci.yml" "$1" <<'PYA'
+import re, sys
+ci, r = open(sys.argv[1]).read(), sys.argv[2]
+m = re.fullmatch(r'((?:CHAIN_TEST_REQUIRE_NETCUT=1 )?)bash ((?:bin|\.github/agent/tests)/(\S+))( </dev/null)?', r)
+if m:
+    w = m.group(1) + "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json " + m.group(3) + " " + m.group(2) + (m.group(4) or "")
+    if ("run: " + w + "\n") in ci:
+        print(w); sys.exit(0)
+print(r)
+PYA
+}
 for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
-  n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$r")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$r'][0]"
-  case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$r']"
+  ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
+  case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
   case_ "$n-continue"    bad "$cs['continue-on-error'] = 'true'"
-  case_ "$n-or-true"     bad "$cs['run'] = '$r || true'"
+  case_ "$n-or-true"     bad "$cs['run'] = '$ar || true'"
   case_ "$n-renamed"     bad "$cs['name'] = 'chain tests'"
   case_ "$n-env"         bad "$cs['env'] = {'CHAIN_X': '1'}"
   case_ "$n-shell"       bad "$cs['shell'] = \"bash -c 'true' {0}\""
@@ -978,7 +989,7 @@ PY
   else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
 }
 gitcase the-real-ci-at-a-commit   ok  ""
-WRAP="w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]; w['run'] = 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+WRAP="w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/inspector-gate-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh')][0]; w['run'] = 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
 gitcase counting-step-at-a-commit ok  "$WRAP"
 GIT_FLOORS_EDIT="d.pop('inspector-gate-test.sh')" gitcase counting-step-unfloored-at-that-commit bad "$WRAP"     # the floors file of the judged commit decides, not the checkout's
 # the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
@@ -1111,7 +1122,7 @@ then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers →
 # the judge keeps refusing the old shape with a leftover shard (a half-done split)
 case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
-PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
+PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
 case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
 case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
