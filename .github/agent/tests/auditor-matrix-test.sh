@@ -3837,11 +3837,12 @@ try:
     P.parse_panel(bad, "grype"); err = "none"
 except P.ParseError:
     err = "ParseError"
-print("grype=%d inspector=%d scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
-  len(g), len(i), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
+carried = [x for x in i if (x.get("extra") or {}).get("carried")]       # the tally's vex_covered entry for Inspector rides along flagged carried (rc-5b fix 5)
+print("grype=%d inspector=%d(+%d carried) scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
+  len(g), len(i) - len(carried), len(carried), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
 PYEOF
 )"
-{ eq "$r" "grype=2 inspector=3 scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
+{ eq "$r" "grype=2 inspector=3(+1 carried) scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
 
 begin "panel-2-panel-inventory-records-a-scanner-that-missed-an-image-as-did-not-run" "from the verdict, a scanner counts as ran only if it ran on EVERY image it was expected on; one image where it did not run makes it 'did not run' (never clean), named with the image; the report path is null for it and the verdict path for the rest; the quorum rule is not recomputed here (the panel owns it)"
 r="$(MF="$pv" "$PY" - <<'PYEOF'
@@ -4314,6 +4315,46 @@ eq "$r15" "OK" && ok || no "rc-5b fix 15: five consecutive unsettled runs open o
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+# rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
+# listed in the report as "not re-checkable (hidden from all scanners)", never silently kept. A vex_covered entry no carried statement matches is dropped.
+r5="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import json,os,sys,io,contextlib,importlib.util,glob,tempfile,subprocess as _sp
+FX=sys.argv[1]; W=tempfile.mkdtemp(); ws=W+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex, parsers
+from unittest.mock import patch
+mp=FX+"/manifest-mediumnofix.json"; m=json.load(open(mp)); d=json.load(open(m["panel"]["verdict"]))
+c="CVE-2099-9400"; purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+json.dump(vex.doc(c,"not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]),open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+_real_run=_sp.run                                  # saved BEFORE R.subprocess.run is patched (same module object): the fake must call the saved one, never itself
+def run(cov,tag):
+    d2=json.loads(json.dumps(d)); d2["vex_covered"]=cov
+    vp2=W+"/verdict-"+tag+".json"; json.dump(d2,open(vp2,"w"))
+    m2=json.loads(json.dumps(m)); m2["panel"]["verdict"]=vp2; mp2=W+"/m-"+tag+".json"; json.dump(m2,open(mp2,"w"))
+    def fake2(cmd,*a,**kw):
+        if cmd and cmd[0] in ("git","gh"): return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+        return _real_run(cmd,*a,**kw)
+    out=W+"/out-"+tag
+    with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp2,True,out,"2026-09-24",adjudicator="offline-probe")
+    rep=open(out+"/report.md").read()
+    if "consistency check did not complete" in rep: raise SystemExit("the run's consistency check did not complete")
+    return os.path.exists(out+"/vex/%s.openvex.json"%c), [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
+cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1"}]
+rejudged,hid,vp=run(cov,"a")
+recs=[r for r in parsers.parse_panel(vp,"inspector") if r["finding_id"]==c]
+parsed_ok = len(recs)==1 and recs[0]["extra"].get("carried") is True and recs[0]["extra"]["images"]==["production-amd64"] and not [r for r in parsers.parse_panel(vp,"google") if r["finding_id"]==c]
+rej_b,hid_b,_=run([],"b")
+rej_c,hid_c,_=run([dict(cov[0],package="otherpkg")],"c")
+# aliases: the carried statement is named by a GHSA id that lists the CVE the scanner reports as its alias (the panel's coverage predicate indexes both); it must resolve and not be called hidden
+st2=vex.doc("GHSA-aaaa-bbbb-cccc","not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]); st2["statements"][0]["vulnerability"]["aliases"]=[c]
+json.dump(st2,open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+rej_d,hid_d,_=run(cov,"d")
+print("OK" if (rejudged and not hid and parsed_ok and not rej_b and len(hid_b)==1 and c in hid_b[0] and not rej_c and len(hid_c)==1 and c in hid_c[0] and not hid_d) else "BAD rejudged=%s hid=%s parsed=%s b=%s/%s c=%s/%s d=%s/%s"%(rejudged,hid,parsed_ok,rej_b,hid_b,rej_c,hid_c,rej_d,hid_d))
+PP
+)"
+eq "$r5" "OK" && ok || no "rc-5b fix 5: a carried statement hidden by our VEX from Inspector is re-judged (flagged carried by the parser, resolved to its scope), one no scanner reports is listed 'not re-checkable', an unmatched entry is dropped" "$r5"
 # rc-5b fix 12 (R4 + R5): the production client reads the category and the refusal from the JSON answer's own keys (exact), and the driver refuses a model proposal by shape and by
 # vendor/model name (the proposal, not the run).
 begin "rc5b-12-client-category-is-exact-json" "the adjudicator client takes the category and the refusal from the JSON keys, exact match: 'not a false_positive' in prose is not false_positive, a word 'cannot' in prose is not a refusal, no JSON is under_investigation"
