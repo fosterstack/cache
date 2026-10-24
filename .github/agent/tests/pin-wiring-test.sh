@@ -1195,8 +1195,8 @@ for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowl
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PYD
 then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers → ok"; else failn=$((failn+1)); echo "FAIL chain-split-grype-installer-with-consumers → $(cat "$work/dep.out")"; fi
-# the judge keeps refusing the old shape with a leftover shard (a half-done split)
-case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
+# a half-done split: one shard job is gone, so a suite would run in no shard (the old case here replaced a shard with a copy of the aggregate and failed on the YAML alias it created, not on the split)
+case_ chain-shard-missing         bad "del d['jobs']['allowlist-chain-4']"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
 PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
