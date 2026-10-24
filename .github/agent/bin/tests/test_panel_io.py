@@ -408,7 +408,8 @@ class Judge(Tmp):
         cases = []
         for bad in ({}, [], None, 0, {"version": 1}, dict(good_state, seat="C"), dict(good_state, scores={"A": 0}), dict(good_state, debates={})):
             cases.append(("state", bad))
-        for bad in ({}, [], None, {"entries": None}, {"entries": {}}):
+        for bad in ({}, [], None, {"entries": None}, {"entries": {}}, {"entries": [{}]}, {"entries": [3]}, {"entries": [{"scanner": "grype", "kind": "sees_alone", "match": ["x"], "behavior": "b", "finding": "f", "evidence": "e"}]},
+                    {"entries": [{"scanner": "grype", "kind": "sees_alone", "match": {"package": 5}, "behavior": "b", "finding": "f", "evidence": "e"}]}):
             cases.append(("profiles", bad))
         for which, bad in cases:
             p = os.path.join(self.d, which + ".json")
@@ -516,7 +517,7 @@ class Judge(Tmp):
         bad = os.path.join(self.d, "p.json")
         json.dump({"entries": [{"scanner": "nope"}]}, open(bad, "w"))
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
-            self.assertEqual(P.cmd_judge(self.a(profiles=bad)), 2)
+            self.assertEqual(P.cmd_judge(self.a(profiles=bad)), 3)
         self.assertIn("scanner profiles", err.getvalue())
 
     def test_no_auditor_errors_are_reported_and_false_by_default(self):
@@ -567,6 +568,7 @@ class Judge(Tmp):
 class StateMembers(Tmp):
     """cache#707 first look B4 (Fable ruling): the members of the state's lists are checked BEFORE any seat is called; extra metadata is allowed."""
     a = Judge.a
+    judged = Judge.judged
     GOOD_ENTRY = {"image": "fips-amd64", "id": "CVE-2099-1", "package": "tzdata", "version": "1", "seen_by": ["grype"], "since": "2026-10-01", "last_seen": "2026-10-02", "vex": False, "purls": ["pkg:deb/debian/tzdata@1"], "extra": 5}
     GOOD_DEBATE = {"image": "fips-amd64", "id": "CVE-2099-2", "package": "libx", "version": "2", "on": "2026-10-01", "settled": None, "installed_then": True,
                    "sides": {"A": "real", "B": "false"}, "outcome": "split", "prevailing": None, "extra": [1]}
@@ -590,6 +592,23 @@ class StateMembers(Tmp):
                        dict(self.GOOD_DEBATE, prevailing="C"), dict(self.GOOD_DEBATE, outcome=5), dict(self.GOOD_DEBATE, installed_then="yes"), dict(self.GOOD_DEBATE, version=None)]
         for bad in bad_debates:
             self.assertTrue(P.validate_state(self.state(debates=[bad])), bad)
+
+    def test_the_state_the_panel_wrote_for_an_unknown_version_is_valid_and_flags_are_real_booleans(self):
+        # cache#707 round 2 (A F1, B B2, C B1; A F6, B B5): the scanner parser writes "" for an unknown version, and the panel must read its own state back
+        self.assertEqual(P.validate_state(self.state(false=[dict(self.GOOD_ENTRY, version="")], real=[dict(self.GOOD_ENTRY, version="")],
+                                                       debates=[dict(self.GOOD_DEBATE, version="")])), [])
+        for bad in (1, 0, 1.0, 0.0, "yes", [True]):
+            self.assertTrue(P.validate_state(self.state(debates=[dict(self.GOOD_DEBATE, installed_then=bad)])), bad)
+        for good in (True, False, None):
+            self.assertEqual(P.validate_state(self.state(debates=[dict(self.GOOD_DEBATE, installed_then=good)])), [], good)
+        for bad in (1, 0, "no"):
+            self.assertTrue(P.validate_state(self.state(false=[dict(self.GOOD_ENTRY, vex=bad)])), bad)
+
+    def test_a_finding_with_an_unknown_version_is_judged_and_its_state_read_back_the_next_day(self):
+        unknown = dict(UNIQUE, version="")
+        self.judged(verdict=verdict_file(self.d, [unknown]))
+        written = os.path.join(self.d, "out", "state.json")
+        self.judged(state=written, verdict=verdict_file(self.d, [unknown]))
 
     def test_a_malformed_member_stops_the_judge_before_any_seat_is_asked(self):
         calls = []
@@ -676,8 +695,33 @@ class Deliver(Tmp):
             self.assertEqual(rc, 3, label)
             self.assertEqual(calls, [], label)                                                   # not even a read: nothing was asked of gh or git
             self.assertIn("::error::", err, label)
+        for label, files, kw in (("vex version {}", {P.VEX: dict(good_vex, version={})}, {"vex": proposal}), ("vex @id a list", {P.VEX: dict(good_vex, statements=[{"@id": ["bad"]}])}, {"vex": proposal}),
+                                 ("vex timestamp 5", {P.VEX: dict(good_vex, timestamp=5)}, {"vex": proposal}), ("vex statement a string", {P.VEX: dict(good_vex, statements=["x"])}, {}),
+                                 ("profiles entry {}", {P.PROFILES: {"entries": [{}]}}, {}), ("profiles match a list", {P.PROFILES: {"entries": [dict(entry[0], match=["x"])]}}, {})):
+            files = dict({P.VEX: good_vex, P.PROFILES: {"entries": []}, P.STATE: None}, **files)
+            rc, calls, err = attempt(files, **kw)
+            self.assertEqual((rc, calls), (3, []), label)
         rc, calls, err = attempt({P.VEX: None, P.PROFILES: {"entries": []}, P.STATE: None})        # an absent VEX with no VEX proposal, an absent state: a first delivery
         self.assertEqual(rc, 0, err)
+
+    def test_the_run_written_documents_are_validated_before_any_call(self):
+        # cache#707 round 2 (A F3, ruled yes): out/state.json and out/day.json are checked with the panel's rules before anything is fetched, checked out, written or published
+        self.day()
+        good_state = json.load(open(os.path.join(self.out, "state.json"))); good_day = json.load(open(os.path.join(self.out, "day.json")))
+        cases = [("state {}", "state.json", {}), ("state []", "state.json", []), ("state keyless", "state.json", {"version": 1}),
+                 ("state bad member", "state.json", dict(good_state, real=[{}])),
+                 ("day {}", "day.json", {}), ("day vex not a list", "day.json", dict(good_day, vex={})), ("day vex entry {}", "day.json", dict(good_day, vex=[{}])),
+                 ("day owner a string", "day.json", dict(good_day, owner="x")), ("day issue a list", "day.json", dict(good_day, issue=[])),
+                 ("day profiles entry {}", "day.json", dict(good_day, profiles=[{}]))]
+        for label, name, doc in cases:
+            json.dump(good_state, open(os.path.join(self.out, "state.json"), "w")); json.dump(good_day, open(os.path.join(self.out, "day.json"), "w"))
+            json.dump(doc, open(os.path.join(self.out, name), "w"))
+            calls, run = self.fake()
+            with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}), mock.patch("sys.stdout", new=io.StringIO()), \
+                    mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_deliver(self.a(), run=run)
+            self.assertEqual((rc, calls), (3, []), label)
+            self.assertIn("::error::", err.getvalue(), label)
 
     def test_nothing_to_deliver(self):
         with mock.patch("sys.stderr", new=io.StringIO()):
@@ -1214,6 +1258,32 @@ class RebuildReal(Tmp):
             self.assertEqual({p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES)}, before, (rel, bad))      # main's files were not touched
             self.git("checkout", "-q", "-f", "main")
 
+    def test_the_pr_branch_documents_are_all_validated_before_the_checkout_moves_anything(self):
+        # cache#707 round 2 (A F2/F4/F5, B B1/B3/B4, C B2): every PR-branch document is checked after the tip guard and BEFORE checkout -B: no git checkout, no ref change, nothing written
+        stmt_bad = {"statements": [{"@id": ["bad"]}], "version": 2, "timestamp": "t"}
+        for label, rel, bad in (("vex {}", P.VEX, {}), ("profiles member {}", P.PROFILES, {"entries": [{}]}), ("profiles match a list", P.PROFILES, {"entries": [dict(self.entry, match=["x"])]}),
+                                ("vex @id a list", P.VEX, stmt_bad), ("vex version {}", P.VEX, {"statements": [], "version": {}}), ("vex zero bytes", P.VEX, ""), ("profiles zero bytes", P.PROFILES, "")):
+            self.git("checkout", "-q", "-f", "auditor/panel")
+            good_profiles = {"entries": [self.entry]}
+            if rel == P.VEX:
+                self.write(P.PROFILES, good_profiles)
+            path = os.path.join(self.work, rel)
+            if bad == "":
+                open(path, "w").close()
+            else:
+                self.write(rel, bad)
+            self.git("add", "-A"); self.git("commit", "-q", "-m", "damaged: " + label); self.git("push", "-q", "-f", "origin", "auditor/panel")
+            self.git("checkout", "-q", "-f", "main")
+            ref = lambda: subprocess.run(["git", "-C", self.work, "rev-parse", "--verify", "-q", "refs/heads/auditor/panel"], capture_output=True, text=True).stdout.strip()
+            ref_before = ref()
+            files_before = {p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES, P.STATE)}
+            rc, calls = self.deliver()
+            self.assertEqual(rc, 3, label)
+            self.assertFalse([c for c in calls if c[:2] == ["git", "checkout"] or (c[0] == "git" and "checkout" in c)], label)
+            self.assertFalse([c for c in calls if c[:3] in (["gh", "api", "graphql"], ["gh", "pr", "create"], ["gh", "pr", "edit"], ["gh", "pr", "merge"])], label)
+            self.assertEqual(ref(), ref_before, label)
+            self.assertEqual({p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES, P.STATE)}, files_before, label)
+
     def test_state_source_reads_through_the_shared_reader(self):
         # cache#707 B3: no os.path.exists: a dangling link or a damaged state (main's or the PR branch's) is a stop, never "no state"
         out = os.path.join(self.d, "st.json"); shaf = os.path.join(self.d, "sha2")
@@ -1426,7 +1496,7 @@ class CarryForward(Tmp):
         self.assertEqual(self.go([P.VEX]), [])
 
     def test_duplicate_profile_keys_are_ambiguous_and_refused(self):                               # review r8 B2
-        a = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "A"}
+        a = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^a$"}, "behavior": "b", "finding": "A", "evidence": "e"}
         b = dict(a, finding="B")                                                                    # same scanner/kind/package, different content
         self.put("BASE", P.PROFILES, {"entries": [a, b]}); self.put("PR", P.PROFILES, {"entries": [a, b, dict(a, match={"package": "^c$"})]})
         self.cur(P.PROFILES, {"entries": [dict(a, finding="A-prime"), b]})
@@ -1491,8 +1561,8 @@ class CarryForward(Tmp):
         self.assertEqual(len(doc["statements"]), len(base["statements"]) + 1)
 
     def test_profile_entries_are_carried_once_and_conflicts_are_loud(self):                       # review r7 B2
-        e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "f1"}
-        e2 = {"scanner": "scout", "kind": "k", "match": {"package": "^b$"}, "finding": "f2"}
+        e1 = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^a$"}, "behavior": "b", "finding": "f1", "evidence": "e"}
+        e2 = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^b$"}, "behavior": "b", "finding": "f2", "evidence": "e"}
         self.put("BASE", P.PROFILES, {"entries": [e1]}); self.put("PR", P.PROFILES, {"entries": [e1, e2]})
         self.cur(P.PROFILES, {"entries": [e1]})
         self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
