@@ -1840,7 +1840,7 @@ sc8="$("$PY" -c '
 import json,sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=sys.argv[2]
-env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-8802","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["GO-2099-8802","CVE-2099-8802"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
 row,_=R._dispose("CVE-2099-8802",[f],["CVE-2099-8802","GO-2099-8802"],env,[])
@@ -2040,7 +2040,7 @@ a5="$("$PY" -c '
 import json,sys,glob,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 gv,out=sys.argv[1],sys.argv[2]
-env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 # two Go findings share the CVE: v1.0.0 (has the trace) and v2.0.0 (no trace)
 f1={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-0005","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["GO-2099-0005","CVE-2099-0005"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
@@ -2153,7 +2153,7 @@ r3="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 gv,out=sys.argv[1],sys.argv[2]
-env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def gm(v,sc): return {"scanner":sc,"finding_id":"GO-2099-1302","purl":"pkg:golang/example.org/lib@"+v,"aliases":["GO-2099-1302","CVE-2099-1302"],"package":"example.org/lib","fixed_version":None,"severity":"Critical","extra":{}}
 # two scanner lineages per version so a no-fix version routes to POA&M without a model call
@@ -2169,7 +2169,7 @@ spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.p
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 import os,shutil,tempfile
 purl="pkg:deb/debian/lib@1"; sc=((policy.VEX_PRODUCT,),(purl,))
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(tempfile.mkdtemp(),"out"),"ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{("CVE-2099-1303",sc):"2026-09-23"},"today":"2026-09-23"}
 f={"scanner":"grype","finding_id":"CVE-2099-1303","purl":purl,"aliases":["CVE-2099-1303"],"package":"lib","fixed_version":None,"severity":"Medium","extra":{}}
@@ -2220,7 +2220,7 @@ r23="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=sys.argv[1]
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def gm(pkg,purl,fixed,sc):
     return {"scanner":sc,"finding_id":"CVE-2099-2003","purl":purl,"aliases":["CVE-2099-2003"],"package":pkg,"fixed_version":fixed,"severity":("Critical" if fixed is None else "Medium"),"extra":{}}
@@ -2292,7 +2292,7 @@ notclean="$(printf '%s' "$first" | grep -qi 'not clean' && echo yes || echo no)"
 echo "=== REQ-AUD-13 refactor boundary regressions (round 3) ==="
 # shared env builder for direct _dispose/_dispose_split cases
 r3env() { cat <<PYENV
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"$1","ts":"2026-09-24T00:00:00Z","dry":True,"digest":"x","carried_expiry":$2,"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"$1","ts":"2026-09-24T00:00:00Z","dry":True,"digest":"x","carried_expiry":$2,"today":"2026-09-24"}
 PYENV
 }
 
@@ -2302,7 +2302,7 @@ res="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
 def mk(v,fx,sc): return {"scanner":sc,"finding_id":"CVE-2099-1703","purl":"pkg:golang/example.org/lib@"+v,"aliases":["CVE-2099-1703"],"package":"example.org/lib","fixed_version":fx,"severity":("Critical" if fx is None else "Medium"),"extra":{}}
 fs=[mk("v8.0.0",None,"grype"),mk("v8.0.0",None,"osv-scanner-gomod"),mk("v1.0.0","1.0.1","grype"),mk("v1.0.0","1.0.1","osv-scanner-gomod")]
 rows,_=R._dispose_split("CVE-2099-1703",fs,["CVE-2099-1703"],env,[])
@@ -2318,7 +2318,7 @@ res="$("$PY" -c '
 import importlib.util,glob,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
 def mk(pkg,sc): return {"scanner":sc,"finding_id":"CVE-2099-1802","purl":"pkg:golang/"+pkg+"@v1.0.0","aliases":["CVE-2099-1802"],"package":pkg,"fixed_version":None,"severity":"High","extra":{}}
 fs=[mk("example.org/a/b","grype"),mk("example.org/a/b","osv-scanner-gomod"),mk("example.org/a_b","grype"),mk("example.org/a_b","osv-scanner-gomod")]
 R._dispose_split("CVE-2099-1802",fs,["CVE-2099-1802"],env,[])
@@ -2332,7 +2332,7 @@ res="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
 bbb=[{"scanner":"grype","finding_id":"CVE-2099-1806","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-1806"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}},
      {"scanner":"osv-scanner","finding_id":"CVE-2099-1806","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-1806"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}}]
 lin={"scanner":"osv-scanner","finding_id":"GO-2099-1805","purl":"pkg:golang/example.org/aaa@v1","aliases":["CVE-2099-1806"],"package":"example.org/aaa","fixed_version":None,"severity":"Low","extra":{},"_lineage_only":True}
@@ -2347,7 +2347,7 @@ import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 import os,tempfile; OUT3=os.path.join(tempfile.mkdtemp(),"out")
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":OUT3,"ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":OUT3,"ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
 f={"scanner":"grype","finding_id":"CVE-2099-1801","purl":purl,"aliases":["CVE-2099-1801"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 row,_=R._dispose("CVE-2099-1801",[f],["CVE-2099-1801"],env,[])
 print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row["section"])' 2>/dev/null | tail -1)"
@@ -2389,7 +2389,7 @@ r3="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
 lin=[{"scanner":"osv-scanner","finding_id":"GO-1","purl":"pkg:golang/adv/lib@v1","aliases":["CVE-2099-3001"],"package":"adv/lib","fixed_version":None,"severity":"High","extra":{},"_lineage_only":True}]
 rows,_=R._dispose_split("CVE-2099-3001",lin,["CVE-2099-3001"],env,[])
 import glob
@@ -2403,7 +2403,7 @@ r5="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
 bbb=[{"scanner":"grype","finding_id":"CVE-2099-3002","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-3002"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}}]
 lin={"scanner":"osv-scanner","finding_id":"GO-2","purl":"pkg:golang/adv@v1","aliases":["CVE-2099-3002"],"package":"adv","fixed_version":None,"severity":"Low","extra":{},"_lineage_only":True}
 rows,_=R._dispose_split("CVE-2099-3002",bbb+[lin],["CVE-2099-3002"],env,[])
@@ -2422,7 +2422,7 @@ open(gv,"w").write("\n".join([
   "{\"finding\":{\"osv\":\"GO-2099-3004\",\"trace\":[{\"module\":\"example.org/lib\",\"version\":\"v1.0.0\",\"package\":\"example.org/lib/x\"}]}}"]))
 def env(cs):
     shutil.rmtree(os.path.join(T4,"out"),ignore_errors=True)
-    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(T4,"out"),"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
+    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(T4,"out"),"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-3004","purl":purl,"aliases":["GO-2099-3004","CVE-2099-3004"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 carried,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env({("CVE-2099-3004",sc)}),[])
 fresh,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env(set()),[])
@@ -2476,7 +2476,7 @@ CARRIERS=[{"component":"openssl","component_purl":OSPURL,"component_version":"1.
 def mkenv(out,**kw):
     shutil.rmtree(out,ignore_errors=True)
     e={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":STUB,
-       "state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-25","out":out,
+       "state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-25","out":out,
        "ts":"2026-09-25T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-25",
        "carried_scopes":set(),"carried_status":{},"carriers":CARRIERS,"base":{},"base_policy_held":False}
     e.update(kw); return e
@@ -3065,7 +3065,7 @@ import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
-env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-7701",sc)},
      "carried_status":{("CVE-2099-7701",sc):"not_affected"}}
@@ -3126,7 +3126,7 @@ begin "req15-poam-row-names-real-ignores" "a §2 POA&M row names the exception i
 pir="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[1],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def f(sc): return {"scanner":sc,"finding_id":"CVE-2099-4141","purl":"pkg:deb/debian/lib@1","aliases":["CVE-2099-4141"],"package":"lib","fixed_version":None,"severity":"Critical","extra":{}}
 row,_=R._dispose("CVE-2099-4141",[f("grype"),f("google")],["CVE-2099-4141"],env,[])
@@ -3144,7 +3144,7 @@ import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
-env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-6601",sc)},"carried_status":{("CVE-2099-6601",sc):"affected"}}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-6601","purl":purl,"aliases":["GO-2099-6601","CVE-2099-6601"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
@@ -4129,8 +4129,8 @@ rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/m
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
-# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue
-# (stable title, the count in the body; a budget stop opens none), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
+# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a token-budget stop is listed and opens
+# no owner issue (the repeated-unsettled case is rc5b-15's), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
 begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, a token-budget stop opens no owner issue (the in-run iteration stop is gone: it could never fire, so the repeated-unsettled case is the run counter's), the lists show their full counts, and the header fields are escaped"
 r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
 import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
@@ -4167,7 +4167,7 @@ def run(mp, fa, dry=True, shim=None, fail=False):
 bad=[]
 def line(rep,start): return [l for l in rep.split("\n") if l.startswith(start)]
 name_re=re.compile(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",re.I)
-# 1: refusals and stops are listed with counts and roles, and the scanner versions are printed; a refused finding gets its per-finding path
+# 1: refusals and stops are listed with counts and roles, and the scanner versions are printed
 rep=run(manifest(2,"two"), adj(1))
 refs=line(rep,"**Model refusals:**"); vers=line(rep,"**Scanner versions:**")
 if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 7: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
