@@ -193,7 +193,7 @@ def _scopes(statement, digests):
             if pm.group(1).count("/") == 0 and any(c in name_ for c in "/@?#") or any(c in ver_ for c in "/?#"):
                 # a delimiter that was only percent-encoded (busybox%401.37.0, github.com%2Fgolang-jwt%2Fjwt): decoded once it would name another package
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
-            if "/" in pm.group(1) and any(c in seg for seg in name_.split("/") for c in "@?#"):
+            if "/" in pm.group(1) and (any(c in seg for seg in name_.split("/") for c in "@?#") or name_.count("/") != pm.group(1).count("/")):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
             out.append((ds, (name_, ver_)))
     return out
