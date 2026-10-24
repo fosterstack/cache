@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild stage, job `rapk` (fresh runner per architecture; REQ-CHAIN-005-AC2). Run under Witness by bin/witnessed.sh.
+# Rebuild stage, job `rapk` (fresh runner per architecture; REQ-CHAIN-005-AC2). Run under Witness by bin/witnessed-local.sh.
 # Verify Build's record first, then build the same apks with the same arguments and date, and write this architecture's fragment.
 set -euo pipefail
 python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json

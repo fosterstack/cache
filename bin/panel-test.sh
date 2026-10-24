@@ -143,6 +143,16 @@ for i, pid in enumerate([R + "@sha256:abc", "pkg:oci/cache?repository_url=ghcr.i
     got = covered_images(pid, "pin%d.json" % i)
     check("a pinned or foreign product (%s) covers no image" % pid, got == [], got)
 
+def id_images(at, purl, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
+        "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}]}, open(f, "w"))
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    return len({c["image"] for c in P.tally(r, P.load_vex(f))["vex_covered"]})
+check("an empty @id beside an identifiers.purl of our image covers nothing (the @id that is present is the id, as the rescan reads it)", id_images("", R, "e1.json") == 0)
+check("a null @id beside an identifiers.purl is that purl", id_images(None, R, "e2.json") == 4)
+
 # --- post-merge rulings on cache#563 (P-1, P-2): a product known only by identifiers.purl is read like the gate's vex_index reads it, and the
 # product's REPOSITORY must be this image's (cache), as rescan-statement.py::_vex_match requires
 def vex_with_products(products, name):
