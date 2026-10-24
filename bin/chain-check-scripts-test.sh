@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
+# proves: REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
 # RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
@@ -1359,6 +1359,12 @@ if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work
   gvrun GV_GO_JSON="$work/real-plain.json" GV_OUT=clean -- "${GVARGS[@]}"
   if [ "$rc" = 0 ]; then ok "G the real go mod edit -json output of a module without ignore passes"; else bad "G real plain output refused: rc=$rc $out"; fi
 else ok "G (no Go on this machine: the real plain-output case is skipped)"; fi
+# go mod edit -json that prints JSON which is not an object cannot say whether an ignore directive is there: refused (REQ-CHAIN-006-AC18), never read as "no ignore"
+for nj in '[]' 'null' '"x"' '5'; do
+  printf '%s\n' "$nj" > "$work/nonobj.json"
+  gvrun GV_GO_JSON="$work/nonobj.json" GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && [ ! -e "$gvt/out/govulncheck.json" ]; then ok "G go mod edit -json printing $nj (not an object) is refused before any scan (REQ-CHAIN-006-AC18)"; else bad "G non-object go mod JSON $nj accepted: rc=$rc $out"; fi
+done
 gvrun GV_RC=3 GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G a tool exit other than 0 fails (it could not run: nothing is clean behind it)"; else bad "G a failing tool was accepted"; fi
 rm -f "$gvt/fake/govulncheck.hide"; mv "$gvt/fake/govulncheck" "$gvt/fake/govulncheck.hide"
@@ -1398,7 +1404,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=484
+EXPECT=488
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

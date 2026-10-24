@@ -145,6 +145,7 @@ class Base(unittest.TestCase):
         p = mock.patch.dict(os.environ); p.start(); self.addCleanup(p.stop)
         for k in _PATH_ENVS:
             os.environ.pop(k, None)
+        os.environ["GITHUB_WORKSPACE"] = self.d("default-workspace")     # run() falls back to the cwd otherwise and would read the real repo's .vex/.auditor (rc-5b fix 13)
 
     def d(self, *parts):
         path = os.path.join(self.tmp, *parts); os.makedirs(path, exist_ok=True); return path
@@ -410,13 +411,51 @@ class MergeConsolidate(Base):
                  "timestamp": "t", "version": version, "statements": statements})
         return out, supp
 
-    def test_corrupt_existing_vex_treated_as_empty(self):
+    def test_corrupt_existing_vex_stops_the_run(self):
+        # rc-5b fix 13: a reviewed file that is present but unreadable is a stop, never "no statements"
         ws = self.d("ws"); self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"), "{not json")
         _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
-        R._merge_suppressions(ws, supp)
-        merged = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))
-        self.assertEqual(merged["version"], 4)                            # new doc's version, not existing+1
-        self.assertEqual([s["vulnerability"]["name"] for s in merged["statements"]], ["CVE-2099-20"])
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+        self.assertEqual(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")).read(), "{not json")      # nothing was rewritten
+
+    def test_corrupt_checkout_inventory_stops_before_the_vex_is_written(self):
+        ws = self.d("ws"); self.wj(os.path.join(ws, ".auditor", "accepted-items.json"), "{bad")
+        vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
+        _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+        self.assertFalse(os.path.exists(vp))                                # the VEX was not written ahead of the stop
+
+    def test_corrupt_run_inventory_stops_the_delivery_merge(self):
+        # the run's OWN accepted-items.json (beside its suppressions) that does not parse must not let the VEX ride without its inventory
+        ws = self.d("ws")
+        _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
+        self.wj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"), "{bad")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+        self.assertFalse(os.path.exists(os.path.join(ws, ".vex")))      # and neither the VEX nor its folder was created ahead of the stop
+
+    def test_read_reopened_is_strict(self):
+        for bad in ({"reopened": [0, None, ""]}, {"reopened": [["CVE", 5, 6]]}, {"reopened": [["CVE", "prod", "purl"]]}, {"reopened": [[["x"], [], []]]}, {"reopened": "x"}, [1]):
+            p = os.path.join(self.d("ro"), "reopened-expired.json"); self.wj(p, bad)
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._read_reopened(p)
+        p = os.path.join(self.d("ro2"), "reopened-expired.json"); self.wj(p, {"reopened": [["CVE-1", ["prod"], ["pkg:deb/a@1"]]]})
+        self.assertEqual(R._read_reopened(p), [["CVE-1", ["prod"], ["pkg:deb/a@1"]]])
+        self.assertEqual(R._read_reopened(os.path.join(self.d("ro3"), "absent.json")), [])      # absent = none
+
+    def test_lstat_failure_other_than_absent_is_a_stop(self):
+        import errno
+        from unittest.mock import patch
+        p = os.path.join(self.d("lst"), "x.json")
+        with patch.object(R.os, "lstat", side_effect=PermissionError(errno.EACCES, "parent inaccessible")):
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._read_reviewed_json(p)
+        with patch.object(R.os, "lstat", side_effect=OSError(errno.EIO, "I/O failure")):
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._read_reviewed_json(p)
+        self.assertIsNone(R._read_reviewed_json(p))                         # really absent: the first run
 
     def test_legacy_item_resolved_by_unique_package(self):
         ws = self.d("ws"); st = self._stmt("CVE-2099-21", ["pkg:deb/debian/libfoo@1.0"])
@@ -448,11 +487,19 @@ class MergeConsolidate(Base):
         self.assertFalse(os.path.exists(os.path.join(ws, ".snyk")))
         self.assertFalse(os.path.exists(os.path.join(ws, "osv-scanner.toml")))
 
-    def test_consolidate_skips_unreadable_files(self):
+    def test_consolidate_stops_on_an_unreadable_file(self):
+        # rc-5b fix 13: a per-finding VEX this run wrote that does not parse means the run is broken: stop, do not produce "statements: []"
         out = self.d("out")
         good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
         self.wj(os.path.join(out, "vex", "a-good.openvex.json"), good)
         self.wj(os.path.join(out, "vex", "b-bad.openvex.json"), "{")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._consolidate(out, "2026-09-22T00:00:00Z")
+
+    def test_consolidate_merges_readable_files(self):
+        out = self.d("out")
+        good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
+        self.wj(os.path.join(out, "vex", "a-good.openvex.json"), good)
         supp, n = R._consolidate(out, "2026-09-22T00:00:00Z")
         self.assertEqual(n, 1)
         doc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))

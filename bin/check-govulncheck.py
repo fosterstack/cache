@@ -166,7 +166,9 @@ def refuse_ignore(tool_env, search):
         mod = json.loads(r.stdout)
     except ValueError:
         fail("go mod edit -json did not print JSON: go.mod cannot be read, so nothing is scanned")
-    ign = mod.get("Ignore") if isinstance(mod, dict) else None
+    if not isinstance(mod, dict):
+        fail("go mod edit -json did not print an object: go.mod cannot be read for an ignore directive, so nothing is scanned")
+    ign = mod.get("Ignore")
     if ign is None:
         return
     if not isinstance(ign, list) or ign:
