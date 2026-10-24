@@ -1096,6 +1096,16 @@ assert len({tuple(v) for v in plain.values()}) == 4, "the probe does not tell th
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for c in combos + combos[::-1] + combos:
     assert sorted(inv.inventory(files(*c))) == plain[c], c
+# "and only then": count the walks of the caller (the callees are walked when their own text is new)
+walks = []; real = inv._file_found
+inv._file_found = lambda p, x: (walks.append(p), real(p, x))[1]
+caller_path = ".github/workflows/caller.yml"
+inv._FILE_MEMO.clear(); inv.inventory(files(ok, ok)); walks.clear()
+inv.inventory(files(ok, ok)); assert caller_path not in walks, "an unchanged tree re-walked the caller"
+inv.inventory(files(no, ok)); assert walks.count(caller_path) == 1, "callee one changed: the caller is walked once"
+walks.clear(); inv.inventory(files(no, ok)); assert caller_path not in walks, "nothing changed: not walked"
+walks.clear(); inv.inventory(files(no, no)); assert walks.count(caller_path) == 1, "callee two changed: the caller is walked once"
+inv._file_found = real
 PY
 CASE="file memo: the context is neutral for every file: a workflow that raises in the middle of a job leaves nothing for the next file (a script read after it equals a neutral run, memo cold and warm)"
 check python3 - "$aud" <<'PY'
