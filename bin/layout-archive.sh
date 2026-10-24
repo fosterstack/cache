@@ -3,7 +3,7 @@
 # Makes a docker-save tar of the linux/ARCH image of an OCI layout, so a scanner reads it without a Docker daemon.
 # The tar holds manifest.json (naming TAG as the image name: grype takes the image identity from it, which is how the
 # published VEX applies), then the child's config blob and its layer blobs, and nothing else of the layout.
-# Prints "child sha256:<child manifest> config sha256:<config>" for the caller to check against what the scanner reports.
+# Prints "child sha256:<child manifest> config sha256:<config>", for the caller to check against the scanner.
 set -euo pipefail
 layout=${1:?usage: layout-archive.sh LAYOUT ARCH ARCHIVE TAG}
 arch=${2:?}; archive=${3:?}; tag=${4:?}

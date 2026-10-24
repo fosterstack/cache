@@ -270,7 +270,8 @@ jobs:
           echo "## Amazon Inspector" >> "$GITHUB_STEP_SUMMARY"
           while read -r ref; do
             tag="${ref##*:}"
-            if ! inspector-sbomgen container --image "/tmp/arc/${tag}.tar" --outfile "/tmp/insp/${tag}.sbom.json" --disable-progress-bar; then
+            if ! inspector-sbomgen container --image "/tmp/arc/${tag}.tar" \
+                 --outfile "/tmp/insp/${tag}.sbom.json" --disable-progress-bar; then
               echo "::error::inspector-sbomgen could not inventory ${ref} — did not run, not a clean pass" >&2; rc=2; continue
             fi
             key=$(python3 bin/inspector-reuse.py key "/tmp/insp/${tag}.sbom.json") || { echo "::error::no inventory key for ${ref} — did not run, not a clean pass" >&2; rc=2; continue; }

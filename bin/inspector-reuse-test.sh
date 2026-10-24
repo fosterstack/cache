@@ -852,7 +852,9 @@ cat > "$sim/bin/inspector-sbomgen" <<'EOF'
 #!/usr/bin/env bash
 ref=""; out=""
 while [ $# -gt 0 ]; do case "$1" in --image) ref=$2; shift ;; --outfile) out=$2; shift ;; esac; shift; done
-n=${ref##*[:/]}; cp "$FAKE_SBOMS/${n%.tar}.json" "$out"
+n=${ref##*[:/]}; n=${n%.tar}
+[ -f "$ref" ] && n=$(sed 's/.*://' "$ref")   # the fake tar holds the tag it was made for
+cp "$FAKE_SBOMS/$n.json" "$out"
 EOF
 cat > "$sim/bin/aws" <<'EOF'
 #!/usr/bin/env bash
@@ -882,6 +884,7 @@ fi
 exec /bin/date "$@"
 EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "$sim/bin/sudo"; cp "$sim/bin/sudo" "$sim/bin/skopeo"
+printf '#!/usr/bin/env bash\necho "$4" > "$3"\n' > "$sim/bin/layout-archive.sh"   # the rescan step's tar, as a file naming its tag
 chmod +x "$sim/bin/"*
 # the images: the two platform children of a variant carry the same inventory (different stamp); the variants differ
 mksbom "$sim/sboms/cand-production-amd64.json" urn:uuid:p1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
@@ -1068,7 +1071,9 @@ mscan2 "the store happens without the day re-check" "$M_NO_RECHECK" daycross_sca
 
 # --- main-candidate-rescan.yml: the daily panel
 extract main-candidate-rescan.yml panel-inspector "Amazon Inspector every image" > "$sim/rescan-raw.sh" || { bad "extract the rescan's Inspector step"; }
-sandbox < "$sim/rescan-raw.sh" > "$sim/rescan-step.sh"
+# the rescan step builds its tars with ./bin/layout-archive.sh; the run uses the fake one on PATH
+rescan_fix() { sed 's#\./bin/layout-archive\.sh#layout-archive.sh#'; }
+sandbox < "$sim/rescan-raw.sh" | rescan_fix > "$sim/rescan-step.sh"
 reset_rescan() { rm -rf "$sim/tmp"; mkdir -p "$sim/tmp"; }
 scans() { ls "$sim"/tmp/panel/inspector/*/scan.json 2>/dev/null | wc -l | tr -d ' '; }
 valid_scans() { for f in "$sim"/tmp/panel/inspector/*/scan.json; do python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d['sbom']['bomFormat']=='CycloneDX' else 1)" "$f" && echo y; done | wc -l | tr -d ' '; }
@@ -1133,7 +1138,7 @@ rescan_case() { # script-file -> "rc1 rc2 calls2 tally-findings-after-reuse"
 }
 expect "rescan findings: a fresh run and a REUSED run (no call) both put the vulnerability into the tally for all four images" "0 0 0 4 4" "$(rescan_case "$sim/rescan-step.sh")"
 mresc() { # name python-mutation
-  mutate "$2" < "$sim/rescan-raw.sh" | sandbox > "$sim/rescan-mut.sh" || { bad "rescan mutation $1 did not apply"; return; }
+  mutate "$2" < "$sim/rescan-raw.sh" | sandbox | rescan_fix > "$sim/rescan-mut.sh" || { bad "rescan mutation $1 did not apply"; return; }
   got=$(rescan_case "$sim/rescan-mut.sh")
   if [ "$got" != "0 0 0 4 4" ]; then ok "rescan mutation caught by the findings case: $1 ($got)"; else bad "rescan mutation NOT caught: $1"; fi
 }
@@ -1146,7 +1151,7 @@ for m in bare sbom other; do
 done
 mresc2() { # name mutation function-and-args...
   local name=$1 mut=$2; shift 2
-  mutate "$mut" < "$sim/rescan-raw.sh" | sandbox > "$sim/rescan-mut.sh" || { bad "rescan mutation $name did not apply"; return; }
+  mutate "$mut" < "$sim/rescan-raw.sh" | sandbox | rescan_fix > "$sim/rescan-mut.sh" || { bad "rescan mutation $name did not apply"; return; }
   want=$(SCRIPT="$sim/rescan-step.sh" "$@"); got=$(SCRIPT="$sim/rescan-mut.sh" "$@")
   if [ "$got" != "$want" ]; then ok "rescan mutation caught: $name ($got)"; else bad "rescan mutation NOT caught: $name"; fi
 }

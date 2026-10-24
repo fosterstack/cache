@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-004-AC1 — the gate scans every image child of the layout, from the child's own blobs, no Docker daemon
+# proves: REQ-REL-004-AC1 — the gate scans each image child of the layout from its own blobs, no Docker daemon
 # bin/layout-archive.sh turns the linux/ARCH image of an OCI layout into a docker-save tar a scanner can read.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -34,7 +34,8 @@ PY
 tag=ghcr.io/fosterstack/cache:cand-production-amd64
 out=$(bash "$tool" "$work/layout" amd64 "$work/amd64.tar" "$tag")
 members=$(tar -tf "$work/amd64.tar" | tr '\n' ' ')
-[ "$(tar -tf "$work/amd64.tar" | head -1)" = manifest.json ] && ok "manifest.json comes first" || bad "manifest.json first"
+first="$(tar -tf "$work/amd64.tar" | head -1)"
+[ "$first" = manifest.json ] && ok "manifest.json comes first" || bad "manifest.json first"
 [ "$(tar -tf "$work/amd64.tar" | wc -l | tr -d ' ')" = 3 ] && ok "three members: manifest, config, one layer" \
   || bad "members: $members"
 tar -xOf "$work/amd64.tar" manifest.json > "$work/m.json"
@@ -43,7 +44,8 @@ config=$(jq -r '.[0].Config' "$work/m.json")
 want=$(cat "$work/layout-amd64")
 [ "$out" = "$want" ] && ok "the child and config digests are printed" || bad "output: $out, wanted $want"
 [ "sha256:${config#blobs/sha256/}" = "${want##* }" ] && ok "the config is the amd64 child's own" || bad "config $config"
-tar -tf "$work/amd64.tar" | grep -qx manifest.json && [ "$(tar -tf "$work/amd64.tar" | grep -c '^manifest.json$')" = 1 ] \
+n="$(tar -tf "$work/amd64.tar" | grep -c '^manifest.json$')"
+[ "$n" = 1 ] \
   && ok "the layout's stray root manifest.json is not in the tar" || bad "stray manifest.json"
 bash "$tool" "$work/layout" arm64 "$work/arm64.tar" "${tag%amd64}arm64" > /dev/null
 cmp -s "$work/amd64.tar" "$work/arm64.tar" && bad "arm64 tar equals amd64" || ok "each architecture gets its own tar"

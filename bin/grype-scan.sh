@@ -38,12 +38,13 @@ cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$
 
 # GRYPE is a test seam (a stand-in for the grype binary); no workflow ever sets it, so CI always runs the pinned grype.
 "${GRYPE:-grype}" "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
-# EXPECT_IMAGE_ID (optional): the config digest of the image the caller built the scanned tar from (bin/layout-archive.sh). A tar's image ID is its config
+# EXPECT_IMAGE_ID (optional): the config digest of the image the caller built the scanned tar from
+# (bin/layout-archive.sh). A tar's image ID is its config
 # digest, so grype's report must name it: the image scanned is then the one we ship, not another tar in its place.
 if [ -n "${EXPECT_IMAGE_ID:-}" ] && jq -e . "$js" >/dev/null 2>&1; then
   got=$(jq -r '.source.target.imageID // empty' "$js" 2>/dev/null) || got=""
   if [ "$got" != "$EXPECT_IMAGE_ID" ]; then
-    echo "::error::grype ${label}: scanned image ID '${got:-none}', expected '${EXPECT_IMAGE_ID}': not the image we ship" >&2
+    echo "::error::grype ${label}: image ID '${got:-none}', expected '${EXPECT_IMAGE_ID}': not the image we ship" >&2
     exit 2
   fi
 fi

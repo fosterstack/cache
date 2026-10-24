@@ -197,7 +197,8 @@ jobs:
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
               ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "${d}.tar" "${ref}" > /dev/null || continue
-              grype "docker-archive:${d}.tar" -c "$RUNNER_TEMP/empty-grype.yaml" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
+              grype "docker-archive:${d}.tar" -c "$RUNNER_TEMP/empty-grype.yaml" \
+                --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
                 || { rm -rf "${d}"; echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
@@ -469,7 +470,8 @@ jobs:
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
               ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "${d}.tar" "${ref}" > /dev/null || continue
-              if ! inspector-sbomgen container --image "${d}.tar" --outfile "${d}/sbom.cdx.json" --disable-progress-bar; then
+              if ! inspector-sbomgen container --image "${d}.tar" --outfile "${d}/sbom.cdx.json" \
+                   --disable-progress-bar; then
                 echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue
               fi
               key=$(python3 bin/inspector-reuse.py key "${d}/sbom.cdx.json") \
@@ -548,7 +550,8 @@ jobs:
           set -uo pipefail
           for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            ./bin/layout-archive.sh "/tmp/oci/${v}" amd64 "${d}.tar" "${ref}" > /dev/null && docker load -i "${d}.tar" > /dev/null || continue
+            ./bin/layout-archive.sh "/tmp/oci/${v}" amd64 "${d}.tar" "${ref}" > /dev/null \
+              && docker load -i "${d}.tar" > /dev/null || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"
