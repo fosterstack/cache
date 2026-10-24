@@ -408,11 +408,11 @@ for k, v in FMT.items(): dj("digests-%s.json" % k, v)
 open(p("digests-dupkey.json"), "w").write('{"image-production":"sha256:%s","image-fips":"sha256:%s","apk":"sha256:%s","apk":"sha256:%s"}' % ("a" * 64, "b" * 64, "d" * 64, "c" * 64))
 open(p("digests-notobject.json"), "w").write('["sha256:%s"]' % ("a" * 64))
 FMT["dupkey"] = FMT["notobject"] = None
-# The Witness move (owner Oct 22): Build and Rebuild record under a throwaway key inside their jobs and Sign re-signs the records keyless, so a Build or Rebuild record
+# The Witness move (owner Oct 22): Build and Rebuild record under a throwaway key inside their jobs and Sign re-signs the records keyless, so a Build, Rebuild or Check record
 # is accepted only under stage-sign.yml's identity (the same file as Sign's provenance: the record TYPE and the collection name tell the stages apart). The old
 # identities (stage-build.yml, stage-reproducibility.yml) are refused for every stage; OLD_BUILD / OLD_REBUILD name them for those cases.
-OLD_BUILD, OLD_REBUILD = "stage-build.yml", "stage-reproducibility.yml"
-STAGES = {"build": "stage-sign.yml", "sign": "stage-sign.yml", "rebuild": "stage-sign.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
+OLD_BUILD, OLD_REBUILD, OLD_CHECK = "stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml"
+STAGES = {"build": "stage-sign.yml", "sign": "stage-sign.yml", "rebuild": "stage-sign.yml", "check": "stage-sign.yml", "release": "stage-promote.yml"}
 json.dump({"repository": REPO, "oidc_issuer": ISSUER, "caller_workflow": ".github/workflows/release.yml", "stages": {k: {"workflow": ".github/workflows/" + v} for k, v in STAGES.items()}}, open(p("template.json"), "w"))
 sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("rekor.key"))
 sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("rekor2.key"))
@@ -443,7 +443,7 @@ def add(n, *a, **k): PAY[n] = record(n, *a, **k)
 add("sign_prov", STAGES["sign"], T, PROV, D)
 add("sign_prov_v0.2", STAGES["sign"], T, "https://slsa.dev/provenance/v0.2", D)
 for s in ("build", "rebuild", "check", "release"): add(s + "_as_sign", STAGES[s], T, PROV, D)
-add("oldbuild_as_sign", OLD_BUILD, T, PROV, D); add("oldrebuild_as_sign", OLD_REBUILD, T, PROV, D)      # the former Build and Rebuild identities presented as Sign's
+add("oldbuild_as_sign", OLD_BUILD, T, PROV, D); add("oldrebuild_as_sign", OLD_REBUILD, T, PROV, D); add("oldcheck_as_sign", OLD_CHECK, T, PROV, D)      # the former Build and Rebuild identities presented as Sign's
 add("sibling_as_sign", "other.yml", T, PROV, D)
 add("evilext_as_sign", "stage-sign.yml.evil", T, PROV, D)
 add("xprefix_as_sign", "xstage-sign.yml", T, PROV, D)
@@ -507,7 +507,9 @@ add("build_coll_badissuer", STAGES["build"], T, COLL, None, stmt="v0.1", coll_fi
 add("build_coll_wrongroot", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
 add("build_coll_wrongrepo", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", repo="attacker/cache")
 add("build_coll_noconfig", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", no_config=True)
-add("check_coll", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json")
+add("check_coll", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
+add("check_coll_old", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
+add("check_coll_oldb", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json")      # the same former identity under a Build collection name (offered as Build's; Check's former identity, since the Check stage holds no token after the Witness move)
 add("rebuild_coll", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
 add("rebuild_coll_other", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
 add("build_coll_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", coll_file="digests.json")
@@ -521,8 +523,8 @@ add("sign_cfg_rc", STAGES["sign"], T, PROV, D, config_ref="refs/tags/v0.3.0-rc1"
 add("sign_san_repoevil", STAGES["sign"], T, PROV, D, repo="fosterstack/cache-evil", config_repo="fosterstack/cache")
 # the extension checks are not Sign-only: Rebuild, Check and Release must each refuse a wrong top-level workflow and a wrong issuer
 for s in ("rebuild", "check"):
-    add(s + "_cfg", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml", coll_name="rebuild" if s == "rebuild" else None)
-    add(s + "_issuer", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com", coll_name="rebuild" if s == "rebuild" else None)
+    add(s + "_cfg", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml", coll_name={"rebuild": "rebuild", "check": "scanners"}.get(s))
+    add(s + "_issuer", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com", coll_name={"rebuild": "rebuild", "check": "scanners"}.get(s))
 _c = json.load(open(p("build_coll.json")))
 t = json.loads(json.dumps(_c)); st = json.loads(base64.b64decode(t["payload"])); st["subject"][0]["digest"]["sha256"] = "e" * 64
 t["payload"] = b64(json.dumps(st).encode()); json.dump(t, open(p("build_coll_tampered.json"), "w"))
@@ -555,8 +557,8 @@ add("release_stmt_policy", STAGES["release"], T, "https://in-toto.io/attestation
 # ATTACK shape: the field = a self-made certificate with the RIGHT identity (issued by an attacker root) followed by a GENUINE certificate of
 # ANY identity (chains to the policy root, and its key signed the payload); a reader that takes the first DER for the identity and openssl
 # that skips to the genuine block both say yes. ATK is that self-made certificate; each record below is a genuine record or the attack.
-add("atk_cert", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
-add("check_as_build", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json")   # genuine chain and key, BUILD's identity
+add("atk_cert", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot", coll_name="scanners")
+add("check_as_build", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")   # genuine chain and key, BUILD's identity
 def cert_text(name): return base64.b64decode(json.load(open(p(name + ".json")))["signatures"][0]["certificate"]).decode()
 def pem_der(text): return base64.b64decode("".join(l for l in text.splitlines() if not l.startswith("-----")))
 def to_pem(der): b = base64.b64encode(der).decode(); return "-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i + 64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n"
@@ -599,7 +601,7 @@ WINDOW_MID = gmt(now - dt.timedelta(minutes=90))   # inside the certificate wind
 INJ = "x\nTime stamp: " + WINDOW_MID
 add("build_sa", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
 add("rebuild_sa", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
-add("check_sa", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
+add("check_sa", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60), coll_name="scanners")
 restamp("sign_stampafter", "sign_sa_inj", "rfc3161-response", inject=INJ)          # a genuine post-expiry stamp with a backdated TEXT in its status string
 for s in ("build", "rebuild", "check"):
     restamp(s + "_sa", s + "_sa_inj", "rfc3161-response", inject=INJ)                 # the same injection on a Witness record that (wrongly) carries a response
@@ -882,7 +884,7 @@ for _nm, _kw in (("iss_raw", {"issuer_der": _hx(_I)}), ("iss_ia5", {"issuer_der"
 dj("rekor-x3.json", {"entries": [entry("sign_" + n, 60 + i) for i, n in enumerate(("iss_raw", "iss_ia5", "iss_len", "iss_trail", "cfg_raw", "cfg_long", "iss_der"))]})
 # ---- PR 4 (advisor 0386, read-back verifier-bindings): bind-items and check-list ----
 # items.json is a PRODUCT of Build's record next to digests.json; the four Check records (scanners, acceptance, runtime, arm64) are Witness collections
-# named for their step, signed by stage-verify.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
+# named for their step, signed by stage-sign.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
 MAT = "https://witness.dev/attestations/material/v0.1/file:"
 PRD = "https://witness.dev/attestations/product/v0.1/file:"
 def _fsha(n): return hashlib.sha256(open(p(n), "rb").read()).hexdigest()
@@ -897,7 +899,7 @@ add("bi_otheritems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll(
 add("bi_noitems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
 add("bi_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
 add("bi_material", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", [_prods("items.json")[0], {"name": MAT + "items.json", "digest": {"sha256": _fsha("items.json")}}]))
-add("bi_wrongstage", STAGES["check"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+add("bi_wrongstage", OLD_CHECK, T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 add("bi_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 add("bi_unsigned", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")), signed=False)
 # REQ-CHAIN-007-AC19 (advisor ruling B): admission-baseline.json is a second product of Build's record, bound by `bind-items --product admission-baseline.json`
@@ -915,7 +917,7 @@ def _chk(name, step, wf=None, ref=T, digests="digests.json", signed=True, subj=N
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("c_" + _sn, _sn)
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("co_" + _sn, _sn, digests="digests-other.json")      # all four agree with each other, not with Build's list
 _chk("c_arm64_job", "check-arm64"); _chk("c_runtime_arm64name", "arm64")
-_chk("c_scanners_buildid", "scanners", wf=STAGES["build"]); _chk("c_scanners_signid", "scanners", wf=STAGES["sign"]); _chk("c_scanners_relid", "scanners", wf=STAGES["release"])
+_chk("c_scanners_buildid", "scanners", wf=OLD_BUILD); _chk("c_scanners_signid", "scanners", wf=OLD_CHECK); _chk("c_scanners_relid", "scanners", wf=STAGES["release"])
 _chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
 _chk("c_scanners_unsigned", "scanners", signed=False)
 _chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
@@ -963,7 +965,7 @@ _gv("gv_noprod", prods=[{"name": PRD + "check-results/scan-results.json", "diges
 _gv("gv_dup", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}, {"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
 _gv("gv_material", prods=[{"name": MAT + "check-results/govulncheck.json", "digest": {"sha256": _fsha("gv.json")}}])
 _gv("gv_wrongstep", step="acceptance"); _gv("gv_otherdigests", digests="digests-other.json")
-_gv("gv_nomat", mats=[]); _gv("gv_buildid", wf=STAGES["build"]); _gv("gv_tag2", ref=T2); _gv("gv_unsigned", signed=False)
+_gv("gv_nomat", mats=[]); _gv("gv_buildid", wf=OLD_BUILD); _gv("gv_tag2", ref=T2); _gv("gv_unsigned", signed=False)
 _gv("gv_branch", ref="refs/heads/main")
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
@@ -1242,10 +1244,10 @@ for k in iss_raw cfg_raw; do
   expect_refuse "001-AC4 a malformed issuer or config extension ($k) with a readable SAN: the refusal names the identity found" "malformed|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_$k) $(R rekor-x3.json)
 done
 expect_refuse "002-AC2 a certificate from another root is refused" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
-python3 - "$root" 2> /dev/null <<'PY' && ok "002-AC2 .github/policy/release-policy.template.json names the five stages (Build's and Rebuild's records are signed by stage-sign.yml) and the issuer" || bad "002-AC2 committed template missing or wrong"
+python3 - "$root" 2> /dev/null <<'PY' && ok "002-AC2 .github/policy/release-policy.template.json names the five stages (Build's, Rebuild's and Check's records are signed by stage-sign.yml) and the issuer" || bad "002-AC2 committed template missing or wrong"
 import json, sys
 t = json.load(open(sys.argv[1] + "/.github/policy/release-policy.template.json"))
-want = {"build": "stage-sign.yml", "sign": "stage-sign.yml", "rebuild": "stage-sign.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
+want = {"build": "stage-sign.yml", "sign": "stage-sign.yml", "rebuild": "stage-sign.yml", "check": "stage-sign.yml", "release": "stage-promote.yml"}
 assert t["caller_workflow"] == ".github/workflows/release.yml", t.get("caller_workflow")
 assert t["repository"] == "fosterstack/cache" and t["oidc_issuer"] == "https://token.actions.githubusercontent.com"
 assert {k: v["workflow"].rsplit("/", 1)[-1] for k, v in t["stages"].items()} == want, t["stages"]
@@ -1265,7 +1267,7 @@ PY
 
 # ---- REQ-CHAIN-001-AC4: provenance only from Sign's identity, only as the Sign stage's record ------------------------
 expect_ok     "001-AC4 provenance under stage-sign.yml@tag is accepted" verify $(V) --stage sign $(rec sign_prov) $(R)
-for s in check:stage-verify.yml release:stage-promote.yml; do
+for s in oldcheck:stage-verify.yml release:stage-promote.yml; do
   expect_refuse "001-AC4 ${s%%:*}'s identity is refused and named" "${s#*:}" verify $(V) --stage sign $(rec ${s%%:*}_as_sign) $(R)
 done
 expect_refuse "001-AC4 a sibling file is refused and named" "other.yml" verify $(V) --stage sign $(rec sibling_as_sign) $(R)
@@ -1374,7 +1376,7 @@ for c in sha512:"a sha512 value" 63:"63 hex characters" upper:"upper-case hex" n
 done
 expect_refuse "001-AC2 Build's record unsigned is refused before the digests are read" "build|signature" $(S build_coll_unsigned) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record tampered after signing (the file hash still equal) is refused" "build|signature" $(S build_coll_tampered) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record signed by another stage's identity is refused" "build|stage-verify.yml" $(S check_coll) --digests "$work/digests.json"
+expect_refuse "001-AC2 Build's record signed by another stage's identity (Check's former stage-verify.yml) is refused" "build|stage-verify.yml" $(S check_coll_oldb) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record from another tag is refused" "build|v0.3.1" $(S build_coll_othertag) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record run from a calling workflow that is not release.yml is refused" "build|scan.yml" $(S build_coll_scan) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record with no timestamp is refused" "build|timestamp" $(S build_coll_nostamp) --digests "$work/digests.json"
@@ -1578,7 +1580,7 @@ expect_refuse "003-AC1 other digests: names build and the digest cause" "build|d
 expect_refuse "003-AC1 a SUBSET of the record's digests is refused" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-subset.json"
 expect_refuse "003-AC1 a SUPERSET of the record's digests is refused" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-extra.json"
 expect_refuse "003-AC1 a record with more subjects than the given list is refused" "build|digest" $(ST rebuild build) $(rec build_coll_plus) --digests "$work/digests.json"
-expect_refuse "003-AC1 wrong signer stage (a Check record offered as Build's): names build and identity" "build|stage-verify.yml" $(ST rebuild build) $(rec check_coll) --digests "$work/digests.json"
+expect_refuse "003-AC1 wrong signer stage (a record under Check's former identity offered as Build's): names build and identity" "build|stage-verify.yml" $(ST rebuild build) $(rec check_coll_oldb) --digests "$work/digests.json"
 expect_refuse "003-AC1 an unsigned record: names build and signature" "build|signature" $(ST rebuild build) $(rec build_coll_unsigned) --digests "$work/digests.json"
 expect_refuse "003-AC1 tamper through stage-start: payload changed after signing" "build|signature" $(ST rebuild build) $(rec build_coll_tampered) --digests "$work/digests.json"
 expect_refuse "003-AC1 wrong tag through stage-start" "build|v0.3.1" $(ST rebuild build) $(rec build_coll_othertag) --digests "$work/digests.json"
@@ -1736,7 +1738,7 @@ expect_refuse "NB-1 the ATTACK: a genuine Build-identity record whose field is [
 expect_refuse "NB-1 the same attack through stage-start (release <- check)" "certificate" $(ST release check) $(rec check_attack) --digests "$work/digests.json"
 expect_refuse "NB-1 the attack in its bare form (base64 of a self-made DER, a newline, then the genuine PEM) is refused for stage check" "certificate" verify $(V) --stage check $(rec check_attack_b64) $(R)
 expect_refuse "NB-1 the bare-form attack through stage-start (release <- check)" "certificate" $(ST release check) $(rec check_attack_b64) --digests "$work/digests.json"
-expect_refuse "NB-1 control: the same genuine key with its true certificate is refused for stage check by IDENTITY (stage-sign.yml, the identity Build's records now carry), so the attack above was the only way past" "stage-sign.yml" verify $(V) --stage check $(rec check_as_build) $(R)
+expect_refuse "NB-1 control: the same genuine key with its true certificate is refused for stage release by IDENTITY (stage-sign.yml is not the Release identity), so the attack above was the only way past" "stage-sign.yml" verify $(V) --stage release $(rec check_as_build) $(R)
 expect_refuse "NB-1 a Rekor entry whose verifier is a genuine PEM plus junk is refused (the log's certificate is compared as one DER)" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-verifierjunk.json)
 expect_ok     "NB-1 control: the genuine records are accepted (one PEM block, whitespace around it allowed)" verify $(V) --stage build $(rec build_coll) $(R)
 # ---- the Witness move (owner Oct 22; verifier leg): Build's and Rebuild's records are trusted only under stage-sign.yml's identity -----------------------------
@@ -1747,6 +1749,10 @@ expect_refuse "WM a Rebuild record under the FORMER identity stage-reproducibili
 expect_refuse "WM a Build record signed only by the building job's throwaway key (a key id, no certificate) is refused with the plain reason" "throwaway key" verify $(V) --stage build $(rec build_coll_throwaway) $(R)
 expect_refuse "WM a Rebuild record signed only by the throwaway key is refused with the plain reason" "throwaway key" verify $(V) --stage rebuild $(rec rebuild_coll_throwaway) $(R)
 expect_refuse "WM the throwaway-only form is refused at the other stages too, with the same plain reason" "throwaway key" verify $(V) --stage check $(rec check_coll_throwaway) $(R)
+expect_refuse "WM a Build record (collection build) presented as Check's is refused by its collection name now that the identities are one" "collection name" verify $(V) --stage check $(rec build_coll) $(R)
+expect_refuse "WM a Rebuild record (collection rebuild) presented as Check's is refused by its collection name" "collection name" verify $(V) --stage check $(rec rebuild_coll) $(R)
+expect_refuse "WM a Check record under the former stage-verify.yml identity is refused: only stage-sign.yml signs Check's records" "stage-verify.yml" verify $(V) --stage check $(rec check_coll_old) $(R)
+expect_ok     "WM a Check record signed by stage-sign.yml (the identity that signs Check's records) is accepted" verify $(V) --stage check $(rec check_coll) $(R)
 expect_ok     "WM a key id alongside a real certificate is not the throwaway form (the certificate decides)" verify $(V) --stage build $(rec build_coll_keyid_and_cert) $(R)
 expect_refuse "WM stage-start rebuild <- build refuses a throwaway-only Build record" "throwaway key" $(ST rebuild build) $(rec build_coll_throwaway) $(R) --digests "$work/digests.json"
 expect_refuse "WM stage-start check <- build refuses a Build record under the former identity" "stage-build.yml" $(ST check build) $(rec build_coll_old) $(R) --digests "$work/digests.json"
@@ -2026,7 +2032,7 @@ expect_refuse "PR4 bind-items: a record that holds another items.json hash is re
 expect_refuse "PR4 bind-items: a record with no items.json product is refused" "build|items.json" $(BI bi_noitems)
 expect_refuse "PR4 bind-items: two items.json products (one right, one wrong) are refused" "build|items.json" $(BI bi_dup)
 expect_refuse "PR4 bind-items: a material subject of the same name does not count as the product" "build|items.json" $(BI bi_material)
-expect_refuse "PR4 bind-items: a record signed by another stage's file is refused" "build|stage-verify.yml" $(BI bi_wrongstage)
+expect_refuse "PR4 bind-items: a record signed by another stage's file (Check's former stage-verify.yml) is refused" "build|stage-verify.yml" $(BI bi_wrongstage)
 expect_refuse "PR4 bind-items: a record of another tag is refused" "build|v0.3.1" $(BI bi_othertag)
 expect_refuse "PR4 bind-items: an unsigned record is refused" "build|signature" $(BI bi_unsigned)
 # REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the same binding for a second product of Build's record, named by --product (default items.json)
@@ -2049,8 +2055,8 @@ expect_refuse "PR4 check-list: the scanners record presented twice (as acceptanc
 expect_refuse "PR4 check-list: a record substituted under another step's name is refused" "check|runtime" $(CLS cl_subst)
 expect_refuse "PR4 check-list: an unverifiable (unsigned) record is refused, naming the record" "check|runtime|signature" $(CLS cl_unverifiable)
 expect_refuse "PR4 check-list: the arm64 slot holding a record of the job check-arm64 (wrong job) is refused" "check|arm64" $(CLS cl_wrongjob)
-expect_refuse "PR4 check-list: a record signed by stage-sign.yml (Build's identity now) is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_buildid)
-expect_refuse "PR4 check-list: a record signed by stage-sign.yml is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_signid)
+expect_refuse "PR4 check-list: a record signed by Build's former stage-build.yml is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_buildid)
+expect_refuse "PR4 check-list: a record signed by Check's former stage-verify.yml is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_signid)
 expect_refuse "PR4 check-list: a record signed by stage-promote.yml is refused (wrong identity)" "check|stage-promote.yml" $(CLS cl_relid)
 expect_refuse "PR4 check-list: a record of another tag is refused" "check|v0.3.1" $(CLS cl_tag2)
 expect_refuse "PR4 check-list: a record signed on a branch is refused" "check|refs/heads/main" $(CLS cl_branch)
@@ -2073,7 +2079,7 @@ expect_refuse "G bind-check: the record of another step (acceptance) is refused:
 expect_refuse "G bind-check: a record about another digest list than Build's is refused" "check|digests" $(BC gv_otherdigests)
 expect_refuse "G bind-check: against another digest list of Build's the record does not match" "check|digests" $(BC gv_ok gv digests-other)
 expect_refuse "G bind-check: a record with no material digest list is refused" "check|digests" $(BC gv_nomat)
-expect_refuse "G bind-check: a record signed by stage-sign.yml (Build's identity now) is refused (wrong identity)" "check|stage-sign.yml" $(BC gv_buildid)
+expect_refuse "G bind-check: a record signed by Build's former stage-build.yml is refused (wrong identity)" "check|stage-sign.yml" $(BC gv_buildid)
 expect_refuse "G bind-check: a record of another tag is refused" "check|v0.3.1" $(BC gv_tag2)
 expect_refuse "G bind-check: a record signed on a branch is refused" "check|refs/heads/main" $(BC gv_branch)
 expect_refuse "G bind-check: an unsigned record is refused" "check|signature" $(BC gv_unsigned)
@@ -2341,7 +2347,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=851
+EXPECT=855
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

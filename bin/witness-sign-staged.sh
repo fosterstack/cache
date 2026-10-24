@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the building jobs' Witness records (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4).
+# bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) and Check's four steps (REQ-REL-011-AC1).
 # the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
 # record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload keyless
 # (the job's identity token, audience sigstore, held in a shell variable and handed to Witness through a one-read process substitution; the request
@@ -23,7 +23,7 @@ while read -r line; do
   step=${file%-collection.payload}
   printf '%s' "$name" | grep -Eq '^witness-[A-Za-z0-9.-]+$' || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
   case "$file" in *[/]*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
-  case "$step" in apk|build|rapk|rebuild) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
+  case "$step" in apk|build|rapk|rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
   if [ -n "$extra" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
     echo "witness-sign-staged: plan line does not match the staged tree: $payload" >&2; exit 1
   fi
@@ -73,6 +73,6 @@ while read -r line; do
     --signer-fulcio-token-path <(printf %s "$tok") \
     --timestamp-servers https://timestamp.sigstore.dev/api/v1/timestamp \
     -o "$final"
-  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
+  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime|arm64) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
   python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
 done < "$plan"

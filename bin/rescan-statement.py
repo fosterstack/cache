@@ -141,7 +141,7 @@ def cmd_find_issue(args):
 
 
 OUR_OCI_REPOS = ("ghcr.io/fosterstack/cache", "ghcr.io/fosterstack/cache-candidates")
-VEX_VARIANTS = ("production", "debug", "fips")
+VEX_VARIANTS = ("production", "fips")   # v0.3.0 ships no :debug image (rc-5a H)
 VEX_ARCHS = ("amd64", "arm64")
 _PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")
 _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
@@ -275,13 +275,16 @@ def _vex_match(doc, finding, variant, image_repo):
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
-    for st in doc["statements"]:
+    dead = _gate.superseded(doc["statements"])
+    for si, st in enumerate(doc["statements"]):
         if st["status"] not in _gate.SUPPRESSING:
             continue
         v = st["vulnerability"]
         if not ({v["name"]} | set(v.get("aliases", []))) & ids:
             continue
-        for p in st["products"]:
+        for pi, p in enumerate(st["products"]):
+            if (si, pi) in dead:   # a later statement of the same vulnerability, product and subcomponents replaces this one
+                continue
             idf = p.get("identifiers", {})
             pp = _parse_product(p.get("@id") if p.get("@id") is not None else idf.get("purl"))
             if pp is None or pp[0] == "go-versioned":
