@@ -11,7 +11,7 @@ Two holes proved on the pinned govulncheck (panel note, Oct 23 2026) are closed:
 exits 0 with no called advisory while the shipped package still builds), and a call that exists only in the linux/arm64 build is invisible to a scan of the runner's own platform. So the
 scan refuses a go.mod with an `ignore` directive, reads the shipped main package(s) from the recipes the build compiles from (build/melange.yaml and build/melange-fips.yaml: exactly one
 build step each, the same package, CGO_ENABLED present; never from a package listing, which a decoy main could join), and runs `./...` AND each shipped package by explicit path on
-linux/amd64 and linux/arm64 with the build's CGO_ENABLED; a called finding in any of the four runs fails, naming the platform and the target. The file written is still the stream of the
+linux/amd64 and linux/arm64 with the build's CGO_ENABLED; a called finding in any of the six runs fails, naming the platform and the target. The file written is still the stream of the
 amd64 `./...` run, byte for byte (the product the Release stage binds); the other runs are judged only.
 Exit 1 on any other outcome, 2 on a usage error. Python is used here for one reason: the pinned toolchain has to be first on the tool's search path, which a plain shell
 code of the chain may not set."""

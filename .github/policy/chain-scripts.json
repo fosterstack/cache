@@ -764,7 +764,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "9ca2aa16dd4cff4bb5227594dd5f60f254a94f97e934c14a60a015ce86c67535",
+      "sha256": "3b61991b22cf0c4b005da92c2aacd5b2200b93aa3b3053646448c85d004c118f",
       "tools": [
         "env",
         "go",
@@ -772,7 +772,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, GOFIPS140=v1.0.0; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with GOFIPS140=v1.0.0 on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
+      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, its GOFIPS140 selection; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with the FIPS recipe's GOFIPS140 selection on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
       "env_mentions": [
         {
           "name": "PATH",

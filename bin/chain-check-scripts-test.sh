@@ -1260,7 +1260,7 @@ for c in noconfig otherscanner otherdb empty notjson; do
 done
 # The two holes proved on the pinned govulncheck v1.7.0 (panel note, Oct 23): a go.mod `ignore` directive plus a decoy main package hid a called advisory from `./...` (an explicit package path
 # still found it), and a call that exists only in the linux/arm64 build was invisible to the amd64-only scan. The scan now refuses an `ignore` directive, scans the shipped main package(s) by
-# explicit path as well, and runs on linux/amd64 AND linux/arm64 (the build's CGO_ENABLED), each run judged: a called finding in any of the four fails, naming the platform and the target.
+# explicit path as well, and runs on linux/amd64 AND linux/arm64 (the build's CGO_ENABLED), each run judged: a called finding in any of the six fails, naming the platform and the target.
 gvrun GV_IGNORE=./cmd GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'ignore' <<< "$out" && grep -q './cmd' <<< "$out" && ! grep -q '^govulncheck ' "$work/gvlog" && [ ! -e "$gvt/out/govulncheck.json" ]; then ok "G a go.mod ignore directive fails before any scan, naming the ignored path"
 else bad "G a go.mod ignore directive -> rc=$rc $out"; fi
@@ -1319,7 +1319,6 @@ gvcases_=(
   'a quoted expansion as the command word|printf "      G=go\n      \"\$G\" build -tags x -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
   'an expansion after a wrapper word|printf "      env \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
   'a glob as the command word|printf "      \/usr\/local\/go\/bin\/g? build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'a quoted Go setting after declare|printf "      declare -x GOFL\x27\x27AGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
   'eval of a built string|printf "      eval \"g\"\"o build -o \/x .\/cmd\/other\"\n" >> "$gvt/build/melange.yaml"'
   'a template line changed (the install directory)|sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"'
   'a template line removed (the git set-up)|sed -i.bak "/safe.directory/d" "$gvt/build/melange.yaml"'
@@ -1342,6 +1341,15 @@ for rc_ in "${gvcases_[@]}"; do
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: ${rc_%%|*}"; else bad "G grammar case '${rc_%%|*}' accepted: rc=$rc $out"; fi
   gv_recipes
 done
+# Recipe lines whose text names a shell keyword the pin-age rule reads as a declaration are DATA in the fixture file beside this test (one tab-separated record per case:
+# label, the line appended to the standard recipe), read with `read` and never sourced, evaluated or run; the file carries no execute bit.
+while IFS=$'\t' read -r gvlabel_ gvline_; do
+  [ -n "$gvlabel_" ] || continue
+  printf '%s\n' "$gvline_" >> "$gvt/build/melange.yaml"
+  gvrun GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: $gvlabel_"; else bad "G grammar case '$gvlabel_' accepted: rc=$rc $out"; fi
+  gv_recipes
+done < "$root/bin/chain-check-scripts-fixtures.txt"
 # a package-pin bump (the refresh rewrites the `- pkg=ver` lines) is not a change of the grammar: it still scans
 gv_recipes; sed -i.bak 's#^      - busybox=1.38.0-r3#      - busybox=1.39.0-r1#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
