@@ -868,15 +868,22 @@ def adjudicate(adjudicator, ctx, state):
     iters = 0; errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
+            if errored and not refused:
+                state["nc_incomplete"] = True
+                return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
             state["stops"] = state.get("stops", 0) + 1
             state["nc_incomplete"] = True                       # REQ-AUD-3 AC3: a stop is an attempted call without a cacheable result
-            return "adjudicator_error" if (errored and not refused) else "refused"
+            by_iters = iters >= policy.MAX_ITERATIONS
+            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "iterations" if by_iters else "token budget"})
+            return "iteration_stop" if by_iters else "budget_stop"     # neither is a genuine refusal: the iteration stop has its one aggregate issue, the budget stop goes to section 4 with no issue
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused as e:
             state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a refusal is still billed
             refused = True
+            state.setdefault("roles_used", set()).add(role)          # a refused call still ran that model
+            state.setdefault("refusals", []).append({"finding_id": ctx["finding_id"], "attempt": attempt, "role": role})     # logged for the report (REQ-AUD-8 AC3): finding, attempt, model role, never a model id
             continue
         except Exception as e:
             errored = True
@@ -948,6 +955,8 @@ def _pullability(adjudicator, ctx, state):
     except cli.Refused as e:
         state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
         state["nc_incomplete"] = True
+        state.setdefault("roles_used", set()).add("primary")
+        state.setdefault("refusals", []).append({"finding_id": ctx["finding_id"], "attempt": "pullability", "role": "primary"})      # REQ-AUD-8 AC3: every refusal is logged
         return None
     except Exception as e:
         state["nc_incomplete"] = True
@@ -1394,6 +1403,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        reason="adjudicator unavailable (model calls failed)",
                        cause="adjudicator unavailable", adjudicator_error=True)
             return row, m_inc
+        elif cat in ("iteration_stop", "budget_stop"):
+            # the loop or the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding. An iteration stop is carried by run()'s ONE
+            # aggregate owner issue (REQ-AUD-9 AC3); a budget stop notifies no one (nothing else notifies anyone). Section 4 either way, no per-finding issue.
+            row.update(section=4, disposition="under investigation",
+                       action="none (%s)" % ("iteration stop: named in the one aggregate owner issue" if cat == "iteration_stop" else "token budget reached"),
+                       reason="adjudication stopped", cause="iteration stop" if cat == "iteration_stop" else "token budget reached")
+            return row, m_inc
         elif cat == "refused":
             # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
             # not a silent §4 (R1 outer round-1 #4). A stub run cannot escalate; say so.
@@ -1834,13 +1850,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
-        title = policy.subject("owner-decision: adjudicator unavailable — %d findings unassessed" % n)
+        title = policy.subject("owner-decision: adjudicator unavailable — findings unassessed")      # stable, so the next run finds and updates this issue (REQ-AUD-9 AC2); the count is in the body
         body = ("The adjudicator was unavailable this run: %d finding(s) could not be assessed "
                 "(primary/rephrase/fallback all failed). Cause: %s. The run is INCOMPLETE; no "
                 "disposition was inferred for these findings. Findings: %s"
                 % (n, adj_cause, ids[:1500]))
         ok, ref = _emit_owner_issue(title, body, dry, would, cves=[r["id"] for r in adj_unavailable],
-                                    target="adjudicator unavailable — %d findings unassessed" % n)
+                                    target="adjudicator unavailable — findings unassessed")
         _delivered = ok and ref not in ("dry", "skipped")
         for r in adj_unavailable:
             r["owner_issue"] = ref if ok else None
@@ -1851,6 +1867,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             else:
                 r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
+    # (a2) The five-iteration stop (REQ-AUD-9 AC3, register row 38: the owner hears on a loop): a finding the model could not settle within MAX_ITERATIONS calls opens exactly ONE
+    # owner-decision issue naming them all, never one per finding.
+    _loops = sorted({x["finding_id"] for x in state.get("stopped", []) if x.get("why") == "iterations"})
+    if _loops:
+        title = policy.subject("owner-decision: the model hit the %d-iteration stop" % policy.MAX_ITERATIONS)      # stable title, the count in the body (REQ-AUD-9 AC2)
+        body = ("The adjudicator hit the %d-iteration stop (primary, rephrase and fallback without a settled disposition) on %d finding(s) this run. No disposition was inferred; each "
+                "stays open for a human decision. Findings: %s" % (policy.MAX_ITERATIONS, len(_loops), ", ".join(_loops)[:1500]))
+        ok, ref = _emit_owner_issue(title, body, dry, would, cves=_loops, target="%d-iteration stop on %d finding(s)" % (policy.MAX_ITERATIONS, len(_loops)))
+        state["iteration_stop_issue"] = ref if ok else "FAILED"
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
     _intents = {}
@@ -1894,7 +1919,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     r["action"] = "OWNER ESCALATION FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
-    issue_failures = sum(1 for r in rows if r.get("issue_failed"))
+    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0)
     # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
     # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
     # owner_issue=None for every at-or-above item, and the release gate then HELD every such
@@ -2226,6 +2251,12 @@ def _conclusion(adjudicator, sections, m, state=None):
         if state is not None:
             state["tokens"] += int(ans.get("token_usage") or 0)   # narrative counts against the budget too
             state.setdefault("roles_used", set()).add("primary")
+    except cli.Refused as e:
+        if state is not None:                                      # a refusal is billed and logged like any other (REQ-AUD-8 AC3)
+            state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+            state.setdefault("roles_used", set()).add("primary")
+            state.setdefault("refusals", []).append({"finding_id": "CONCLUSION", "attempt": "narrative", "role": "primary"})
+        return "conclusion withheld: the narrative could not be produced this run."
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
         # SDK error. A generic withheld line only.
@@ -2465,6 +2496,20 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
         L.append("**Did not run:** " + "; ".join(notrun_lines))
+    # each scanner's version and database date (REQ-AUD-7 AC1): what the manifest recorded, else "not recorded by <scanner>" - never a blank
+    vparts = []
+    for sc_ in _scanners(m):
+        info_ = st.get(sc_) or {}
+        vparts.append("%s %s, database %s" % (_text(sc_), _text(info_.get("version") or "not recorded by %s" % sc_), _text(info_.get("db_date") or "not recorded by %s" % sc_)))
+    L.append("**Scanner versions:** " + "; ".join(vparts))
+    # the model's refusals and loop stops this run (REQ-AUD-8 AC3 "logging every refusal"): finding, attempt, role - no model identifier. Both lines print the FULL count; the
+    # list is capped at 60 entries and says so.
+    _refs = (state or {}).get("refusals") or []
+    _stops = (state or {}).get("stopped") or []
+    L.append("**Model refusals:** " + (("%d: " % len(_refs)) + "; ".join("%s (%s, %s)" % (_text(x["finding_id"]), x["attempt"], x["role"]) for x in _refs[:60]) + ("; ..." if len(_refs) > 60 else "") if _refs else "none"))
+    if _stops:
+        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else "")
+                 + ("; owner-decision issue: %s" % _text(str((state or {}).get("iteration_stop_issue"))) if (state or {}).get("iteration_stop_issue") else ""))
     # Inventory quorum honesty (scanner-panel rule 3): which images counted, which scanners ran everywhere, which did not run.
     qi = quorum_info or {}
     agreed = qi.get("agreed") or []
