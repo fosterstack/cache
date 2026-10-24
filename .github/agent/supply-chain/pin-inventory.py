@@ -739,12 +739,16 @@ def _scanner_sums(text, name, version):
 
 
 def _arm_of(text, rawln):
-    """The tool label of the installer arm (`  <tool>)`) a script line sits in, or None."""
+    """The tool label of the installer arm (`  <tool>)`) a script line sits in, or None.
+    The LAST marker before the line decides: any `  <label>)` (a label with `|` or `*` included), a `  ;;` or an `esac` line. Only a plain single-label arm is an arm; a multi-label arm,
+    a glob arm, or a line after a terminator is in no single tool's arm (None: the whole-script identity applies, so no foreign sums attach)."""
     at = text.find(rawln) if rawln else -1
     if at < 0:
         return None
-    arms = re.findall(r"^  ([\w.\-]+)\)[ \t]*(?:#.*)?$", text[:at], re.M)
-    return arms[-1] if arms else None
+    marks = re.findall(r"^(?:  ([^\s;()#][^()\n]*)\)[ \t]*(?:#.*)?|(  ;;.*|esac\b.*))$", text[:at], re.M)
+    if not marks or marks[-1][1]:
+        return None
+    return marks[-1][0] if re.fullmatch(r"[\w.\-]+", marks[-1][0]) else None
 
 
 _REQ_HASH = re.compile(r"--hash=([A-Za-z0-9]+:[0-9A-Fa-f]+)")

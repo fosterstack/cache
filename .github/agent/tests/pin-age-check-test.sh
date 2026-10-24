@@ -4413,5 +4413,24 @@ def files(sm, decoy=True):
 assert inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))), "a sum-only edit behind a decoy arm label was not seen"
 assert not inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("a" * 64)))
 PY
+CASE="sum: a download in a multi-label arm (a|b)) or after esac is in no single tool's arm: no foreign sums attach and a sum-only edit of its own row is a moved item (Fable ruling on #639)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+HEAD = '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  foo:amd64) SUM=' + "f" * 64 + ' ;;\n  crane:amd64) SUM=%s ;;\nesac\ncase "$TOOL" in\n  foo)\n    echo foo\n    ;;\n'
+def multi(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "  crane|other)\n" + DL + "    ;;\nesac\n"}
+def after(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "esac\n" + DL}
+for name, mk in (("a|b) arm", multi), ("after esac", after)):
+    a, b = inv.inventory(mk("a" * 64)), inv.inventory(mk("b" * 64))
+    dl = [it for it in a.values() if "go-containerregistry" in it.name]
+    assert dl, (name, list(a))
+    assert not any("f" * 64 in it.sums for it in dl), (name, "foreign sums attached", [it.sums for it in dl])
+    assert inv.moved(a, b), (name, "a sum-only edit was not a moved item")
+    assert not inv.moved(a, inv.inventory(mk("a" * 64))), name
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
