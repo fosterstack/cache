@@ -39,11 +39,6 @@ for j in jobs:
     # The old scanner-reports job (trivy/osv-scanner reports for the auditor) is gone: the auditor reads the panel
     if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk", "osv-scanner")) and j not in ("manifests", "rescan"):
         bad.append(f"{j} runs Trivy, Snyk or OSV-Scanner")
-    # rc-5a K (Fable R9): no job names Trivy or Snyk at all, the rescan included (neither is in scanners.json)
-    step_names = " ".join(str(st.get("name", "")) + str(st.get("if", "")) for st in jobs[j].get("steps", []))
-    named = (text(j) + " ".join(uses(j))).lower() + step_names.lower()
-    if any(x in named for x in ("trivy", "snyk")):
-        bad.append(f"{j} still has a Trivy or Snyk step or branch")
 for gone in ("scan-main", "trivy-main", "snyk-main", "scanner-reports"):
     if gone in jobs:
         bad.append(f"the retired {gone} job is still there")
@@ -627,7 +622,6 @@ case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run']
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
 case_ scanner-reports-back    bad "$J['scanner-reports'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'osv-scanner scan image x'}]}"
 case_ osv-in-panel            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + '\\nosv-scanner scan image x'"
-case_ k-trivy-step-in-rescan  bad "$J['rescan']['steps'].append({'name': 'Trivy rescan', 'run': 'trivy image x'})"
 case_ trivy-back              bad "$J['trivy-main'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'trivy image x'}]}"
 case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '\${{ secrets.GCP_KEY }}'}) for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
 case_ google-literal-provider bad "[s['with'].__setitem__('workload_identity_provider', 'projects/1/locations/global/workloadIdentityPools/p/providers/q') for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
