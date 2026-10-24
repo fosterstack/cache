@@ -8,6 +8,7 @@ vulnerability.aliases), never whole shared files."""
 import os, sys, json, datetime, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy, vex
+from auditorlib import reviewed
 
 
 def _expiry(today):
@@ -16,11 +17,8 @@ def _expiry(today):
 
 
 def _remove_from_vex(path, aliases):
-    try:
-        d = json.load(open(path))
-    except Exception:
-        return False
-    if "statements" not in d:
+    d = reviewed.read(path, as_name="x.openvex.json")      # a present VEX without its statements list, or one that cannot be read, is a stop: never "nothing to remove" (cache#701)
+    if d is None:
         return False
     kept = []
     for s in d["statements"]:
@@ -103,7 +101,10 @@ def P_kev(path):
 def main():
     out = cli.opt("--out"); today = cli.opt("--today", "2026-09-22")
     if cli.flag("--recheck"):
-        recheck(cli.opt("--package"), cli.opt("--suppression-dir"), today, out)
+        try:
+            recheck(cli.opt("--package"), cli.opt("--suppression-dir"), today, out)
+        except reviewed.ReviewedInputInvalid as e:
+            sys.exit("poam: %s" % e)
     else:
         accept(cli.opt("--finding"), cli.opt("--kev"), cli.opt("--github"), cli.opt("--state"), today, out)
 

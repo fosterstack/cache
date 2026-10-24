@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC34
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE] [--rerun-held]
@@ -337,6 +337,21 @@ check grep -q '"rerun", "99"' "$work/heldfirst.gh"
 run heldunprov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"x\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {}}" "$work/r-clean" --rerun-held
 CASE="a held PR whose age cannot be proven is not re-run (it stays red)"
 check bash -c "! grep -q 'rerun' '$work/heldunprov.gh'"
+
+# --- REQ-SUP-001-AC34: a held file-pin update is re-run once the base branch's file_pins row is old enough (the same proof the age check takes) ---
+FPP=.github/policy/gradle-wrapper-jar-sha256.txt; FPT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
+FPH=$(python3 -c "import hashlib;print(hashlib.sha256(('$FPP' + chr(0) + '$FPT\n').encode()).hexdigest())")
+fpex() { printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [{"file": "%s", "content": "%s", "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "%s"}]}' "$FPP" "$FPH" "$1" >"$work/fpex-$2.json"; }
+fpheld() { echo "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 11, \"title\": \"jar sum\", \"run_id\": 77, \"moved\": [\"tool:file:$FPP@(file)#content:$1\"]}], \"times\": {}}"; }
+fpex "$(dago 8)" old; run fpheld "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
+CASE="AC34: a held PR whose file pin is dated by a base-branch row 8 days old is RE-RUN (gh run rerun 77)"
+check grep -q '"rerun", "77"' "$work/fpheld.gh"
+fpex "$(dago 2)" young; run fpheld2 "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-young.json"
+CASE="AC34: the same row 2 days old: not re-run"
+check bash -c "! grep -q 'rerun' '$work/fpheld2.gh'"
+run fpheld3 "$(fpheld $(printf 'b%.0s' $(seq 64)))" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
+CASE="AC34: a file pin whose content differs from the row's is not re-run"
+check bash -c "! grep -q 'rerun' '$work/fpheld3.gh'"
 
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"

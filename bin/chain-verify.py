@@ -665,14 +665,18 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     entry = dsse["signatures"][0]
     try:
         leaf_der = single_cert_der(b64d(entry["certificate"]).decode())
-        leaf = parse_cert(leaf_der)
         cert_pem = der_to_pem(leaf_der)
         intermediates = [b64d(x).decode() for x in entry.get("intermediates", [])]
         sig = b64d(entry["sig"])
     except Exception as ex:
         refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
-    check_identity(stage, pol, leaf)
+    # rc-2 R8: the certificate chain is verified (by openssl) BEFORE the DER reader sees a single field of the leaf (its boundary note: never point it at bytes nobody has verified)
     chain = check_chain(stage, pol, cert_pem, intermediates, tmp)
+    try:
+        leaf = parse_cert(leaf_der)
+    except Exception as ex:
+        refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
+    check_identity(stage, pol, leaf)
     check_signature(stage, chain[0], ptype, payload, sig, tmp)
     stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
     chain_valid_at(stage, chain, stamped)
@@ -1322,6 +1326,11 @@ def cmd_sign(a):
     require_fresh_out(a.out)
     pol, obj = check_build_record(a)
     dry = bool(pol.get("dry_run"))
+    # rc-2 R1a: GITHUB_SHA and GITHUB_RUN_ID are written into the signed provenance, so Sign refuses (before cosign is asked, before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number, rather than signing the defaults "" and "0"
+    if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
+        refuse("sign", "provenance: GITHUB_SHA is not a 40-hex commit")
+    if not re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")):
+        refuse("sign", "provenance: GITHUB_RUN_ID is not a run number (digits)")
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
     with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
@@ -1449,7 +1458,7 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     subs = typed_subjects(stage, stmt)
     commits = [x["name"][len(GIT_COMMIT_PREFIX):] for x in subs if x["name"].startswith(GIT_COMMIT_PREFIX)]
     if commits != [commit]:
-        refuse(stage, "commit: the record names commit %s, not the run's commit %s" % (", ".join(commits) or "(none)", commit))
+        refuse(stage, "commit: the record's git commit %s is not the run's commit %s" % (", ".join(commits) or "(none)", commit))
     products = {}
     for x in subs:
         if x["name"].startswith(PRODUCT_PREFIX):

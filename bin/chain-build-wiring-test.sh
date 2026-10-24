@@ -2826,7 +2826,8 @@ allowed = BASE
 stray_files = stray(root)
 assert not stray_files, "named outside Build's and Rebuild's assemble scripts: %s" % stray_files       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
 ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
-assert all(row.startswith("run: bash bin/vex-index-test.sh") or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
+WRAPPED = "run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null"      # REQ-CI-005: the test runs as a counting step, exactly this line
+assert all(row.startswith("run: bash bin/vex-index-test.sh") or row == WRAPPED or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 assert runners(rows) == sorted(p for p in allowed if p.startswith("bin/build-stage-")), runners(rows)      # a row may carry no runs list (bin/loopback-get.sh): it runs nothing
 PY

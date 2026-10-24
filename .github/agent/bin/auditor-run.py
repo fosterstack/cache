@@ -25,8 +25,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
 from auditorlib import vex
+from auditorlib import reviewed
 from auditorlib import signed_commit
 from auditorlib import knowledge as K
+from auditorlib import nochange
 
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
 C = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(C)
@@ -73,6 +75,44 @@ def _sub_purl(sc):
     return sc.get("@id") or ((sc.get("identifiers") or {}).get("purl"))
 
 
+def _resolve_carried(groups, carried_stmts):
+    """rc-5b fix 5: the panel's vex_covered entries arrive as findings flagged `carried` with a generic package URL (parsers.parse_panel). Resolve each to the scope of the carried
+    statement that names the same CVE (or one of its aliases: the panel's coverage predicate indexes both) and the same package and version, so the statement is re-judged this
+    run like any visible finding; a flagged entry no carried statement matches is dropped (nothing carries it). Returns the CVE ids of the carried statements that NO scanner
+    (visible or hidden-by-our-VEX) reports this run, by any of the statement's ids."""
+    by_id, primaries = {}, []
+    for s in carried_stmts:
+        v = s.get("vulnerability") or {}
+        nm = v.get("name")
+        if not nm:
+            continue
+        ids = {nm} | {a for a in (v.get("aliases") or []) if isinstance(a, str)}
+        primaries.append((nm, ids))
+        for i in ids:
+            by_id.setdefault(i, []).append(sorted(_scope_key(s)[1]))
+    for cid in list(groups):
+        grp = groups[cid]
+        keep = []
+        for f in grp["findings"]:
+            if not (f.get("extra") or {}).get("carried"):
+                keep.append(f)
+                continue
+            for cve in {cid} | set(grp["aliases"]) | set(f.get("aliases") or []):
+                for purls in by_id.get(cve, []):
+                    for p in purls:
+                        pn, pv = PARS._panel_module()._purl_name_version(p)
+                        if pn == f.get("package") and pv == (f.get("extra") or {}).get("version"):
+                            keep.append(PARS._finding(f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), None, None,
+                                                      dict(f["extra"], carried=True)))
+        grp["findings"] = keep
+        if not keep:
+            del groups[cid]
+    seen_ids = set()
+    for grp in groups.values():
+        seen_ids |= set(grp["aliases"]) | {grp["id"]}
+    return sorted({nm for nm, ids in primaries if not (ids & seen_ids)})
+
+
 def _scope_key(statement):
     """The canonical scope of a VEX statement (REQ-AUD-13 AC1): (sorted product @ids, the sorted
     SET of subcomponent package-URLs). Order- and representation-insensitive and de-duplicated;
@@ -99,30 +139,8 @@ def _issue_pending_note(ref):
     return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
 
 
-class ReviewedInputInvalid(Exception):
-    """A reviewed file on main (the published VEX, the accepted-items inventory) is present but unreadable or not the JSON object it must be: the run stops (exit 3) rather than guess an
-    empty one, which would delete every statement or renew every time box (rc-5b fix 13; REQ-AUD-13 AC6, REQ-AUD-2 AC5c)."""
-
-
-def _read_reviewed_json(path):
-    """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object is a stop."""
-    try:
-        os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
-        return None                                # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
-    except OSError as ex:
-        raise ReviewedInputInvalid("%s cannot be looked at (%s)" % (path, type(ex).__name__))
-    try:
-        with open(path) as f:
-            doc = json.load(f)
-    except (OSError, ValueError, UnicodeError) as ex:
-        raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
-    if not isinstance(doc, dict):
-        raise ReviewedInputInvalid("%s is not a JSON object" % path)
-    key = "statements" if "openvex" in os.path.basename(path) else "accepted_items" if os.path.basename(path) == "accepted-items.json" else None
-    if key and key in doc and (not isinstance(doc[key], list) or not all(isinstance(x, dict) for x in doc[key])):
-        raise ReviewedInputInvalid("%s: %r is not a list of objects" % (path, key))
-    return doc
+ReviewedInputInvalid = reviewed.ReviewedInputInvalid       # the exception and the reader are shared (auditorlib/reviewed.py): the release gate and the consistency check use them too
+_read_reviewed_json = reviewed.read
 
 
 def _workspace():
@@ -134,7 +152,7 @@ def _read_reopened(path):
     """The scopes this run reopened (reopened-expired.json, written by the run itself): a list of [cve, products, purls]. Absent = none; present and unreadable or mis-shaped means the run
     is broken, so it stops (exit 3) rather than deliver without the removals (rc-5b fix 13, item 6)."""
     doc = _read_reviewed_json(path)
-    rows = (doc or {}).get("reopened", [])
+    rows = [] if doc is None else doc["reopened"]                 # a present ledger without its key was refused by the reader
     if not isinstance(rows, list) or not all(isinstance(x, list) and len(x) == 3 and isinstance(x[0], str) and all(isinstance(y, list) and all(isinstance(z, str) for z in y) for y in x[1:]) for x in rows):
         raise ReviewedInputInvalid("%s: 'reopened' is not a list of [cve, [products], [purls]] with strings" % path)
     return rows
@@ -147,8 +165,13 @@ class DefectLogInvalid(Exception):
 
 def load_defect_log(logpath):
     """The known-defect log as a dict ({} when there is none); DefectLogInvalid when unreadable."""
-    if not (logpath and os.path.exists(logpath)):
+    if not logpath:
         return {}
+    try:
+        if not reviewed.present(logpath):          # the reader owns existence (lstat): a dangling link or a log in an unreachable folder is present, and a stop
+            return {}
+    except reviewed.ReviewedInputInvalid as e:
+        raise DefectLogInvalid(str(e))
     try:
         with open(logpath) as fh:
             d = json.load(fh)
@@ -156,7 +179,10 @@ def load_defect_log(logpath):
         raise DefectLogInvalid("%s: %s" % (logpath, e))
     if not isinstance(d, dict):
         raise DefectLogInvalid("%s: top level is %s, want an object" % (logpath, type(d).__name__))
-    return d
+    try:
+        return reviewed.check(d, logpath, "known-defect-log.json")        # a present log must carry "defects" (a list of objects): {} is not an empty history
+    except reviewed.ReviewedInputInvalid as e:
+        raise DefectLogInvalid(str(e))
 
 
 def log_index(log):
@@ -857,17 +883,32 @@ def adjudicate(adjudicator, ctx, state):
     UNAVAILABLE). On an error, surface the REAL cause (exception class + HTTP status + message,
     secrets MASKED) ONCE per distinct error into state['adj_errors'] so the header, §4 and the
     status line can name it, and it is not repeated per finding (R-live fix 1)."""
+    # REQ-AUD-3 AC3: the exact same context judged by yesterday's run (state valid, finding-set hash identical) is not asked again.
+    nc_key = nochange.call_key("adjudicate", ctx)
+    reused = nochange.verdict(state.get("nc_prev"), nc_key)
+    if reused is not None:
+        state.setdefault("nc_verdicts", {})[nc_key] = reused
+        state["nc_reused"] = state.get("nc_reused", 0) + 1
+        return reused
     iters = 0; errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
+            if errored and not refused:
+                state["nc_incomplete"] = True
+                return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
             state["stops"] = state.get("stops", 0) + 1
-            return "adjudicator_error" if (errored and not refused) else "refused"
+            state["nc_incomplete"] = True                       # REQ-AUD-3 AC3: a stop is an attempted call without a cacheable result
+            by_iters = iters >= policy.MAX_ITERATIONS
+            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "iterations" if by_iters else "token budget"})
+            return "iteration_stop" if by_iters else "budget_stop"     # neither is a genuine refusal: the iteration stop has its one aggregate issue, the budget stop goes to section 4 with no issue
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused as e:
             state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a refusal is still billed
             refused = True
+            state.setdefault("roles_used", set()).add(role)          # a refused call still ran that model
+            state.setdefault("refusals", []).append({"finding_id": ctx["finding_id"], "attempt": attempt, "role": role})     # logged for the report (REQ-AUD-8 AC3): finding, attempt, model role, never a model id
             continue
         except Exception as e:
             errored = True
@@ -894,7 +935,13 @@ def adjudicate(adjudicator, ctx, state):
                 {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
         elif ans.get("propose") is not None:
             state["proposals_refused"] = state.get("proposals_refused", 0) + 1      # the proposal is refused, not the run (rc-5b R4)
-        return ans.get("category") or "unknown"
+        category = ans.get("category") or "unknown"
+        if category in nochange.CATEGORIES:
+            state.setdefault("nc_verdicts", {})[nc_key] = category
+        else:
+            state["nc_incomplete"] = True                       # an answer outside the five categories is not cached, so the run is incomplete
+        return category
+    state["nc_incomplete"] = True                               # every attempt was refused or errored: nothing cacheable
     return "adjudicator_error" if (errored and not refused) else "refused"
 
 
@@ -918,15 +965,26 @@ def _pullability(adjudicator, ctx, state):
     existing routing, so a model outage never fabricates a not-pullable acceptance (fail toward
     the actionable class). The call is billed like any other; an error is recorded (masked) once
     so the header can name it, exactly as adjudicate() does."""
+    nc_key = nochange.call_key("pullability", ctx)
+    reused = nochange.pullability(state.get("nc_prev"), nc_key)
+    if reused is not None:                                      # REQ-AUD-3 AC3: the same context, judged yesterday
+        state.setdefault("nc_pull", {})[nc_key] = reused
+        state["nc_reused"] = state.get("nc_reused", 0) + 1
+        return reused
     if state["tokens"] >= policy.TOKEN_BUDGET or state.get("iters", 0) >= policy.MAX_ITERATIONS:
+        state["nc_incomplete"] = True                           # REQ-AUD-3 AC3: a stop leaves a call unanswered, so the run is incomplete
         return None
     state["calls"] = state.get("calls", 0) + 1
     try:
         ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt="pullability", model="primary", context=ctx)
     except cli.Refused as e:
         state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+        state["nc_incomplete"] = True
+        state.setdefault("roles_used", set()).add("primary")
+        state.setdefault("refusals", []).append({"finding_id": ctx["finding_id"], "attempt": "pullability", "role": "primary"})      # REQ-AUD-8 AC3: every refusal is logged
         return None
     except Exception as e:
+        state["nc_incomplete"] = True
         msg = "%s: %s" % (type(e).__name__, _mask(str(e)))
         key = re.sub(r"\s*\[?request[_-]?id[=:]\s*[^\]\s]+\]?", "", msg, flags=re.I)
         errs = state.setdefault("adj_errors", {})
@@ -935,6 +993,11 @@ def _pullability(adjudicator, ctx, state):
         return None
     state["tokens"] += int(ans.get("token_usage") or 0)
     state.setdefault("roles_used", set()).add("primary")
+    rec = nochange.pull_record(ans)
+    if rec is None:
+        state["nc_incomplete"] = True
+        return None          # an answer the router cannot read safely is as good as none: the finding stays on the actionable route
+    state.setdefault("nc_pull", {})[nc_key] = rec
     return ans
 
 
@@ -1311,7 +1374,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         row["reachability"] = "govulncheck: %s" % verdict
         # a FRESH unreachable finding closes §5 even if a fix exists (unreachable => not
         # exploitable); only a CARRIED reachability suppression defers to the fix so it can be
-        # LIFTED and bumped (REQ-AUD-13 AC7; R1 refactor round-4 #4).
+        # LIFTED and bumped (REQ-AUD-2 AC7; REQ-AUD-13 AC3; R1 refactor round-4 #4).
         if verdict == "unreachable" and not (gf["fixed"] and _carried):
             # scope the closure to EXACTLY the module@version the trace supports, from the
             # NON-lineage Go findings only; a sibling version the evidence does not cover, or a
@@ -1365,6 +1428,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        reason="adjudicator unavailable (model calls failed)",
                        cause="adjudicator unavailable", adjudicator_error=True)
             return row, m_inc
+        elif cat in ("iteration_stop", "budget_stop"):
+            # the loop or the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding. An iteration stop is carried by run()'s ONE
+            # aggregate owner issue (REQ-AUD-9 AC3); a budget stop notifies no one (nothing else notifies anyone). Section 4 either way, no per-finding issue.
+            row.update(section=4, disposition="under investigation",
+                       action="none (%s)" % ("iteration stop: named in the one aggregate owner issue" if cat == "iteration_stop" else "token budget reached"),
+                       reason="adjudication stopped", cause="iteration stop" if cat == "iteration_stop" else "token budget reached")
+            return row, m_inc
         elif cat == "refused":
             # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
             # not a silent §4 (R1 outer round-1 #4). A stub run cannot escalate; say so.
@@ -1400,7 +1470,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         if (carrier or base_hold) and not gf["is_go"]:
             pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
                     "installed_version": gf["installed"], "component_fixed": gf["fixed"],
-                    "purl": (subs or [None])[0], "carrier": carrier, "base": env.get("base"),
+                    "purl": (subs or [None])[0], "carrier": carrier, "base": _stable_base(env.get("base")),
                     "candidate_digest": env["digest"]}
             pull = _pullability(env["adjudicator"], pctx, env["state"])
             if pull is not None:
@@ -1591,6 +1661,32 @@ def _dispose(c, findings, aliases, env, would, name=None):
     return row, m_inc
 
 
+def _stable_base(base):
+    """the base block without its day counter: days_behind moves every day with no finding changing, so it would end every
+    no-change day. What the decisions use of it is whether it is beyond the threshold, which stays."""
+    b = dict(base or {})
+    if "days_behind" in b:
+        days = b.pop("days_behind")
+        b["behind_beyond_threshold"] = isinstance(days, int) and days > b.get("behind_threshold_days", 30)
+    return b
+
+
+def _adjudication_fingerprint(adjudicator):
+    """a digest of what the model's answers depend on besides the question: the standing prompt, the adjudicator client itself and
+    the configured model identifiers (hashed; the identifiers never leave the process)"""
+    import hashlib
+    h = hashlib.sha256()
+    for path in (os.path.join(HERE, "..", "prompts", "adjudicator.md"), adjudicator):
+        try:
+            h.update(open(path, "rb").read())
+        except OSError:
+            h.update(("unreadable:%s" % path).encode("utf-8"))
+        h.update(b"\0")
+    for k, v in sorted((k, v.strip()) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and len(v.strip()) >= 3):
+        h.update(("%s=%s" % (k, v)).encode("utf-8")); h.update(b"\0")       # the role name with its value: swapping primary and fallback is a change
+    return h.hexdigest()
+
+
 def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     m, groups = C.manifest_findings(manifest_path)
     # A test image is never shipped, so no statement on `main` applies and nothing is delivered:
@@ -1623,11 +1719,21 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             kev_ok = False
     exp = _expiry(today)
     state = {"tokens": 0, "iters": 0, "roles_used": set()}
+    # REQ-AUD-3 AC3 (no-change day): yesterday's verdicts and narrative are usable only when yesterday's state file is valid AND its
+    # finding-set hash equals today's exactly; anything else leaves the run exactly as it was (model calls).
+    import hashlib
+    nc_hash = nochange.finding_set_hash(groups, {
+        "digests": m.get("candidate_digests"), "knowledge": hashlib.sha256(knowledge_doc.encode("utf-8")).hexdigest(),
+        "gvc": [gvc, module, gvc_usable], "carriers": m.get("carriers") or [], "base": _stable_base(m.get("base")),
+        "adjudication": _adjudication_fingerprint(adjudicator)})
+    state.update(nc_verdicts={}, nc_pull={}, nc_narr=None, nc_today=today,
+                 nc_prev=nochange.matching(nochange.load(cli.opt("--prev-state") or os.environ.get("AUDITOR_PREV_STATE")), nc_hash))
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
     carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
     carried_lift_trigger = {}
+    carried_stmts = []
     ws0 = _workspace()
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -1636,13 +1742,14 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         prev_id_to_scope = {}
         pv = _read_reviewed_json(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json"))
         try:
+            carried_stmts = list((pv or {}).get("statements", []))
             for s in (pv or {}).get("statements", []):
                 if s.get("@id"):
                     prev_id_to_scope[s["@id"]] = _scope_key(s)
                 nm = (s.get("vulnerability") or {}).get("name")
                 if nm:
                     # every carried (cve, scope) — including a reachability not_affected that has
-                    # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC7; R1 refactor #4)
+                    # NO time box — so a pullable fix can lift it (REQ-AUD-2 AC7; REQ-AUD-13 AC3; R1 refactor #4)
                     carried_scopes.add((nm, _scope_key(s)))
                     # the PUBLISHED status for this exact scope, so the "in force (main)" display
                     # tag is only applied when THIS run writes the SAME disposition already on main:
@@ -1672,6 +1779,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                         carried_lift_trigger[key] = it["lift_trigger"]
         except Exception as ex:
             raise ReviewedInputInvalid("accepted-items.json has an entry the run cannot read (%s): it stops rather than renew or drop a time box" % type(ex).__name__)
+    state["not_rechecked"] = _resolve_carried(groups, carried_stmts)      # carried statements no scanner reports: listed in the report, never kept silently
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
@@ -1770,13 +1878,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
-        title = policy.subject("owner-decision: adjudicator unavailable — %d findings unassessed" % n)
+        title = policy.subject("owner-decision: adjudicator unavailable — findings unassessed")      # stable, so the next run finds and updates this issue (REQ-AUD-9 AC2); the count is in the body
         body = ("The adjudicator was unavailable this run: %d finding(s) could not be assessed "
                 "(primary/rephrase/fallback all failed). Cause: %s. The run is INCOMPLETE; no "
                 "disposition was inferred for these findings. Findings: %s"
                 % (n, adj_cause, ids[:1500]))
         ok, ref = _emit_owner_issue(title, body, dry, would, cves=[r["id"] for r in adj_unavailable],
-                                    target="adjudicator unavailable — %d findings unassessed" % n)
+                                    target="adjudicator unavailable — findings unassessed")
         _delivered = ok and ref not in ("dry", "skipped")
         for r in adj_unavailable:
             r["owner_issue"] = ref if ok else None
@@ -1787,6 +1895,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             else:
                 r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
+    # (a2) The five-iteration stop (REQ-AUD-9 AC3, register row 38: the owner hears on a loop): a finding the model could not settle within MAX_ITERATIONS calls opens exactly ONE
+    # owner-decision issue naming them all, never one per finding.
+    _loops = sorted({x["finding_id"] for x in state.get("stopped", []) if x.get("why") == "iterations"})
+    if _loops:
+        title = policy.subject("owner-decision: the model hit the %d-iteration stop" % policy.MAX_ITERATIONS)      # stable title, the count in the body (REQ-AUD-9 AC2)
+        body = ("The adjudicator hit the %d-iteration stop (primary, rephrase and fallback without a settled disposition) on %d finding(s) this run. No disposition was inferred; each "
+                "stays open for a human decision. Findings: %s" % (policy.MAX_ITERATIONS, len(_loops), ", ".join(_loops)[:1500]))
+        ok, ref = _emit_owner_issue(title, body, dry, would, cves=_loops, target="%d-iteration stop on %d finding(s)" % (policy.MAX_ITERATIONS, len(_loops)))
+        state["iteration_stop_issue"] = ref if ok else "FAILED"
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
     _intents = {}
@@ -1830,7 +1947,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     r["action"] = "OWNER ESCALATION FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
-    issue_failures = sum(1 for r in rows if r.get("issue_failed"))
+    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0)
     # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
     # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
     # owner_issue=None for every at-or-above item, and the release gate then HELD every such
@@ -1940,6 +2057,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
+    cli.writej(os.path.join(out, ".auditor", "auditor-state.json"),
+               nochange.dump(today, nc_hash, *nochange.settle(state["nc_verdicts"], state["nc_pull"], state["nc_narr"], state.get("nc_incomplete"))))
+    if state.get("nc_reused"):
+        print("daily CVE auditor: no-change inputs — reused %d model verdict(s) from the last run" % state["nc_reused"])
     # REQ-AUD-17 AC2: drive the single standing "needs a human" issue from the same §0 list the
     # report shows — comment it (find-or-create) while §0 is non-empty; close it when §0 is empty.
     needs = _needs_human(rows, sections, dry, pr_url, status)
@@ -1980,7 +2101,7 @@ def _consistency(out, supp, manifest_path):
                             "--suppression-dir", supp, "--live-findings", manifest_path,
                             "--out", cj], capture_output=True, text=True)
         if r.returncode == 0 and os.path.exists(cj):
-            return json.load(open(cj))
+            return reviewed.read(cj)       # a result without "problems" and "consistent" is not a clean check
         return {"problems": [{"type": "consistency-check-failed",
                               "detail": "rc=%d %s" % (r.returncode, (r.stderr or "").strip()[:200])}]}
     except Exception as e:
@@ -2125,15 +2246,32 @@ def _narrative_ok(text, sections):
     return True
 
 
+def _narrative_structured(sections, m):
+    st = m.get("scanner_status") or {}
+    return {"image": (m.get("candidate_digests") or {}).get("production"),
+            "package_counts": {s: (st.get(s) or {}).get("package_count") for s in _scanners(m)},
+            "sections": {C.TITLES[n]: [r["id"] for r in sections[n]] for n in range(1, 8)}}
+
+
+def _narrative_key(sections, m):
+    """the key of a narrative: exactly the structured record the model is given. That record carries no commit: a new commit that
+    changes no finding is still a no-change day (REQ-AUD-3 AC3), and the narrative never needed one."""
+    return nochange.call_key("narrative", _narrative_structured(sections, m))
+
+
 def _conclusion(adjudicator, sections, m, state=None):
     if "stub" in os.path.basename(adjudicator or "").lower():
         return "stub: no narrative — §4 reflects the stub, not the model. The real picture needs the real adjudicator on main."
+    nc_key = _narrative_key(sections, m)
+    prev = nochange.narrative((state or {}).get("nc_prev"), nc_key)
+    if prev is not None and _narrative_ok(prev[0], sections):     # yesterday's text, still consistent with today's record
+        state["nc_narr"] = {"key": nc_key, "text": prev[0], "date": prev[1]}
+        state["nc_reused"] = state.get("nc_reused", 0) + 1
+        return "%s\n\n(unchanged since %s)" % (prev[0], prev[1])
     if state and state.get("tokens", 0) >= policy.TOKEN_BUDGET:
+        state["nc_incomplete"] = True
         return "conclusion withheld: token budget reached before the narrative."
-    st = m.get("scanner_status") or {}
-    structured = {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
-                  "package_counts": {s: (st.get(s) or {}).get("package_count") for s in _scanners(m)},
-                  "sections": {C.TITLES[n]: [r["id"] for r in sections[n]] for n in range(1, 8)}}
+    structured = _narrative_structured(sections, m)
     try:
         ans = cli.ask_model(adjudicator, "CONCLUSION", attempt="narrative", model="primary",
                             context={"mode": "narrative", "structured": structured})
@@ -2141,12 +2279,25 @@ def _conclusion(adjudicator, sections, m, state=None):
         if state is not None:
             state["tokens"] += int(ans.get("token_usage") or 0)   # narrative counts against the budget too
             state.setdefault("roles_used", set()).add("primary")
+    except cli.Refused as e:
+        if state is not None:                                      # a refusal is billed and logged like any other (REQ-AUD-8 AC3)
+            state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+            state.setdefault("roles_used", set()).add("primary")
+            state.setdefault("refusals", []).append({"finding_id": "CONCLUSION", "attempt": "narrative", "role": "primary"})
+            state["nc_incomplete"] = True                          # REQ-AUD-3 AC3: a refused narrative is an attempted call without a cacheable result
+        return "conclusion withheld: the narrative could not be produced this run."
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
         # SDK error. A generic withheld line only.
+        if state is not None:
+            state["nc_incomplete"] = True
         return "conclusion withheld: the narrative could not be produced this run."
     if not text or not _narrative_ok(text, sections):
+        if state is not None:
+            state["nc_incomplete"] = True
         return "conclusion withheld: narrative disagreed with the record."
+    if state is not None:
+        state["nc_narr"] = {"key": nc_key, "text": text, "date": state.get("nc_today") or "1970-01-01"}
     return text
 
 
@@ -2374,6 +2525,22 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
         L.append("**Did not run:** " + "; ".join(notrun_lines))
+    if (state or {}).get("not_rechecked"):       # a carried statement no scanner reports this run (our VEX hides it from every scanner): kept as it is, never re-judged, and said so
+        L.append("**Not re-checkable (hidden from all scanners):** " + ", ".join(state["not_rechecked"]))
+    # each scanner's version and database date (REQ-AUD-7 AC1): what the manifest recorded, else "not recorded by <scanner>" - never a blank
+    vparts = []
+    for sc_ in _scanners(m):
+        info_ = st.get(sc_) or {}
+        vparts.append("%s %s, database %s" % (_text(sc_), _text(info_.get("version") or "not recorded by %s" % sc_), _text(info_.get("db_date") or "not recorded by %s" % sc_)))
+    L.append("**Scanner versions:** " + "; ".join(vparts))
+    # the model's refusals and loop stops this run (REQ-AUD-8 AC3 "logging every refusal"): finding, attempt, role - no model identifier. Both lines print the FULL count; the
+    # list is capped at 60 entries and says so.
+    _refs = (state or {}).get("refusals") or []
+    _stops = (state or {}).get("stopped") or []
+    L.append("**Model refusals:** " + (("%d: " % len(_refs)) + "; ".join("%s (%s, %s)" % (_text(x["finding_id"]), x["attempt"], x["role"]) for x in _refs[:60]) + ("; ..." if len(_refs) > 60 else "") if _refs else "none"))
+    if _stops:
+        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else "")
+                 + ("; owner-decision issue: %s" % _text(str((state or {}).get("iteration_stop_issue"))) if (state or {}).get("iteration_stop_issue") else ""))
     # Inventory quorum honesty (scanner-panel rule 3): which images counted, which scanners ran everywhere, which did not run.
     qi = quorum_info or {}
     agreed = qi.get("agreed") or []

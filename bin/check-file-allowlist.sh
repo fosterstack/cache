@@ -162,7 +162,7 @@ ALLOW_PATTERNS=(
   '^bin/build-(admit|archives|version-check)\.py$'
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
-  '^bin/chain-sign-wiring-fixtures\.txt$'
+  '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'
   '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'

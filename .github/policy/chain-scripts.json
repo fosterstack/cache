@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "a0707d4a853d74e365213ab18c9a9475014a9ae554386873d7a93ac6cd52bf7a",
+      "sha256": "5df724aac2c74d37a5f513c53aad2b8520d2431f80235fdb90583becaa1470f1",
       "tools": [
         "make",
         "at",
@@ -611,7 +611,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "2d3f35644cc0d035f4988592441806a8aeabf2a26c473f9f09cddb648b84f54f"
+      "sha256": "5bd31680dc7cc66eafda3d5cae3fbaa0f28432adfc8a499ce7ee622699f23dae"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -764,14 +764,15 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "50c24d360d311fa88bfba26fc2734c5e2622319bf1d966623aa6aa171bb888c4",
+      "sha256": "3b61991b22cf0c4b005da92c2aacd5b2200b93aa3b3053646448c85d004c118f",
       "tools": [
         "env",
+        "go",
         "source"
       ],
       "runs": [],
       "signs": false,
-      "reason": "Check's Go scan of the module's code: `govulncheck -json ./...` in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the pinned Go first on the tool's search path), the stream written unchanged to check-results/govulncheck.json, a called symbol fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs",
+      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, its GOFIPS140 selection; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with the FIPS recipe's GOFIPS140 selection on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
       "env_mentions": [
         {
           "name": "PATH",
@@ -782,7 +783,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "4b6ad729091e1c4cdd03b8851c14a55d5c0a6b9c92d0aedeefe2d6215bc26d92",
+      "sha256": "4c34116854e90dcb156e28df332498d61e83978ce19a25145dba65dad522fa03",
       "tools": [
         "find",
         "python3",
@@ -881,7 +882,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
+      "sha256": "5f021d2ae72110ec0ac030d9a216a9c0fd4da01c33591282441b150315ce77f0",
       "tools": [
         "curl",
         "docker",
@@ -901,7 +902,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "e4e68f95fd045da4878c68f71298306367f884143b12a420ec5af2d6151e7647",
+      "sha256": "62708883efa8b77b4ccd0dd8b73af8a5ed158e1b904d82fd3f9b8a7d3b07f7e0",
       "tools": [
         "bash",
         "docker",
@@ -1405,7 +1406,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "26f711ac440240a0baa0057bb5fa0c6b4b4602f20ebd0c5b110a5f2b8dc5acc7",
+      "sha256": "36d088685db1fe88b0d69043988f367ea6bb7c6586cbe8696c02adf55946e5b1",
       "tools": [
         "curl",
         "docker",
@@ -1905,7 +1906,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "d3cfa3fca4ce9e7e639d0dc80fa65d2386fc63a6ee3de05c501c9bf72c7ca21a",
+      "sha256": "efbd2bb935a223d4abb4b26ff6ac78f72a3758c1f1f959a9ac7798bcbb19881f",
       "exceptions": [
         {
           "rule": "deny",
@@ -1954,7 +1955,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
+      "sha256": "56fa6d8abe7d4bf2d85b8fc8920d5fa3031a63c794732a80dc4e501b45798b6b",
       "tools": [
         "at",
         "curl",
@@ -2025,7 +2026,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
       "tools": [],
       "runs": [
         "bin/chain_items.py"
@@ -2045,7 +2046,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "45baba99fcd4b1c9be538fa7aa1b39cde8d63392248d789a17e7fd627457554c",
+      "sha256": "17b8fd7cd291e117570cd12a78e0594bbe35af2511661e2b46d554fb6b35aa7a",
       "tools": [
         "at",
         "gh",
@@ -2088,7 +2089,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "8dc7ae7b5cfd576bd6bd97252729203bb7336820d57ec1c216e9d3541a43397d",
+      "sha256": "7148c225516cd40d754c40f93b58e1c54c4af1ebea78c39b5ab644e7d9b2ebf2",
       "tools": [
         "at",
         "python3"
