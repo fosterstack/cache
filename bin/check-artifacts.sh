@@ -51,7 +51,16 @@ trap cleanup EXIT
 
 checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
-healthy() { for _ in $(seq 20); do lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
+# healthy PORT [PID]: /healthz answers within 10 s; with a PID, a server that is gone ends the wait at once
+healthy() {
+  local pid=${2:-}
+  for _ in $(seq 20); do
+    lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0
+    if [ -n "$pid" ] && ! kill -0 "$pid" > /dev/null 2>&1; then return 1; fi
+    sleep 0.5
+  done
+  return 1
+}
 roundtrip() { lg -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(lg -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
 # the posture as one string, boolean first: it is compared whole, so the boolean and the note are checked together (round 1 F5)
 posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
@@ -72,35 +81,49 @@ done
 python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
-# three free ports for this run's servers (suites running side by side, or a server left on a fixed port, must never answer for the binary under test)
-port_std="" port_fips=""
-pick_port() {
-  for _ in $(seq 100); do
-    pp=$((20000 + RANDOM % 40000))
-    case " $port_std $port_fips " in *" $pp "*) continue ;; esac
-    ( : < "/dev/tcp/127.0.0.1/$pp" ) > /dev/null 2>&1 || { echo "$pp"; return 0; }   # nothing accepts a connection there (a refused connection fails the redirect)
+# Each server asks the kernel for its own port (127.0.0.1:0) and the check reads the port from the server's "starting"
+# log line, so no port is guessed: another run's server, or a connection that is open on a port, can never be what a
+# server of this run fails to get.
+# bound_port PID LOG: the port the server reports; fails when the process is gone first or no line comes in 20 s
+bound_port() {
+  local i addr
+  for i in $(seq 80); do
+    addr=$(jq -nRr 'first(inputs | fromjson? | select(.msg == "fscache: starting") | .addr) // empty' "$2")
+    if [ -n "$addr" ]; then
+      echo "${addr##*:}"
+      return 0
+    fi
+    kill -0 "$1" > /dev/null 2>&1 || return 1
+    sleep 0.25
   done
   return 1
 }
-# the server answering on a port must be the one this run started: after its answers the process must still be there (a process that lost the port to another run's
-# server exits at once, and the answers were that other server's)
+last_output() { tail -n 3 "$1" | tr '\n' ' '; }
+# start_server NAME BINARY DESCRIPTION [GODEBUG]: runs one server of this run and sets $port. GODEBUG is always given
+# (empty when not asked), so a runner's own value never reaches the binary under test. A server that dies or never
+# answers fails the check with its last output.
+start_server() {
+  local log="$tmp/log-$1" pid
+  FSCACHE_ADDR=127.0.0.1:0 FSCACHE_DATA_DIR="$tmp/data-$1" GODEBUG="${4:-}" "$2" > "$log" 2>&1 &
+  pid=$!
+  pids+=("$pid")
+  port=$(bound_port "$pid" "$log") && healthy "$port" "$pid" ||
+    fail "$3 never answered /healthz: it does not execute; its last output: $(last_output "$log")"
+}
+# the server answering on a port must be the one this run started: after its answers the process must still be there
 still_ours() { sleep 0.5; kill -0 "$1" > /dev/null 2>&1; }
-port_std=$(pick_port) && port_fips=$(pick_port) && port_forced=$(pick_port) || fail "no free ports for the binaries under test"
-FSCACHE_ADDR=":$port_std" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
-pids+=("$!")
-healthy "$port_std" || fail "fscache (linux/$arch) never answered /healthz: it does not execute"
+start_server std "$tmp/bin/fscache" "fscache (linux/$arch)"
+port_std=$port
 roundtrip "$port_std" std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
 note_std=$(posture "$port_std") || note_std=""
 still_ours "${pids[0]}" || fail "fscache (linux/$arch) exited right after it answered: the answers were not its own"
-FSCACHE_ADDR=":$port_fips" FSCACHE_DATA_DIR="$tmp/data-fips" "$tmp/bin/fscache-fips" > "$tmp/log-fips" 2>&1 &
-pids+=("$!")
-healthy "$port_fips" || fail "fscache-fips (linux/$arch) never answered /healthz: it does not execute"
+start_server fips "$tmp/bin/fscache-fips" "fscache-fips (linux/$arch)"
+port_fips=$port
 roundtrip "$port_fips" fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
 note_fips=$(posture "$port_fips") || note_fips=""
 still_ours "${pids[1]}" || fail "fscache-fips (linux/$arch) exited right after it answered: the answers were not its own"
-FSCACHE_ADDR=":$port_forced" FSCACHE_DATA_DIR="$tmp/data-forced" GODEBUG=fips140=on "$tmp/bin/fscache" > "$tmp/log-forced" 2>&1 &
-pids+=("$!")
-healthy "$port_forced" || fail "fscache (linux/$arch, GODEBUG=fips140=on) never answered /healthz"
+start_server forced "$tmp/bin/fscache" "fscache (linux/$arch, GODEBUG=fips140=on)" fips140=on
+port_forced=$port
 note_forced=$(posture "$port_forced") || note_forced=""
 still_ours "${pids[2]}" || fail "fscache (linux/$arch, GODEBUG=fips140=on) exited right after it answered: the answers were not its own"
 passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
