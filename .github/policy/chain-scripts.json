@@ -1587,7 +1587,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "276a2b27707d86698c23c6b17d4d11cf87614e07016cd438e4dcec73a2d8b6d4",
+      "sha256": "e638d4892f4f6cdf5ba3c93a769d72e65a1c0d286deaaf58a7f058c41f079a45",
       "exceptions": [
         {
           "rule": "deny",
@@ -1618,7 +1618,7 @@
         "bin/release-sign-apks.sh"
       ],
       "signs": "other",
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (melange sign of Build's apks only; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
       "sha256": "bb859d4254e1d4cced43922b4c381be86e6a723fd4ef3bb515b496bec2e4828f",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
