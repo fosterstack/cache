@@ -87,6 +87,13 @@ class Profiles(unittest.TestCase):
             e = dict(ok, **broken)
             self.assertTrue(P.validate_profiles({"entries": [e]}), broken)
 
+    def test_the_validator_names_wrong_types_instead_of_raising(self):          # cache#707 round 2: a damaged profiles document is a named error, never an AttributeError
+        ok = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}
+        for doc in ({"entries": [3]}, {"entries": ["x"]}, {"entries": [dict(ok, match=["x"])]}, {"entries": [dict(ok, match={"package": 5})]}, {"entries": "x"}, {"entries": {"a": 1}}):      # (an empty {} is the reader's container rule, tested there)
+            self.assertTrue(P.validate_profiles(doc), doc)
+        self.assertEqual(P.validate_profiles({"entries": None}), [])
+        self.assertEqual(P.validate_profiles({}), [])
+
     def test_committed_profiles_validate(self):
         path = os.path.join(BIN, "..", "..", "policy", "scanner-profiles.json")
         self.assertEqual(P.validate_profiles(json.load(open(path))), [])
