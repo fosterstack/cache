@@ -36,7 +36,7 @@ TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
 # certificate, signature or timestamp is looked at, and both early protection against honest confusion and lookalikes: the security boundary is the Build Config URI
 # pin of check_identity (the calling workflow must be release.yml at the tag).
 SNAPSHOT_NAME = re.compile(r"snapshot-[a-z0-9_-]*")                    # exactly this is "a snapshot record"
-RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}      # the collection names a stage reads; other stages' records are not collections
+RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}      # the collection names a stage reads; other stages' records are not collections
 SNAPSHOT_VERSION_FILE = re.compile(r"fscache(-fips)?[-_]0\.0\.0[_-]")           # fscache-0.0.0_rc1-r0.apk, fscache_0.0.0-rc.1_linux_amd64.tar.gz; not 10.0.0 or 0.10.0
 
 

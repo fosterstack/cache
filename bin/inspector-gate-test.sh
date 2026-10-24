@@ -191,11 +191,68 @@ def idoc(at, purl):
     return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
 row("index: an empty @id beside an identifiers.purl of our image covers nothing", G.covered(G.vex_index(idoc("", OCI)), "CVE-9999-1", PKG, None) is False)
 row("index: an @id equal to the identifiers.purl covers", G.covered(G.vex_index(idoc(OCI, OCI)), "CVE-9999-1", PKG, None) is True)
+# the LATEST statement per (vulnerability id, product, subcomponent set) wins (rc-5a 667 item 4): a later affected retracts an earlier not_affected, by timestamp when both parse, else by document order
+def lw(*specs, subs=("pkg:generic/busybox@1.37.0",), prods=None):
+    sts = []
+    for status, ts in specs:
+        s_ = {"vulnerability": {"name": "CVE-9999-1"}, "status": status, "products": [{"@id": p_, "subcomponents": [{"@id": x} for x in subs]} for p_ in (prods or [OCI])]}
+        if ts is not None: s_["timestamp"] = ts
+        sts.append(s_)
+    return G.covered(G.vex_index({"statements": sts}), "CVE-9999-1", PKG, None)
+T1, T2 = "2026-01-01T00:00:00Z", "2026-02-01T00:00:00+00:00"
+row("latest: not_affected then affected (document order): retracted", lw(("not_affected", None), ("affected", None)) is False)
+row("latest: affected then not_affected (document order): covers", lw(("affected", None), ("not_affected", None)) is True)
+row("latest: under_investigation after not_affected retracts too", lw(("not_affected", None), ("under_investigation", None)) is False)
+row("latest: the timestamps beat the document order (affected is earlier by time, later by position)", lw(("not_affected", T2), ("affected", T1)) is True)
+row("latest: ...and the other way (affected is later by time, earlier by position)", lw(("affected", T2), ("not_affected", T1)) is False)
+row("latest: an unparseable timestamp falls back to document order for the pair", lw(("not_affected", T1), ("affected", "garbage")) is False)
+row("latest: a missing timestamp on one side falls back to document order for the pair", lw(("affected", T2), ("not_affected", None)) is True)
+row("latest: equal timestamps: the later in the document wins", lw(("not_affected", T1), ("affected", T1)) is False)
+row("latest: a different subcomponent set is another pair and is not retracted", G.covered(G.vex_index({"statements": [
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/zlib@1.2"}]}]}]}), "CVE-9999-1", PKG, None) is True)
+row("latest: a different product is another pair and is not retracted", lw(("not_affected", None), prods=[OCI]) is True and G.covered(G.vex_index({"statements": [
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI + "&variant=fips", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is True)
+row("latest: an alias is the same vulnerability (the later affected statement names the alias)", G.covered(G.vex_index({"statements": [
+    {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-x"]}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "GHSA-x"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is False)
+# round 1 (cache#671): the pair is compared by what the readers match on, not by spelling; aliases are one vulnerability across the whole document; the order is one total order per pair
+def two(first, second, f_prods=None, s_prods=None, f_subs=("pkg:generic/busybox@1.37.0",), s_subs=("pkg:generic/busybox@1.37.0",), f_name="CVE-9999-1", s_name="CVE-9999-1"):
+    def stmt(status, name, prods, subs, extra=None):
+        v = {"name": name}
+        if extra: v["aliases"] = extra
+        return {"vulnerability": v, "status": status, "products": [{"@id": q, "subcomponents": [{"@id": x} for x in subs]} for q in prods]}
+    return G.covered(G.vex_index({"statements": [stmt(first, f_name, f_prods or [OCI], f_subs), stmt(second, s_name, s_prods or [OCI], s_subs)]}), "CVE-9999-1", PKG, None)
+SC = OCI + "&variant=production&arch=amd64"
+SC2 = OCI.replace("?repository_url=ghcr.io/fosterstack/cache", "?repository_url=ghcr.io/fosterstack/cache") + "&arch=amd64&variant=production"
+row("latest: the same scope with its qualifiers in another order is the same product (retracted)", two("not_affected", "affected", [SC], [SC2]) is False)
+row("latest: the same scope with the qualifiers swapped back (a not_affected after an affected) covers", two("affected", "not_affected", [SC], [SC2]) is True)
+row("latest: another scope is another product (not retracted)", two("not_affected", "affected", [SC], [OCI + "&variant=fips&arch=amd64"]) is True)
+row("latest: a subcomponent of another purl type is the same package (retracted)", two("not_affected", "affected", f_subs=("pkg:apk/busybox@1.37.0",), s_subs=("pkg:generic/busybox@1.37.0",)) is False)
+row("latest: a subcomponent in another case is the same package (retracted)", two("not_affected", "affected", f_subs=("pkg:generic/BusyBox@1.37.0",)) is False)
+row("latest: a percent-encoded subcomponent is the same package (retracted)", two("not_affected", "affected", f_subs=("pkg:generic/busybox@1.37.0",), s_subs=("pkg:generic/%62usybox@1.37.0",)) is False)
+row("latest: another version is another package (not retracted)", two("not_affected", "affected", s_subs=("pkg:generic/busybox@1.36.0",)) is True)
+AL = {"statements": [
+    {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-X"]}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "GHSA-X"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
+row("latest: an alias declared by one statement links the others (CVE, alias affected, CVE not_affected, alias affected): retracted", G.covered(G.vex_index(AL), "CVE-9999-1", PKG, None) is False)
+def three(*specs):
+    return G.covered(G.vex_index({"statements": [dict({"vulnerability": {"name": "CVE-9999-1"}, "status": st_, "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}, **({"timestamp": ts} if ts else {})) for st_, ts in specs]}), "CVE-9999-1", PKG, None)
+row("latest: three not_affected with timestamps [Feb, none, Jan] are not all superseded (one total order)", three(("not_affected", T2), ("not_affected", None), ("not_affected", T1)) is True)
+row("latest: a group with one missing timestamp is ordered by position: [not_affected Feb, affected none] retracts", three(("not_affected", T2), ("affected", None)) is False)
+row("latest: a group where every statement has a time is ordered by time: [affected Feb, not_affected Jan, not_affected Jan2]", three(("affected", T2), ("not_affected", T1), ("not_affected", "2026-01-15T00:00:00Z")) is False)
+TWO = {"statements": [
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}, {"@id": GO, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
+IX = G.vex_index(TWO)
+row("latest: retracting one product of a two-product statement leaves its sibling covered (the image is retracted, the Go product stays)", G.covered(IX, "CVE-9999-1", PKG, None) is True and G.superseded(TWO["statements"]) == {(0, 0)})
 print("index-cases-run")
 PYI
 )"; idx_rc=$?
 echo "$IDXOUT" | sed 's/^/  /'
-[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 34 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 34, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
+[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 57 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 57, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
 pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
 
 echo "----"
