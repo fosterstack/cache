@@ -686,6 +686,12 @@ requirements:
         then: the identical bytes return, and store totals reflect the entry
         verification: { method: component, release_blocking: true }
         status: approved
+      - id: REQ-STORE-001-AC2
+        given: a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record
+        when: both have completed
+        then: the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct
+        verification: { method: component, release_blocking: true }
+        status: approved
 
   - id: REQ-STORE-002
     title: Atomic writes
@@ -825,7 +831,9 @@ requirements:
       temporary headroom, not a hard filesystem quota: temporary and
       in-flight disk usage during writes, and concurrent-write headroom,
       are outside this requirement and need requirements of their own
-      before any hard disk ceiling is claimed.
+      before any hard disk ceiling is claimed. That exclusion covers in-flight
+      temporary disk usage only, never the accuracy of the index once the
+      operations have completed (REQ-STORE-001-AC2).
     source: [README.md "Full core", docs/docker-deploy.md "Sizing", internal/cache/cache.go]
     tier: community
     introduced: v0.1.0
@@ -1587,6 +1595,12 @@ requirements:
         when: the scan check or the rescan would call Amazon Inspector for it
         then: "it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ"
         verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-004-AC9
+        given: "the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits"
+        when: "bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it)"
+        then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential)"
+        verification: { method: unit, release_blocking: false }
         status: approved
       # owner RATIFIED Oct 24 2026 (ops/docs/ratify/2026-10-24-runner-tools-and-token-in-env.md; named there REQ-REL-004-AC5, renumbered AC10 because AC5 exists); LLM-enforced, no judge
       - id: REQ-REL-004-AC10
@@ -3972,7 +3986,7 @@ requirements:
       - id: REQ-CHAIN-007-AC6
         given: "bin/release-apks.sh with the stored key in APK_RELEASE_SIGNING_KEY"
         when: "it signs the released apks"
-        then: "it maps Build's artifacts to the layout cache's bin/release-sign-apks.sh reads through the fixed table of AC17, checks that each of the four apks (standard and fips, amd64 and arm64) has exactly the digest Build attested in digests.json (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) and refuses before signing otherwise, writes the key to a private file named release.rsa that is removed on every exit and never put on a command line, in the output or in a log, runs `bash bin/release-sign-apks.sh --build-dir B --rebuild-dir R --key K` (it alone compares Build's and Rebuild's control and data sections and signs; Release does not call melange itself), requires each result to carry the release key and the attested digest again, and refuses at once, naming the variable, when the key is missing"
+        then: "it maps Build's artifacts to the layout cache's bin/release-sign-apks.sh reads through the fixed table of AC17, checks that each of the four apks (standard and fips, amd64 and arm64) has exactly the digest Build attested in digests.json (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) and refuses before signing otherwise, writes the key to a private file named release.rsa that is removed on every exit and never put on a command line, in the output or in a log, runs `bash bin/release-sign-apks.sh --build-dir B --key K` (it signs Build's apks and nothing else; Release receives no Rebuild output, because the comparison of Build's and Rebuild's apks is bin/release-compare.sh's, in a job without the key; Release does not call melange itself), requires each result to carry the release key and the attested digest again, and refuses at once, naming the variable, when the key is missing"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC7
@@ -3996,7 +4010,7 @@ requirements:
       - id: REQ-CHAIN-007-AC10
         given: "the five release scripts and the witnessed helper"
         when: "chain-scripts.json and the scripts are read"
-        then: "each is listed with its sha256 and exactly the tools it uses (release-verify: python3 only; release-apks: melange, jq and python3 for the apk tool; release-publish: crane and jq; release-sign: cosign, jq and python3; release-assets: gh), signs false for release-verify, release-publish and release-assets and other, with a reason, for release-apks and release-sign, no script starts another script except through the list, no script prints a credential, and a run with credential sentinels in the environment shows none of them in any output or file"
+        then: "each is listed with its sha256 and exactly the tools it uses (release-verify: python3 only; release-apks: melange, jq and python3 for the apk tool; release-publish: crane and jq; release-sign: cosign, git, jq and python3; release-assets: gh), signs false for release-verify, release-publish and release-assets and other, with a reason, for release-apks and release-sign, no script starts another script except through the list, no script prints a credential, and a run with credential sentinels in the environment shows none of them in any output or file"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC11
@@ -4064,7 +4078,7 @@ requirements:
       - id: REQ-CHAIN-007-AC21
         given: "the four Linux archives in dist/ that Build uploaded, Build's verified digests.json, and the Release scripts"
         when: "release-sign.sh runs"
-        then: "before its first signature it runs `python3 bin/release-metadata.py bind-archives` (dist holds exactly the four archives Build recorded, each with the digest of digests.json) and then `python3 bin/release-metadata.py checksums --version V --digests witness-build/digests.json --dist dist --out dist/checksums.txt`, which writes checksums.txt as one line `<sha256>  <name>` (two spaces) for each of the four archives, in byte order of the names, ending in a newline, with no other line, through a temporary file renamed into place; an archive that is missing, extra, symlinked or different from the recorded digest, or a version that is not vX.Y.Z, is a refusal (exit 1, naming the archive) and nothing is written or signed; no producer other than this command makes checksums.txt (Build and Rebuild do not write it, it is not an item of items.json), and no test creates the file it signs"
+        then: "before its first signature it runs `python3 bin/release-metadata.py checksums --version V --digests witness-build/digests.json --dist dist --out dist/checksums.txt`, which first checks that dist holds exactly the four archives Build recorded, each with the digest of digests.json, and then writes checksums.txt as one line `<sha256>  <name>` (two spaces) for each of the four archives, in byte order of the names, ending in a newline, with no other line, through a temporary file renamed into place; an archive that is missing, extra, symlinked or different from the recorded digest, or a version that is not vX.Y.Z, is a refusal (exit 1, naming the archive) and nothing is written or signed; no producer other than this command makes checksums.txt (Build and Rebuild do not write it, it is not an item of items.json), and no test creates the file it signs"
         verification: { method: unit, release_blocking: true }
         status: approved
   - id: REQ-BUILDTOOLS-002
@@ -4104,7 +4118,7 @@ requirements:
       The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code;
       dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin,
       commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
-    source: [bin/vendor-provenance.py, bin/vendor-check.sh, bin/vendoring-test.sh, bin/vendor-provenance-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh, vendor/modules.txt, dependency-provenance.json]
+    source: [bin/vendor-provenance.py, bin/vendor-provenance-records.py, bin/vendor-check.sh, bin/vendoring-test.sh, bin/vendor-provenance-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh, vendor/modules.txt, dependency-provenance.json]
     tier: community
     introduced: v0.3.0
     origin: owner-ratified dependency rules 1-10 (ops/docs/ratify/2026-10-09-v030-rules.md, VEND-1..8, 41, 45); the check coded on the owner's "code it" Oct 14 (ops/docs/ratify/2026-10-14-vendored-dependencies-check.md); ACs accepted by the advisor, step 5, Oct 12 2026, with --date as epoch digits only, one ^vendor/ subtree allowlist pattern, no new write token, evidence records the scan and never judges it; AC14 by advisor ruling Oct 12 (two-module rule-6 record); AC2 amended by advisor ruling Oct 14 (mode 100644; the narrow no-vendor/ pass) under the owner's byte-for-byte words; AC2 amended again by advisor ruling D, Oct 14 (dot files allowed when regenerated byte for byte; the git index and .gitattributes judged), back to the owner's ratified wording "exactly what the official tool produces ... byte for byte"
@@ -4201,6 +4215,12 @@ requirements:
         then: "its origin is taken from test-evidence/dependency-origins.yaml, one entry per such module with module, version, repository URL, commit and the command that produced it; an entry for any other module (one the cache has an Origin for, or one not in the build list), or a commit that does not match the pseudo-version's hash, is refused; no other gap is filled"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-VEND-001-AC15
+        given: "a go.mod, go.sum and vendor/ tree after a dependency bump, the committed reviewed files test-evidence/dependency-licenses.yaml and test-evidence/dependency-origins.yaml, and `bin/vendor-provenance-records.py --vendor-dir vendor --go-sum go.sum --licenses test-evidence/dependency-licenses.yaml [--recorded-origins test-evidence/dependency-origins.yaml] --out-dir DIR` with DIR absent"
+        when: "it runs on a runner with network access"
+        then: "it asks the Go toolchain (`go mod download -json`, at the toolchain's fixed install path, in an empty scratch module, with a closed environment: GOTOOLCHAIN=local, GOENV=off, the checksum database on at its default and no opt-out) for every module of vendor/modules.txt, and writes into DIR only the three files bin/vendor-provenance.py build reads (the checksum-log record, the origins the toolchain verified, the licences copied from the reviewed file); a module the toolchain cannot verify, that it does not report, that appears twice or is not in modules.txt, whose verified hash differs from go.sum, whose origin is not a git https address with the tagged version's tag ref or the pseudo-version's 40-hex commit, that has no origin and no entry in the recorded-origins file, or that has no licence in the reviewed file makes it exit 2 naming the module and write nothing; an existing DIR is refused; it never invents a licence, an origin or a commit and never writes dependency-provenance.json"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-BUILDAPK-001
     title: The apk is built by melange from vendored source, sealed from the network, assembly-signed
     statement: >
@@ -4252,9 +4272,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC7
-        given: "bin/release-sign-apks.sh with a Build and a Rebuild output directory and a key"
+        given: "bin/release-sign-apks.sh with a Build output directory and a key"
         when: "it runs"
-        then: "it signs each released apk with melange sign and that key only when every apk has a counterpart in Rebuild (and no apk only Rebuild has) with the same control AND data sections; it signs nothing and names the apk when they differ (exit 1), when a counterpart is missing or extra, or when anything is a symlink or not a regular file (exit 2); the key file must be named release.rsa and hold exactly one PEM block labelled RSA PRIVATE KEY (no headers, no CR, no second block), its public half is derived from that one block, and the assembly key is refused whatever its bytes or file name; it first verifies the signature bytes of every Build and Rebuild apk against the committed assembly.rsa.pub, signs copies, checks that each carries a signature that verifies against the committed release.rsa.pub, and replaces Build's apks only when all succeeded; it has no option and no variable that names another keys directory (rules 17, 22); NEW, PROPOSED (handoff 0434, awaiting ratification): it runs from the repository root only and names bin/apk-tool.py by its literal repo-root path (a run from another directory is refused with a message naming the repository root), and reads the apk names it finds with read -r"
+        then: "it signs each apk in the Build directory with melange sign and that key; it takes no Rebuild directory (the comparison of Build's and Rebuild's apks is bin/release-compare.sh's, in a job without the key, and a --rebuild-dir is an unknown argument, exit 2); it signs nothing and exits 2 when anything is a symlink or not a regular file or when Build carries a signature other than the assembly key's, and exits 1 when a signing step fails with nothing in Build's directory changed; the key file must be named release.rsa and hold exactly one PEM block labelled RSA PRIVATE KEY (no headers, no CR, no second block), its public half is derived from that one block, and the assembly key is refused whatever its bytes or file name; it first verifies the signature bytes of every Build apk against the committed assembly.rsa.pub, signs copies, checks that each carries a signature that verifies against the committed release.rsa.pub, and replaces Build's apks only when all succeeded; it has no option and no variable that names another keys directory (rules 17, 22); it runs from the repository root only and names bin/apk-tool.py by its literal repo-root path (a run from another directory is refused with a message naming the repository root), and reads the apk names it finds with read -r"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC8

@@ -218,8 +218,20 @@ mappings:
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
+  - ac: REQ-STORE-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestSameKeyConcurrentPutsKeepIndexEqualToBytes" }
+      - { type: go-test, ref: "internal/cache:TestReconcileCorrectsRecordedSizeMismatch" }
+      - { type: go-test, ref: "internal/cache:TestReconcileReportsSizeCorrectionFailure" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotRaceAPutOfTheSameKey" }
+      - { type: go-test, ref: "internal/cache:TestEvictOneSkipsChangedAndReportsLookupFailure" }
+      - { type: go-test, ref: "internal/cache:TestPanickingReaderDoesNotLockTheKey" }
+      - { type: go-test, ref: "internal/cache:TestCaseAliasedKeysShareOneLock" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotWaitForASlowUploadOfTheSelectedKey" }
+      - { type: go-test, ref: "internal/metadata:TestLookupFoundMissingAndCorrupt" }
   - ac: REQ-STORE-004-AC1
     evidence:
+      - { type: go-test, ref: "internal/cache:TestFailedOverwriteLeavesNoRecord" }
       - { type: go-test, ref: "internal/cache:TestPutFailsAndRemovesBlobWhenMetadataFails" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274 — the PUT reporting success on a failed metadata record, before the implementation commit)" }
   - ac: REQ-STORE-005-AC1
@@ -422,6 +434,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/inspector-reuse-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml: bin/inspector-reuse-test.sh, whose wiring cases over scan.yml and main-candidate-rescan.yml (reuse program before any ScanSbom call, the pinned stock actions/cache restore and save, same-repo condition, save only on fresh results, permissions unchanged; each mutation caught)" }
+  - ac: REQ-REL-004-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
   - ac: REQ-REL-004-AC10
     evidence:
       - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }
@@ -1459,6 +1474,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-VEND-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC15
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-BUILDAPK-001-AC1
