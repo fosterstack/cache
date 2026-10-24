@@ -607,7 +607,7 @@ n=$(jq '.statements | length' .vex/fosterstack-cache.openvex.json)
 for i in $(seq 0 $((n-1))); do
   name=$(jq -r ".statements[$i].vulnerability.name" .vex/fosterstack-cache.openvex.json)
   sub=$(jq -r "[.statements[$i].products[] | .subcomponents // [] | .[] | .\"@id\"][0] // empty" .vex/fosterstack-cache.openvex.json)
-  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); pver=${sub##*@}; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
+  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); case $sub in *@*) pver=${sub##*@};; *) pver=v4.5.0;; esac; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
   rep=$(jq -nc --arg n "$name" --arg p "$pname" --arg v "$pver" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}')
   vrun osv-scanner 1 "$rep" ".vex/fosterstack-cache.openvex.json" production linux/amd64 "$REPO@$AMD"
   expect "the published VEX statement $i ($name, $pname@$pver) removes its finding from the cache image" clean false 0 1
@@ -643,7 +643,13 @@ vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":
 expect "snyk: a well-formed applications list still works (one suppressed, the application finding counts)" findings true 1 1
 # namespace-preserving package match against the PUBLISHED VEX (pkg:generic/busybox@1.37.0 covers busybox 1.37.0 only, not another namespace's busybox)
 osvrep() { jq -nc --arg n "$1" --arg p "$2" --arg v "$3" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}'; }
-PUBVEX=.vex/fosterstack-cache.openvex.json
+PUBVEX=test-evidence/vex-scope/busybox.openvex.json   # the retired busybox statements (rc-5a G): the namespace-preserving match still needs a document that holds them
+# the COMMITTED document says no more than it names (rc-5a G review round 1): the jwt/v4 module at any version, not CVE-2024-51744 anywhere, not another module, not a bare "v4"
+LIVE=.vex/fosterstack-cache.openvex.json
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.0.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: jwt/v4 at any version is suppressed" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v5 v5.2.1)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: jwt/v5 is another module, its finding counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 v4 v4.5.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: a bare package named v4 is not the jwt/v4 module, its finding counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 busybox 1.37.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: busybox is not the jwt/v4 module, its finding counts" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; expect "published VEX: evil/busybox 1.37.0 is NOT busybox (namespace kept, finding counts)" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX"; expect "published VEX: busybox 1.37.0 is suppressed in the cache image" clean false 0 1
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX" debug linux/arm64 "$CAND_REPO@$AMD"; expect "published VEX: busybox 1.37.0 is suppressed in the candidates image" clean false 0 1
@@ -680,7 +686,7 @@ open(sys.argv[2], "w").write(src.replace(sys.argv[3], sys.argv[4]))
 P
   echo "$md/rescan-statement.py"
 }
-M=$(mutant pkg 'return name == sub_name and version == sub_version' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
+M=$(mutant pkg 'return name == sub_name and (not sub_version or version == sub_version)' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
 SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; SCRIPT=$SCRIPT_SAVE
 [ "$V" = clean ] && ok || bad "mutant (last-segment package match) was not caught by the evil/busybox case (got $V)"
 M=$(mutant apps 'apps = _bad(bad) or []' 'apps = []')

@@ -5,10 +5,11 @@
 # another vendor's image (even one whose bare basename is "cache"), a different
 # busybox version, or an image with no usable identity (no context-free
 # package fallback). Runs the pinned Grype over synthetic SBOMs against the
-# committed .vex and asserts suppress/flag per case.
+# retired-busybox fixture document (test-evidence/vex-scope/busybox.openvex.json: the committed .vex no longer holds busybox statements)
+# and asserts suppress/flag per case; the Check-path section at the end runs bin/check-scan.sh over real layouts.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/.." && pwd)"
-vex="$repo/.vex/fosterstack-cache.openvex.json"
+vex="$repo/test-evidence/vex-scope/busybox.openvex.json"
 base="$repo/test-evidence/vex-scope/busybox-image.sbom.json"
 grype="${GRYPE:-$(command -v grype || true)}"   # PATH or $GRYPE only: no probing of a fixed system location
 [ -n "$grype" ] && [ -x "$grype" ] || { echo "::error::grype not found — install it (bin/install-scanner.sh grype) before this test" >&2; exit 1; }
