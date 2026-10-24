@@ -220,8 +220,8 @@ jobs:
           ref: ${{ steps.resolve.outputs.tag }}
           persist-credentials: false
 
-      - name: install the pinned kind binary
-        run: ./bin/install-scanner.sh kind
+      - name: kind from the runner image
+        run: command -v kind > /dev/null && kind version || { echo "::error::kind is not on the runner image (PIPELINE failure, not a finding)"; exit 1; }
 
       - name: pin pip (hash-checked)
         run: |

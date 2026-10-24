@@ -177,7 +177,6 @@ ALLOW_PATTERNS=(
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
-  '^bin/install-kind\.sh$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
   # Check's source scan of the product module (ruling G, Oct 12): the script, and the committed tool module whose go.sum pins govulncheck (tools/govulncheck).

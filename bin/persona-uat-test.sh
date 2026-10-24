@@ -25,7 +25,7 @@
 #   agent: one JSON request on stdin; one JSON answer on stdout {"findings":[{"kind":"blocking|friction","text":str}],
 #          "tokens": int >= 0, "transcript": str, optional "commands": [str] (the commands the persona ran, in order; absent = none)}
 # DELTAS (advisor 0207/0208, review round d6r1; step 6, tests first). The contract the cases pin:
-#   (1) kind: the cluster is created by a `kind` binary the JOB installs (a workflow step `./bin/install-scanner.sh kind`, version and sha256 pinned;
+#   (1) kind: the cluster is created by a `kind` binary the JOB installs (a workflow step that checks the runner image has it and prints `kind version` (amended Oct 24: no install, no pin);
 #       the wiring test requires that step) and that is found on PATH: the driver does not install it. The driver runs
 #       `kind create cluster --image <the kind entry of the tools file> --name <fixed name> --kubeconfig <driver-private file>`, exactly those
 #       options. Everything that follows uses the host `kubectl` on PATH (preinstalled on the runner) with that admin kubeconfig, which never
