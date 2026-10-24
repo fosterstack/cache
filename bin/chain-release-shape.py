@@ -267,9 +267,11 @@ def stage(path):
             kinds.append("install:melange")
         elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
             kinds.append("W:" + r.split()[2])
+        elif re.fullmatch(r"python3 -I bin/chain_items\.py record-env --record witness-(release-[a-z]+)/\1-collection\.json", r):   # rc-2 R4: the Release job checks its own six Witness records for a token before they are uploaded (REQ-CHAIN-007-AC12)
+            kinds.append("RE:" + r.split()[-1].split("/")[0][len("witness-"):])
         else:
             bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
-        want_if = RC_IF if kinds and kinds[-1].startswith("W:") and kinds[-1] != "W:release-verify" else None
+        want_if = RC_IF if kinds and kinds[-1][:2] in ("W:", "RE") and kinds[-1] not in ("W:release-verify", "RE:release-verify") else None
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
             bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
                        % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
@@ -303,8 +305,11 @@ def stage(path):
         bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % kinds[first_w:last_w + 1])
     if any(k.startswith("install:") for k in kinds[5:]):
         bad.append("between the checkout and the downloads exactly the four installs are allowed, and no install after them: %s" % kinds)
-    if any(k != "up" for k in kinds[last_w + 1:]) or not ups:
-        bad.append("only uploads may follow the witnessed steps, and there must be at least one")
+    after = kinds[last_w + 1:]
+    if after[:len(STEPS)] != ["RE:" + s for s in STEPS]:
+        bad.append("right after the witnessed steps the Release job must check each of its own six Witness records for a token (python3 -I bin/chain_items.py record-env --record witness-STEP/STEP-collection.json, REQ-CHAIN-007-AC12), exactly %s in this order, found %s" % (STEPS, [k[3:] for k in after if k.startswith("RE:")]))
+    if any(k != "up" for k in after[len(STEPS):]) or not ups:
+        bad.append("only uploads may follow the witnessed steps and their record checks, and there must be at least one")
     text = open(path).read()
     if re.search(r"docker\s+login|build-push|buildx|goreleaser|\bgo build\b", text):
         bad.append("a registry login or a build command appears in the stage file")
