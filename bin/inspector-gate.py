@@ -4,7 +4,7 @@
 # inspector-scan:ScanSbom returns that SBOM annotated with vulnerabilities.
 # This reads both and decides, the same way the grype leg does:
 #
-#   * the package count is the SBOM's components (row 53: zero packages =
+#   * the package count is the SBOM's components that carry a package URL (row 53: zero packages =
 #     the scanner did not run, which is red — never a clean pass);
 #   * every vulnerability blocks at ANY severity, except one covered by the
 #     published OpenVEX document (.vex/) with status not_affected or fixed
@@ -238,7 +238,10 @@ def main(argv):
               '(expected {"sbom": {"bomFormat": "CycloneDX", ...}}) — did not run, not a clean pass')
         return 2
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-    if not comps:
+    # packages are the components that carry a package URL (the grype gate and the panel count the same way; files and an operating-system
+    # component are not packages): none = the scanner looked at nothing (row 53)
+    n_pkg = sum(1 for c in comps if isinstance(c.get("purl"), str) and c["purl"])
+    if not n_pkg:
         print(f"::error::inspector {label}: 0 packages inventoried — did not run (row 53), not a clean pass")
         return 2
     by_ref = {}
@@ -258,7 +261,7 @@ def main(argv):
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
             (suppressed if covered(idx, vid, pkg, image) else blocking).append(row)
-    print(f"inspector {label}: {len(comps)} packages, {len(blocking)} finding(s), "
+    print(f"inspector {label}: {n_pkg} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")
     for r in suppressed:
         print(f"  vex: {r}")
