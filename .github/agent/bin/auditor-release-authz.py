@@ -13,6 +13,7 @@ workflow step is three lines (R4: no embedded Python in the YAML).
 import os, sys, re, json, datetime, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
+from auditorlib import reviewed
 
 ACCEPT = re.compile(r"^ACCEPT\s+(\S+)\s+until\s+(\d{4}-\d{2}-\d{2})\s*$")
 REJECT = re.compile(r"^(?:REJECT|DO NOT ACCEPT)\s+(\S+)\b")
@@ -55,7 +56,7 @@ def affected_cves(vex_dir):
     if vex_dir and os.path.isdir(vex_dir):
         for f in glob.glob(os.path.join(vex_dir, "*.json")):
             try:
-                for s in json.load(open(f)).get("statements", []):
+                for s in reviewed.read(f, as_name="x.openvex.json")["statements"]:     # a VEX of {} is malformed, not "no statements" (rc-5b fix 13)
                     if s.get("status") == "affected":
                         n = (s.get("vulnerability") or {}).get("name")
                         if n:

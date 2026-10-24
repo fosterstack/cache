@@ -16,6 +16,7 @@ Two rules hold everywhere:
 import os, sys, re, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
+from auditorlib import reviewed
 from auditorlib import parsers as P
 from auditorlib import vex
 
@@ -88,7 +89,7 @@ def fp_verified(ids, logpath, findings):
     """Verify a false positive only on the FULL exact key (scanner, finding_id, purl) of one
     of the group's findings against a trusted (not model-proposed) log row."""
     if logpath and os.path.exists(logpath):
-        log = json.load(open(logpath))
+        log = reviewed.read(logpath, as_name="known-defect-log.json")     # a present log without "defects" is a stop (rc-5b fix 13)
         keys = {(k["scanner"], k["finding_id"], k["purl"]): row
                 for row in log.get("defects", []) for k in row.get("keys", [])}
         for f in findings:

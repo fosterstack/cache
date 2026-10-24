@@ -4198,7 +4198,7 @@ good_items={"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","t
 def write_good():
     json.dump(old,open(vp,"w")); json.dump(good_items,open(ap,"w"))
 write_good()
-corrupt_at="start"
+corrupt_at="start"; reopened_body="{bad"
 if variant=="vex-malformed": open(vp,"w").write("{not json")
 elif variant=="vex-notobject": open(vp,"w").write("[]")
 elif variant=="vex-empty-object": open(vp,"w").write("{}")
@@ -4222,13 +4222,15 @@ elif variant=="items-bad-at-delivery": corrupt_at="delivery"
 elif variant=="missing": os.remove(vp); os.remove(ap)
 elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
 elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
+elif variant=="reopened-empty-at-delivery": corrupt_at="reopened"; reopened_body="{}"
+elif variant=="reopened-nokey-at-delivery": corrupt_at="reopened"; reopened_body='{"other": []}'
 calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
         if corrupt_at=="delivery" and cmd[1:2]==["checkout"]: open(ap,"w").write("{bad")
         if corrupt_at=="reopened" and cmd[1:2]==["checkout"]:
-            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write("{bad")
+            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write(reopened_body)
         return _sp.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
     return _sp.run(cmd,*a,**kw)
@@ -4254,6 +4256,10 @@ if [ "$is_root" = 0 ]; then
 else ok; fi
 r6="$("$PY" "$WORK/r6main.py" "$FXRUN" reopened-bad-at-delivery 2>/dev/null | tail -1)"
 eq "$r6" "rc=3 mutating=0" && ok || no "a reopened-expired.json this run wrote that does not parse stops the run (exit 3) at every reader, nothing delivered" "$r6"
+for variant in reopened-empty-at-delivery reopened-nokey-at-delivery; do
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "a reopened-expired.json this run wrote that is {} or lacks its reopened list ($variant) stops the run (exit 3), nothing delivered" "$r6"
+done
 r6g="$("$PY" - <<'PP' 2>&1 | tail -1
 import os,sys,tempfile,importlib.util
 sys.path.insert(0,".github/agent/bin")

@@ -455,7 +455,7 @@ class MergeConsolidate(Base):
             for good in ({key: []}, {key: [{}]}, {key: [{"a": 1}], "other": 1}):
                 p = os.path.join(self.d("rq2"), name); self.wj(p, good)
                 self.assertEqual(R._read_reviewed_json(p), good)
-        p = os.path.join(self.d("rq3"), "reopened-expired.json"); self.wj(p, {})      # a file with no required list is read as before
+        p = os.path.join(self.d("rq3"), "run-state.json"); self.wj(p, {})      # a file the reader has no rule for is read as before
         self.assertEqual(R._read_reviewed_json(p), {})
 
     def test_lstat_failure_other_than_absent_is_a_stop(self):
