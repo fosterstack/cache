@@ -1322,7 +1322,7 @@ def cmd_sign(a):
     require_fresh_out(a.out)
     pol, obj = check_build_record(a)
     dry = bool(pol.get("dry_run"))
-    # rc-2 R1a: GITHUB_SHA and GITHUB_RUN_ID go into the signed provenance, so Sign refuses (before cosign is asked, before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number, rather than signing the defaults "" and "0"
+    # rc-2 R1a: GITHUB_SHA and GITHUB_RUN_ID are written into the signed provenance, so Sign refuses (before cosign is asked, before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number, rather than signing the defaults "" and "0"
     if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
         refuse("sign", "provenance: GITHUB_SHA is not a 40-hex commit")
     if not re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")):
