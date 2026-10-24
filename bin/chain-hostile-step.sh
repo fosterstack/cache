@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# The hostile Build step of the dry run (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5). It runs as a step of the Build job, only when
-# the dry run asks for it (`if: ${{ inputs.hostile }}`), and tries the five ways a Build step could reach Sign's signing identity.
+# The hostile Build step of a release-candidate tag run (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5). It runs as a step of the Build job, only when
+# the caller asks for it (`if: ${{ inputs.hostile }}`; release.yml sets it on a push of an -rc tag), and tries the five ways a Build step could reach Sign's signing identity.
 # It writes only the RAW MATERIAL of each attempt (a file under attempts/) and never says whether an attempt worked: the verify
 # job judges every attempt with the real verifier, so this step cannot grade itself.
 #
-#   attempt_mint_sign_cert                       ask Fulcio for a certificate and sign a provenance statement with it; the only
-#                                                certificate this job can get names the Build stage file, never Sign's
+#   attempt_mint_sign_cert                       sign a provenance statement that claims Sign's identity with a throwaway key (this job holds no
+#                                                identity token, so no certificate can be had at all)
 #   attempt_read_sign_token                      look for Sign's identity token on this runner (Sign runs on another machine)
 #   attempt_read_sign_key                        look for Sign's signing key material on this runner
 #   attempt_hand_sign_code                       give Sign a digest list that carries code instead of digests
-#   attempt_forge_provenance                     write provenance for different digests and sign it with this job's own identity
+#   attempt_forge_provenance                     write provenance for different digests and sign it with a throwaway key as Build's own
 #   (the sixth case of rule 52a, a second workflow calling stage-sign.yml, is not a runtime case: no second workflow file exists; Sign's
 #   caller check in the static judge and the offline hostile test prove it, a stated limit of the proof, REQ-CHAIN-001-AC5)
 #
@@ -38,18 +38,17 @@ statement() {
        predicate: {buildDefinition: {buildType: "hostile", externalParameters: {}, internalParameters: {}, resolvedDependencies: []}, runDetails: {builder: {id: $b}}}}'
 }
 
-# forged_record STATEMENT-FILE: a DSSE envelope of the verify shape (on stdout) over that statement, signed with THIS job's own
-# certificate (cosign signs the PAE bytes as a blob; the certificate it gets names stage-build.yml, never stage-sign.yml)
+# forged_record STATEMENT-FILE: a DSSE envelope of the verify shape (on stdout) over that statement, signed with a THROWAWAY ed25519 key made here, the only kind of
+# signature a Build job can produce now that it holds no identity token (no certificate can be had from Fulcio without one). The envelope is {payloadType, payload,
+# signatures: [{keyid, sig}]}, the shape of a building job's own Witness record; the verifier must refuse it because it is not Sign's keyless signature.
 forged_record() {
-  local pt="application/vnd.in-toto+json" pem
-  [ -x hostile-work/cosign ] || bash bin/install-scanner.sh cosign hostile-work > /dev/null || return 1
+  local pt="application/vnd.in-toto+json" kid
+  openssl genpkey -algorithm ed25519 -out hostile-work/throwaway.pem > /dev/null 2>&1 || return 1
   { printf 'DSSEv1 %d %s %d ' "${#pt}" "$pt" "$(wc -c < "$1")"; cat "$1"; } > hostile-work/pae.bin
-  hostile-work/cosign sign-blob --yes --bundle hostile-work/forged.bundle.json hostile-work/pae.bin > /dev/null 2>&1 || return 1
-  pem=$(jq -r '.verificationMaterial.certificate.rawBytes' hostile-work/forged.bundle.json | base64 -d | openssl x509 -inform DER) || return 1
-  jq -n --arg pt "$pt" --arg payload "$(base64 < "$1" | tr -d '\n')" --arg sig "$(jq -r '.messageSignature.signature' hostile-work/forged.bundle.json)" \
-        --arg cert "$(printf '%s\n' "$pem" | base64 | tr -d '\n')" \
-        --argjson stamps "$(jq '[(.verificationMaterial.timestampVerificationData.rfc3161Timestamps // [])[] | {type: "tsp", data: .signedTimestamp}]' hostile-work/forged.bundle.json)" \
-        '{payloadType: $pt, payload: $payload, signatures: [{keyid: "", sig: $sig, certificate: $cert, intermediates: [], timestamps: $stamps}]}'
+  openssl pkeyutl -sign -rawin -inkey hostile-work/throwaway.pem -in hostile-work/pae.bin -out hostile-work/forged.sig > /dev/null 2>&1 || return 1
+  kid=$(openssl pkey -in hostile-work/throwaway.pem -pubout -outform DER 2> /dev/null | openssl dgst -sha256 -r | cut -d' ' -f1)
+  jq -n --arg pt "$pt" --arg payload "$(base64 < "$1" | tr -d '\n')" --arg sig "$(base64 < hostile-work/forged.sig | tr -d '\n')" --arg kid "$kid" \
+        '{payloadType: $pt, payload: $payload, signatures: [{keyid: $kid, sig: $sig}]}'
 }
 
 attempt_mint_sign_cert() {
@@ -62,9 +61,31 @@ attempt_read_sign_token() {
   {
     echo "# transcript: searched /proc/*/environ for a token belonging to the sign job, then asked the runner for this job's own token"
     grep -l -a 'ACTIONS_ID_TOKEN_REQUEST' /proc/[0-9]*/environ 2> /dev/null | head -5 | sed 's#^#a process on this runner holds a token request address: #'
-    # the claims of the token this job can get (no signature): the verifier reads job_workflow_ref from them. If no token can be
-    # fetched there is nothing to grade and the verifier reports an error, so the dry run is red instead of vacuously green.
-    claims=$(own_claims) && echo "claims: $claims"
+    # the claims of the token this job can get (no signature): the verifier reads job_workflow_ref from them. If the request address exists and no token
+    # can be fetched there is nothing to grade and the verifier reports an error, so the dry run is red instead of vacuously green.
+    if ! compgen -e | grep -q '^ACTIONS_ID_TOKEN_REQUEST_'; then
+      # Build holds no id-token permission since the Witness move (the static permission judge proves that), so the runner never offers a request address. This
+      # transcript only corroborates it for the verifier: the environ search above finding nothing, the number of environ files this step could read, and no
+      # unreadable environ among its own process ancestors.
+      : > hostile-work/environ-read.txt
+      : > hostile-work/environ-bad.txt
+      for f in /proc/[0-9]*/environ; do
+        if cat "$f" > /dev/null 2> /dev/null; then echo r >> hostile-work/environ-read.txt; fi
+      done
+      # the unreadable count is about THIS step's own process ancestors (its process tree up to init): another process of the same user on a hosted runner may deny its
+      # environ (dumpable off) and says nothing about this job; an ancestor of ours that denies it could hide a request variable (no ownership test: the kernel hands the
+      # files of a non-dumpable process to root)
+      pid=$$
+      while [ "$pid" -gt 1 ] && [ -r "/proc/$pid/stat" ]; do
+        if ! cat "/proc/$pid/environ" > /dev/null 2> /dev/null; then echo "$pid" >> hostile-work/environ-bad.txt; fi
+        pid=$(sed -e 's/^.*) [A-Za-z] //' -e 's/ .*//' "/proc/$pid/stat")
+      done
+      echo "request-env: absent"
+      echo "environ-read: $(wc -l < hostile-work/environ-read.txt | tr -d ' ')"
+      echo "environ-unreadable-same-user: $(wc -l < hostile-work/environ-bad.txt | tr -d ' ')"
+    else
+      claims=$(own_claims) && echo "claims: $claims"
+    fi
   } > attempts/read_sign_token.txt
 }
 

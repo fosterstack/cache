@@ -21,13 +21,13 @@ TAG = "ghcr.io/fosterstack/cache:cand-production"
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
-def _run(cmd, out_path=None, timeout=1500):
+def _run(cmd, out_path=None, timeout=1500, cwd=None, env=None):
     try:
         if out_path:
             with open(out_path, "w") as fh:
-                r = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=timeout)
+                r = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=timeout, cwd=cwd, env=env)
             return r.returncode, (r.stderr.decode() if r.stderr else "")
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
         return r.returncode, r.stdout
     except Exception as e:
         return 255, str(e)
@@ -304,8 +304,10 @@ def _archives(rescan_dir, test_image, oci, tar):
 
 def main():
     rescan = cli.opt("--rescan-dir"); reports = cli.opt("--reports")
-    source = cli.opt("--source-dir", os.getcwd()); out = cli.opt("--out")
-    commit = cli.opt("--commit", os.environ.get("GITHUB_SHA", "unknown"))
+    source = cli.opt("--source-dir"); out = cli.opt("--out")
+    commit = cli.opt("--commit", "unknown")          # never the run's own sha: the field says which head the scanned image was built from; absent = "unknown"
+    if cli.flag("--commit") and not re.fullmatch(r"[0-9a-f]{40}", commit or ""):   # a supplied value is 40-hex, whatever it is ("unknown" included)
+        sys.exit("auditor-manifest: --commit must be a 40-hex commit id (the head the scanned image was built from) or absent, got %r" % (commit,))
     test_image = cli.opt("--test-image") or os.environ.get("AUDITOR_TEST_IMAGE") or ""
     kdl = cli.opt("--known-defect-log", ".github/agent/known-defect-log.json")
     os.makedirs(reports, exist_ok=True)
@@ -333,12 +335,23 @@ def main():
         print("syft did not run (rc %d); the carriers and base OS stay unknown" % rc)
 
     # govulncheck -json over the checked-out tree, bound to module + commit.
-    module = _module(source); gvc = None
+    # The tree is the selected rescan's head (auditor.yml checks it out; it is DATA, never built or run by us beyond govulncheck's own
+    # package loading): no toolchain download and no module fetch (GOTOOLCHAIN=local, -mod=vendor); with no such tree the scan is
+    # recorded 'did not run', never run on the auditor's own checkout (rc-5b fix 4, ruling A2).
+    has_tree = bool(source) and os.path.isdir(source) and commit != "unknown"   # a tree with no head to stamp it with is not bound to anything: not scanned
+    module = _module(source) if has_tree else None; gvc = None
     gvc_path = os.path.join(reports, "govulncheck.json")
-    have_gvc = bool(_version("govulncheck", ("-version",)) or _version("govulncheck"))
-    rc, _ = _run(["govulncheck", "-json", "./..."], out_path=gvc_path, timeout=1500) if have_gvc else (255, "")
+    have_gvc = has_tree and bool(_version("govulncheck", ("-version",)) or _version("govulncheck"))
+    if not has_tree:
+        print("govulncheck did not run: no source tree (or no head to bind it to) of the scanned image was given")
+    genv = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="-mod=vendor", GOPROXY="off", CGO_ENABLED="0", GOENV="off")
+    rc, gerr = _run(["govulncheck", "-json", "./..."], out_path=gvc_path, timeout=1500, cwd=source, env=genv) if have_gvc else (255, "")
+    if has_tree and not have_gvc:
+        print("govulncheck did not run: the tool is not installed")
     if os.path.exists(gvc_path) and os.path.getsize(gvc_path) > 0 and rc in (0, 3):
         gvc = {"path": gvc_path, "module": module, "commit": commit, "complete": True, "scan_level": "symbol"}
+    elif have_gvc:
+        print("govulncheck did not complete (rc %d) on %s: %s" % (rc, commit, " ".join(str(gerr).split())[-600:]))
 
     digest = ""
     for transport in (("docker-archive:" + tar) if have_tar else None, ("oci-archive:" + oci) if have_oci else None):

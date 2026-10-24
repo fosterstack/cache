@@ -7,7 +7,7 @@
   },
   {
    "type": "https://witness.testifysec.com/attestation-collection/v0.1",
-   "claim": "what each Build, Rebuild, Check and Release step did and produced (apk, build, rapk, rebuild; scanners, acceptance, runtime: the scan, suite, FIPS and guide results for the exact candidate digests; release-verify to release-postverify: what Release verified, signed, published and attached), signed keyless by Witness under the stage's own identity; the next stage verifies each, and a customer can read Release's own as extra evidence",
+   "claim": "what each Build, Rebuild, Check and Release step did and produced (apk, build, rapk, rebuild; scanners, acceptance, runtime: the scan, suite, FIPS and guide results for the exact candidate digests; release-verify to release-postverify: what Release verified, signed, published and attached), Build and Rebuild records are made under a throwaway key and re-signed keyless by Sign (stage-sign.yml), the others keyless under the stage's own identity; the next stage verifies each, and a customer can read Release's own as extra evidence",
    "consumer": "release"
   },
   {
