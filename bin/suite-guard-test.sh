@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-CI-005-AC1, REQ-CI-005-AC2, REQ-CI-005-AC3, REQ-CI-005-AC4 — a floored suite is run once by the step that counts it; `all` runs only the rest (the REQ-CI-005 cases)
 # Tests for bin/suite-guard.sh (self-contained: needs only bash, git, python3). Proves:
 #  - no tracked test file of any suite is zero bytes or whitespace-only (an empty script exits 0 and proves nothing);
 #  - a suite that prints no case count, or a count below its committed floor, or a count of zero, fails;

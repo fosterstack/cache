@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the split form of allowlist-chain is accepted only exactly (the chain-split cases)
+# proves: REQ-CI-005-AC2 — a counting step is accepted only in exactly its form (the count-step cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
