@@ -902,7 +902,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "62708883efa8b77b4ccd0dd8b73af8a5ed158e1b904d82fd3f9b8a7d3b07f7e0",
+      "sha256": "1bd55a2be1e76399546deb4379e01a142993c0c215a8e215b580911a591617d0",
       "tools": [
         "bash",
         "docker",
@@ -1406,7 +1406,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "36d088685db1fe88b0d69043988f367ea6bb7c6586cbe8696c02adf55946e5b1",
+      "sha256": "27093e3c59ebd2f42dec74c96ec30d803e81a82bf474301062b94ece902f1a2a",
       "tools": [
         "curl",
         "docker",

@@ -2,7 +2,7 @@
 # bin/check-acceptance.sh SUITE --digests FILE --images DIR --out DIR   (SUITE: gradle | maven | egress | k8s)
 # Runs one existing acceptance suite against the production candidate from Build's artifacts (v0.3.0 rule 55; REQ-CHAIN-006-AC5).
 # It loads DIR/production (an OCI layout directory, as a tar made of it) and runs the suite's shared scripts (the bodies acceptance.yml and the old stages ran, unchanged: the
-# bin/acceptance-SUITE scripts) against that image: gradle and maven start the candidate as acceptance.yml's release-chain mode does (bin/acceptance-serve.sh),
+# bin/acceptance-SUITE scripts) against that image: gradle and maven start it through bin/acceptance-serve.sh,
 # maven once per extension version of acceptance.yml's matrix (1.2.0, 1.2.3) from a clean state; egress runs it as REF; k8s loads it into
 # its kind cluster as CANDIDATE_LOCAL. The suite's last step writes the ACs it asserted as results=JSON to $GITHUB_OUTPUT; the script
 # fails when a suite fails or reports no passing assertion, and writes OUT/acceptance-SUITE.json naming the candidate digest.
