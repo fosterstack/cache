@@ -610,6 +610,44 @@ class StateMembers(Tmp):
         written = os.path.join(self.d, "out", "state.json")
         self.judged(state=written, verdict=verdict_file(self.d, [unknown]))
 
+    def test_every_validator_and_loader_branch_names_what_it_refuses(self):
+        # the shapes validate_state / validate_vex / validate_day / the text loaders refuse: each branch is a named error, not an exception (cache#707 round 3, coverage)
+        self.assertTrue(P.validate_state({"false": {"a": 1}}))
+        self.assertTrue(P.validate_state({"real": ["x"]}))
+        self.assertTrue(P.validate_vex({"statements": ["x"]}))
+        day = {"issue": "", "vex": [], "profiles": [], "owner": [], "misses": [], "log": []}
+        self.assertEqual(P.validate_day(day), [])
+        self.assertEqual(P.validate_day({k: day[k] for k in ("issue", "vex", "profiles", "owner")}), [])     # misses and log are the report's, not the delivery's
+        self.assertTrue(P.validate_day(dict(day, vex=[3])))
+        self.assertTrue(P.validate_day(dict(day, vex=[{"id": "CVE-1", "impact_statement": "x", "status": "affected", "purls": "p"}])))
+        self.assertTrue(P.validate_day(dict(day, misses={})))
+        for text in ("{bad", "[]", json.dumps(self.state(real=[{}]))):
+            with self.assertRaises(P.reviewed.ReviewedInputInvalid, msg=text):
+                P._checked_state_text(text, "a branch")
+        self.assertEqual(P._checked_state_text(json.dumps(self.state()), "a branch"), json.dumps(self.state()))
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P._checked_doc("[]", P.VEX, "a branch", P.VEX)
+        repo = os.path.join(self.d, "repo"); os.makedirs(os.path.join(repo, ".auditor"))
+        json.dump(self.state(real=[{}]), open(os.path.join(repo, P.STATE), "w"))
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P._main_state_text(repo)
+
+    def test_the_carried_documents_preflight_covers_its_branches(self):
+        repo = os.path.join(self.d, "repo2"); os.makedirs(repo)
+        plan = []
+        self.assertIsNone(P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX], plan, False, None))        # a plan-only run reads nothing
+        absent = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        self.assertIsNone(P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX, P.STATE], [], True, absent))   # the PR does not hold the file / a file the panel does not merge
+        good = json.dumps({"statements": [], "version": 1, "timestamp": "t"})
+
+        def holds(cmd, **kw):
+            if cmd[3:4] == ["ls-tree"]:
+                return types.SimpleNamespace(returncode=0, stdout="100644 blob x\t.vex/x", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=good if cmd[-1].startswith("FETCH_HEAD") else good.replace("1", "2"), stderr="")
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid) as e:       # the PR changes it but the checkout has no such file
+            P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX], [], True, holds)
+        self.assertIn("does not exist in the checkout", str(e.exception))
+
     def test_a_malformed_member_stops_the_judge_before_any_seat_is_asked(self):
         calls = []
         seat = lambda *a, **k: calls.append(1) or {}

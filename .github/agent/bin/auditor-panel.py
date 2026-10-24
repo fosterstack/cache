@@ -1240,9 +1240,12 @@ def validate_day(day):
     errs = []
     if not isinstance(day.get("issue"), str):
         errs.append("day: 'issue' is missing or is not text")
-    for k in ("vex", "profiles", "owner", "misses", "log"):
+    for k in ("vex", "profiles", "owner"):                       # what the delivery consumes (misses and log are the report's)
         if not isinstance(day.get(k), list):
             errs.append("day: %r is missing or is not a list" % k)
+    for k in ("misses", "log"):
+        if k in day and not isinstance(day[k], list):
+            errs.append("day: %r is not a list" % k)
     if not (isinstance(day.get("owner"), list) and all(isinstance(x, str) for x in day["owner"])):
         errs.append("day: 'owner' is not a list of text")
     for i, v in enumerate(day.get("vex") if isinstance(day.get("vex"), list) else []):
