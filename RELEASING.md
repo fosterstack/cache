@@ -9,12 +9,12 @@ laptop cannot forge a release that GitHub's own runners never built).
 ## Pipeline (`.github/workflows/release.yml`)
 
 From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
-own job, on a fresh GitHub-hosted runner (Sign is called twice, once for Build's
-records and once for Rebuild's). The jobs that build (Build's and
-Rebuild's) hold no signing identity; the Sign stage signs their Witness records:
+own job, on a fresh GitHub-hosted runner (Sign is called three times: for Build's, Rebuild's and Check's
+records). The jobs that build or run workloads (Build, Rebuild and Check)
+hold no signing identity; the Sign stage signs their Witness records:
 
 ```
-Build -> Sign -> { Rebuild, Check } ; Rebuild -> Sign (second call) ; { Check, Sign, Sign (second call) } -> Release
+Build -> Sign -> { Rebuild, Check } ; Rebuild -> Sign (second call) ; Check -> Sign (third call) ; { Check, Sign, Sign (second call), Sign (third call) } -> Release
 ```
 
 The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
@@ -42,7 +42,8 @@ signing key or `packages: write`.
   code from the build. It receives Build's records and the artifacts they name,
   checks each record against them, signs the records keyless under its own
   identity, and writes and signs the SLSA provenance. A second call of the same
-  file signs Rebuild's records; it receives no Rebuild apk or image.
+  file signs Rebuild's records; it receives no Rebuild apk or image. A third call
+  signs Check's records; it receives only those records and the results they name.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
   machines and compares every item with Build's; any difference blocks the
   release. Its records are signed by the Sign stage, not by Rebuild.
@@ -194,7 +195,7 @@ a file that anyone could have written.
 | `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, keyless | Build's and Rebuild's: `stage-sign.yml` at the tag; Check's and Release's: the stage that made them |
+| Witness records | Witness envelope, keyless | Build's, Rebuild's and Check's: `stage-sign.yml` at the tag; Release's: the Release stage |
 
 ### VEX statements
 
