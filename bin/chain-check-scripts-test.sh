@@ -233,7 +233,7 @@ if [ "$1" = grype ]; then
 fi
 [ "\${1:-} \${2:-}" != "db update" ] || exit "\$FAKE_DB_RC"
 n=$3; name=$1
-for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1"} for i in range(int(sys.argv[2]))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
+for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,os,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1","purl":(7 if os.environ.get("FAKE_GRYPE_BADPURL") else "pkg:generic/p%d@1" % i)} for i in range(0 if os.environ.get("FAKE_GRYPE_FILES_ONLY") else int(sys.argv[2]))] + [{"type":"file","name":"/usr/lib/f%d" % i} for i in range(int(os.environ.get("FAKE_GRYPE_FILES") or 0))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
 if [ "\$name" = osv-scanner ]; then
   case " \$* " in *" --offline-vulnerabilities "*) ;; *) echo "online scan refused by the fake: no --offline-vulnerabilities" >&2; exit 99;; esac
   ocfg=""; oprev=""
@@ -394,6 +394,10 @@ mkfake grype 0 120; mkfake osv-scanner 1 80
 want_fail "AC4 the second scanner reports findings: the script fails naming it" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80; mkfake grype 0 0
 want_fail "AC4 zero packages scanned fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
+mkfake grype 0 120
+FAKE_GRYPE_FILES_ONLY=1 FAKE_GRYPE_FILES=946 want_fail "AC4 rc-5a C: a grype inventory of files only (no component carries a package URL) is zero packages and fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
+FAKE_GRYPE_BADPURL=1 want_fail "AC4 rc-5a C: components whose purl is a number are not packages: zero packages fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
+FAKE_GRYPE_FILES=946 want_ok "AC4 rc-5a C: files beside 120 packages do not change the count or the verdict" "${SCAN[@]}"
 mkfake grype 0 120; mkfake osv-scanner 2 80
 want_fail "AC4 a scanner that could not run (exit 2) fails: nothing is judged behind a scanner that did not run" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80
@@ -1318,7 +1322,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=456
+EXPECT=459
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
