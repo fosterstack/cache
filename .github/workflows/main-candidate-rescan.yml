@@ -176,13 +176,21 @@ jobs:
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
-          grype db update >/dev/null 2>&1 || true
+          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
+          # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > "$RUNNER_TEMP/empty-grype.yaml"
+          grype db update -c "$RUNNER_TEMP/empty-grype.yaml" >/dev/null 2>&1 || true
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
               skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
-              grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
-                || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
+              grype "docker:${ref}" -c "$RUNNER_TEMP/empty-grype.yaml" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
+                || { rm -rf "${d}"; echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
       - id: upload
@@ -248,7 +256,7 @@ jobs:
               d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
               docker scout sbom --format json --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/sbom.json" \
                 && docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/cves.json" \
-                || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
+                || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
       # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
