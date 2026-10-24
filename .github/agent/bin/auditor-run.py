@@ -877,8 +877,8 @@ def _consolidate(out, ts):
 
 
 def adjudicate(adjudicator, ctx, state):
-    """primary -> rephrase -> fallback for ONE finding, bounded PER FINDING by the five-iteration
-    stop and globally by the token budget. Returns the category, 'refused' (a genuine refusal the
+    """primary -> rephrase -> fallback for ONE finding, bounded by the
+    three attempts and globally by the token budget. Returns the category, 'refused' (a genuine refusal the
     model WAS reachable for), or 'adjudicator_error' (every attempt errored — the model was
     UNAVAILABLE). On an error, surface the REAL cause (exception class + HTTP status + message,
     secrets MASKED) ONCE per distinct error into state['adj_errors'] so the header, §4 and the
@@ -890,18 +890,17 @@ def adjudicate(adjudicator, ctx, state):
         state.setdefault("nc_verdicts", {})[nc_key] = reused
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return reused
-    iters = 0; errored = False; refused = False
+    errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
-        if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
+        if state["tokens"] >= policy.TOKEN_BUDGET:
             if errored and not refused:
                 state["nc_incomplete"] = True
                 return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
             state["stops"] = state.get("stops", 0) + 1
             state["nc_incomplete"] = True                       # REQ-AUD-3 AC3: a stop is an attempted call without a cacheable result
-            by_iters = iters >= policy.MAX_ITERATIONS
-            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "iterations" if by_iters else "token budget"})
-            return "iteration_stop" if by_iters else "budget_stop"     # neither is a genuine refusal: the iteration stop has its one aggregate issue, the budget stop goes to section 4 with no issue
-        iters += 1; state["calls"] = state.get("calls", 0) + 1
+            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "token budget"})
+            return "budget_stop"     # not a genuine refusal: section 4 with no issue
+        state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused as e:
@@ -971,7 +970,7 @@ def _pullability(adjudicator, ctx, state):
         state.setdefault("nc_pull", {})[nc_key] = reused
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return reused
-    if state["tokens"] >= policy.TOKEN_BUDGET or state.get("iters", 0) >= policy.MAX_ITERATIONS:
+    if state["tokens"] >= policy.TOKEN_BUDGET:
         state["nc_incomplete"] = True                           # REQ-AUD-3 AC3: a stop leaves a call unanswered, so the run is incomplete
         return None
     state["calls"] = state.get("calls", 0) + 1
@@ -1430,12 +1429,12 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        reason="adjudicator unavailable (model calls failed)",
                        cause="adjudicator unavailable", adjudicator_error=True)
             return row, m_inc
-        elif cat in ("iteration_stop", "budget_stop"):
-            # the loop or the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding. An iteration stop is carried by run()'s ONE
-            # aggregate owner issue (REQ-AUD-9 AC3); a budget stop notifies no one (nothing else notifies anyone). Section 4 either way, no per-finding issue.
+        elif cat == "budget_stop":
+            # the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding; a budget stop notifies no one (nothing else notifies anyone).
+            # Section 4, no per-finding issue. (The repeated-unsettled case, REQ-AUD-9 AC3 "a five-iteration stop", is the run counter's one aggregate issue below.)
             row.update(section=4, disposition="under investigation",
-                       action="none (%s)" % ("iteration stop: named in the one aggregate owner issue" if cat == "iteration_stop" else "token budget reached"),
-                       reason="adjudication stopped", cause="iteration stop" if cat == "iteration_stop" else "token budget reached")
+                       action="none (token budget reached)",
+                       reason="adjudication stopped", cause="token budget reached")
             return row, m_inc
         elif cat == "refused":
             # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
@@ -1720,7 +1719,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         else:
             kev_ok = False
     exp = _expiry(today)
-    state = {"tokens": 0, "iters": 0, "roles_used": set()}
+    state = {"tokens": 0, "roles_used": set()}
     # REQ-AUD-3 AC3 (no-change day): yesterday's verdicts and narrative are usable only when yesterday's state file is valid AND its
     # finding-set hash equals today's exactly; anything else leaves the run exactly as it was (model calls).
     import hashlib
@@ -1903,15 +1902,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             else:
                 r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
-    # (a2) The five-iteration stop (REQ-AUD-9 AC3, register row 38: the owner hears on a loop): a finding the model could not settle within MAX_ITERATIONS calls opens exactly ONE
-    # owner-decision issue naming them all, never one per finding.
-    _loops = sorted({x["finding_id"] for x in state.get("stopped", []) if x.get("why") == "iterations"})
-    if _loops:
-        title = policy.subject("owner-decision: the model hit the %d-iteration stop" % policy.MAX_ITERATIONS)      # stable title, the count in the body (REQ-AUD-9 AC2)
-        body = ("The adjudicator hit the %d-iteration stop (primary, rephrase and fallback without a settled disposition) on %d finding(s) this run. No disposition was inferred; each "
-                "stays open for a human decision. Findings: %s" % (policy.MAX_ITERATIONS, len(_loops), ", ".join(_loops)[:1500]))
-        ok, ref = _emit_owner_issue(title, body, dry, would, cves=_loops, target="%d-iteration stop on %d finding(s)" % (policy.MAX_ITERATIONS, len(_loops)))
-        state["iteration_stop_issue"] = ref if ok else "FAILED"
     # (a2) "a five-iteration stop" (REQ-AUD-9 AC3, register row 38): findings left unsettled by the model in policy.UNSETTLED_RUNS consecutive runs are named in ONE owner-decision
     # issue, never one per finding. The title is stable (the next run updates the open issue, AC2); the findings and their run counts are in the body.
     state["unsettled_counts"] = nochange.advance(state["unsettled_prev"], state["unsettled_now"], today)
@@ -1957,8 +1947,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 else:
                     r["action"] = "OWNER ESCALATION FAILED"
     # (a3) the five-iteration stop's aggregate issue, emitted AFTER the per-finding escalations above so it names only the findings that are in no owner-decision issue this run (the
-    # outage issue, the iteration-stop issue and the per-finding issues already carry the others). The counts above still advance for every unsettled finding.
-    _in_issue = {r["id"] for r in rows if r.get("owner_issue") or r.get("issue_failed") or r.get("adjudicator_error")} | set(_loops)
+    # outage issue and the per-finding issues already carry the others). The counts above still advance for every unsettled finding.
+    _in_issue = {r["id"] for r in rows if r.get("owner_issue") or r.get("issue_failed") or r.get("adjudicator_error")}
     _stuck = [x for x in nochange.at_limit(state["unsettled_counts"], policy.UNSETTLED_RUNS) if x[0] not in _in_issue]
     if _stuck:
         title = policy.subject("owner-decision: the model left findings unsettled for %d consecutive runs" % policy.UNSETTLED_RUNS)
@@ -1969,7 +1959,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         state["unsettled_issue"] = ref if ok else "FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
-    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0) + (1 if state.get("unsettled_issue") == "FAILED" else 0)
+    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("unsettled_issue") == "FAILED" else 0)
     # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
     # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
     # owner_issue=None for every at-or-above item, and the release gate then HELD every such
@@ -2565,8 +2555,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     _stops = (state or {}).get("stopped") or []
     L.append("**Model refusals:** " + (("%d: " % len(_refs)) + "; ".join("%s (%s, %s)" % (_text(x["finding_id"]), x["attempt"], x["role"]) for x in _refs[:60]) + ("; ..." if len(_refs) > 60 else "") if _refs else "none"))
     if _stops:
-        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else "")
-                 + ("; owner-decision issue: %s" % _text(str((state or {}).get("iteration_stop_issue"))) if (state or {}).get("iteration_stop_issue") else ""))
+        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else ""))
     # the unsettled-run counts (REQ-AUD-9 AC3): a missing state is said, never silent
     _uc = (state or {}).get("unsettled_counts") or {}
     if (state or {}).get("counter_status") == "missing":

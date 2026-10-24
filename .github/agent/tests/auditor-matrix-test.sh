@@ -1537,13 +1537,10 @@ charged="$("$PY" -c '
 import sys,importlib.util,tempfile,os
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":100001})+\"\\n\")\n    sys.stdout.flush()\n")
-st={"tokens":0,"iters":0}
+st={"tokens":0}
 R.adjudicate(fa,{"finding_id":"CVE-X"},st)
-R.policy.MAX_ITERATIONS=1   # the iteration stop: only 3 attempts exist, below the real limit of 5, so lower the limit to make the guard decide
-st2={"tokens":0,"iters":0}
-R.adjudicate(fa,{"finding_id":"CVE-X"},st2)
-print(st["tokens"], st.get("calls"), st.get("stops"), st2.get("calls"), st2.get("stops"))' 2>/dev/null)"
-{ [ "$charged" = "200002 2 1 1 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops, then calls stops with the iteration limit at 1 =$charged"
+print(st["tokens"], st.get("calls"), st.get("stops"))' 2>/dev/null)"
+{ [ "$charged" = "200002 2 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops =$charged"
 
 begin "ol2-3-high-outlier-excluded-quorum-holds" "one over-counting scanner is excluded as an outlier; the three agreeing scanners still form the quorum -> AUDIT COMPLETE, osv named excluded not did-not-run"
 o="$WORK/ol23"; rm -rf "$o"; : > "$LEDGER"
@@ -4122,7 +4119,7 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 
 # rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue
 # (stable title, the count in the body; a budget stop opens none), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
-begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, an iteration stop opens exactly ONE owner issue for all stopped findings with a stable title, a budget stop opens none, a failed delivery marks the run incomplete, the lists show their full counts, and the header fields are escaped"
+begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, a token-budget stop opens no owner issue (the in-run iteration stop is gone: it could never fire, so the repeated-unsettled case is the run counter's), the lists show their full counts, and the header fields are escaped"
 r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
 import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
 FX=sys.argv[1]; tmp=tempfile.mkdtemp()
@@ -4145,31 +4142,27 @@ def manifest(nfind, name, ver="v1.2.3"):
     for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
     m["scanner_status"]["grype"]["version"]=ver; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
     json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
-def run(mp, fa, dry=True, limit=None, shim=None, fail=False):
+def run(mp, fa, dry=True, shim=None, fail=False):
     ws=tmp+"/ws"; os.makedirs(ws, exist_ok=True); os.environ["GITHUB_WORKSPACE"]=ws
     if shim: os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
     else: os.environ.pop("AUDITOR_GIT_SHIM_LOG",None)
     if fail: os.environ["AUDITOR_SHIM_ISSUE_FAIL"]="1"
     else: os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL",None)
-    keep=R.policy.MAX_ITERATIONS
-    if limit: R.policy.MAX_ITERATIONS=limit
     out=tempfile.mkdtemp(dir=tmp)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
-    finally: R.policy.MAX_ITERATIONS=keep
+    with contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
     return open(out+"/report.md").read()
 bad=[]
 def line(rep,start): return [l for l in rep.split("\n") if l.startswith(start)]
 name_re=re.compile(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",re.I)
-# 1: two findings stopped by the iteration limit: one issue naming both, no per-finding issue, refusals and stops with counts and roles, versions
-rep=run(manifest(2,"two"), adj(1), limit=1)
-iss=[l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]
-refs=line(rep,"**Model refusals:**"); stops=line(rep,"**Model stops:**"); vers=line(rep,"**Scanner versions:**")
-if not (len(iss)==1 and "2 finding(s)" in iss[0]): bad.append("stop issue %r"%iss)
-if [l for l in rep.split("\n") if "unassessed-after-fallback" in l or "escalation pending" in l]: bad.append("per-finding path also taken")
-if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 3: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
-if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(iterations)" in stops[0]): bad.append("stops %r"%stops)
+# 1: refusals and stops are listed with counts and roles, and the scanner versions are printed; a refused finding gets its per-finding path
+rep=run(manifest(2,"two"), adj(1))
+refs=line(rep,"**Model refusals:**"); vers=line(rep,"**Scanner versions:**")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 7: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
+if line(rep,"**Model stops:**"): bad.append("a stop listed without one")
+rep=run(manifest(2,"two-stopped"), adj(R.policy.TOKEN_BUDGET+1))
+stops=line(rep,"**Model stops:**")
+if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(token budget)" in stops[0]): bad.append("stops %r"%stops)
 if not (len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0]): bad.append("vers %r"%vers)
 if "none called" in rep: bad.append("role header says none called after refused calls")
 if name_re.search(rep): bad.append("a model/vendor name in the report")
@@ -4177,32 +4170,23 @@ if name_re.search(rep): bad.append("a model/vendor name in the report")
 rep=run(manifest(2,"budget"), adj(R.policy.TOKEN_BUDGET+1))
 if [l for l in rep.split("\n") if "owner-decision issue" in l]: bad.append("budget stop opened an issue")
 if not any("(token budget)" in l for l in line(rep,"**Model stops:**")): bad.append("budget stop not listed")
-# 2b: an adjudicator that ERRORS (does not refuse) and meets the stop is an outage, not a stop: one adjudicator-unavailable issue, no stop issue, no stop recorded, the run incomplete
+# 2b: an adjudicator that ERRORS (does not refuse) is an outage, not a stop: one adjudicator-unavailable issue, no stop recorded, the run incomplete
 fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nfor line in sys.stdin:\n    sys.exit(3)\n")
-rep=run(manifest(2,"errored"), fe, limit=1)
-if [l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]: bad.append("an errored finding opened a stop issue")
+rep=run(manifest(2,"errored"), fe)
 if line(rep,"**Model stops:**"): bad.append("an errored finding was reported as a stop %r"%line(rep,"**Model stops:**"))
 if len([l for l in rep.split("\n") if l.startswith("- would open") and "owner-decision issue" in l and "adjudicator unavailable" in l])!=1: bad.append("no single adjudicator-unavailable issue %r"%[l[:160] for l in rep.split("\n") if "owner-decision" in l or "navailable" in l][:6])
 if "AUDIT INCOMPLETE" not in rep: bad.append("an adjudicator outage left the run complete")
-# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64)
+# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64); stops show the full count
 rep=run(manifest(21,"many"), adj(1))
 refs=line(rep,"**Model refusals:**")
 if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 64: ") and refs[0].endswith("; ...")): bad.append("refs cap %r"%[r[:60] for r in refs])
-rep=run(manifest(21,"manystop"), adj(1), limit=1)
+rep=run(manifest(21,"manystop"), adj(R.policy.TOKEN_BUDGET+1))
 st=line(rep,"**Model stops:**")
 if not (len(st)==1 and st[0].startswith("**Model stops:** 21: ")): bad.append("stops count %r"%[x[:60] for x in st])
-# 4: the stop issue has a stable title across runs with a different count (one create, then an update), and the adjudicator-unavailable title is stable too
-shim=tmp+"/shim.log"
-run(manifest(1,"d1"), adj(1), dry=False, limit=1, shim=shim); run(manifest(3,"d3"), adj(1), dry=False, limit=1, shim=shim)
-log=open(shim).read()
-c=len([l for l in log.split("\n") if l.startswith("gh issue create") and "iteration stop" in l]); u=len([l for l in log.split("\n") if l.startswith("gh issue comment") and "iteration stop" in l])
-if (c,u)!=(1,1): bad.append("stop issue create/update %r"%((c,u),))
+# 4: the adjudicator-unavailable title is stable (no count in it)
 t1=R.policy.subject("owner-decision: adjudicator unavailable — findings unassessed")
 src=open(".github/agent/bin/auditor-run.py").read()
 if "adjudicator unavailable — %d findings" in src: bad.append("count in the unavailable title")
-# 5: a failed delivery of the stop issue marks the run incomplete
-rep=run(manifest(1,"f1"), adj(1), dry=False, limit=1, shim=tmp+"/shim2.log", fail=True)
-if "AUDIT COMPLETE" in rep or "failed to open" not in rep: bad.append("failed stop-issue delivery not incomplete")
 # 6: a pullability refusal is logged with its role and billed
 st={"tokens":0}
 R._pullability(adj(5),{"finding_id":"CVE-P"},st)
@@ -4212,7 +4196,7 @@ st={"tokens":0}
 R._conclusion(adj(7),{n:[] for n in range(1,8)},json.load(open(manifest(1,"n"))),st)
 if not (st.get("tokens")==7 and st.get("refusals")==[{"finding_id":"CONCLUSION","attempt":"narrative","role":"primary"}]): bad.append("narrative refusal %r"%st)
 # 8: scanner version text is escaped in the header
-rep=run(manifest(1,"esc","v`x`|[1]"), adj(1), limit=1)
+rep=run(manifest(1,"esc","v`x`|[1]"), adj(1))
 vers=line(rep,"**Scanner versions:**")
 if not (len(vers)==1 and "v\\`x\\`\\|\\[1\\]" in vers[0]): bad.append("unescaped version %r"%vers)
 print("OK" if not bad else "BAD "+"; ".join(bad))
