@@ -10,6 +10,7 @@ driver produces the same document inline. Prints to stdout when --out is omitted
 import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+from auditorlib import reviewed
 from auditorlib import knowledge as K
 
 
@@ -18,7 +19,10 @@ def main():
     if op != "generate":
         sys.exit("knowledge: unknown op %r (expected 'generate')" % op)
     logpath = cli.opt("--log")
-    log = json.load(open(logpath)) if logpath and os.path.exists(logpath) else {"defects": []}
+    try:
+        log = (reviewed.read(logpath, as_name="known-defect-log.json") if logpath else None) or {"defects": []}      # a present log without "defects" is a stop (rc-5b fix 13)
+    except reviewed.ReviewedInputInvalid as e:
+        sys.exit("knowledge: %s" % e)
     doc = K.generate(log)
     out = cli.opt("--out")
     if out:

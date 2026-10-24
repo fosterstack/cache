@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (no write but id-token).
+  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (read only: the building jobs hold no identity token).
   build:
     uses: ./.github/workflows/stage-build.yml
     permissions:
@@ -34,7 +34,6 @@ jobs:
       checks: read
       statuses: read
       pull-requests: read
-      id-token: write
     with:
       mode: snapshot
 
@@ -177,13 +176,21 @@ jobs:
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
-          grype db update >/dev/null 2>&1 || true
+          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
+          # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > "$RUNNER_TEMP/empty-grype.yaml"
+          grype db update -c "$RUNNER_TEMP/empty-grype.yaml" >/dev/null 2>&1 || true
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
               skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
-              grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
-                || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
+              grype "docker:${ref}" -c "$RUNNER_TEMP/empty-grype.yaml" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
+                || { rm -rf "${d}"; echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
       - id: upload
@@ -249,7 +256,7 @@ jobs:
               d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
               docker scout sbom --format json --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/sbom.json" \
                 && docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/cves.json" \
-                || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
+                || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
       # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
@@ -854,6 +861,14 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config (never the repository's), and a GRYPE_* variable stops the step,
+          # as in bin/grype-scan.sh and bin/check-scan.sh (names only are printed). Zero packages = did not run (row 53): the inventory is written too.
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > /tmp/empty-grype.yaml
           ./bin/install-scanner.sh grype
           rc=0
           child_no=0
@@ -869,19 +884,22 @@ jobs:
           while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
-            out="/tmp/grype-child-${child_no}.json"
+            out="/tmp/grype-child-${child_no}.json"; sbom="/tmp/grype-child-${child_no}.cdx.json"
             echo "grype: ${platform} ${ref}"
             plat_arg=""
             case "$platform" in */*) plat_arg="--platform ${platform}";; esac
             code=0
             # shellcheck disable=SC2086
-            grype "registry:${ref}" $plat_arg \
+            grype "registry:${ref}" $plat_arg -c /tmp/empty-grype.yaml \
               --fail-on negligible \
               --vex .vex/fosterstack-cache.openvex.json \
-              -o json --file "$out" || code=$?
+              -o "json=${out}" -o "cyclonedx-json=${sbom}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+            # packages = components that carry a package URL (grype also lists files); unreadable = 0, which bin/rescan-statement.py refuses
+            pk=$(jq '[.components[]? | select((.purl // "") != "")] | length' "${sbom}" 2>/dev/null) || pk=0
+            [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0                  # an empty or odd result must not stop the loop before this child's record is written
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
+              '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
 
@@ -892,6 +910,13 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # An empty config, every package and every vulnerability listed, and an OSV_SCANNER_* variable stops the step (as in bin/check-scan.sh).
+          bad_env=$(compgen -e | grep '^OSV_SCANNER_' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::osv-scanner: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > /tmp/empty-osv.toml
           ./bin/install-scanner.sh osv-scanner
           rc=0
           child_no=0
@@ -906,10 +931,12 @@ jobs:
             out="/tmp/osv-child-${child_no}.json"
             echo "osv-scanner: ${platform} ${ref}"
             code=0
-            osv-scanner scan image --format json --output "$out" "${ref}" || code=$?
+            osv-scanner scan image --config /tmp/empty-osv.toml --all-packages --all-vulns --format json --output "$out" "${ref}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+            pk=$(jq '[.results[]?.packages[]?] | length' "${out}" 2>/dev/null) || pk=0
+            [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
+              '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
 
@@ -949,6 +976,7 @@ jobs:
           python3 bin/rescan-statement.py statement \
             --scanner "$TARGET_SCANNER" \
             --children /tmp/children-scanned.jsonl \
+            --expect-children "$(grep -c . /tmp/children.txt)" \
             --meta /tmp/scanner-meta \
             --vex .vex/fosterstack-cache.openvex.json \
             --scope-file /tmp/scan-scope.json \

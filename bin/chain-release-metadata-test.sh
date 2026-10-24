@@ -198,7 +198,7 @@ REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "require
 def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
 t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
 t19 = ac("REQ-CHAIN-007", 19)["then"]
-check("the command wrapped in timeout -k 20 540 (a kill-after of 20 seconds, so a command that ignores the TERM cannot hold the job past the certificate)" in t4 and "wrapped in timeout 540," not in t4,
+check("the command wrapped in timeout -k 20 540 (a bound on a hung command, with a kill-after of 20 seconds)" in t4 and "wrapped in timeout 540," not in t4,
       "text: REQ-CHAIN-004-AC2 says timeout -k 20 540 (E item A)")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
 check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7

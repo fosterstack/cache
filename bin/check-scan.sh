@@ -145,13 +145,19 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
 # an explicit member list ONLY, in this order: the manifest.json generated here from the child's own manifest, then that child's config blob and its layer blobs.
 # Nothing else of the layout goes in: the reader takes the FIRST member named manifest.json, and check-bind lets a layout carry extra files (a root manifest.json
 # would replace the generated one, a stray tar could be named by it). Every digest must be sha256:<64 hex> and the layer list must not be empty, or no archive is made.
+vex_image_repo() {   # the one repository the published VEX names for the cache image (pkg:oci/cache[@sha256:<64 hex>]?[...&]repository_url=REPO[&...][#...]), or nothing.
+  # Every identifier of every product counts (grype's VEX reader considers @id and identifiers.* alike): a product that is not an object, or a cache identifier
+  # (pkg:oci/cache followed by @ ? # / or the end) in any other form or with two repository_url, or a conflicting second repository, leaves nothing (fail closed).
+  local repo='[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+'
+  jq -r --arg repo "$repo" '[.statements[]?.products[]? | if type == "object" then ((.["@id"]?), ((.identifiers? | objects | .[]?))) else "pkg:oci/cache?malformed" end | select(type == "string" and test("^pkg:oci/cache([@?#/]|$)"))] as $ids | if any($ids | .[]; (test("^pkg:oci/cache(@sha256:[0-9a-f]{64})?[?]([^#]*&)?repository_url=" + $repo + "(&[^#]*)?(#.*)?\\z") | not) or ([sub("#.*$"; "") | match("repository_url=";"g")] | length) != 1) then empty else [$ids | .[] | sub("#.*$"; "") | capture("repository_url=(?<r>" + $repo + ")") | .r] | unique | if length == 1 then .[0] else empty end end' "$VEX" 2> /dev/null
+}
 osv_archive() {
-  local layout=$1 child=$2 arc=$3 abs m prog
-  shift 3
+  local layout=$1 child=$2 arc=$3 tag=${4:-} abs m prog   # tag: the image name the archive carries (RepoTags); grype reads its identity from it, osv-scanner takes none
+  shift $(( $# < 4 ? $# : 4 ))
   abs=$(cd "$layout" && pwd) || return 1
   mkdir -p "$tmp/osvm" && rm -f "$tmp/osvm/manifest.json" || return 1
-  prog='def ok: type == "string" and test("^sha256:[0-9a-f]{64}$"); if (.config.digest | ok) and (.layers | type) == "array" and (.layers | length) > 0 and all(.layers[]; .digest | ok) then [{Config: ("blobs/sha256/" + (.config.digest | ltrimstr("sha256:"))), RepoTags: null, Layers: [.layers[] | "blobs/sha256/" + (.digest | ltrimstr("sha256:"))]}] else error("not an image with a sha256 config and one or more sha256 layers") end'
-  jq -ce "$prog" "$abs/blobs/sha256/${child#sha256:}" > "$tmp/osvm/manifest.json" || return 1
+  prog='def ok: type == "string" and test("^sha256:[0-9a-f]{64}$"); if (.config.digest | ok) and (.layers | type) == "array" and (.layers | length) > 0 and all(.layers[]; .digest | ok) then [{Config: ("blobs/sha256/" + (.config.digest | ltrimstr("sha256:"))), RepoTags: (if $tag == "" then null else [$tag] end), Layers: [.layers[] | "blobs/sha256/" + (.digest | ltrimstr("sha256:"))]}] else error("not an image with a sha256 config and one or more sha256 layers") end'
+  jq -ce --arg tag "$tag" "$prog" "$abs/blobs/sha256/${child#sha256:}" > "$tmp/osvm/manifest.json" || return 1
   while read -r m; do set -- "$@" "$m"; done < <(jq -r '.[0] | .Config, .Layers[]' "$tmp/osvm/manifest.json")
   [ $# -ge 2 ] || return 1
   tar -cf "$arc" -C "$tmp/osvm" manifest.json -C "$abs" "$@"
@@ -222,7 +228,20 @@ for s in "${scanners[@]}"; do
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*)
+        # An oci-dir: layout carries no tag and no repo digest, so grype derives no image identity from it and applies NO VEX statement (rc-5a I, ruling R1; probed on
+        # the pinned grype). The child is read from an image archive that names it <repository>:cand-<variant>-<arch>, the name the cache image statements are
+        # matched by (the same name the rescan and the PR gate scan under), so the one published VEX applies here as everywhere. A check script knows no registry
+        # (REQ-CHAIN-006-AC8): the repository is the one the VEX itself names for the cache image; none, or two, cannot be judged and nothing is scanned under an image name.
+        arc="$tmp/grype-${name//\//-}.tar"
+        imgrepo=$(vex_image_repo) || imgrepo=""
+        if [ -z "$imgrepo" ]; then
+          echo "check-scan: grype: the published VEX names no single cache image repository, so $name cannot be scanned under its image name" >&2; rc=2
+        elif osv_archive "$path" "$digest" "$arc" "${imgrepo}:cand-${name%"/$plat"}-${plat#linux/}"; then
+          GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "docker-archive:$arc" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$?
+        else
+          echo "check-scan: grype: the archive of $name could not be made from its manifest" >&2; rc=2
+        fi ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --config "$tmp/empty.toml" --all-vulns --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
         arc="$tmp/img-${name//\//-}.tar"
@@ -234,7 +253,7 @@ for s in "${scanners[@]}"; do
     esac
     # A tool that failed before writing leaves nothing to read, and anything but a number is 0 packages (did not run).
     if [ "$s" = grype ]; then
-      packages=$(jq '[.components[]?] | length' "$tmp/sbom.json" 2> /dev/null) || packages=0
+      packages=$(jq '[.components[]? | select((.purl | type) == "string" and .purl != "")] | length' "$tmp/sbom.json" 2> /dev/null) || packages=0   # components with a package URL: grype also lists files (rc-5a C)
       jq -c '{grype: .descriptor.version, matches: ([.matches[]?] | length), db: .descriptor.db.status}' "$tmp/out.json" 2> /dev/null || true
     else
       packages=$(jq '[.results[]?.packages[]?] | length' "$tmp/out.json" 2> /dev/null) || packages=0
@@ -266,10 +285,12 @@ for s in "${scanners[@]}"; do
       fi
     fi
     if [ "$s" = grype ] && [ -n "$plat" ] && [ "$rc" = 0 ]; then
-      # the image grype reports it scanned is the child recorded for this subject (--platform alone could select another descriptor)
-      md=$(jq -r '.source.target.manifestDigest // empty' "$tmp/out.json" 2> /dev/null) || md=""
-      if [ "$md" != "$digest" ]; then
-        echo "check-scan: grype's report for $name names manifest digest '${md:-none}', not the child $digest it was asked to scan: the recorded digest is not the one scanned" >&2; rc=2
+      # the image grype reports it scanned is the child recorded for this subject: the archive was made from that child's own blobs, and an archive's image ID is
+      # its config digest, so the report's imageID must be the config the child's manifest names (the manifest digest grype reports for an archive is its own, not the child's). This confirms grype read the archive made here from that child, not an independent view of what was scanned: the layers are bound by check-bind (every blob re-hashed) and by the explicit member list of osv_archive
+      want=$(jq -r '.config.digest // empty' "$path/blobs/sha256/${digest#sha256:}" 2> /dev/null) || want=""
+      md=$(jq -r '.source.target.imageID // empty' "$tmp/out.json" 2> /dev/null) || md=""
+      if [ -z "$want" ] || [ "$md" != "$want" ]; then
+        echo "check-scan: grype's report for $name names image ID '${md:-none}', not the config '${want:-none}' of the child $digest it was asked to scan: the recorded digest is not the one scanned" >&2; rc=2
       fi
     fi
     if [ "$rc" = 0 ] && [ "$s" = osv-scanner ]; then

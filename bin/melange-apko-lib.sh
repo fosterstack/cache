@@ -309,8 +309,14 @@ def fixtures(fx):
     open(fx + "/apko.yaml", "w").write(CFG % dict(fs="fscache")); open(fx + "/apko-fips.yaml", "w").write(CFG % dict(fs="fscache-fips"))
     open(fx + "/fips-module.txt", "w").write("v1.0.0-c2097c7c\n")
     open(fx + "/melange.yaml.tmpl", "w").write(recipe(fx, sums))
-    subprocess.run([sys.executable, os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py"), "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True,
-                   env=dict(os.environ, FSCACHE_TEST_MODE="1", FSCACHE_GEN_PIN=hashlib.sha256(open(fx + "/melange.yaml.tmpl", "rb").read()).hexdigest()))
+    # the generator has no test switch: the fixtures run a copy of it whose TEMPLATE_SHA256 line (the only line marked TEST-SUBST) holds the fixture template's own pin
+    src = open(os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py")).read().split("\n")
+    pin = hashlib.sha256(open(fx + "/melange.yaml.tmpl", "rb").read()).hexdigest()
+    hit = [i for i, ln in enumerate(src) if re.match(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"\s+# TEST-SUBST', ln)]
+    assert len(hit) == 1, "bin/gen-recipes.py must hold exactly one TEMPLATE_SHA256 line marked TEST-SUBST (found %d)" % len(hit)
+    src[hit[0]] = 'TEMPLATE_SHA256 = "%s"   # TEST-SUBST' % pin
+    open(fx + "/gen-recipes.py", "w").write("\n".join(src))
+    subprocess.run([sys.executable, fx + "/gen-recipes.py", "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
     # a repo tree for the refresh job
     r = fx + "/repo"
     os.makedirs(r + "/build/locks", exist_ok=True)
