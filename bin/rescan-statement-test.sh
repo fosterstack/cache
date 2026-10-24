@@ -579,6 +579,14 @@ vrun osv-scanner 1 "$OSV_NOPKG" "$D/v/sub-busybox.json"; expect "osv: a finding 
 vrun osv-scanner 1 "$OSV_NOPKG" "$D/v/by-cve.json"; expect "osv: ...but a product-wide statement still covers it" clean false 0 1
 # conflicting @id and identifiers.purl in one product; a Go product with qualifiers
 badvex id-purl-conflict '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","identifiers":{"purl":"pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"}}]}'
+for suf in '/extra' '#sub' '&arch=arm64' '&x'; do
+  badvex "go-suffix-$(printf '%s' "$suf" | tr -c 'A-Za-z0-9' _)" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",\"products\":[{\"@id\":\"pkg:golang/github.com/fosterstack/cache$suf\"}]}"
+done
+badvex go-suffix-newline '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:golang/github.com/fosterstack/cache\n"}]}'
+# a product with a NULL @id and an identifiers.purl is that purl (as the gate and the panel read it); an EMPTY @id is not replaced (it differs from the purl: refused)
+vexdoc "$D/v/nullid.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":null,"identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/nullid.json"
+expect "a null @id beside an identifiers.purl is that purl (suppressed)" clean false 0 1
+badvex emptyid-purl '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"","identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]}'
 badvex go-qualifier '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:golang/github.com/fosterstack/cache?x=y"}]}'
 # a malformed scanner entry (a list-valued id, a non-string package name) is an operational error; the VALID findings around it are still counted and the outputs are written
 OSV_BADID='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0"},"vulnerabilities":[{"id":["GO-1"],"aliases":[]},{"id":"GO-2024-0002","aliases":["CVE-2024-8888"]}]}]}]}'
