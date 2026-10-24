@@ -95,8 +95,11 @@ def load_vex(path):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
-def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl" and a bare "pkg:" are not
-    return isinstance(purl, str) and purl.startswith("pkg:") and "/" in purl
+def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
+    if not isinstance(purl, str) or not purl.startswith("pkg:"):
+        return False
+    slash = purl.find("/", 4)
+    return 4 < slash < len(purl) - 1
 
 
 def _cdx_packages(doc):

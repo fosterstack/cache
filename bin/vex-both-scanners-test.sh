@@ -223,7 +223,8 @@ fake_grype grype-filesandone '{"components":[{"type":"file","name":"/usr/lib/f0"
 fake_grype grype-numpurl '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":7},{"type":"library","name":"x","purl":{}},{"type":"library","name":"y","purl":[]},{"type":"library","name":"z","purl":true}],"vulnerabilities":[]}' "$OKJSON"
 fake_grype grype-strpurl '{"components":[{"type":"file","name":"/usr/lib/f0","purl":"not-a-purl"}],"vulnerabilities":[]}' "$OKJSON"
 fake_grype grype-schemeonly '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":"pkg:"}],"vulnerabilities":[]}' "$OKJSON"
-for g in grype-fileonly grype-emptypurl grype-nullpurl grype-numpurl grype-strpurl grype-schemeonly; do
+fake_grype grype-noname '{"components":[{"type":"library","name":"b","purl":"pkg:/"},{"type":"library","name":"c","purl":"pkg:deb/"},{"type":"library","name":"d","purl":"pkg:?q=/"}],"vulnerabilities":[]}' "$OKJSON"
+for g in grype-fileonly grype-emptypurl grype-nullpurl grype-numpurl grype-strpurl grype-schemeonly grype-noname; do
   out="$(GRYPE="$w/$g" bash "$here/grype-scan.sh" "sbom:$w/does-not-matter.json" "$g" 2>&1)"; rc=$?
   [ "$rc" -eq 2 ] && grep -q "$g: 0 packages" <<<"$out" && grep -q "0 packages in $g.*did not run" <<<"$out" \
     && ok "grype: $g is 0 packages (components without a package URL are not packages), exit 2" || bad "grype: $g (rc $rc)" "$out"
