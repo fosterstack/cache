@@ -1784,6 +1784,12 @@ case_ run-sh-c-script-as-before-bad  bad "$(r "docker run --rm alpine@sha256:b19
 case_ exec-sh-c-inner-tool-bad      bad "$(r "docker exec C sh -c 'bash evil.sh; docker pull alpine:latest'")"
 case_ run-entrypoint-value-of-other-option-bad bad "$(r "docker run --entrypoint docker --label '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
 case_ run-entrypoint-last-wins-ok  ok  "$(r 'docker run --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 hello')"
+case_ run-entrypoint-repeated-last-wins-ok  ok  "$(r 'docker run --entrypoint docker --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ run-entrypoint-repeated-last-wins-bad bad "$(r 'docker run --entrypoint echo --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+# the attached form `--entrypoint=sh` has no separate `sh` word for the outer scan to see: the body is read by the inner command alone (#712 review)
+case_ run-entrypoint-attached-sh-script-bad bad "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ run-entrypoint-attached-sh-pull-bad   bad "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'docker pull alpine:latest'")"
+case_ run-entrypoint-attached-sh-ok         ok  "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'bash safe.sh'")" "printf 'echo safe\\n' > safe.sh"
 case_ run-entrypoint-value-of-short-group-bad bad "$(r "docker run --entrypoint docker -il '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
 mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
 mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"

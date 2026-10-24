@@ -1100,9 +1100,9 @@ def _commands(script, depth=0, in_container=False):
     if depth < 6:
         for sub in inner:
             if sub.startswith("(") and sub.endswith(")"):     # $(( … )) arithmetic: only its own $( … ) run
-                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1, in_container)]
+                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1)]
             else:
-                out += _commands(sub, depth + 1, in_container)
+                out += _commands(sub, depth + 1)
     elif inner:
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
@@ -1125,11 +1125,11 @@ def _commands(script, depth=0, in_container=False):
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
                 elif c is not None:
-                    out += _commands(toks[c + 1], depth + 1, in_container) if c + 1 < len(toks) else []
+                    out += _commands(toks[c + 1], depth + 1) if c + 1 < len(toks) else []
                 elif trap_cmd is not None:
-                    out += _commands(trap_cmd, depth + 1, in_container)
+                    out += _commands(trap_cmd, depth + 1)
                 else:
-                    out += _commands(" ".join(toks[i + 1:]), depth + 1, in_container)
+                    out += _commands(" ".join(toks[i + 1:]), depth + 1)
                 break
         inline = next((w for w in _command_words(toks) if _base(w) in INTERPRETERS and any(
             re.match(INTERPRETERS[_base(w)], t) for t in toks[toks.index(w) + 1:])), None)
@@ -1146,7 +1146,11 @@ def _commands(script, depth=0, in_container=False):
         if bad_wrap:          # env -S runs a string, env -C moves the working directory (Codex r3, C02)
             out.append(["__wrapper_opt__", bad_wrap])
             continue
-        if words:             # a script this command runs (Codex #164 r2, C02): through wrappers, $( ), -c, eval alike
+        # a script path in the PLAIN inner command of a container names the container's file, never the checkout's: not
+        # bound to a committed file (the bytes are the image's, pinned by digest), as before not read. A `sh -c` / eval
+        # body or $( ) on the line is read by its own _commands call (in_container False) and keeps main's rule (#712
+        # review: a filter on the whole result once dropped the body's script too; `--entrypoint=sh IMG -c 'bash x.sh'`)
+        if words and not in_container:    # a script this command runs (Codex #164 r2, C02): through wrappers, $( ), -c, eval alike
             w = words[-1]
             rest = toks[toks.index(w) + 1:]
             ops = [a for k, a in enumerate(rest) if not a.startswith(("-", "<", ">")) and not re.match(r"^[0-9]+[<>]", a)
@@ -1193,10 +1197,6 @@ def _commands(script, depth=0, in_container=False):
                     out.append(["__too_deep__", _base(toks[at])])
                 else:
                     out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1, True)
-    if in_container:
-        # a script path in the PLAIN inner command of a container names the container's file, never the checkout's: it is not bound to a committed file (the
-        # bytes are the image's, pinned by digest) and, as before, not read. A `sh -c` / eval body on the line keeps the rule it had on main.
-        out = [c for c in out if c[0] not in ("__script__", "__exec__", "__globexec__", "__foreign__")]
     return out
 
 
