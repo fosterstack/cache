@@ -296,7 +296,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
     },
     {
       "path": "bin/witnessed.sh",
@@ -988,7 +988,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "6b4b3e150a8f562715f8b882a2e7fe67f4c06b4d846e2f5ca8fb0a0363961290",
+      "sha256": "c1c96768f690f949da407538f664c7b35b4b80d3b9139c4baa3ccfb985d04f14",
       "tools": [
         "at",
         "awk",
@@ -1092,7 +1092,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "aab318ef556e89bc9b4871be6cf4458fc5eb81c562f0af56b0425e8d4c71d1ee",
+      "sha256": "ef70a1c5a204629bc7a96d82c9043012b185c53b98938f07f59cb377c0ddacf6",
       "tools": [
         "awk",
         "bash",
@@ -2089,7 +2089,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "7148c225516cd40d754c40f93b58e1c54c4af1ebea78c39b5ab644e7d9b2ebf2",
+      "sha256": "ec4c3549b7bece428ea93db4bba00e03a00a2e9b2a242f3675fbc0d445e871e6",
       "tools": [
         "at",
         "python3"

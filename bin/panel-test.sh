@@ -87,6 +87,12 @@ W(os.path.join(r, "google", "fips-amd64"), "packages.json", [{}, {"package": ""}
 v = judge(r)
 check("structurally incomplete answers (no bomFormat, empty package records) are did not run",
       v["images"]["fips-amd64"]["did_not_run"] == ["google", "grype", "inspector", "scout"], v["images"]["fips-amd64"])
+r = tree(); W(os.path.join(r, "scout", "fips-amd64"), "cves.json", {})
+W(os.path.join(r, "grype", "fips-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"type": "file", "name": "/x", "purl": "not-a-purl"}, {"type": "library", "name": "b", "purl": "pkg:"}], "vulnerabilities": []})
+W(os.path.join(r, "inspector", "fips-amd64"), "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"type": "file", "name": "/x", "purl": "not-a-purl"}], "vulnerabilities": []})
+v = judge(r)
+check("a CycloneDX inventory whose only purl strings are not package URLs (not-a-purl, pkg:) holds no package: grype and inspector did not run",
+      "grype" in v["images"]["fips-amd64"]["did_not_run"] and "inspector" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 check("an incomplete Scout answer (no vulnerabilities list) is did not run", "scout" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 r = tree(skip={("scout", "production-arm64")}); v = judge(r)
 check("an arm64 image with 2 of its 3 does not count (all three must run)", v["images"]["production-arm64"]["counts_for_day"] is False, v["images"]["production-arm64"])
@@ -333,12 +339,16 @@ put(sd, "cves.json", {"vulnerabilities": [
      "location": {"dependency": {"package": {"name": "tzdata"}, "version": "2026c"}}},
     {"severity": "Unknown", "identifiers": [{"type": "cve", "value": "CVE-2099-0103"}],
      "location": {"dependency": {"package": {"name": "tzdata"}, "version": "2026c"}}}]})
+sb = os.path.join(tempfile.mkdtemp(), "s")
+put(sb, "sbom.json", {"artifacts": [{"name": "x", "version": "1", "purl": "not-a-purl"}, {"name": "y", "version": "2"}, {"name": "z", "purl": "pkg:"}, {"name": "ok", "version": "3", "purl": "pkg:generic/ok@3"}]})
+put(sb, "cves.json", {"vulnerabilities": []})
+check("Scout: only an artifact with a package-URL purl is a package (name + version + not-a-purl, a bare version and 'pkg:' are not)", P.read_scout(sb)[0] == 1, P.read_scout(sb)[0])
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
-# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component with a non-empty STRING purl
-pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"name": "f"}, "x"]}
-check("panel: only a component with a non-empty string purl is a package (7, an object, a list and true are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
+# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component whose purl is a package URL (pkg:<type>/<name>)
+pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"purl": "not-a-purl"}, {"purl": "pkg:/"}, {"purl": "pkg:deb/"}, {"purl": "pkg:?q=/"}, {"name": "f"}, "x"]}
+check("panel: only a component with a package-URL purl is a package (7, an object, a list, true, an empty string and not-a-purl are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
 # rc-5a B (Fable ruling on astra B2): Scout puts the package URL in dependency.package.name (scout-selfcheck.py:124); the reader names it as the other scanners do
 sp = os.path.join(tempfile.mkdtemp(), "sp")
 put(sp, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:deb/debian/tzdata@2026c"}]})

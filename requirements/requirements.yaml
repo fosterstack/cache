@@ -2078,7 +2078,7 @@ requirements:
       - id: REQ-REL-010-AC1
         given: "Build's image layouts and the tag's .vex/ OpenVEX file"
         when: "Build writes digests.json"
-        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content in the form Docker Scout applies: the same OpenVEX document, except that in each statement a product that names the attested image (its purl) and lists subcomponents is replaced by those subcomponents (the vulnerable packages; the image is the in-toto statement's subject), in order and once each, and any other product is unchanged; the in-toto statement holds that document as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index, and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-010-AC2
@@ -2868,6 +2868,18 @@ requirements:
         given: "acceptance.yml run with an image-ref (release-chain mode)"
         when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC31
+        given: "the sample project's committed Gradle wrapper jar (bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar)"
+        when: "the offline tests run, and when a pull request changes the wrapper jar or properties (CI then also runs the online test)"
+        then: "the jar's sha256 equals the reviewed value committed beside it (.github/policy/gradle-wrapper-jar-sha256.txt, one sha256sum line) and, in the online test, the sha256 Gradle publishes for the wrapper of the version the distribution URL names, so a changed or substituted jar fails; this is the owner's plain form for a tool download: exact version and checksum"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC32
+        given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
+        when: "either starts"
+        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, is not exactly one line naming the jar, or is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC30

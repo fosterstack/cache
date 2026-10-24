@@ -44,6 +44,13 @@ OUR_PRODUCTS = re.compile(
 SUPPRESSING = {"not_affected", "fixed"}
 
 
+def is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
+    if not isinstance(purl, str) or not purl.startswith("pkg:"):
+        return False
+    slash = purl.find("/", 4)
+    return 4 < slash < len(purl) - 1
+
+
 def name_version(purl_or_id):
     """pkg:<type>/<ns>/<name>@<ver>?q → (name, ver); '' when absent."""
     s = (purl_or_id or "").split("?", 1)[0].split("#", 1)[0]
@@ -240,9 +247,9 @@ def main(argv):
               '(expected {"sbom": {"bomFormat": "CycloneDX", ...}}) — did not run, not a clean pass')
         return 2
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-    # packages are the components that carry a package URL (the grype gate and the panel count the same way; files and an operating-system
-    # component are not packages): none = the scanner looked at nothing (row 53)
-    n_pkg = sum(1 for c in comps if isinstance(c.get("purl"), str) and c["purl"])
+    # packages are the components that carry a package URL (pkg:deb/debian/glibc@2.36), not any string (the grype gate and the panel count the same way; files and an
+    # operating-system component are not packages): none = the scanner looked at nothing (row 53)
+    n_pkg = sum(1 for c in comps if is_package_url(c.get("purl")))
     if not n_pkg:
         print(f"::error::inspector {label}: 0 packages inventoried — did not run (row 53), not a clean pass")
         return 2
