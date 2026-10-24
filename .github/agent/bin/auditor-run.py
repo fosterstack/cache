@@ -372,7 +372,50 @@ def _find_pr(ws, branch):
     return (q.stdout or "").strip(), None
 
 
-def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
+BASE_VEX, BASE_ITEMS = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"      # the two reviewed files the delivery merges into
+
+
+def _fetch_base(ws):
+    """(sha, None) or (None, the failure text): ONE `git fetch origin main` (it changes no ref the workspace stands on) and the sha origin/main resolved to. The sha is what the base is read
+    at, what the delivery branch is cut from and what the signed commit is built on, so the validated bytes are the bytes merged into (cache#708 rulings 1, 2). A failure is handed down to the
+    delivery, which reports it and acquires nothing again: a second acquisition could find a base the first never validated, after an owner issue exists."""
+    r = subprocess.run(["git", "fetch", "origin", "main"], cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, "git fetch: " + (r.stderr or "").strip()
+    s = subprocess.run(["git", "rev-parse", "origin/main"], cwd=ws, capture_output=True, text=True)
+    sha = (s.stdout or "").strip()
+    if s.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None, "git rev-parse: " + ((s.stderr or "").strip() or sha)
+    return sha, None
+
+
+def _base_file(ws, sha, rel):
+    """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is not touched: the parsed JSON object the reader requires, None when the
+    base does not hold it (the first run; a file git reports as existing on disk but not in the base is absent at the base too: the workspace copy is never the base), or
+    ReviewedInputInvalid. git runs in the C locale because its messages are matched."""
+    r = subprocess.run(["git", "show", sha + ":" + rel], cwd=ws, capture_output=True, env=dict(os.environ, LC_ALL="C"))
+    if r.returncode != 0:
+        err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
+        if "does not exist in" in err or "exists on disk, but not in" in err:
+            return None
+        raise ReviewedInputInvalid("%s:%s cannot be read (%s)" % (sha[:12], rel, err.strip()[:200]))
+    return reviewed.parse(r.stdout, "%s:%s" % (sha[:12], rel), as_name=rel)
+
+
+def _base_docs(ws, sha):
+    """Both reviewed files of the delivery base, parsed and validated: {path: document or None}."""
+    return {BASE_VEX: _base_file(ws, sha, BASE_VEX), BASE_ITEMS: _base_file(ws, sha, BASE_ITEMS)}
+
+
+def _preflight_delivery(out, supp):
+    """What _merge_suppressions reads of the files THIS run wrote (the consolidated VEX, the reopened-expired ledger, the accepted-items inventory), validated BEFORE
+    `git checkout -B` touches the workspace (cache#701 ruling F3/B3: exit 3 never follows a mutating call)."""
+    _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))      # absent is the staging error _merge_suppressions reports; present must be the VEX object
+    _read_reopened(os.path.join(out, ".auditor", "reopened-expired.json"))
+    _read_reviewed_json(os.path.join(out, ".auditor", "accepted-items.json"))
+
+
+def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None, base_err=None):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json (the only exception there is, rule 4) in a single commit
     by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
@@ -432,10 +475,15 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
-    r = _git("fetch", "origin", "main")
-    if r.returncode != 0:
-        return None, ("git fetch: " + (r.stderr or "").strip())
-    r = _git("checkout", "-B", branch, "origin/main")     # off main => not stacked
+    if base_err:                                          # run() tried to acquire the base before the first owner issue and failed: that failure is the delivery's, and nothing is acquired again
+        return None, base_err
+    if base_sha is None:                                  # run() hands the validated sha down; a direct caller (neither given) acquires it here
+        base_sha, base_err = _fetch_base(ws)
+        if base_err:
+            return None, base_err
+    base_docs = _base_docs(ws, base_sha)                  # the belt: the base read again at the sha, with the run's own outputs, before anything touches the workspace
+    _preflight_delivery(out, supp)
+    r = _git("checkout", "-B", branch, base_sha)          # off main => not stacked
     if r.returncode != 0:
         return None, ("git checkout: " + (r.stderr or "").strip())
     try:
@@ -444,7 +492,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         # absent from a production scan) must survive, and the document version continues.
         # _merge_suppressions merges the VEX AND the coupled .auditor/accepted-items.json (retained affected statements keep their
         # inventory entry, R1 outer round-5 #2) — no wholesale copy of the run's inventory.
-        _merge_suppressions(ws, supp)
+        _merge_suppressions(ws, supp, base=base_docs)
         # copy the run's proposals + generated knowledge into the checkout so they ride the PR.
         for p in extra:
             s = os.path.join(out, p); d = os.path.join(ws, p)
@@ -461,9 +509,6 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     changed = [e[3:] for e in (r.stdout or "").split("\0") if len(e) > 3]
     if not changed:
         return None, "signed commit: nothing to commit (the run changed none of the suppression files)"
-    sha = _git("rev-parse", "origin/main")
-    if sha.returncode != 0:
-        return None, ("git rev-parse: " + (sha.stderr or "").strip())
     # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
     # it (no duplicate, no false failure) instead of a second `gh pr create`.
     def _arm_head(u):
@@ -479,7 +524,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if err:
         return None, err
     # the commit is made THROUGH THE API so GitHub signs it (main requires signed commits; a `git commit` is unsigned and left the PR BLOCKED)
-    oid, err = _signed_delivery(ws, branch, sha.stdout.strip(), title, changed)
+    oid, err = _signed_delivery(ws, branch, base_sha, title, changed)       # built on the validated sha, never on a ref that may have moved since
     if err:
         return None, err
     if ex:
@@ -719,7 +764,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     return (None, err, "error") if err else (url, None, "delivered")
 
 
-def _merge_suppressions(ws, supp):
+def _merge_suppressions(ws, supp, base=None):
     """Merge this run's consolidated suppressions INTO the existing reviewed files in the
     checkout, preserving statements/entries this run does not touch and continuing the VEX
     document version (R1 outer round-4 #3). Statements are keyed by @id (this run replaces a
@@ -729,7 +774,7 @@ def _merge_suppressions(ws, supp):
     newdoc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     if newdoc is None:                              # the run's own consolidated VEX must exist (as before: a missing file is a staging error)
         raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
-    existing = _read_reviewed_json(vp) or {}
+    existing = (base[BASE_VEX] if base is not None else _read_reviewed_json(vp)) or {}      # the delivery hands down the base documents it validated at the sha: the tree is not read again
     # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
     # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
     # same-scope statement — this run's or a carried one — has the same key and the incoming
@@ -766,7 +811,7 @@ def _merge_suppressions(ws, supp):
     for k in ("@context", "@id", "author", "role"):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
-    old_ai = _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
+    old_ai = base[BASE_ITEMS] if base is not None else _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
     new_ai = _read_reviewed_json(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))     # the run's own inventory too
     os.makedirs(os.path.dirname(vp), exist_ok=True)       # the working tree is touched only after every read above has passed
     cli.writej(vp, merged)
@@ -857,28 +902,44 @@ def _merge_suppressions(ws, supp):
 
 
 
+def _collect_vex(out, ts):
+    """Read every per-CVE VEX this run wrote and validate the merged document; writes nothing. Returns (document, statements). run() calls it BEFORE the first owner-decision issue
+    so a damaged per-finding VEX stops the run (exit 3) while nothing outside the run's own directory has been touched (cache#701 ruling F3/B3); _consolidate does the same read."""
+    vdir = os.path.join(out, "vex")
+    try:
+        names = sorted(n for n in os.listdir(vdir) if n.endswith(".openvex.json") and not n.startswith("."))
+    except FileNotFoundError:
+        names = []                                    # the run wrote no per-finding VEX
+    except OSError as ex:                             # unreadable, or not a directory: a stop, never "no statements" (glob turned it into an empty list)
+        raise ReviewedInputInvalid("%s cannot be listed (%s)" % (vdir, type(ex).__name__))
+    statements = []
+    for n in names:
+        statements.extend((_read_reviewed_json(os.path.join(vdir, n)) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+    document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
+                "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
+                "statements": statements}
+    try:
+        vex.validate(document)
+    except ValueError as ex:
+        raise ReviewedInputInvalid("the per-finding VEX the run wrote does not make a valid statement set (%s)" % ex)
+    return document, statements
+
+
 def _consolidate(out, ts):
     """Merge every per-CVE VEX this run wrote into ONE canonical
     suppressions/fosterstack-cache.openvex.json (the file scan/rescan/release-authz read),
     Returns
     (suppression_dir, statement_count). (R1 round-3: the auditor's VEX must reach the
     canonical file, and the consistency check must read the layout the run actually writes.)"""
-    import glob
-    statements = []
-    for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
-        statements.extend((_read_reviewed_json(vf) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+    document, statements = _collect_vex(out, ts)
     supp = os.path.join(out, "suppressions")
-    document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
-                "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
-                "statements": statements}
-    vex.validate(document)
     cli.writej(os.path.join(supp, "fosterstack-cache.openvex.json"), document)
     return supp, len(statements)
 
 
 def adjudicate(adjudicator, ctx, state):
-    """primary -> rephrase -> fallback for ONE finding, bounded PER FINDING by the five-iteration
-    stop and globally by the token budget. Returns the category, 'refused' (a genuine refusal the
+    """primary -> rephrase -> fallback for ONE finding, bounded by the
+    three attempts and globally by the token budget. Returns the category, 'refused' (a genuine refusal the
     model WAS reachable for), or 'adjudicator_error' (every attempt errored — the model was
     UNAVAILABLE). On an error, surface the REAL cause (exception class + HTTP status + message,
     secrets MASKED) ONCE per distinct error into state['adj_errors'] so the header, §4 and the
@@ -890,18 +951,14 @@ def adjudicate(adjudicator, ctx, state):
         state.setdefault("nc_verdicts", {})[nc_key] = reused
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return reused
-    iters = 0; errored = False; refused = False
+    errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
-        if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
-            if errored and not refused:
-                state["nc_incomplete"] = True
-                return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
+        if state["tokens"] >= policy.TOKEN_BUDGET:
             state["stops"] = state.get("stops", 0) + 1
             state["nc_incomplete"] = True                       # REQ-AUD-3 AC3: a stop is an attempted call without a cacheable result
-            by_iters = iters >= policy.MAX_ITERATIONS
-            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "iterations" if by_iters else "token budget"})
-            return "iteration_stop" if by_iters else "budget_stop"     # neither is a genuine refusal: the iteration stop has its one aggregate issue, the budget stop goes to section 4 with no issue
-        iters += 1; state["calls"] = state.get("calls", 0) + 1
+            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "token budget"})
+            return "budget_stop"     # not a genuine refusal: section 4 with no issue
+        state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused as e:
@@ -971,7 +1028,7 @@ def _pullability(adjudicator, ctx, state):
         state.setdefault("nc_pull", {})[nc_key] = reused
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return reused
-    if state["tokens"] >= policy.TOKEN_BUDGET or state.get("iters", 0) >= policy.MAX_ITERATIONS:
+    if state["tokens"] >= policy.TOKEN_BUDGET:
         state["nc_incomplete"] = True                           # REQ-AUD-3 AC3: a stop leaves a call unanswered, so the run is incomplete
         return None
     state["calls"] = state.get("calls", 0) + 1
@@ -1430,12 +1487,12 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        reason="adjudicator unavailable (model calls failed)",
                        cause="adjudicator unavailable", adjudicator_error=True)
             return row, m_inc
-        elif cat in ("iteration_stop", "budget_stop"):
-            # the loop or the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding. An iteration stop is carried by run()'s ONE
-            # aggregate owner issue (REQ-AUD-9 AC3); a budget stop notifies no one (nothing else notifies anyone). Section 4 either way, no per-finding issue.
+        elif cat == "budget_stop":
+            # the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding; a budget stop notifies no one (nothing else notifies anyone).
+            # Section 4, no per-finding issue. (The repeated-unsettled case, REQ-AUD-9 AC3 "a five-iteration stop", is the run counter's one aggregate issue below.)
             row.update(section=4, disposition="under investigation",
-                       action="none (%s)" % ("iteration stop: named in the one aggregate owner issue" if cat == "iteration_stop" else "token budget reached"),
-                       reason="adjudication stopped", cause="iteration stop" if cat == "iteration_stop" else "token budget reached")
+                       action="none (token budget reached)",
+                       reason="adjudication stopped", cause="token budget reached")
             return row, m_inc
         elif cat == "refused":
             # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
@@ -1720,7 +1777,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         else:
             kev_ok = False
     exp = _expiry(today)
-    state = {"tokens": 0, "iters": 0, "roles_used": set()}
+    state = {"tokens": 0, "roles_used": set()}
     # REQ-AUD-3 AC3 (no-change day): yesterday's verdicts and narrative are usable only when yesterday's state file is valid AND its
     # finding-set hash equals today's exactly; anything else leaves the run exactly as it was (model calls).
     import hashlib
@@ -1883,6 +1940,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     adj_err_msgs = sorted((state.get("adj_errors") or {}).values())
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
+    _collect_vex(out, ts)       # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never follows a mutating call (cache#701 ruling F3/B3)
+    base_sha = base_err = None  # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh call (cache#708 ruling 1); the delivery cuts its branch from this sha
+    if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and (m.get("provenance") or {}).get("source") != "test-image":
+        base_sha, base_err = _fetch_base(_workspace())
+        if base_sha:
+            _base_docs(_workspace(), base_sha)
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
@@ -1903,15 +1966,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             else:
                 r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
-    # (a2) The five-iteration stop (REQ-AUD-9 AC3, register row 38: the owner hears on a loop): a finding the model could not settle within MAX_ITERATIONS calls opens exactly ONE
-    # owner-decision issue naming them all, never one per finding.
-    _loops = sorted({x["finding_id"] for x in state.get("stopped", []) if x.get("why") == "iterations"})
-    if _loops:
-        title = policy.subject("owner-decision: the model hit the %d-iteration stop" % policy.MAX_ITERATIONS)      # stable title, the count in the body (REQ-AUD-9 AC2)
-        body = ("The adjudicator hit the %d-iteration stop (primary, rephrase and fallback without a settled disposition) on %d finding(s) this run. No disposition was inferred; each "
-                "stays open for a human decision. Findings: %s" % (policy.MAX_ITERATIONS, len(_loops), ", ".join(_loops)[:1500]))
-        ok, ref = _emit_owner_issue(title, body, dry, would, cves=_loops, target="%d-iteration stop on %d finding(s)" % (policy.MAX_ITERATIONS, len(_loops)))
-        state["iteration_stop_issue"] = ref if ok else "FAILED"
     # (a2) "a five-iteration stop" (REQ-AUD-9 AC3, register row 38): findings left unsettled by the model in policy.UNSETTLED_RUNS consecutive runs are named in ONE owner-decision
     # issue, never one per finding. The title is stable (the next run updates the open issue, AC2); the findings and their run counts are in the body.
     state["unsettled_counts"] = nochange.advance(state["unsettled_prev"], state["unsettled_now"], today)
@@ -1957,8 +2011,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 else:
                     r["action"] = "OWNER ESCALATION FAILED"
     # (a3) the five-iteration stop's aggregate issue, emitted AFTER the per-finding escalations above so it names only the findings that are in no owner-decision issue this run (the
-    # outage issue, the iteration-stop issue and the per-finding issues already carry the others). The counts above still advance for every unsettled finding.
-    _in_issue = {r["id"] for r in rows if r.get("owner_issue") or r.get("issue_failed") or r.get("adjudicator_error")} | set(_loops)
+    # outage issue and the per-finding issues already carry the others). The counts above still advance for every unsettled finding.
+    _in_issue = {r["id"] for r in rows if r.get("owner_issue") or r.get("issue_failed") or r.get("adjudicator_error")}
     _stuck = [x for x in nochange.at_limit(state["unsettled_counts"], policy.UNSETTLED_RUNS) if x[0] not in _in_issue]
     if _stuck:
         title = policy.subject("owner-decision: the model left findings unsettled for %d consecutive runs" % policy.UNSETTLED_RUNS)
@@ -1969,7 +2023,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         state["unsettled_issue"] = ref if ok else "FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
-    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0) + (1 if state.get("unsettled_issue") == "FAILED" else 0)
+    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("unsettled_issue") == "FAILED" else 0)
     # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
     # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
     # owner_issue=None for every at-or-above item, and the release gate then HELD every such
@@ -2035,7 +2089,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     consistency = _consistency(out, supp, manifest_path)
     cons_failed = any(p.get("type", "").startswith("consistency-check-") for p in (consistency or {}).get("problems", []))
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
-    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
+    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test, base_sha=base_sha, base_err=base_err)
     # Decision 2: the auditor DELIVERS its own Go-module bumps as draft PRs through the App path
     # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one
     # draft PR; an unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy
@@ -2565,8 +2619,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     _stops = (state or {}).get("stopped") or []
     L.append("**Model refusals:** " + (("%d: " % len(_refs)) + "; ".join("%s (%s, %s)" % (_text(x["finding_id"]), x["attempt"], x["role"]) for x in _refs[:60]) + ("; ..." if len(_refs) > 60 else "") if _refs else "none"))
     if _stops:
-        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else "")
-                 + ("; owner-decision issue: %s" % _text(str((state or {}).get("iteration_stop_issue"))) if (state or {}).get("iteration_stop_issue") else ""))
+        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else ""))
     # the unsettled-run counts (REQ-AUD-9 AC3): a missing state is said, never silent
     _uc = (state or {}).get("unsettled_counts") or {}
     if (state or {}).get("counter_status") == "missing":

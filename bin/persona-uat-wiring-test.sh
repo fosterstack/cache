@@ -1912,6 +1912,80 @@ for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
     mutate(f"{lab}: workflow-level env holds the compliance model id", "workflow-level env", lambda d: d.update(env={"PERSONA_UAT_COMPLIANCE_MODEL": "${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}"}), w)
     mutate(f"{lab}: workflow-level env aliases a model secret", "workflow-level env", lambda d: d.update(env={"X": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
 
+
+# The shard gate of bin/persona-uat-test.sh (the driver suite runs as parallel shards; it fails unless every shard passed and the shards together ran every section of the
+# script exactly once). Judged on recorded shard outputs, with the section list counted from the script itself.
+import subprocess
+SUITE = os.path.join(root, "bin/persona-uat-test.sh")
+def gate(script, outs, rcs=None):
+    d = tempfile.mkdtemp(); args = []
+    for i, o in enumerate(outs):
+        open(f"{d}/{i}.out", "w").write(o)
+        rl = rcs if rcs is not None else [0] * len(outs)
+        if i < len(rl): open(f"{d}/{i}.rc", "w").write(str(rl[i]) + "\n")     # a result with no exit status file is a shard that left nothing
+        args += [f"{d}/{i}.out", f"{d}/{i}.rc"]
+    r = subprocess.run(["bash", SUITE, "--gate", script, str(len(outs)), *args], capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+def shard_out(secs, passed_n=5, failed_n=0, fixtures=(0, 0)):
+    return f"persona-uat-seg: 0 {fixtures[0]} {fixtures[1]}\n" + "".join(f"persona-uat-seg: {k} 1 0\n" for k in secs) + f"persona-uat: {passed_n} passed, {failed_n} failed\n"
+fake = tempfile.mktemp(); open(fake, "w").write('x\nSEG_CASES="5 5"\nseg_begin 1\nseg_on\nseg_begin 2\nseg_begin 3\nseg_begin 4\n')
+fake1 = tempfile.mktemp(); open(fake1, "w").write('x\nSEG_CASES="5"\nseg_begin 1\nseg_begin 2\nseg_begin 3\nseg_begin 4\n')
+fake0 = tempfile.mktemp(); open(fake0, "w").write("x\nseg_begin 1\nseg_begin 2\nseg_begin 3\nseg_begin 4\n")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3])])
+result(rc == 0 and "4 sections, each once" in o, "shard gate: shards that together ran every section once pass")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2])])
+result(rc == 1 and "section 3 ran in no shard" in o, "shard gate: a section that ran in no shard fails")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3, 4])])
+result(rc == 1 and "section 4 ran in shards [1, 2]" in o, "shard gate: a section that ran in two shards fails")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3, 9])])
+result(rc == 1 and "section 9, which the script does not hold" in o, "shard gate: a section the script does not hold fails")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3], 5, 2)])
+result(rc == 1 and "shard 2 failed 2 case(s)" in o, "shard gate: a shard with a failed case fails")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3])], [0, 1])
+result(rc == 1 and "shard 2 exited 1" in o, "shard gate: a shard that exits non-zero fails even with a clean summary")
+rc, o = gate(fake, [shard_out([1, 4]), "persona-uat-seg: 2 1 0\npersona-uat-seg: 3 1 0\n"])
+result(rc == 1 and "printed 0 summary lines" in o, "shard gate: a shard that printed no summary (a crash) fails")
+rc, o = gate(fake, [shard_out([1, 4], fixtures=(2, 0)), shard_out([2, 3])])
+result(rc == 1 and "ran 2 case(s) in the fixtures" in o, "shard gate: a case in the fixtures (which every shard would run) fails")
+rc, o = gate(fake1, [shard_out([1, 2, 3, 4])])
+result(rc == 0, "shard gate: one shard that ran everything passes")
+rc, o = gate(fake, [shard_out([1, 4], 4), shard_out([2, 3])])
+result(rc == 1 and "shard 1 passed 4 case(s), SEG_CASES says 5" in o, "shard gate: a shard that passed fewer cases than SEG_CASES says (a case skipped or moved out) fails")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3], 6)])
+result(rc == 1 and "shard 2 passed 6 case(s), SEG_CASES says 5" in o, "shard gate: a shard that passed more cases than SEG_CASES says (a case run twice or added) fails")
+rc, o = gate(fake0, [shard_out([1, 4]), shard_out([2, 3])])
+result(rc == 1 and "SEG_CASES does not give 2 numbers" in o, "shard gate: a script with no SEG_CASES line fails")
+rc, o = gate(fake1, [shard_out([1, 4]), shard_out([2, 3])])
+result(rc == 1 and "SEG_CASES does not give 2 numbers" in o, "shard gate: a SEG_CASES line with fewer numbers than shards fails")
+rc, o = gate(fake, [shard_out([1, 2, 3, 4]), shard_out([])], [0])
+result(rc == 1, "shard gate: a missing shard result fails")
+# the real script: the gate reads its section list, and every section is owned by exactly one of the shards
+src = open(SUITE).read()
+held = [int(x) for x in re.findall(r"^seg_begin ([0-9]+)$", src, re.M)]
+result(held == list(range(1, len(held) + 1)) and len(held) > 1, "shard gate: the driver suite numbers its sections 1..n in order")
+own = re.search(r"^SEG_OWNER=\(([0-9 ]+)\)$", src, re.M)
+shards = int(re.search(r"^SEG_SHARDS=([0-9]+)$", src, re.M).group(1))
+owners = [int(x) for x in own.group(1).split()] if own else []
+result(len(owners) == len(held) and set(owners) == set(range(1, shards + 1)), "shard gate: SEG_OWNER names an owner among the shards for each of the script's sections")
+cases = [int(x) for x in re.search(r'^SEG_CASES="([0-9 ]+)"$', src, re.M).group(1).split()]
+result(len(cases) == shards and all(c > 0 for c in cases), "shard gate: SEG_CASES gives a number of cases for each shard")
+rc, o = gate(SUITE, [shard_out([k for k, w in zip(held, owners) if w == i], cases[i - 1]) for i in range(1, shards + 1)])
+result(rc == 0, "shard gate: the shards each running the sections SEG_OWNER gives them cover every section of the real script once")
+# section 34 reads runs made in section 26: moving section 26 to another shard must make the shard that keeps section 34 fail, not skip the check
+mv26 = owners[:]; mv26[25] = 2 if owners[25] != 2 else 3
+d = tempfile.mkdtemp(); moved = f"{d}/persona-uat-test.sh"
+open(moved, "w").write(re.sub(r"^SEG_OWNER=\([0-9 ]+\)$", "SEG_OWNER=(" + " ".join(map(str, mv26)) + ")", src, count=1, flags=re.M))
+r = subprocess.run(["bash", moved], capture_output=True, text=True, env={**os.environ, "PERSONA_UAT_SHARD": f"{owners[33]}/{shards}"}, timeout=2400)
+result(r.returncode != 0 and "section 34 reads" in r.stdout + r.stderr, "shard gate: section 26 moved away from the shard that keeps section 34 makes that shard fail (section 34 reads its runs)")
+# a shard that hangs is killed after its deadline and counts as failed (exit 124); one that ends in time keeps its own exit status and output
+import time
+d = tempfile.mkdtemp(); t0 = time.time()
+subprocess.run(["bash", SUITE, "--run-shard", "1", f"{d}/o", f"{d}/e", f"{d}/rc", "bash", "-c", "sleep 60 & sleep 60"], capture_output=True, timeout=30)
+result(open(f"{d}/rc").read().strip() == "124" and time.time() - t0 < 20, "shard run: a shard that is still running at its deadline is killed (with its child processes) and its status is 124")
+subprocess.run(["bash", SUITE, "--run-shard", "20", f"{d}/o2", f"{d}/e2", f"{d}/rc2", "sh", "-c", "echo hi; echo err >&2; exit 3"], capture_output=True, timeout=30)
+result(open(f"{d}/rc2").read().strip() == "3" and open(f"{d}/o2").read() == "hi\n" and open(f"{d}/e2").read() == "err\n", "shard run: a shard that ends in time keeps its exit status, its output and its error output")
+rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3])], [0, 124])
+result(rc == 1 and "shard 2 exited 124" in o, "shard gate: a shard killed at its deadline fails the gate")
 print(f"persona-uat wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)
 PY
