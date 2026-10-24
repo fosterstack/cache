@@ -257,7 +257,7 @@ for flag, what, name in (("--snapshot", "Build (capital B)", "Build"), ("--snaps
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
     for files, want_snapshot in (([SNAP_APK], True), ([REAL_APK], False)):
-        record("rec.json", stage, files)
+        record("rec.json", "scanners" if stage == "check" else stage, files)   # Check reads scanners/acceptance/runtime/arm64 collections (chain_items.RELEASE_NAMES)
         rc, out, err = run([a.replace("{rec}", "rec.json") for a in args], env)
         first = err.split("\n", 1)[0]
         if want_snapshot:
