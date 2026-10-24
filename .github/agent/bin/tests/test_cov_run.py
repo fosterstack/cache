@@ -485,6 +485,7 @@ class MergeConsolidate(Base):
         s1 = self._stmt("CVE-2099-26", ["pkg:deb/debian/libfoo@1.0"])
         s2 = self._stmt("CVE-2099-26", ["pkg:deb/debian/libfoo@2.0"])
         s2["@id"] = s1["@id"]
+        first = s1["@id"]
         _out, supp = self._supp([s1, s2])
         R._merge_suppressions(ws, supp)
         ids = [s["@id"] for s in json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]]
