@@ -81,17 +81,22 @@ func loadConfig() (config, error) {
 	}
 	if cfg.roUsername != "" {
 		if cfg.username == "" {
-			return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD require FSCACHE_USERNAME and FSCACHE_PASSWORD: a read-only pair with no read-write pair would leave nothing able to write")
+			return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD require " +
+				"FSCACHE_USERNAME and FSCACHE_PASSWORD: " +
+				"a read-only pair with no read-write pair would leave nothing able to write")
 		}
 		if cfg.roUsername == cfg.username {
-			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: identical usernames make the credential tier ambiguous")
+			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: " +
+				"identical usernames make the credential tier ambiguous")
 		}
 	}
 	if cfg.tlsCert != "" && cfg.tlsKey == "" {
-		return cfg, fmt.Errorf("FSCACHE_TLS_CERT=%q is set without FSCACHE_TLS_KEY: set both (HTTPS) or neither (plain HTTP)", cfg.tlsCert)
+		return cfg, fmt.Errorf("FSCACHE_TLS_CERT=%q is set without FSCACHE_TLS_KEY: "+
+			"set both (HTTPS) or neither (plain HTTP)", cfg.tlsCert)
 	}
 	if cfg.tlsKey != "" && cfg.tlsCert == "" {
-		return cfg, fmt.Errorf("FSCACHE_TLS_KEY=%q is set without FSCACHE_TLS_CERT: set both (HTTPS) or neither (plain HTTP)", cfg.tlsKey)
+		return cfg, fmt.Errorf("FSCACHE_TLS_KEY=%q is set without FSCACHE_TLS_CERT: "+
+			"set both (HTTPS) or neither (plain HTTP)", cfg.tlsKey)
 	}
 	return cfg, nil
 }
@@ -121,7 +126,8 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 	}
 	defer func() {
 		if recover() != nil {
-			cert, err = tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q could not be parsed as a certificate and private key", certPath, keyPath)
+			cert, err = tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q "+
+				"could not be parsed as a certificate and private key", certPath, keyPath)
 		}
 	}()
 	certDER := firstPEMBlock(certPEM, func(typ string) bool { return typ == "CERTIFICATE" })
@@ -131,7 +137,9 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 	if _, err := x509.ParseCertificate(certDER); err != nil {
 		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q: the certificate does not parse", certPath)
 	}
-	keyDER := firstPEMBlock(keyPEM, func(typ string) bool { return typ == "PRIVATE KEY" || strings.HasSuffix(typ, " PRIVATE KEY") })
+	keyDER := firstPEMBlock(keyPEM, func(typ string) bool {
+		return typ == "PRIVATE KEY" || strings.HasSuffix(typ, " PRIVATE KEY")
+	})
 	if keyDER == nil {
 		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_KEY=%q holds no PEM PRIVATE KEY block", keyPath)
 	}
@@ -140,7 +148,8 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 	}
 	cert, err = x509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: the private key does not match the certificate, or is of a type TLS cannot use", certPath, keyPath)
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: "+
+			"the private key does not match the certificate, or is of a type TLS cannot use", certPath, keyPath)
 	}
 	return cert, nil
 }
