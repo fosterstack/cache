@@ -27,6 +27,7 @@ from auditorlib import cli, policy
 from auditorlib import vex
 from auditorlib import signed_commit
 from auditorlib import knowledge as K
+from auditorlib import nochange
 
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
 C = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(C)
@@ -839,6 +840,13 @@ def adjudicate(adjudicator, ctx, state):
     UNAVAILABLE). On an error, surface the REAL cause (exception class + HTTP status + message,
     secrets MASKED) ONCE per distinct error into state['adj_errors'] so the header, §4 and the
     status line can name it, and it is not repeated per finding (R-live fix 1)."""
+    # REQ-AUD-3 AC3: the exact same context judged by yesterday's run (state valid, finding-set hash identical) is not asked again.
+    nc_key = nochange.call_key("adjudicate", ctx)
+    reused = nochange.verdict(state.get("nc_prev"), nc_key)
+    if reused is not None:
+        state.setdefault("nc_verdicts", {})[nc_key] = reused
+        state["nc_reused"] = state.get("nc_reused", 0) + 1
+        return reused
     iters = 0; errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
@@ -874,7 +882,10 @@ def adjudicate(adjudicator, ctx, state):
         if isinstance(_pr, dict) and _pr.get("kind") in ("defect_log", "knowledge") and _pr.get("evidence"):
             state.setdefault("proposals", []).append(
                 {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
-        return ans.get("category") or "unknown"
+        category = ans.get("category") or "unknown"
+        if category in nochange.CATEGORIES:
+            state.setdefault("nc_verdicts", {})[nc_key] = category
+        return category
     return "adjudicator_error" if (errored and not refused) else "refused"
 
 
@@ -898,6 +909,12 @@ def _pullability(adjudicator, ctx, state):
     existing routing, so a model outage never fabricates a not-pullable acceptance (fail toward
     the actionable class). The call is billed like any other; an error is recorded (masked) once
     so the header can name it, exactly as adjudicate() does."""
+    nc_key = nochange.call_key("pullability", ctx)
+    reused = nochange.pullability(state.get("nc_prev"), nc_key)
+    if reused is not None:                                      # REQ-AUD-3 AC3: the same context, judged yesterday
+        state.setdefault("nc_pull", {})[nc_key] = reused
+        state["nc_reused"] = state.get("nc_reused", 0) + 1
+        return reused
     if state["tokens"] >= policy.TOKEN_BUDGET or state.get("iters", 0) >= policy.MAX_ITERATIONS:
         return None
     state["calls"] = state.get("calls", 0) + 1
@@ -915,6 +932,7 @@ def _pullability(adjudicator, ctx, state):
         return None
     state["tokens"] += int(ans.get("token_usage") or 0)
     state.setdefault("roles_used", set()).add("primary")
+    state.setdefault("nc_pull", {})[nc_key] = nochange.pull_record(ans)
     return ans
 
 
@@ -1603,6 +1621,14 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             kev_ok = False
     exp = _expiry(today)
     state = {"tokens": 0, "iters": 0, "roles_used": set()}
+    # REQ-AUD-3 AC3 (no-change day): yesterday's verdicts and narrative are usable only when yesterday's state file is valid AND its
+    # finding-set hash equals today's exactly; anything else leaves the run exactly as it was (model calls).
+    import hashlib
+    nc_hash = nochange.finding_set_hash(groups, {
+        "digests": m.get("candidate_digests"), "knowledge": hashlib.sha256(knowledge_doc.encode("utf-8")).hexdigest(),
+        "gvc": [gvc, module, gvc_usable], "carriers": m.get("carriers") or [], "base": m.get("base") or {}})
+    state.update(nc_verdicts={}, nc_pull={}, nc_narr=None, nc_today=today,
+                 nc_prev=nochange.matching(nochange.load(cli.opt("--prev-state")), nc_hash))
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
@@ -1920,6 +1946,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
+    cli.writej(os.path.join(out, ".auditor", "auditor-state.json"),
+               nochange.dump(today, nc_hash, state["nc_verdicts"], state["nc_pull"], state["nc_narr"]))
+    if state.get("nc_reused"):
+        print("daily CVE auditor: no-change inputs — reused %d model verdict(s) from the last run" % state["nc_reused"])
     # REQ-AUD-17 AC2: drive the single standing "needs a human" issue from the same §0 list the
     # report shows — comment it (find-or-create) while §0 is non-empty; close it when §0 is empty.
     needs = _needs_human(rows, sections, dry, pr_url, status)
@@ -2015,15 +2045,32 @@ def _narrative_ok(text, sections):
     return True
 
 
+def _narrative_structured(sections, m):
+    st = m.get("scanner_status") or {}
+    return {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
+            "package_counts": {s: (st.get(s) or {}).get("package_count") for s in _scanners(m)},
+            "sections": {C.TITLES[n]: [r["id"] for r in sections[n]] for n in range(1, 8)}}
+
+
+def _narrative_key(sections, m):
+    """the key of a narrative: the structured record it is written for, without the commit (a new commit that changes no
+    finding is still a no-change day, REQ-AUD-3 AC3)"""
+    structured = _narrative_structured(sections, m); structured.pop("commit")
+    return nochange.call_key("narrative", structured)
+
+
 def _conclusion(adjudicator, sections, m, state=None):
     if "stub" in os.path.basename(adjudicator or "").lower():
         return "stub: no narrative — §4 reflects the stub, not the model. The real picture needs the real adjudicator on main."
+    nc_key = _narrative_key(sections, m)
+    prev = nochange.narrative((state or {}).get("nc_prev"), nc_key)
+    if prev is not None and _narrative_ok(prev[0], sections):     # yesterday's text, still consistent with today's record
+        state["nc_narr"] = {"key": nc_key, "text": prev[0], "date": prev[1]}
+        state["nc_reused"] = state.get("nc_reused", 0) + 1
+        return "%s\n\n(unchanged since %s)" % (prev[0], prev[1])
     if state and state.get("tokens", 0) >= policy.TOKEN_BUDGET:
         return "conclusion withheld: token budget reached before the narrative."
-    st = m.get("scanner_status") or {}
-    structured = {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
-                  "package_counts": {s: (st.get(s) or {}).get("package_count") for s in _scanners(m)},
-                  "sections": {C.TITLES[n]: [r["id"] for r in sections[n]] for n in range(1, 8)}}
+    structured = _narrative_structured(sections, m)
     try:
         ans = cli.ask_model(adjudicator, "CONCLUSION", attempt="narrative", model="primary",
                             context={"mode": "narrative", "structured": structured})
@@ -2037,6 +2084,8 @@ def _conclusion(adjudicator, sections, m, state=None):
         return "conclusion withheld: the narrative could not be produced this run."
     if not text or not _narrative_ok(text, sections):
         return "conclusion withheld: narrative disagreed with the record."
+    if state is not None:
+        state["nc_narr"] = {"key": nc_key, "text": text, "date": state.get("nc_today") or "1970-01-01"}
     return text
 
 

@@ -14,6 +14,7 @@ import verdict_fixture  # noqa: E402  (fixture verdicts adapted to the panel's c
 _spec = importlib.util.spec_from_file_location("auditor_run_cov", os.path.join(BIN, "auditor-run.py"))
 R = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(R)
 policy = R.policy
+from auditorlib import nochange  # noqa: E402
 PROD = policy.VEX_PRODUCT
 
 # env vars that change which delivery path runs — cleared for every test, set explicitly per case
@@ -247,6 +248,120 @@ class PureHelpers(Base):
         self.assertIn("primary", st["roles_used"])
         self.assertEqual(ask.call_args.kwargs["attempt"], "narrative")
         self.assertEqual(ask.call_args.kwargs["context"]["structured"]["commit"], "c1")
+
+
+# ---------------------------------------------------------------- no-change day (REQ-AUD-3 AC3)
+
+class NoChange(Base):
+    CTX = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
+
+    def state(self, **kw):
+        st = {"tokens": 0, "iters": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
+              "nc_prev": None, "nc_today": "2026-10-24"}
+        st.update(kw); return st
+
+    def prev(self, **kw):
+        doc = nochange.dump("2026-10-23", "a" * 64, {}, {}, None); doc.update(kw); return doc
+
+    def test_a_reused_verdict_makes_no_model_call_and_is_carried_forward(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        st = self.state(nc_prev=self.prev(verdicts={key: "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "false_positive")
+        ask.assert_not_called()
+        self.assertNotIn("calls", st); self.assertEqual(st["tokens"], 0)
+        self.assertEqual(st["nc_verdicts"], {key: "false_positive"})
+        self.assertEqual(st.get("nc_reused"), 1)
+
+    def test_a_fresh_verdict_is_recorded_only_when_it_is_a_real_category(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        for cat, kept in (("real_fixable", True), ("under_investigation", True), ("unknown", False), ("burn_it_down", False)):
+            st = self.state()
+            with mock.patch.object(R.cli, "ask_model", return_value={"category": cat, "token_usage": 1}) as ask:
+                self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), cat)
+            self.assertEqual(ask.call_count, 1)
+            self.assertEqual(st["nc_verdicts"], {key: cat} if kept else {}, cat)
+
+    def test_a_different_context_is_a_miss_even_with_a_matching_state(self):
+        st = self.state(nc_prev=self.prev(verdicts={nochange.call_key("adjudicate", dict(self.CTX, installed_version="0")): "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "real_fixable", "token_usage": 1}) as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "real_fixable")
+        self.assertEqual(ask.call_count, 1)
+
+    def test_a_refusal_or_an_error_is_never_recorded_as_a_verdict(self):
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=R.cli.Refused("no")):
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "refused")
+        self.assertEqual(st["nc_verdicts"], {})
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
+        self.assertEqual(st["nc_verdicts"], {})
+
+    def test_a_reused_pullability_verdict_makes_no_call(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        key = nochange.call_key("pullability", ctx)
+        verdict = {"pullable": False, "lift_trigger": "base >= 3"}
+        st = self.state(nc_prev=self.prev(pullability={key: verdict}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            self.assertEqual(R._pullability("/x/real.py", ctx, st), verdict)
+        ask.assert_not_called()
+        self.assertEqual(st["nc_pull"], {key: verdict}); self.assertNotIn("calls", st)
+
+    def test_a_fresh_pullability_verdict_is_recorded_by_its_known_keys_only(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        key = nochange.call_key("pullability", ctx)
+        st = self.state()
+        ans = {"pullable": False, "lift_trigger": "x", "token_usage": 5, "surprise": {"nested": 1}, "evidence": "e"}
+        with mock.patch.object(R.cli, "ask_model", return_value=ans):
+            got = R._pullability("/x/real.py", ctx, st)
+        self.assertEqual(got, ans)
+        self.assertEqual(st["nc_pull"], {key: {"pullable": False, "lift_trigger": "x", "evidence": "e"}})
+
+    def test_a_reused_narrative_is_marked_unchanged_and_makes_no_call(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        m = {"commit": "c1", "candidate_digests": {"production": "sha256:p"}}
+        key = R._narrative_key(secs, m)
+        st = self.state(nc_prev=self.prev(narrative={"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            text = R._conclusion("/x/real.py", secs, m, st)
+        ask.assert_not_called()
+        self.assertEqual(text, "CVE-2099-3 needs a bump.\n\n(unchanged since 2026-10-22)")
+        self.assertEqual(st["nc_narr"], {"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"})
+
+    def test_a_new_commit_alone_does_not_change_the_narrative_key(self):
+        secs = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._narrative_key(secs, {"commit": "c1"}), R._narrative_key(secs, {"commit": "c2"}))
+        secs2 = {n: [] for n in range(1, 8)}; secs2[3] = [{"id": "CVE-2099-3"}]
+        self.assertNotEqual(R._narrative_key(secs, {"commit": "c1"}), R._narrative_key(secs2, {"commit": "c1"}))
+
+    def test_a_reused_narrative_that_no_longer_fits_the_record_is_asked_again(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]; secs[5] = [{"id": "CVE-2099-5"}]
+        m = {"commit": "c1"}; key = R._narrative_key(secs, m)
+        st = self.state(nc_prev=self.prev(narrative={"key": key, "text": "CVE-2099-9 appeared.", "date": "2026-10-22"}))
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump.", "token_usage": 2}) as ask:
+            text = R._conclusion("/x/real.py", secs, m, st)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(text, "CVE-2099-3 needs a bump.")
+        self.assertEqual(st["nc_narr"]["date"], "2026-10-24")
+
+    def test_a_fresh_narrative_is_recorded_with_todays_date(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump.", "token_usage": 2}):
+            R._conclusion("/x/real.py", secs, {"commit": "c1"}, st)
+        self.assertEqual(st["nc_narr"], {"key": R._narrative_key(secs, {"commit": "c1"}), "text": "CVE-2099-3 needs a bump.", "date": "2026-10-24"})
+
+    def test_a_withheld_narrative_is_not_recorded(self):
+        secs = {n: [] for n in range(1, 8)}
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            R._conclusion("/x/real.py", secs, {}, st)
+        self.assertIsNone(st["nc_narr"])
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-9 appeared.", "token_usage": 1}):
+            R._conclusion("/x/real.py", secs, {}, st)
+        self.assertIsNone(st["nc_narr"])
 
 
 # ---------------------------------------------------------------- pullability model call
@@ -1078,7 +1193,7 @@ class ConsistencyTablesMain(Base):
 # ---------------------------------------------------------------- run() end to end (in-process)
 
 def _expected_images(scanner):
-    from auditorlib import parsers as PL
+    from auditorlib import nochange,  parsers as PL
     return sum(1 for im in PL.panel_images() if PL.panel_expected(scanner, im))      # follows bin/panel.py VARIANTS (Google: amd64 only)
 
 
