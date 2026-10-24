@@ -2856,6 +2856,12 @@ requirements:
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC34
+        given: "a pull request that adds or changes a checksum file for an upstream artifact (a file whose name says sha256 or checksum, an item whose identity is the file's content) that is no base input"
+        when: "the age check runs and the exceptions file the base branch holds has a file_pins row {file, content, upstream, version, published} for that file and exactly that content"
+        then: "the file is dated by the row's published time and still needs 7 days public (too young fails, a future or unreadable time fails); a row for other content, another file, one that omits a field or one that only the pull request's own tree carries rules nothing (exit 1); two rows for one file and content, a file_pins that is not a list or an unreadable exceptions file stop the check (exit 2); owner's plain-forms rule: a pin has a version and a date the checker can read. Advisor ruling Oct 23 (fix to an existing coded check that blocks work)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >

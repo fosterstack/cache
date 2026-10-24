@@ -71,17 +71,26 @@ def is_pin(version):
     return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
 
 
+FILE_PIN_SOURCE = "file-pin-ruling"
+
+
+def is_file_item(item):
+    """A checksum or version FILE item (its identity is the file's content), the only kind a file_pins row can date."""
+    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:")
+
+
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
-            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
+    ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
-        if src not in SERVER_SIDE and src != "first-seen":
+        if src not in SERVER_SIDE and src != "first-seen" and not (src == FILE_PIN_SOURCE and ruled_file):
             continue
         if src == "github-release" and item.kind == "action":
             continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
@@ -427,6 +436,9 @@ def check(moved_items, source, now, min_days):
     rows = []
     for it in moved_items:
         ok, reason, proof = judge_item(it, source.proofs(it), now, min_days)
+        note = getattr(source, "notes", {}).get(it.key)
+        if note:
+            reason += f" ({note})"
         rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason, "proof": proof})
     return rows
 
@@ -1294,6 +1306,55 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
+def load_file_pins(path, required=False):
+    """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins list (the BASE branch's copy: rows a pull request brings
+    do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time that is not a time rules nothing. Two rows for
+    one (file, content), a list that is not a list or an unreadable file stop the check (RuntimeError, exit 2): never 'nothing ruled' by guesswork and never the older of two."""
+    if not os.path.exists(path):
+        if required:
+            raise RuntimeError(f"the exceptions file {path} (file_pins) does not exist")
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the exceptions file {path} (file_pins) is unreadable: {e}")
+    rows = d.get("file_pins", []) if isinstance(d, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path}: file_pins is not a list")
+    out, seen = {}, set()
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            raise RuntimeError(f"{path}: file_pins row {i} is not an object")
+        f_, c_ = r.get("file"), r.get("content")
+        if isinstance(f_, str) and isinstance(c_, str):
+            if (f_, c_) in seen:
+                raise RuntimeError(f"{path}: file_pins repeats the row for {f_} with content {c_}")
+            seen.add((f_, c_))
+        fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
+        if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
+                or parse_time(r["published"]) is None:
+            continue
+        out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
+    return out
+
+
+class FilePinSource:
+    """Wraps a proof source: a file item the base branch's file_pins names (same file AND same content) gets the row's published time as its proof."""
+
+    def __init__(self, inner, pins):
+        self.inner, self.pins, self.notes = inner, pins, {}
+
+    def proofs(self, item):
+        out = list(self.inner.proofs(item))
+        if is_file_item(item):
+            row = self.pins.get((item.name[5:], item.step[len("content:"):]))
+            if row:
+                out.append((row[0], FILE_PIN_SOURCE))
+                self.notes[item.key] = f"file pin ruled by the base branch: {row[1]} version {row[2]}"
+        return out
+
+
 def load_base_inputs(path, required=False):
     """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside this script, never the pull request's tree).
     A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and never 'everything'."""
@@ -1509,7 +1570,7 @@ def _run(a, moved, fx, now):
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), now, a.min_days)
+        rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
