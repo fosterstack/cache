@@ -9,7 +9,7 @@
 # ===== rule 21: bin/gen-recipes.py (both recipes are generated from one template; CI checks the committed files are exactly its output) =================
 gt="$fx/melange.yaml.tmpl"; ga="$fx/melange.yaml"; gb="$fx/melange-fips.yaml"
 GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt"   # the fixture data files
-GRX="env FSCACHE_TEST_MODE=1 FSCACHE_GEN_PIN=$(shasum -a 256 "$gt" | cut -d" " -f1)"   # the fixture template's own pin (the real one is in gen-recipes.py and is checked in build-apk-test.sh)
+GR_PROD="$GR"; GR="$fx/gen-recipes.py"; GRX=env   # the fixtures run a copy of the generator whose TEMPLATE_SHA256 line holds the fixture template's own pin (the real one is checked in build-apk-test.sh)
 t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
 t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
 t "rule 21" "the standard recipe holds no GOFIPS140 at all" bash -c "! grep -q GOFIPS140 '$ga'"
@@ -782,7 +782,8 @@ p = sys.argv[1]; s = open(p).read(); open(p, "w").write(s + "#")
 P
 fails "rule 21" "gen-recipes: a ONE-BYTE edit of the template fails --check, naming the pin and saying to update it in the same reviewed change" 'update TEMPLATE_SHA256 in the same reviewed change' trule
 t "rule 21" "gen-recipes: the pin passes for the unchanged template" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
-fails "rule 21" "gen-recipes: an override of the pin is refused outside test mode" 'test mode' env FSCACHE_GEN_PIN=0000 python3 "$GR" --template "$gt" --regular "$ga" --fips "$gb" --check
+t "rule 21" "gen-recipes: no environment variable changes the pin (FSCACHE_GEN_PIN and FSCACHE_TEST_MODE are ignored: a wrong pin in the environment cannot fail the check, a right one cannot rescue a changed template)" bash -c "env FSCACHE_GEN_PIN=0000 FSCACHE_TEST_MODE=1 python3 '$GR' $GRD --template '$gt' --regular '$ga' --fips '$gb' --check"
+t "rule 21" "bin/gen-recipes.py carries no test hook: no FSCACHE_ name, and exactly one TEMPLATE_SHA256 line marked TEST-SUBST (the copies the fixtures run differ from it in that line only)" bash -c "! grep -E 'FSCACHE_[A-Z_]+' '$GR_PROD' && test \$(grep -c '^TEMPLATE_SHA256 = .*# TEST-SUBST' '$GR_PROD') = 1 && diff <(grep -v '^TEMPLATE_SHA256 = ' '$GR_PROD') <(grep -v '^TEMPLATE_SHA256 = ' '$GR')" 
 
 # ruling of review round 9: melange writes only types '0' and '5': type NUL is refused, and a directory header carries no data
 python3 - "$work" <<'P'

@@ -18,11 +18,6 @@
   },
   {
    "workflow": "main-candidate-rescan.yml",
-   "job": "build",
-   "reason": "calls stage-build.yml in snapshot mode; the caller's grants are a static ceiling (REQ-CHAIN-004-AC14)"
-  },
-  {
-   "workflow": "main-candidate-rescan.yml",
    "job": "panel-inspector",
    "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
   },
@@ -38,18 +33,18 @@
   },
   {
    "workflow": "release.yml",
-   "job": "build",
-   "reason": "calls stage-build.yml: Build, whose Witness steps mint the keyless signing identity (REQ-CHAIN-004)"
-  },
-  {
-   "workflow": "release.yml",
    "job": "sign",
    "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
   },
   {
    "workflow": "release.yml",
-   "job": "check",
-   "reason": "calls stage-verify.yml: Check, whose Witness steps mint the keyless signing identity (REQ-CHAIN-006)"
+   "job": "sign-rebuild",
+   "reason": "calls stage-sign.yml a second time, for the Rebuild records: Sign's second call, which checks and signs them keyless and receives no Rebuild apk or image (REQ-CHAIN-005-AC4)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-check",
+   "reason": "calls stage-sign.yml a third time, for the Check records: Sign's third call, which checks and signs them keyless (REQ-REL-011-AC1)"
   },
   {
    "workflow": "release.yml",
@@ -57,39 +52,14 @@
    "reason": "calls stage-promote.yml: Release, whose Witness steps and keyless cosign signatures mint the signing identity (REQ-CHAIN-007)"
   },
   {
-   "workflow": "release.yml",
-   "job": "rebuild",
-   "reason": "calls stage-reproducibility.yml: Rebuild, whose Witness steps mint the keyless signing identity (REQ-CHAIN-005)"
-  },
-  {
-   "workflow": "scan.yml",
-   "job": "build",
-   "reason": "calls stage-build.yml in snapshot mode for the PR scan; the caller's grants are a static ceiling (REQ-CHAIN-004-AC14)"
-  },
-  {
    "workflow": "scan.yml",
    "job": "inspector",
    "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
   },
   {
-   "workflow": "scan.yml",
-   "job": "rebuild",
-   "reason": "calls stage-reproducibility.yml in snapshot mode: the PR proof of reproducibility (REQ-CHAIN-005-AC7)"
-  },
-  {
    "workflow": "scorecard.yml",
    "job": "analysis",
    "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
-  },
-  {
-   "workflow": "stage-build.yml",
-   "job": "apk",
-   "reason": "Build, job apk: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-004); signs no provenance"
-  },
-  {
-   "workflow": "stage-build.yml",
-   "job": "assemble",
-   "reason": "Build, job assemble: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-004); signs no provenance"
   },
   {
    "workflow": "stage-promote.yml",
@@ -112,29 +82,19 @@
    "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
   },
   {
-   "workflow": "stage-reproducibility.yml",
-   "job": "apk",
-   "reason": "Rebuild, job apk: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-005); signs no provenance"
-  },
-  {
-   "workflow": "stage-reproducibility.yml",
-   "job": "assemble",
-   "reason": "Rebuild, job assemble: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-005); signs no provenance"
+   "workflow": "stage-sign.yml",
+   "job": "sign",
+   "reason": "Sign: the one provenance signer (REQ-CHAIN-001), and the signer of the Build records (owner Oct 22)"
   },
   {
    "workflow": "stage-sign.yml",
-   "job": "sign",
-   "reason": "Sign: the one provenance signer (REQ-CHAIN-001)"
+   "job": "sign-rebuild",
+   "reason": "Sign: the signer of the Rebuild records (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md); receives no Rebuild apk or image"
   },
   {
-   "workflow": "stage-verify.yml",
-   "job": "check",
-   "reason": "Check: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-006); signs no provenance"
-  },
-  {
-   "workflow": "stage-verify.yml",
-   "job": "check-arm64",
-   "reason": "Check, arm64 leg: the Witness wrapper fetches the identity token for the keyless record of the arm64 artifact checks (REQ-CHAIN-006-AC17); signs no provenance"
+   "workflow": "stage-sign.yml",
+   "job": "sign-check",
+   "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them keyless"
   },
   {
    "workflow": "ci.yml",
