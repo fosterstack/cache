@@ -4018,17 +4018,19 @@ from unittest.mock import patch
 mp=FX+"/manifest-mediumnofix.json"; m=json.load(open(mp)); d=json.load(open(m["panel"]["verdict"]))
 c="CVE-2099-9400"; purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
 json.dump(vex.doc(c,"not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]),open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+_real_run=_sp.run                                  # saved BEFORE R.subprocess.run is patched (same module object): the fake must call the saved one, never itself
 def run(cov,tag):
     d2=json.loads(json.dumps(d)); d2["vex_covered"]=cov
     vp2=W+"/verdict-"+tag+".json"; json.dump(d2,open(vp2,"w"))
     m2=json.loads(json.dumps(m)); m2["panel"]["verdict"]=vp2; mp2=W+"/m-"+tag+".json"; json.dump(m2,open(mp2,"w"))
     def fake2(cmd,*a,**kw):
         if cmd and cmd[0] in ("git","gh"): return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
-        return _sp.run(cmd,*a,**kw)
+        return _real_run(cmd,*a,**kw)
     out=W+"/out-"+tag
     with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
         R.run(mp2,True,out,"2026-09-24",adjudicator="offline-probe")
     rep=open(out+"/report.md").read()
+    if "consistency check did not complete" in rep: raise SystemExit("the run's consistency check did not complete")
     return os.path.exists(out+"/vex/%s.openvex.json"%c), [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
 cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1"}]
 rejudged,hid,vp=run(cov,"a")
@@ -4036,7 +4038,11 @@ recs=[r for r in parsers.parse_panel(vp,"inspector") if r["finding_id"]==c]
 parsed_ok = len(recs)==1 and recs[0]["extra"].get("carried") is True and recs[0]["extra"]["images"]==["production-amd64"] and not [r for r in parsers.parse_panel(vp,"google") if r["finding_id"]==c]
 rej_b,hid_b,_=run([],"b")
 rej_c,hid_c,_=run([dict(cov[0],package="otherpkg")],"c")
-print("OK" if (rejudged and not hid and parsed_ok and not rej_b and len(hid_b)==1 and c in hid_b[0] and not rej_c and len(hid_c)==1 and c in hid_c[0]) else "BAD rejudged=%s hid=%s parsed=%s b=%s/%s c=%s/%s"%(rejudged,hid,parsed_ok,rej_b,hid_b,rej_c,hid_c))
+# aliases: the carried statement is named by a GHSA id that lists the CVE the scanner reports as its alias (the panel's coverage predicate indexes both); it must resolve and not be called hidden
+st2=vex.doc("GHSA-aaaa-bbbb-cccc","not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]); st2["statements"][0]["vulnerability"]["aliases"]=[c]
+json.dump(st2,open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+rej_d,hid_d,_=run(cov,"d")
+print("OK" if (rejudged and not hid and parsed_ok and not rej_b and len(hid_b)==1 and c in hid_b[0] and not rej_c and len(hid_c)==1 and c in hid_c[0] and not hid_d) else "BAD rejudged=%s hid=%s parsed=%s b=%s/%s c=%s/%s d=%s/%s"%(rejudged,hid,parsed_ok,rej_b,hid_b,rej_c,hid_c,rej_d,hid_d))
 PP
 )"
 eq "$r5" "OK" && ok || no "rc-5b fix 5: a carried statement hidden by our VEX from Inspector is re-judged (flagged carried by the parser, resolved to its scope), one no scanner reports is listed 'not re-checkable', an unmatched entry is dropped" "$r5"

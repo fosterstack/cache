@@ -75,13 +75,19 @@ def _sub_purl(sc):
 
 def _resolve_carried(groups, carried_stmts):
     """rc-5b fix 5: the panel's vex_covered entries arrive as findings flagged `carried` with a generic package URL (parsers.parse_panel). Resolve each to the scope of the carried
-    statement that names the same CVE (or an alias) and the same package and version, so the statement is re-judged this run like any visible finding; a flagged entry no carried
-    statement matches is dropped (nothing carries it). Returns the CVE ids of the carried statements that NO scanner (visible or hidden-by-our-VEX) reports this run."""
-    by_cve = {}
+    statement that names the same CVE (or one of its aliases: the panel's coverage predicate indexes both) and the same package and version, so the statement is re-judged this
+    run like any visible finding; a flagged entry no carried statement matches is dropped (nothing carries it). Returns the CVE ids of the carried statements that NO scanner
+    (visible or hidden-by-our-VEX) reports this run, by any of the statement's ids."""
+    by_id, primaries = {}, []
     for s in carried_stmts:
-        nm = (s.get("vulnerability") or {}).get("name")
-        if nm:
-            by_cve.setdefault(nm, []).append(sorted(_scope_key(s)[1]))
+        v = s.get("vulnerability") or {}
+        nm = v.get("name")
+        if not nm:
+            continue
+        ids = {nm} | {a for a in (v.get("aliases") or []) if isinstance(a, str)}
+        primaries.append((nm, ids))
+        for i in ids:
+            by_id.setdefault(i, []).append(sorted(_scope_key(s)[1]))
     for cid in list(groups):
         grp = groups[cid]
         keep = []
@@ -89,8 +95,8 @@ def _resolve_carried(groups, carried_stmts):
             if not (f.get("extra") or {}).get("carried"):
                 keep.append(f)
                 continue
-            for cve in {cid} | set(grp["aliases"]):
-                for purls in by_cve.get(cve, []):
+            for cve in {cid} | set(grp["aliases"]) | set(f.get("aliases") or []):
+                for purls in by_id.get(cve, []):
                     for p in purls:
                         pn, pv = PARS._panel_module()._purl_name_version(p)
                         if pn == f.get("package") and pv == (f.get("extra") or {}).get("version"):
@@ -102,7 +108,7 @@ def _resolve_carried(groups, carried_stmts):
     seen_ids = set()
     for grp in groups.values():
         seen_ids |= set(grp["aliases"]) | {grp["id"]}
-    return sorted(nm for nm in by_cve if nm not in seen_ids)
+    return sorted({nm for nm, ids in primaries if not (ids & seen_ids)})
 
 
 def _scope_key(statement):
