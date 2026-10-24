@@ -75,6 +75,8 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
+  # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
+  '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
