@@ -256,7 +256,10 @@ def _exempt_local_call(raw, job):
     """REQ-SUP-001-AC19 (the closed form, orchestrator Oct 14): a job calling exactly ./.github/workflows/<plain name>.yml, a workflow of this tree with a
     workflow_call trigger and jobs, with NO with: block (absent or empty: no caller can hand it anything), is no item: the called file is inventoried itself.
     Any with: value, any other local form, a step, keeps the call an item that cannot pass."""
-    if not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0] or job.get("with"):
+    if not _LOCAL_CALL.fullmatch(raw):
+        return False
+    _READS.append(_read_of(raw[2:]))      # what the answer below rests on besides the caller's own text: the file inventory() memoises on (cache#693)
+    if raw[2:] not in _TREE[0] or job.get("with"):
         return False
     try:
         doc = yaml.load(_FILES[0].get(raw[2:], ""), Loader=yaml.BaseLoader)
@@ -680,25 +683,27 @@ def _walk(node, out, labels, path="", in_step=False):
                             out.append(_image_item(svc["image"]))
             if k == "jobs" and isinstance(v, dict):
                 top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
-                for job in v.values():
-                    _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
-                    _ENV_PRESENT[0] = bool(node.get("env")) or (isinstance(job, dict) and bool(job.get("env") or job.get("strategy")))
-                    _JOB_RUNS[0] = [st.get("run") for st in (job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []) if isinstance(st, dict) and isinstance(st.get("run"), str)]
-                    _JOB_SUMS[0] = re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", json.dumps(job, default=str)) if isinstance(job, dict) else []   # a checksum in ANY step of the job (a separate verify step) belongs to the job's downloads
-                    n0 = len(out)
-                    _walk(job, out, labels, "job:" + k)
-                    if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].strip().startswith("./"):
-                        mine = [it for it in out[n0:] if it.version == "(local)" and it.name == _local_name(job["uses"]) and not it.step]
-                        if mine and _exempt_local_call(job["uses"], job):
-                            for it in mine:
-                                out.remove(it)       # REQ-SUP-001-AC19: the called file is inventoried itself
-                        elif job.get("with"):
-                            for it in mine:          # a local reusable-workflow call: what it passes in is part of that call's identity
-                                it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()
-                _ENV_CTX[0] = ""
-                _ENV_PRESENT[0] = False
-                _JOB_RUNS[0] = []
-                _JOB_SUMS[0] = []
+                try:
+                    for job in v.values():
+                        _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
+                        _ENV_PRESENT[0] = bool(node.get("env")) or (isinstance(job, dict) and bool(job.get("env") or job.get("strategy")))
+                        _JOB_RUNS[0] = [st.get("run") for st in (job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []) if isinstance(st, dict) and isinstance(st.get("run"), str)]
+                        _JOB_SUMS[0] = re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", json.dumps(job, default=str)) if isinstance(job, dict) else []   # a checksum in ANY step of the job (a separate verify step) belongs to the job's downloads
+                        n0 = len(out)
+                        _walk(job, out, labels, "job:" + k)
+                        if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].strip().startswith("./"):
+                            mine = [it for it in out[n0:] if it.version == "(local)" and it.name == _local_name(job["uses"]) and not it.step]
+                            if mine and _exempt_local_call(job["uses"], job):
+                                for it in mine:
+                                    out.remove(it)       # REQ-SUP-001-AC19: the called file is inventoried itself
+                            elif job.get("with"):
+                                for it in mine:          # a local reusable-workflow call: what it passes in is part of that call's identity
+                                    it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()
+                finally:      # a raise inside a job leaves the next file no job context (cache#693)
+                    _ENV_CTX[0] = ""
+                    _ENV_PRESENT[0] = False
+                    _JOB_RUNS[0] = []
+                    _JOB_SUMS[0] = []
                 continue
             _walk(v, out, labels, k, in_step=(k == "steps"))
     elif isinstance(node, list):
@@ -707,19 +712,20 @@ def _walk(node, out, labels, path="", in_step=False):
 
 
 _MEMO_ON = [True]
-_FILE_MEMO = {}     # (path, sha256 of the text, the local workflows the text names with their blob hashes) -> the items _file_found made
-_LOCAL_NAMED = re.compile(r"\./\.github/workflows/[A-Za-z0-9._-]+\.yml")   # a superset of _LOCAL_CALL: every spelling that could make _exempt_local_call read another file
+_FILE_MEMO = {}     # (path, sha256 of the text) -> (the items _file_found made, the reads they rest on)
+_READS = []         # the other files the walk of the current file looked at: (name, is it a workflow of the tree, sha256 of its text), as _exempt_local_call saw them
 
 
-def _memo_key(path, text, files):
-    callees = tuple(sorted((m[2:], m[2:] in _TREE[0], hashlib.sha256(files.get(m[2:], "").encode("utf-8", "replace")).hexdigest() if m[2:] in files else "")
-                           for m in set(_LOCAL_NAMED.findall(text))))
-    return (path, hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), callees)
+def _read_of(name):
+    text = _FILES[0].get(name)
+    return (name, name in _TREE[0], hashlib.sha256(text.encode("utf-8", "replace")).hexdigest() if text is not None else "")
 
 
 def _file_found(path, text):
     """The items one file yields (before the tree-wide de-duplication of inventory()). A function of the path and the text, and of the local
-    workflows the text names (_exempt_local_call): inventory() memoises it on exactly that."""
+    workflows the walk reads (_exempt_local_call records them in _READS): inventory() memoises it on exactly that."""
+    _ENV_CTX[0], _ENV_PRESENT[0], _JOB_RUNS[0], _JOB_SUMS[0], _INPUT_CTX[0] = "", False, [], [], ""      # every file starts from the neutral context, whatever raised before it
+    _READS.clear()
     found = []
     if path == "bin/install-scanner.sh":
         found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
@@ -816,13 +822,14 @@ def inventory(files):
     _TREE[0] = frozenset(n for n in files if any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS))
     _FILES[0] = files
     for path, text in sorted(files.items()):
-        mk = _memo_key(path, text, files) if _MEMO_ON[0] else None
-        if mk is not None and mk in _FILE_MEMO:
-            found = [copy.copy(it) for it in _FILE_MEMO[mk]]      # the de-duplication below renames steps: it must never touch the remembered items
+        mk = (path, hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()) if _MEMO_ON[0] else None
+        hit = _FILE_MEMO.get(mk) if mk is not None else None
+        if hit is not None and all(_read_of(r[0]) == r for r in hit[1]):      # the reads the walk made are re-asked of THIS tree: the same answers, the same items
+            found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
             found = _file_found(path, text)
-            if mk is not None:                                  # a raise left nothing here: only a completed file is remembered
-                _FILE_MEMO[mk] = [copy.copy(it) for it in found]
+            if mk is not None:                              # a raise left nothing here: only a completed file is remembered
+                _FILE_MEMO[mk] = ([copy.copy(it) for it in found], tuple(_READS))
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2

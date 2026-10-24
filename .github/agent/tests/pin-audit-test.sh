@@ -1063,6 +1063,91 @@ for n in range(5):
 assert calls[0] == 2 + 5, calls[0]    # a.yml and the script once, each b file once
 PY
 
+# --- cache#693 first look (advisor ruling Oct 24): the memo revalidates the callees the walk actually READ, the context is neutral for every file, and the oracle is the parent ---
+CASE="file memo: a caller whose callee is spelled with YAML escapes (\\x2e) is re-read when the callee changes: the memo decides on the reads the walk made, not on a regex of the text"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = 'on: pull_request\njobs:\n  c:\n    uses: "\\x2e/.github/workflows/c\\x61llee.yml"\n'
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda c: {".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(c))) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the escaped callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert sorted(inv.inventory(files(c))) == plain[c]
+PY
+CASE="file memo: the context is neutral for every file: a workflow that raises in the middle of a job leaves nothing for the next file (a script read after it equals a neutral run, memo cold and warm)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+bad = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: echo " + "0123456789abcdef" * 4 + "\n      - run: " + "x" * 4500 + "\n"
+script = "#!/usr/bin/env bash\npip install missingversion\ncurl -L -o /tmp/t https://example.org/releases/download/v${VER}/tool-${VER}.tgz\n"
+dump = lambda d: sorted((k, i.step, i.path, i.src) for k, i in d.items())
+inv._MEMO_ON[0] = False
+neutral = dump(inv.inventory({"bin/x.sh": script}))
+assert neutral, "the probe has no items"
+many = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: |\n" + "".join("          pip install p%d==1.0\n" % i for i in range(600))
+for memo, poison in ((m, p) for m in (False, True) for p in (bad, many)):
+    inv._MEMO_ON[0] = memo; inv._FILE_MEMO.clear()
+    for _ in range(2):    # cold, then warm
+        try:
+            inv.inventory({".github/workflows/bad.yml": poison}); raise SystemExit("the limit did not raise")
+        except RuntimeError:
+            pass
+        assert dump(inv.inventory({"bin/x.sh": script})) == neutral, ("memo", memo)
+        for v in (inv._ENV_CTX[0], inv._INPUT_CTX[0]): assert v == "", v
+        assert inv._ENV_PRESENT[0] is False and inv._JOB_RUNS[0] == [] and inv._JOB_SUMS[0] == []
+PY
+CASE="file memo: a returned item can be changed without reaching the memo or a later inventory; a file that breaks a limit raises on every use"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+wf = ".github/workflows/a.yml"
+files = {wf: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n      - run: curl -L https://example.org/x/${V}/t.tgz\n", "bin/a.sh": "curl -L https://example.org/x/${V}/t.tgz\n"}
+dump = lambda d: sorted((k, i.step, i.label, i.version) for k, i in d.items())
+first = inv.inventory(dict(files)); pristine = dump(first)
+for it in first.values():
+    it.step = "changed"; it.label = "changed"; it.version = "changed"
+assert dump(inv.inventory(dict(files))) == pristine
+long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
+for _ in range(3):
+    try:
+        inv.inventory(dict(long_line)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+PY
+CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, subprocess, sys, tempfile, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+src = subprocess.run(["git", "-C", root, "show", "HEAD^1:.github/agent/supply-chain/pin-inventory.py"], capture_output=True, text=True)
+assert src.returncode == 0, src.stderr[:200]
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
+    ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD^1", "--", *paths).split()
+assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+def run(mod, r):
+    try:
+        return dump(mod.load_at(root, r))
+    except RuntimeError as e:
+        return "raise:" + str(e)
+want = {r: run(parent, r) for r in revs}
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for r in revs + list(reversed(revs)):
+    assert run(inv, r) == want[r], r
+PY
+
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
