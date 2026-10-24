@@ -2,7 +2,7 @@
 """Plain-form pins (owner: tool downloads are an exact version plus a checksum; images are pinned by digest).
 AC28: the sample project's Gradle wrapper carries distributionSha256Sum, a lowercase sha256 hex.
 """
-import os, re, shutil, stat, subprocess, tempfile, unittest
+import os, re, shutil, subprocess, tempfile, unittest
 
 import yaml
 
@@ -16,7 +16,6 @@ EXPECTED_SUM = "acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a
 JAR_REL = "bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
 JAR_SUM_REL = ".github/policy/gradle-wrapper-jar-sha256.txt"   # sha256sum format, read by the two Gradle acceptance scripts (REQ-SUP-001-AC32)
 JAR_SUM_FILE = os.path.join(ROOT, JAR_SUM_REL)
-DIGEST = "ghcr.io/fosterstack/cache@sha256:" + "a" * 64
 
 
 def wrapper_props():
