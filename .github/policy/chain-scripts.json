@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "06d532be94eec391f6068401bb571ba2b28b7ad7cd5f3725ebb1090a827b55da",
+      "sha256": "5df724aac2c74d37a5f513c53aad2b8520d2431f80235fdb90583becaa1470f1",
       "tools": [
         "make",
         "at",
@@ -902,7 +902,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "625139a11962384c52752c283bd4b3f7c968c5be56329605cc8eb1b8c5434a17",
+      "sha256": "62708883efa8b77b4ccd0dd8b73af8a5ed158e1b904d82fd3f9b8a7d3b07f7e0",
       "tools": [
         "bash",
         "docker",
@@ -1406,7 +1406,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "26f711ac440240a0baa0057bb5fa0c6b4b4602f20ebd0c5b110a5f2b8dc5acc7",
+      "sha256": "36d088685db1fe88b0d69043988f367ea6bb7c6586cbe8696c02adf55946e5b1",
       "tools": [
         "curl",
         "docker",

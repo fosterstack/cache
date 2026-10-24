@@ -1165,6 +1165,8 @@ json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verifi
 PYF
 FAKE
 chmod +x "$work/fakebin/cosign"
+# rc-2 R1a: sign refuses a GITHUB_SHA that is not 40-hex and a GITHUB_RUN_ID that is not digits, so every case that signs runs with GitHub's own two variables set (the R1a cases below override them)
+export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242
 PY3=$(command -v python3)
 MARK="$work/.start-marker"; : > "$MARK"
 : > "$work/cosign-all.log"; SIGNS_OK=0; LEAKS=0
@@ -1411,6 +1413,18 @@ assert env["signatures"] and env["payloadType"] == "application/vnd.in-toto+json
 # a real SLSA v1 predicate, not {}: buildDefinition and runDetails.builder.id (the Sign workflow identity)
 pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"), pr
 PY
+# rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before cosign is asked
+SGN() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
+GITHUB_SHA="" GITHUB_RUN_ID=424242 expect_refuse "R1a an empty GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-empty)
+[ ! -e "$work/sd/r1a-empty" ] && ok "R1a r1a-empty: no output folder was made" || bad "R1a r1a-empty: an output folder exists"
+GITHUB_SHA=0123456789abcdef GITHUB_RUN_ID=424242 expect_refuse "R1a a short GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-short)
+[ ! -e "$work/sd/r1a-short" ] && ok "R1a r1a-short: no output folder was made" || bad "R1a r1a-short: an output folder exists"
+GITHUB_SHA=0123456789ABCDEF0123456789ABCDEF01234567 GITHUB_RUN_ID=424242 expect_refuse "R1a an upper-case GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-upper)
+[ ! -e "$work/sd/r1a-upper" ] && ok "R1a r1a-upper: no output folder was made" || bad "R1a r1a-upper: an output folder exists"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID="" expect_refuse "R1a an empty GITHUB_RUN_ID is refused by sign, naming it" "github_run_id" $(SGN r1a-noid)
+[ ! -e "$work/sd/r1a-noid" ] && ok "R1a r1a-noid: no output folder was made" || bad "R1a r1a-noid: an output folder exists"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=42a expect_refuse "R1a a GITHUB_RUN_ID that is not digits is refused by sign, naming it" "github_run_id" $(SGN r1a-badid)
+[ ! -e "$work/sd/r1a-badid" ] && ok "R1a r1a-badid: no output folder was made" || bad "R1a r1a-badid: an output folder exists"
 # the provenance says what was built from which source in which run (SLSA v1 buildDefinition / runDetails), from GitHub's own variables
 GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/meta" || true
 python3 - "$work/sd/meta" <<'PY' 2> /dev/null && ok "001-AC2 the provenance names the source commit and the run (resolvedDependencies gitCommit, invocationId = the run URL) and the Sign workflow as builder" || bad "001-AC2 the provenance lacks the commit or the run"
@@ -2359,7 +2373,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=857
+EXPECT=867
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
