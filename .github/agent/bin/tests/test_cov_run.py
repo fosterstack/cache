@@ -347,6 +347,7 @@ class NoChange(Base):
     def test_every_uncacheable_narrative_outcome_marks_the_run_incomplete(self):
         sections, m = {"s": 1}, {}
         cases = (("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
                  ("an empty narrative", dict(return_value={"narrative": "  ", "token_usage": 1}), {}),
                  ("a narrative that disagrees with the record", dict(return_value={"narrative": "text", "token_usage": 1}), {"bad": True}),
                  ("the token budget stop", dict(return_value={"narrative": "text"}), {"tokens": R.policy.TOKEN_BUDGET}))

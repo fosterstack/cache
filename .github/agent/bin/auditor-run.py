@@ -2256,6 +2256,7 @@ def _conclusion(adjudicator, sections, m, state=None):
             state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
             state.setdefault("roles_used", set()).add("primary")
             state.setdefault("refusals", []).append({"finding_id": "CONCLUSION", "attempt": "narrative", "role": "primary"})
+            state["nc_incomplete"] = True                          # REQ-AUD-3 AC3: a refused narrative is an attempted call without a cacheable result
         return "conclusion withheld: the narrative could not be produced this run."
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
