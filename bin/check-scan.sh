@@ -253,7 +253,7 @@ for s in "${scanners[@]}"; do
     esac
     # A tool that failed before writing leaves nothing to read, and anything but a number is 0 packages (did not run).
     if [ "$s" = grype ]; then
-      packages=$(jq '[.components[]? | select((.purl | type) == "string" and .purl != "")] | length' "$tmp/sbom.json" 2> /dev/null) || packages=0   # components with a package URL: grype also lists files (rc-5a C)
+      packages=$(jq '[.components[]? | select((.purl | type) == "string" and (.purl | test("^pkg:[a-z][a-z0-9.+-]*/.")))] | length' "$tmp/sbom.json" 2> /dev/null) || packages=0   # components with a package URL (pkg:<type>/<name>, not any string): grype also lists files (rc-5a C)
       jq -c '{grype: .descriptor.version, matches: ([.matches[]?] | length), db: .descriptor.db.status}' "$tmp/out.json" 2> /dev/null || true
     else
       packages=$(jq '[.results[]?.packages[]?] | length' "$tmp/out.json" 2> /dev/null) || packages=0
