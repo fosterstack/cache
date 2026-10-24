@@ -30,7 +30,6 @@ root = os.environ["PERSONA_ROOT"]
 REL = os.path.join(root, ".github/workflows/release.yml")
 FRESH = os.path.join(root, ".github/workflows/go-freshness.yml")
 TOOLS = os.path.join(root, "bin/persona-uat-tools.json")
-INST = os.path.join(root, "bin/install-scanner.sh")
 SRC = [os.path.join(root, "bin", f) for f in ("persona-uat.py", "persona-uat-agent.py", "persona-uat-provider.py")]
 
 def load(path): return yaml.load(open(path), Loader=yaml.BaseLoader)
@@ -66,11 +65,11 @@ def expr_is(val, expr):
 def literal_false(v):
     return str(v).strip() in ("", "false") if v is not None else True
 
-KIND_RUN = 'command -v kind > /dev/null && kind version || { echo "::error::kind is not on the runner image (PIPELINE failure, not a finding)"; exit 1; }'
-def install_re(pre):
-    """the ONLY accepted way to have `kind` in the job (amended Oct 24, rule 13 of the simplest-correct-form rules): the runner image's own kind, proved present by
-    this one run step, which prints its version and fails with a labelled pipeline error if it is missing"""
-    return re.compile("^" + re.escape(KIND_RUN) + "$")
+KIND_RUN = 'kind version || { echo "::error::PIPELINE, no kind"; exit 1; }'
+def is_kind_run(run):
+    """the ONLY accepted way to have `kind` in the job (amended Oct 24, rule 13 of the simplest-correct-form rules): the
+    runner image's own kind, proved present by this one run step: it prints the version and fails with a labelled error"""
+    return run.strip() == KIND_RUN
 
 def crane_re(pre):
     """the ONLY accepted way to get `crane` onto the weekly job: the repo's own installer (version and sha256 pinned inside it), the tool the chain already pins for every digest read"""
@@ -97,22 +96,24 @@ def judge_crane(name, steps, d, pre, bad):
         bad.append(f"{name}: the crane install step has a custom shell, working-directory or env")
 
 def judge_install(name, steps, d, pre, bad):
-    """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver (no download and no install of its own)"""
+    """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver (no download, no install)"""
     di = steps.index(d)
     cands = [(i, s) for i, s in enumerate(steps) if "run" in s and re.search(r"\bkind\b|install-scanner", str(s["run"])) and not crane_re(pre).match(str(s["run"]).strip())]
-    good = [(i, s) for i, s in cands if install_re(pre).match(str(s["run"]).strip())]
+    good = [(i, s) for i, s in cands if is_kind_run(str(s["run"]))]
     if len(good) != 1 or len(cands) != 1:
-        bad.append(f"{name}: the job must check kind with exactly one step `{KIND_RUN}` (the runner image's kind; no kind download or install step); found {[str(s['run'])[:60] for _, s in cands]}")
+        found = [str(s["run"])[:60] for _, s in cands]
+        bad.append(f"{name}: the job must check kind with exactly one step `{KIND_RUN}` "
+                   f"(the runner image's kind; no kind download or install step); found {found}")
         return
     i, s = good[0]
     if i > di:
         bad.append(f"{name}: kind is checked AFTER the driver step: the driver would run without the check")
     if s.get("if") is not None or not literal_false(s.get("continue-on-error")):
-        bad.append(f"{name}: the kind check step is conditional or non-fatal: a job without kind must fail, never skip it")
+        bad.append(f"{name}: the kind check step is conditional or non-fatal: a job without kind must fail")
     if str(s.get("shell", "bash")) != "bash" or s.get("working-directory") or s.get("env"):
         bad.append(f"{name}: the kind check step has a custom shell, working-directory or env")
 
-import hashlib, http.server, shutil, subprocess, tempfile, threading, stat
+import http.server, shutil, subprocess, tempfile, threading
 
 # --- prerequisites of the job (defined BEFORE common(), which calls them; the complete-workflow control below runs them through judge()) ----------------
 CRED_REF = re.compile(r"secrets\.|vars\.PERSONA_UAT|github\.token|ANTHROPIC_")
@@ -145,7 +146,7 @@ def step_kind(x, pre, weekly):
     if "upload-artifact" in u: return "upload"
     if "nohup" in r and "--mint-identity" in r: return "refresher"
     if r == CLEANUP_RUN: return "cleanup"
-    if install_re(pre).match(r) or crane_re(pre).match(r): return "install"
+    if is_kind_run(r) or crane_re(pre).match(r): return "install"
     if PIN_PIP_SHAPE.fullmatch(r): return "pinpip"
     if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
     if weekly and "gh release view" in r: return "resolver"
@@ -363,7 +364,8 @@ def common(name, job, bad):
         if s is d: continue
         isrun = "run" in s
         is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
-        is_install = isrun and (install_re(pre).match(str(s.get("run", "")).strip()) is not None or crane_re(pre).match(str(s.get("run", "")).strip()) is not None)
+        kind_run_text = str(s.get("run", ""))
+        is_install = isrun and (is_kind_run(kind_run_text) or crane_re(pre).match(kind_run_text.strip()) is not None)
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
         is_pin = isrun and is_pin_pip(s)
@@ -373,7 +375,8 @@ def common(name, job, bad):
         if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
             bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
         if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin and not is_load:
-            bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install and the one pinned kind install (it could change what the driver sees)")
+            bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install "
+                       f"and the one kind check (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
     if weekly:
         judge_crane(name, steps, d, pre, bad)
@@ -1017,13 +1020,16 @@ result(not good, "a clean source set is accepted by the source judge" + ("" if n
 def synth_steps(weekly):
     pre = ""
     cos = [{"uses": "actions/checkout@" + "0" * 40}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
-    return pre, cos + [{"run": KIND_RUN}, {"run": PIN_PIP_RUN}, {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+    pip = ("python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r "
+           + pre + "bin/persona-uat-requirements.txt")
+    return pre, cos + [{"run": KIND_RUN}, {"run": PIN_PIP_RUN}, {"run": pip},
                        {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
     pre, st = synth_steps(weekly)
     bd = []
     judge_install("synth", st, st[-1], pre, bd)
-    result(not bd, f"the install judge accepts the pinned kind install step ({'weekly' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
+    which = "weekly" if weekly else "rc"
+    result(not bd, f"the install judge accepts the kind check step ({which})" + ("" if not bd else ": " + "; ".join(bd)))
 def ins(st):
     return next(x for x in st if "install-scanner" in str(x.get("run", "")) or re.search(r"\bkind\b", str(x.get("run", ""))))
 
@@ -1139,7 +1145,9 @@ for weekly in (False, True):
     pm("SDK install with a working-directory", "carries keys outside its allowlist", lambda j: boot(j).update({"working-directory": "/tmp"}))
     pm("SDK install with a custom shell", "carries keys outside its allowlist", lambda j: boot(j).update({"shell": "pwsh"}))
     pm("SDK install with an env", "carries keys outside its allowlist", lambda j: boot(j).update({"env": {"PIP_INDEX_URL": "https://evil.example/simple"}}))
-    pm("kind install with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "install-scanner" in str(x.get("run", ""))).update({"working-directory": "/tmp"}))
+    kind_step = lambda j: next(x for x in j["steps"] if x.get("run") == KIND_RUN)
+    pm("kind check with a working-directory", "carries keys outside its allowlist",
+       lambda j: kind_step(j).update({"working-directory": "/tmp"}))
     pm("identity step with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
     pm("identity step with another option", "options outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update({"github-token": "${{ secrets.X }}"}))
     pm("upload with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "upload-artifact" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
@@ -1456,13 +1464,15 @@ mutate("rc checkout with if: false", "checkout step is conditional or non-fatal"
 mutate("rc SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
 mutate("rc runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
 mutate("rc matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}))
-mutate("rc kind check missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "kind version" in str(x.get("run", "")))))
+mutate("rc kind check missing", "exactly one step",
+       lambda j: j["steps"].remove(next(x for x in j["steps"] if "kind version" in str(x.get("run", "")))))
 mutate("weekly job-level if: false", "does not run only on the Monday cron", lambda j: j.update({"if": "false"}), "fresh")
 mutate("weekly checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}), "fresh")
 mutate("weekly SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}), "fresh")
 mutate("weekly runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}), "fresh")
 mutate("weekly matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}), "fresh")
-mutate("weekly kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))), "fresh")
+mutate("weekly kind check missing", "exactly one step",
+       lambda j: j["steps"].remove(next(x for x in j["steps"] if x.get("run") == KIND_RUN)), "fresh")
 mutate("rc checkout of another repository", "checkout of another repository", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(repository="evil/cache"))
 mutate("rc driver step reads another identity token file", "is not exactly ${{ runner.temp }}/anthropic-identity-token", lambda j: drv(j).setdefault("env", {}).update(ANTHROPIC_IDENTITY_TOKEN_FILE="/missing"))
 mutate("rc driver step has no identity token file path", "is not exactly ${{ runner.temp }}/anthropic-identity-token", lambda j: drv(j)["env"].pop("ANTHROPIC_IDENTITY_TOKEN_FILE"))

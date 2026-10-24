@@ -112,7 +112,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\n    outputs:\n      recor
          "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
          + f"      - uses: {DWN}\n        with:\n          artifact-ids: ${{{{ needs.govulncheck-build.outputs.artifact-id }}}}\n          path: govulncheck-dl\n" +
          "      - name: install govulncheck from its build job (its download was digest-checked)\n        run: bash bin/unpack-govulncheck.sh\n"
-         "      - name: kind and kubectl from the runner image\n        run: command -v kind kubectl > /dev/null && kind version && kubectl version --client || { echo \"::error::kind or kubectl is not on the runner image (PIPELINE failure, not a finding)\"; exit 1; }\n"
+         "      - name: kind and kubectl from the runner image\n        run: kind version && kubectl version --client || { echo \"::error::PIPELINE, no kind or kubectl\"; exit 1; }\n"
          + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
          + wit("scanners") + wit("acceptance") + wit("runtime")
@@ -321,10 +321,10 @@ m s_threeup 'witness-runtime\n' 'elsewhere\n' 'upload-artifact' "AC12 a record d
 m s_img2   'name: images\n          path: images\n' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images2\n' 'exactly one download of the images' "AC1 a second download of the images artifact (Q4)"
 m s_imgno  '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n' '' 'exactly one download of the images' "AC1 no download of the images artifact (Q4)"
 m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'download-artifact' "AC1 another artifact name in place of images (Q4)"
-m s_kindact '        run: command -v kind kubectl > /dev/null \&\& kind version \&\& kubectl version --client \|\| \{ echo "::error::kind or kubectl is not on the runner image \(PIPELINE failure, not a finding\)"; exit 1; \}\n' '        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0\n' 'uses not allowed' "AC14 helm/kind-action in place of the runner's kind"
+m s_kindact '        run: kind version \&\& kubectl version --client \|\| \{ echo "::error::PIPELINE, no kind or kubectl"; exit 1; \}\n' '        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0\n' 'uses not allowed' "AC14 helm/kind-action in place of the runner's kind"
 m s_kindform 'kubectl version --client \|\|' 'kubectl version --client; kind create cluster \|\|' 'witnessed-local.sh' "AC14 the kind step in another form"
-m s_kindlbl 'PIPELINE failure, not a finding' 'ignore' 'witnessed-local.sh' "AC14 the kind step without its labelled error"
-m s_kindinst 'command -v kind kubectl > /dev/null' 'curl -fsSL https://example.invalid/kind > /usr/local/bin/kind' 'witnessed-local.sh' "AC14 kind downloaded in place of the runner's"
+m s_kindlbl 'PIPELINE, no kind' 'ignore' 'witnessed-local.sh' "AC14 the kind step without its labelled error"
+m s_kindinst 'kind version \&\& kubectl' 'curl -fsSL https://example.invalid/kind > /usr/local/bin/kind' 'witnessed-local.sh' "AC14 kind downloaded in place of the runner's"
 m s_xnogr  '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '' 'exactly its' "AC4 round 1 F2: Check without the grype install (check-scan.sh needs it)"
 m s_xnoosv '      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '' 'exactly its' "AC4 round 1 F2: Check without the osv-scanner install"
 m s_xinsord '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n' 'check step' "AC4 round 1 F2: the scanner installs out of the listed order"
@@ -398,7 +398,7 @@ m a_upname 'name: witness-check-arm64'                         'name: check-resu
 m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
 m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
 m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
-m s_kindno '      - name: kind and kubectl from the runner image\n        run: command -v kind kubectl > /dev/null \&\& kind version \&\& kubectl version --client \|\| \{ echo "::error::kind or kubectl is not on the runner image \(PIPELINE failure, not a finding\)"; exit 1; \}\n' '' 'the kind and kubectl check' "AC14 no kind check step"
+m s_kindno '      - name: kind and kubectl from the runner image\n        run: kind version \&\& kubectl version --client \|\| \{ echo "::error::PIPELINE, no kind or kubectl"; exit 1; \}\n' '' 'the kind and kubectl check' "AC14 no kind check step"
 # PR 3 round 1, F6 (Codex B3, A extra): the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
 # path and once, the witness-check upload by name and path. Each of these was accepted before.
 m s_xnowb '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
@@ -436,7 +436,7 @@ hm h_noset   'set -euo pipefail\n'                              ''              
 hm h_nostep  'release-verify\|release-apks\|'              ''                                                      'the helper'        "AC11 two of Release's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
 hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
-# ---- AC14: the kind install and the cluster ------------------------------------------------------------------------------
+# ---- AC14: the kind check and the cluster ------------------------------------------------------------------------------
 cm() { if mutate "$work/k8s.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" cluster "$work/$1.sh"; fi; }
 cm c8_tag    '@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5' ''                             'by digest'          "AC14 the node image by tag only"
 cm c8_noimg  ' --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5' '' 'by digest'      "AC14 kind's default node image"

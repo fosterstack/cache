@@ -221,7 +221,7 @@ jobs:
           persist-credentials: false
 
       - name: kind from the runner image
-        run: command -v kind > /dev/null && kind version || { echo "::error::kind is not on the runner image (PIPELINE failure, not a finding)"; exit 1; }
+        run: kind version || { echo "::error::PIPELINE, no kind"; exit 1; }
 
       - name: pin pip (hash-checked)
         run: |
