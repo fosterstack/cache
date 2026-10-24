@@ -93,9 +93,10 @@ jobs:
         if: inputs.image-ref != ''
         env:
           IMAGE_REF: ${{ inputs.image-ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 "${IMAGE_REF}"
           for _ in $(seq 1 20); do
             curl -sf http://localhost:18095/healthz && exit 0
@@ -228,9 +229,10 @@ jobs:
         if: inputs.image-ref != ''
         env:
           IMAGE_REF: ${{ inputs.image-ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker run -d --name fscache-mvn-acc -p 127.0.0.1:18098:8080 \
             -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \
             "${IMAGE_REF}"

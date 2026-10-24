@@ -1818,9 +1818,10 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertNotIn("Schedule runs are always real and never dry", text)
         self.assertIn("AUDITOR_SCHEDULE_MODE", text.split("on:")[0])
 
-    def test_the_skopeo_install_line_is_grouped(self):
+    def test_skopeo_is_checked_on_the_runner_not_installed(self):      # REQ-REL-004-AC10 (owner, Oct 24): the runner image's skopeo, checked by command -v; no job installs it at run time
         run = self.steps[self.step("auditor-manifest.py")]["run"]
-        self.assertIn("command -v skopeo >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; } || true", run)
+        self.assertIn('command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image (no job installs it at run time)" >&2; exit 1; }', run)
+        self.assertNotRegex(run, r"apt(-get)?\s+install[^\n]*skopeo")
 
     def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # review r1 R3; advisor 0186: through the tested command, bound to the delivery
         run = self.steps[self.step("auditor-panel.py judge")]["run"]

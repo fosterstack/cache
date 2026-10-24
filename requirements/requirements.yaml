@@ -1588,6 +1588,13 @@ requirements:
         then: "it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # owner RATIFIED Oct 24 2026 (ops/docs/ratify/2026-10-24-runner-tools-and-token-in-env.md; named there REQ-REL-004-AC5, renumbered AC10 because AC5 exists); LLM-enforced, no judge
+      - id: REQ-REL-004-AC10
+        given: "any workflow job that uses skopeo, and any workflow step that needs the job token"
+        when: "the job starts, and the step runs"
+        then: "the job uses the skopeo on the runner image, checked by `command -v`, and a job without it fails as a labeled pipeline failure; no job installs it at run time; the job token reaches a step only through `env:`, never interpolated into `run:` script text, in every workflow"
+        verification: { method: inspection, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-005
     title: Every CI action pinned to a commit digest
