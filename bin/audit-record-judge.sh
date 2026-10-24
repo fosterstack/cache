@@ -6,12 +6,16 @@
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
 set -uo pipefail
-head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}     # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
+# mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
+head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
 here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 args=()
 patch=""
-if [ "$mode" = --release ] && printf '%s' "$rtag" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$'; then patch=1; fi     # a patch tag needs no record: nothing is read
+# a patch tag needs no record: nothing is read. It matches v1.2.3 and v0.9.10;
+# it refuses v1.2.0, v1.2.3-rc1, v01.2.3 and v1.2
+patch_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$'
+if [ "$mode" = --release ] && printf '%s' "$rtag" | grep -Eq "$patch_tag"; then patch=1; fi
 if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then
   repo=${GITHUB_REPOSITORY:-}
   [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "audit-record: GITHUB_REPOSITORY is not owner/name" >&2; exit 1; }
@@ -37,6 +41,7 @@ if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; the
 fi
 if [ "$mode" = --release ]; then
   [ "$base" = main ] || { echo "audit-record: a release is judged against main" >&2; exit 1; }
-  cd "$here" && exec python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" --tagged-sha "$head" --base-root . "${args[@]+"${args[@]}"}"
+  cd "$here" && exec python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
+    --tagged-sha "$head" --base-root . "${args[@]+"${args[@]}"}"
 fi
 cd "$here" && exec python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}"
