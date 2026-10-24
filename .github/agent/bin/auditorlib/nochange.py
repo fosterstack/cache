@@ -13,6 +13,9 @@ import json
 import os
 import re
 import stat
+from datetime import date
+
+from auditorlib import policy
 
 SCHEMA = "fosterstack/auditor-state/v1"
 MAX_BYTES = 1 << 20
@@ -25,9 +28,19 @@ PULL_KEYS = ("pullable", "lift_trigger", "hold", "component_fixed", "candidate_r
              "repo_version", "base_release", "evidence")
 STATE_KEYS = {"schema", "run_date", "finding_set_hash", "verdicts", "pullability", "narrative", "unsettled"}
 UNSETTLED_MAX = 5000
-FINDING_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
+FINDING_ID = policy.FINDING_ID
 HEX64 = re.compile(r"[0-9a-f]{64}")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+RUNS_MAX = 1000
+
+
+def _calendar(s):
+    """a real calendar date written YYYY-MM-DD"""
+    try:
+        date.fromisoformat(s)
+    except ValueError:
+        return False
+    return True
 
 
 def _digest(obj):
@@ -78,16 +91,16 @@ class CounterInvalid(ValueError):
     """the unsettled-run counts in a state file that IS present cannot be trusted: the run stops (never resets the counts to zero)"""
 
 
-def _valid_unsettled(u):
+def _valid_unsettled(u, today=None):
     if not isinstance(u, dict) or len(u) > UNSETTLED_MAX:
         return False
     for k, d in u.items():
         if not (isinstance(k, str) and FINDING_ID.fullmatch(k) and isinstance(d, dict) and set(d) == {"runs", "last"}):
             return False
         r = d["runs"]
-        if not (isinstance(r, int) and not isinstance(r, bool) and 1 <= r <= 1000):
+        if not (isinstance(r, int) and not isinstance(r, bool) and 1 <= r <= RUNS_MAX):
             return False
-        if not (isinstance(d["last"], str) and DATE.fullmatch(d["last"])):
+        if not (isinstance(d["last"], str) and DATE.fullmatch(d["last"]) and _calendar(d["last"]) and (today is None or d["last"] <= today)):
             return False
     return True
 
@@ -176,11 +189,12 @@ def dump(today, fs_hash, verdicts, pull, narr, unsettled=None):
             "unsettled": {k: dict(v) for k, v in (unsettled or {}).items()}}
 
 
-def load_unsettled(path):
+def load_unsettled(path, today):
     """The per-finding count of consecutive runs left unsettled (REQ-AUD-9 AC3, "a five-iteration stop"), from the carrier of the no-change day's state.
     ("missing", {}) when there is no usable state: no file (the first run, or the artifact expired), a file that is not an auditor state at all (not JSON, another schema, not a
     regular file, too large: REQ-AUD-3 AC3 ignores such a file) or a state written before the counts existed. The counts restart and the run says so.
-    ("ok", counts) for a valid file. Raises CounterInvalid for a state that IS an auditor state (right schema) whose counts cannot be trusted: the caller stops the run."""
+    ("ok", counts) for a valid file. Raises CounterInvalid for a state that IS an auditor state (right schema) whose counts cannot be trusted (malformed, a date that is not a
+    calendar date, or a date after `today`): the caller stops the run, before any model call or mutating call."""
     if not path or not os.path.lexists(path):
         return "missing", {}
     try:
@@ -198,29 +212,24 @@ def load_unsettled(path):
         return "missing", {}
     if set(doc) == STATE_KEYS - {"unsettled"}:
         return "missing", {}
-    if set(doc) != STATE_KEYS or not _valid_unsettled(doc["unsettled"]):
+    if set(doc) != STATE_KEYS or not _valid_unsettled(doc["unsettled"], today):
         raise CounterInvalid("the unsettled-run counts are malformed")
     return "ok", doc["unsettled"]
 
 
 def advance(prev, now_ids, today):
     """today's counts: a finding unsettled today is one more than its previous count (the same day again counts once); a finding not unsettled today is dropped, so
-    its count restarts. A previous count dated after today cannot be (a forged or misdated state): CounterInvalid."""
+    its count restarts. A count never passes RUNS_MAX (saturates). The previous counts were checked by load_unsettled (no date after today)."""
     out = {}
     for fid in sorted(now_ids):
         p = prev.get(fid)
         if p is None:
             runs = 1
-        elif p["last"] > today:
-            raise CounterInvalid("the count for %s is dated after today" % fid)
         elif p["last"] == today:
             runs = p["runs"]
         else:
-            runs = p["runs"] + 1
+            runs = min(p["runs"] + 1, RUNS_MAX)
         out[fid] = {"runs": runs, "last": today}
-    for fid, p in prev.items():
-        if p["last"] > today:
-            raise CounterInvalid("the count for %s is dated after today" % fid)
     if len(out) > UNSETTLED_MAX:
         raise CounterInvalid("more than %d unsettled findings" % UNSETTLED_MAX)
     return out

@@ -9,6 +9,7 @@ import json, os, sys, tempfile, unittest
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
 from auditorlib import nochange as N  # noqa: E402
+from auditorlib import parsers as PARS  # noqa: E402
 
 H = "a" * 64
 K1 = "b" * 64
@@ -198,26 +199,26 @@ class Unsettled(unittest.TestCase):
         d = good(); d["unsettled"] = unsettled; return d
 
     def test_no_file_is_missing_not_an_error(self):
-        self.assertEqual(N.load_unsettled(None), ("missing", {}))
-        self.assertEqual(N.load_unsettled(os.path.join(tempfile.mkdtemp(), "nope.json")), ("missing", {}))
+        self.assertEqual(N.load_unsettled(None, "2026-10-23"), ("missing", {}))
+        self.assertEqual(N.load_unsettled(os.path.join(tempfile.mkdtemp(), "nope.json"), "2026-10-23"), ("missing", {}))
 
     def test_a_state_written_before_the_counts_existed_is_missing(self):
         d = good(); del d["unsettled"]
-        self.assertEqual(N.load_unsettled(self.write(d)), ("missing", {}))
+        self.assertEqual(N.load_unsettled(self.write(d), "2026-10-23"), ("missing", {}))
 
     def test_a_valid_state_returns_its_counts(self):
         c = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
-        self.assertEqual(N.load_unsettled(self.write(self.state(c))), ("ok", c))
-        self.assertEqual(N.load_unsettled(self.write(self.state({}))), ("ok", {}))
+        self.assertEqual(N.load_unsettled(self.write(self.state(c)), "2026-10-23"), ("ok", c))
+        self.assertEqual(N.load_unsettled(self.write(self.state({})), "2026-10-23"), ("ok", {}))
 
     def test_a_file_that_is_not_an_auditor_state_is_missing_like_the_no_change_day_ignores_it(self):
         ok = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
         for doc in ("{", "[]", "null", json.dumps(dict(self.state(ok), schema="other")), "{\"a\": NaN}", " " * (N.MAX_BYTES + 1)):
-            self.assertEqual(N.load_unsettled(self.write(doc)), ("missing", {}), doc[:40])
+            self.assertEqual(N.load_unsettled(self.write(doc), "2026-10-23"), ("missing", {}), doc[:40])
         d = tempfile.mkdtemp()
-        self.assertEqual(N.load_unsettled(d), ("missing", {}))
+        self.assertEqual(N.load_unsettled(d, "2026-10-23"), ("missing", {}))
         real = self.write(self.state({})); link = os.path.join(d, "l.json"); os.symlink(real, link)
-        self.assertEqual(N.load_unsettled(link), ("missing", {}))
+        self.assertEqual(N.load_unsettled(link, "2026-10-23"), ("missing", {}))
 
     def test_an_auditor_state_with_untrustworthy_counts_raises(self):
         ok = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
@@ -229,7 +230,7 @@ class Unsettled(unittest.TestCase):
                json.dumps(self.state({"CVE-%d" % i: {"runs": 1, "last": "2026-10-22"} for i in range(N.UNSETTLED_MAX + 1)}))]
         for doc in bad:
             with self.assertRaises(N.CounterInvalid, msg=doc[:60]):
-                N.load_unsettled(self.write(doc))
+                N.load_unsettled(self.write(doc), "2026-10-23")
 
     def test_advance_counts_consecutive_runs_and_resets_a_settled_finding(self):
         prev = {"CVE-A": {"runs": 4, "last": "2026-10-22"}, "CVE-B": {"runs": 2, "last": "2026-10-22"}}
@@ -241,12 +242,29 @@ class Unsettled(unittest.TestCase):
         self.assertEqual(N.advance(prev, {"CVE-A"}, "2026-10-23"), {"CVE-A": {"runs": 4, "last": "2026-10-23"}})
 
     def test_a_count_from_the_future_is_corrupt(self):
+        c = {"CVE-A": {"runs": 4, "last": "2026-10-24"}}
         with self.assertRaises(N.CounterInvalid):
-            N.advance({"CVE-A": {"runs": 4, "last": "2026-10-24"}}, {"CVE-A"}, "2026-10-23")
+            N.load_unsettled(self.write(self.state(c)), "2026-10-23")
+        self.assertEqual(N.load_unsettled(self.write(self.state(c)), "2026-10-24"), ("ok", c))        # the same day is not the future
 
-    def test_a_count_from_the_future_for_a_finding_settled_today_is_corrupt_too(self):
-        with self.assertRaises(N.CounterInvalid):
-            N.advance({"CVE-A": {"runs": 4, "last": "2026-10-24"}}, set(), "2026-10-23")
+    def test_a_date_that_is_not_on_the_calendar_is_corrupt(self):
+        for d in ("2026-00-00", "2026-02-30", "2026-13-01"):
+            with self.assertRaises(N.CounterInvalid, msg=d):
+                N.load_unsettled(self.write(self.state({"CVE-A": {"runs": 4, "last": d}})), "2026-12-31")
+
+    def test_a_count_saturates_at_the_most_the_state_accepts(self):
+        new = N.advance({"CVE-A": {"runs": N.RUNS_MAX, "last": "2026-10-22"}}, {"CVE-A"}, "2026-10-23")
+        self.assertEqual(new["CVE-A"]["runs"], N.RUNS_MAX)
+        doc = N.dump("2026-10-23", H, {}, {}, None, new)
+        self.assertEqual(N.load_unsettled(self.write(doc), "2026-10-23"), ("ok", new))            # written, then read back
+
+    def test_every_id_the_verdict_parser_accepts_is_one_the_counter_keeps(self):
+        for i in ("?", "CVE-2024-0001", "GHSA-xxxx-yyyy-zzzz", "DEBIAN-CVE-2024-1", "GO-2024-1", "a+b", "x" * 200):
+            self.assertTrue(PARS._ID.fullmatch(i), i)
+            c = {i: {"runs": 2, "last": "2026-10-22"}}
+            self.assertEqual(N.load_unsettled(self.write(self.state(c)), "2026-10-23"), ("ok", c), i)
+        for i in ("x" * 201, "", "has space", "a`b"):
+            self.assertFalse(PARS._ID.fullmatch(i), i)
 
     def test_more_unsettled_findings_than_the_state_can_hold_is_corrupt(self):
         ids = {"CVE-%d" % i for i in range(N.UNSETTLED_MAX + 1)}
@@ -263,7 +281,7 @@ class Unsettled(unittest.TestCase):
         doc = N.dump("2026-10-23", H, {}, {}, None, c)
         self.assertEqual(doc["unsettled"], c)
         self.assertIsNotNone(N.load(self.write(doc)))
-        self.assertEqual(N.load_unsettled(self.write(doc)), ("ok", c))
+        self.assertEqual(N.load_unsettled(self.write(doc), "2026-10-23"), ("ok", c))
 
 
 if __name__ == "__main__":

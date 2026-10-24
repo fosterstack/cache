@@ -639,6 +639,16 @@ class PurlVersion(unittest.TestCase):
         self.assertIsNone(R._ver_from_purl(None))
 
 
+class NeedsHuman(unittest.TestCase):
+    def test_the_unsettled_run_issue_is_a_section_zero_item_and_a_failed_one_is_said(self):
+        none = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._needs_human([], none, True, None, "ok"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "dry"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "skipped"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "#12"), ["owner-decision needed: findings unsettled for 5 consecutive runs — #12"])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "FAILED"), ["owner-decision issue FAILED to open: findings unsettled for 5 consecutive runs"])
+
+
 class MergeConsolidate(Base):
     def _stmt(self, cve, purls, status="affected"):
         return R.vex.doc(cve, status, "2026-09-22T00:00:00Z", action="x", subcomponents=purls)["statements"][0]
