@@ -139,6 +139,14 @@ def pull_record(ans):
     return rec if valid_pull(rec) else None
 
 
+def settle(verdicts, pull, narr, incomplete):
+    """what a run may leave for tomorrow. A run where any attempted model call ended without a cacheable result (a refusal, an error,
+    an answer outside the five categories or one the router cannot read, a budget or iteration stop, a narrative that was empty or
+    disagreed with the record) is incomplete: it leaves nothing reusable, so the next run repeats its calls instead of treating a
+    partial state as 'nothing to ask' (REQ-AUD-3 AC3, zero calls only on a complete state)."""
+    return ({}, {}, None) if incomplete else (verdicts, pull, narr)
+
+
 def dump(today, fs_hash, verdicts, pull, narr):
     return {"schema": SCHEMA, "run_date": today, "finding_set_hash": fs_hash, "verdicts": dict(verdicts),
             "pullability": {k: dict(v) for k, v in pull.items()}, "narrative": narr}

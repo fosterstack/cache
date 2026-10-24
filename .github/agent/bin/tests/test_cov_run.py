@@ -299,6 +299,74 @@ class NoChange(Base):
             self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
         self.assertEqual(st["nc_verdicts"], {})
 
+    # REQ-AUD-3 AC3, Fable ruling on cache#684: a run where ANY attempted model call ended without a cacheable result is an incomplete run; it leaves no usable state.
+    def test_a_complete_adjudication_leaves_the_run_complete(self):
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "real_fixable", "token_usage": 1}):
+            R.adjudicate("/x/real.py", self.CTX, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_adjudication_outcome_marks_the_run_incomplete(self):
+        cases = (("an unknown answer", dict(return_value={"category": "unknown", "token_usage": 1}), {}),
+                 ("a category outside the five", dict(return_value={"category": "burn_it_down", "token_usage": 1}), {}),
+                 ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("the token budget stop", dict(return_value={"category": "real_fixable"}), {"tokens": R.policy.TOKEN_BUDGET}),
+                 ("the iteration stop", dict(return_value={"category": "real_fixable"}), {"iters": R.policy.MAX_ITERATIONS}))
+        for label, ask_kw, st_kw in cases:
+            st = self.state(**st_kw)
+            if label == "the iteration stop":
+                st_kw = {}
+            with mock.patch.object(R.cli, "ask_model", **ask_kw), mock.patch.object(R.policy, "MAX_ITERATIONS", 0 if label == "the iteration stop" else R.policy.MAX_ITERATIONS):
+                R.adjudicate("/x/real.py", self.CTX, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+
+    def test_a_reused_adjudication_makes_no_call_and_does_not_mark_the_run_incomplete(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        st = self.state(nc_prev=self.prev(verdicts={key: "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            R.adjudicate("/x/real.py", self.CTX, st)
+        ask.assert_not_called(); self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_pullability_outcome_marks_the_run_incomplete(self):
+        good = {"pullable": False, "token_usage": 1}
+        cases = (("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("an answer the router cannot read", dict(return_value={"pullable": "maybe", "token_usage": 1}), {}),
+                 ("the token budget stop", dict(return_value=good), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, st_kw in cases:
+            st = self.state(**st_kw)
+            with mock.patch.object(R.cli, "ask_model", **ask_kw):
+                R._pullability("/x/real.py", self.CTX, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value=good):
+            R._pullability("/x/real.py", self.CTX, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_narrative_outcome_marks_the_run_incomplete(self):
+        sections, m = {"s": 1}, {}
+        cases = (("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("an empty narrative", dict(return_value={"narrative": "  ", "token_usage": 1}), {}),
+                 ("a narrative that disagrees with the record", dict(return_value={"narrative": "text", "token_usage": 1}), {"bad": True}),
+                 ("the token budget stop", dict(return_value={"narrative": "text"}), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, flags in cases:
+            st = self.state(**({"tokens": R.policy.TOKEN_BUDGET} if "budget" in label else {}))
+            with mock.patch.object(R.cli, "ask_model", **ask_kw), mock.patch.object(R, "_narrative_structured", return_value={}), \
+                 mock.patch.object(R, "_narrative_ok", return_value=not flags.get("bad")):
+                R._conclusion("/x/real.py", sections, m, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "fine", "token_usage": 1}), mock.patch.object(R, "_narrative_structured", return_value={}), \
+             mock.patch.object(R, "_narrative_ok", return_value=True):
+            R._conclusion("/x/real.py", sections, m, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_a_stub_adjudicator_makes_no_call_and_is_not_incomplete(self):
+        st = self.state()
+        R._conclusion("/x/stub.py", {}, {}, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
     def test_the_stable_base_drops_the_day_counter_but_keeps_the_threshold_decision(self):
         a = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 52})
         b = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 53})

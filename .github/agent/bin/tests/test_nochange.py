@@ -169,6 +169,11 @@ class Use(unittest.TestCase):
                            ("evidence", {"k": {"deep": 1}}), ("lift_trigger", 12)):
             self.assertIsNone(N.pull_record({"pullable": False, key: value}), (key, value))
 
+    def test_an_incomplete_run_keeps_nothing_reusable(self):
+        v = {"a" * 64: "false_positive"}; p = {"b" * 64: {"pullable": False}}; n = {"key": "c" * 64, "text": "t", "date": "2026-10-24"}
+        self.assertEqual(N.settle(v, p, n, False), (v, p, n))
+        self.assertEqual(N.settle(v, p, n, True), ({}, {}, None))
+
     def test_dump_round_trips_through_load(self):
         d = tempfile.mkdtemp(); p = os.path.join(d, "s.json")
         doc = N.dump("2026-10-24", H, {K1: "real_fixable"}, {K2: {"pullable": True}}, {"key": K1, "text": "t", "date": "2026-10-24"})

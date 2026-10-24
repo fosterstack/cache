@@ -869,6 +869,7 @@ def adjudicate(adjudicator, ctx, state):
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
             state["stops"] = state.get("stops", 0) + 1
+            state["nc_incomplete"] = True                       # REQ-AUD-3 AC3: a stop is an attempted call without a cacheable result
             return "adjudicator_error" if (errored and not refused) else "refused"
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
@@ -903,7 +904,10 @@ def adjudicate(adjudicator, ctx, state):
         category = ans.get("category") or "unknown"
         if category in nochange.CATEGORIES:
             state.setdefault("nc_verdicts", {})[nc_key] = category
+        else:
+            state["nc_incomplete"] = True                       # an answer outside the five categories is not cached, so the run is incomplete
         return category
+    state["nc_incomplete"] = True                               # every attempt was refused or errored: nothing cacheable
     return "adjudicator_error" if (errored and not refused) else "refused"
 
 
@@ -934,14 +938,17 @@ def _pullability(adjudicator, ctx, state):
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return reused
     if state["tokens"] >= policy.TOKEN_BUDGET or state.get("iters", 0) >= policy.MAX_ITERATIONS:
+        state["nc_incomplete"] = True                           # REQ-AUD-3 AC3: a stop leaves a call unanswered, so the run is incomplete
         return None
     state["calls"] = state.get("calls", 0) + 1
     try:
         ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt="pullability", model="primary", context=ctx)
     except cli.Refused as e:
         state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+        state["nc_incomplete"] = True
         return None
     except Exception as e:
+        state["nc_incomplete"] = True
         msg = "%s: %s" % (type(e).__name__, _mask(str(e)))
         key = re.sub(r"\s*\[?request[_-]?id[=:]\s*[^\]\s]+\]?", "", msg, flags=re.I)
         errs = state.setdefault("adj_errors", {})
@@ -952,6 +959,7 @@ def _pullability(adjudicator, ctx, state):
     state.setdefault("roles_used", set()).add("primary")
     rec = nochange.pull_record(ans)
     if rec is None:
+        state["nc_incomplete"] = True
         return None          # an answer the router cannot read safely is as good as none: the finding stays on the actionable route
     state.setdefault("nc_pull", {})[nc_key] = rec
     return ans
@@ -1995,7 +2003,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
     cli.writej(os.path.join(out, ".auditor", "auditor-state.json"),
-               nochange.dump(today, nc_hash, state["nc_verdicts"], state["nc_pull"], state["nc_narr"]))
+               nochange.dump(today, nc_hash, *nochange.settle(state["nc_verdicts"], state["nc_pull"], state["nc_narr"], state.get("nc_incomplete"))))
     if state.get("nc_reused"):
         print("daily CVE auditor: no-change inputs — reused %d model verdict(s) from the last run" % state["nc_reused"])
     # REQ-AUD-17 AC2: drive the single standing "needs a human" issue from the same §0 list the
@@ -2116,6 +2124,7 @@ def _conclusion(adjudicator, sections, m, state=None):
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return "%s\n\n(unchanged since %s)" % (prev[0], prev[1])
     if state and state.get("tokens", 0) >= policy.TOKEN_BUDGET:
+        state["nc_incomplete"] = True
         return "conclusion withheld: token budget reached before the narrative."
     structured = _narrative_structured(sections, m)
     try:
@@ -2128,8 +2137,12 @@ def _conclusion(adjudicator, sections, m, state=None):
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
         # SDK error. A generic withheld line only.
+        if state is not None:
+            state["nc_incomplete"] = True
         return "conclusion withheld: the narrative could not be produced this run."
     if not text or not _narrative_ok(text, sections):
+        if state is not None:
+            state["nc_incomplete"] = True
         return "conclusion withheld: narrative disagreed with the record."
     if state is not None:
         state["nc_narr"] = {"key": nc_key, "text": text, "date": state.get("nc_today") or "1970-01-01"}

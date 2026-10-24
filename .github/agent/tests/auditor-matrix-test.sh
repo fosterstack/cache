@@ -2863,6 +2863,26 @@ valid="$(printf '%s' "$h1" | grep -Eq '^[0-9a-f]{64}$' && echo y || echo n)"
 { eq "$valid" "y" && [ "$calls1" -gt 0 ] && eq "$calls2" "0" && eq "$h1" "$h2" && eq "$calls3" "$calls1" && eq "$calls4" "$calls1" && eq "$calls5" "$calls1"; } \
   && ok || no "run 1 calls>0, run 2 (with state) 0 calls and the same hash, other/garbage/missing state = run 1's calls" "calls=$calls1/$calls2/$calls3/$calls4/$calls5 h1=$h1 h2=$h2 valid=$valid state=$(tr -d "\n " < "$st1" | head -c 700)"
 
+begin "req3-ac3-driver-incomplete-run-leaves-no-usable-state" "the DRIVER (REQ-AUD-3 AC3, Fable ruling on cache#684): a run where a model call ended without a cacheable result (here: every answer is 'unknown' and the narrative is empty) writes a state with NO verdicts, pullability or narrative, so the next run repeats the same calls instead of making zero"
+nl() { if [ -s "$LEDGER" ]; then wc -l < "$LEDGER" | tr -d ' '; else echo 0; fi; }
+cat > "$WORK/unknown-adj.py" <<'PYA'
+import json, os, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    if os.environ.get("AUDITOR_MODEL_LEDGER"):
+        open(os.environ["AUDITOR_MODEL_LEDGER"], "a").write("%s|%s|%s\n" % (req.get("finding_id"), req.get("attempt"), req.get("model")))
+    print(json.dumps({"refused": False, "category": "unknown", "token_usage": 1}), flush=True)
+PYA
+drvu() { # drvu OUTDIR [prev-state]
+  local o="$1"; shift; local extra=(); [ -n "${1:-}" ] && extra=(--prev-state "$1")
+  "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/nc-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$WORK/unknown-adj.py" "${extra[@]}" --out "$o" >/dev/null 2>&1; }
+u1="$WORK/du1"; u2="$WORK/du2"; rm -rf "$u1" "$u2"
+: > "$LEDGER"; drvu "$u1"; ucalls1="$(nl)"; : > "$LEDGER"; ust1="$u1/.auditor/auditor-state.json"
+drvu "$u2" "$ust1"; ucalls2="$(nl)"; : > "$LEDGER"
+uhollow="$(pj "$ust1" 'len(d["verdicts"])==0 and len(d["pullability"])==0 and d["narrative"] is None' 2>/dev/null)"
+{ [ "$ucalls1" -gt 0 ] && eq "$ucalls2" "$ucalls1" && eq "$uhollow" "true"; } \
+  && ok || no "run 1 calls>0 and leaves an empty state, run 2 repeats run 1's calls" "calls=$ucalls1/$ucalls2 hollow=$uhollow state=$(tr -d "\n " < "$ust1" 2>/dev/null | cut -c1-200)"
+
 begin "req16-ac2-versioned-prompt-file" "the model's standing instructions are a versioned prompt FILE (public; names no vendor/model); the adjudicator client loads them from the file, not an inline string"
 a2="$("$PY" -c "
 import importlib.util
