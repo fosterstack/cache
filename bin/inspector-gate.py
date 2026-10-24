@@ -130,7 +130,7 @@ def _product_key(pid):
     sc = scope_of(pid) if isinstance(pid, str) else None
     if sc is None:
         return ("raw", pid)
-    return ("go",) if pid.startswith("pkg:golang/") else ("oci", sc.get("variant"), sc.get("arch"))
+    return ("fosterstack-module",) if pid.startswith("pkg:golang/") else ("oci", sc.get("variant"), sc.get("arch"))
 
 
 def _package_key(sid):
@@ -149,7 +149,7 @@ def superseded(statements):
     _package_key), not by spelling. 'Later' is one total order per pair: by timestamp when EVERY statement of the pair carries a readable one (equal times: document
     order), else by document order for the whole pair."""
     parent = {}
-    def find(x):
+    def alias_root(x):
         while parent.setdefault(x, x) != x:
             parent[x] = parent[parent[x]]; x = parent[x]
         return x
@@ -159,7 +159,7 @@ def superseded(statements):
         ids = [x for x in ([v.get("name")] + list(v.get("aliases") or [])) if isinstance(x, str) and x]
         named.append(ids)
         for x in ids[1:]:
-            parent[find(x)] = find(ids[0])
+            parent[alias_root(x)] = alias_root(ids[0])
     groups = {}
     for i, st in enumerate(statements):
         if not isinstance(st, dict) or not named[i]:
@@ -170,7 +170,7 @@ def superseded(statements):
             at = p.get("@id")
             pid = at if at is not None else (p.get("identifiers") or {}).get("purl") or ""
             subs = frozenset(_package_key(s.get("@id")) for s in p.get("subcomponents") or [] if isinstance(s, dict))
-            groups.setdefault((find(named[i][0]), _product_key(pid), subs), []).append((i, pi, _stamp(st.get("timestamp"))))
+            groups.setdefault((alias_root(named[i][0]), _product_key(pid), subs), []).append((i, pi, _stamp(st.get("timestamp"))))
     dead = set()
     for entries in groups.values():
         if len({e[0] for e in entries}) < 2:

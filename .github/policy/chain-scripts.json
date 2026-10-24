@@ -2087,7 +2087,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "2a540ae13c613c3948466b0f1f93881a941d5d7cc40642af1dbeb511b745a9fc",
+      "sha256": "a74d72fe7a01425fc5f75dee7d00b2a8fa9a92ee4059c1c5eb673781f21ccacd",
       "tools": [
         "at",
         "python3"
