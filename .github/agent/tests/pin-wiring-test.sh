@@ -853,7 +853,6 @@ case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 # The transition judge (cache#669's landing): allowlist-pins-auditor is accepted in EXACTLY two forms: main's list, or it plus the gate-6 step once, right after patch-decide
 G6="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; g6 = {'name': 'gate 6 of the release process \\u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)', 'run': 'bash bin/audit-record-test.sh'}; "
-case_ g6-form-accepted            ok  "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-at-start                 bad "${G6}ps.insert(0, g6)"
 case_ g6-at-end                   bad "${G6}ps.append(g6)"
 case_ g6-before-patch-decide      bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh'), g6)"

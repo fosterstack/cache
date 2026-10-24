@@ -2098,8 +2098,9 @@ requirements:
       process rule 6, owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md:
       "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
       audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
-      .github/policy/audit-writers.json of the base checkout, changing no file. Nothing is stored in the pull request's
-      own files, and a new push changes the head sha, so an earlier record no longer applies. The verdict is part of the
+      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
+      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
+      record no longer applies. The verdict is part of the
       existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
       cannot edit or skip it, and a retarget re-runs it.
     source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
