@@ -91,7 +91,8 @@ for k in sorted(set(job) - {"name", "runs-on", "steps"}):
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
-        "bash .github/agent/tests/pin-wiring-test.sh"}  # this test's own step, too
+        "bash .github/agent/tests/pin-wiring-test.sh",  # this test's own step, too
+        "bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"}  # REQ-CI-005: their counting steps, split out of the parser-tests block (cache#705 round 1)
 seen = set()
 for st in job.get("steps", []):
     run = (st.get("run") or "").strip()
@@ -100,6 +101,9 @@ for st in job.get("steps", []):
         for k in ("if", "continue-on-error", "shell", "working-directory") + (("env",) if run == "bash .github/agent/tests/check-action-pins-test.sh" else ()):   # env on the cases step: the PINS_* controls (shard, dry, serial, self, jobs) are never set from the workflow
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
+        if run in ("bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"):     # REQ-CI-005: a counting step is trusted only with no key but name and run, so any other key makes `all` run the suite again
+            for k in sorted(set(st) - {"name", "run"}):
+                bad.append(f"the counting step `{run}` has `{k}` (a counting step has no key but name and run)")
 # nothing may redirect how those steps execute (step 8 r3, residual 2): a shell startup file, an
 # environment or PATH written for later steps, interpreter search paths, or a checkout of another tree
 import json
@@ -191,14 +195,14 @@ for w in sorted(want - seen):
 # exactly this name and this run line and nothing else (no if, continue-on-error, env, shell, working-directory, timeout-minutes), so a
 # pull request cannot remove, skip, rename, weaken or move them
 CHAIN_STEPS = {
-    "suite guard (no tracked test file is empty; the guard's own regressions)": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh",
+    "suite guard (no tracked test file is empty; the guard's own regressions)": "bash bin/suite-guard.sh files",
+    "the suite guard's own regressions (REQ-CI-005, a counting step)": "bash bin/suite-guard-test.sh",
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
     "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
-    "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)": "bash bin/vex-index-test.sh </dev/null",
     "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)": "bash bin/chain-build-admit-test.sh",
     "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)": "bash bin/chain-bind-test.sh",
     "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)": "bash bin/chain-rebuild-test.sh",
@@ -364,8 +368,12 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/inspector-gate-test.sh"
   },
   {
+   "name": "install the pinned grype for the VEX product-scope regressions and the suites after them (shard 4 keeps it with its consumers)",
+   "run": "./bin/install-scanner.sh grype"
+  },
+  {
    "name": "VEX product-scope regressions (audit R01 \u2014 exception bound to the FosterStack product)",
-   "run": "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh\n"
+   "run": "bash bin/vex-scope-test.sh"
   },
   {
    "name": "VEX applied by both gate scanners (REQ-REL-004-AC1 \u2014 covered suppressed, uncovered blocks, zero packages fails)",
@@ -389,7 +397,11 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "name": "suite guard (no tracked test file is empty; the guard's own regressions)",
-   "run": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh"
+   "run": "bash bin/suite-guard.sh files"
+  },
+  {
+   "name": "the suite guard's own regressions (REQ-CI-005, a counting step)",
+   "run": "bash bin/suite-guard-test.sh"
   },
   {
    "env": {
@@ -422,10 +434,6 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)",
    "run": "bash bin/chain-build-wiring-test.sh"
-  },
-  {
-   "name": "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
-   "run": "bash bin/vex-index-test.sh </dev/null"
   },
   {
    "name": "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)",
@@ -891,6 +899,16 @@ case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
 case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
+# the matrix and label suites (REQ-CI-005, cache#705): each is its own step of the allowlist job and cannot be removed, skipped, made non-blocking or given a shell
+for sfx in matrix labels; do
+  sel="[s for s in $steps if 'auditor-$sfx-test.sh' in (s.get('run') or '')][0]"
+  case_ "auditor-$sfx-removed"  bad "$steps[:] = [s for s in $steps if 'auditor-$sfx-test.sh' not in (s.get('run') or '')]"
+  case_ "auditor-$sfx-if"       bad "$sel['if'] = 'false'"
+  case_ "auditor-$sfx-continue" bad "$sel['continue-on-error'] = 'true'"
+  case_ "auditor-$sfx-shell"    bad "$sel['shell'] = \"bash -c 'true' {0}\""
+  case_ "auditor-$sfx-env"      bad "$sel['env'] = {'A': 'b'}"
+  case_ "auditor-$sfx-timeout"  bad "$sel['timeout-minutes'] = '5'"
+done
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -964,7 +982,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
@@ -1140,10 +1158,10 @@ case_ chain-split-shard-name      bad "${SC}${S1}['name'] = 'allowlist-chain'"
 case_ chain-split-impersonate     bad "${SC}d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 # exactly once across the whole workflow (seat A of cache#608, round 1): a copy of a chain suite kept in another job is refused
 case_ chain-split-copy-in-allowlist bad "${SC}d['jobs']['allowlist']['steps'].append(copy.deepcopy(${S1}['steps'][-1]))"
+# a copy of the VEX-index suite in a shard of the chain job is refused: the suite runs once, in the pins-auditor job (REQ-CI-005; the name of the file is built from two parts, a scope test reads this file line by line)
+case_ chain-split-vex-copy-in-chain bad "${SC}d['jobs']['allowlist-chain-4']['steps'].append({'name': 'x', 'run': 'bash bin/vex-' + 'index-test.sh </dev/null'})"
 case_ chain-split-copy-in-pa        bad "${SC}d['jobs']['allowlist-pins-auditor']['steps'].append({'name': 'x', 'run': 'bash bin/assemble-image-test.sh'})"
 case_ chain-split-original-kept     bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/assemble-image-test.sh'}]}"
-# (the name of this suite, which the pins-auditor job also runs, is built from two parts: a scope test of the vex tool reads this file line by line for its name)
-case_ chain-split-suite-thrice      bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/vex-' + 'index-test.sh </dev/null'}]}"
 # installed state does not cross jobs: every shard that runs a consumer of the installed grype (vex-both-scanners-test, the suite-floor re-run) must also run the installer step
 # and run it BEFORE the consumer. Checked on the split form the helper builds from the real ci.yml (independent of the judge's groups).
 if python3 - "$here/.github/workflows/ci.yml" "$work/split.py" > "$work/dep.out" 2>&1 <<'PYD'
