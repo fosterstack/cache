@@ -1,6 +1,6 @@
-"""check-osv-vex.py --vex FILE --report FILE [--variant production|fips] [--platform linux/ARCH]
+"""bin/check-osv-vex.py --vex FILE --report FILE [--variant production|fips] [--platform linux/ARCH]
 
-Apply the published VEX document to osv-scanner's findings (REQ-CHAIN-006-AC4, REQ-REL-004-AC1).
+Apply the published VEX document to osv-scanner's findings (REQ-CHAIN-006-AC4, REQ-REL-004-AC1; PR 3 round 1 F3).
 grype reads the VEX itself (--vex); osv-scanner cannot, so its report is filtered here with the same
 decision the daily rescan makes (bin/rescan-statement.py, which uses the PR gate's matcher).
 
@@ -13,8 +13,8 @@ A finding is excepted by a not_affected or fixed statement when all of these hol
 on that architecture only; without --platform it excepts nothing.
 
 Exit 0: the report holds one finding or more and every one is excepted.
-Exit 1, saying why: a finding no statement covers, a report with no parseable finding, a malformed entry,
-or a VEX document that cannot be read (a document that cannot be read excepts nothing).
+Exit 1, saying why: a finding no statement covers, a report with no parseable finding (nothing to except),
+a malformed entry, or a VEX document that cannot be read (a document that cannot be read excepts nothing).
 
 When the report was readable, one JSON line {"findings": N, "excepted": N, "uncovered": [ids]} is printed,
 on exit 0 and on exit 1 alike."""

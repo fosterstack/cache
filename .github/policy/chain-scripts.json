@@ -2036,7 +2036,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "417263cac0c2c3ea0ed52eb7caad8f976dd9137c1c8973102947fb0fb6119aa6",
+      "sha256": "3980fc06bf599e35e945a30419727006e9dffe825dd41695b881f45503be9711",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
