@@ -9,12 +9,18 @@
 # Anything else is a refusal: exit 1 with the reason, nothing written.
 set -uo pipefail
 pr=${1:-}; head=${2:-}; repo=${GITHUB_REPOSITORY:-}
-[[ "$pr" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "audit-record: the pull request number is not a number" >&2; exit 1; }
+[[ "$pr" =~ ^([1-9][0-9]{0,8}|release)$ ]] || { echo "audit-record: the pull request number is not a number (or the word release, the whole-release record of gate 7)" >&2; exit 1; }
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "audit-record: the head is not 40 lower-case hex" >&2; exit 1; }
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "audit-record: GITHUB_REPOSITORY is not owner/name" >&2; exit 1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-gh api "repos/${repo}/pulls/${pr}" > "$tmp/pr.json" 2> "$tmp/err" || { echo "audit-record: could not read pull request #${pr}: $(tail -c 200 "$tmp/err" | tr '\n' ' ')" >&2; exit 1; }
-python3 -I bin/audit-record.py plan --pr "$pr" --head "$head" --pr-json "$tmp/pr.json" --actor "${AUDIT_ACTOR:-}" --base-root . >&2 || exit 1
+if [ "$pr" = release ]; then
+  # gate 7 (release process rule 7): the whole-release record is for a commit that main contains; same dispatchers, same record branch audit/<sha>
+  gh api "repos/${repo}/compare/${head}...main" > "$tmp/cmp.json" 2> "$tmp/err" || { echo "audit-record: could not compare ${head} with main: $(tail -c 200 "$tmp/err" | tr '\n' ' ')" >&2; exit 1; }
+  python3 -I bin/audit-record.py plan-release --head "$head" --cmp-json "$tmp/cmp.json" --actor "${AUDIT_ACTOR:-}" --base-root . >&2 || exit 1
+else
+  gh api "repos/${repo}/pulls/${pr}" > "$tmp/pr.json" 2> "$tmp/err" || { echo "audit-record: could not read pull request #${pr}: $(tail -c 200 "$tmp/err" | tr '\n' ' ')" >&2; exit 1; }
+  python3 -I bin/audit-record.py plan --pr "$pr" --head "$head" --pr-json "$tmp/pr.json" --actor "${AUDIT_ACTOR:-}" --base-root . >&2 || exit 1
+fi
 # exit 0 = a passing record is there; 1 = no passing record (missing or invalid): write one; anything else (3 = a GitHub API error) = we could not tell: write nothing, never over a record we could not read
 bash bin/audit-record-judge.sh "$head" main > /dev/null 2>&1; rc=$?
 if [ "$rc" = 0 ]; then echo present; exit 0; fi

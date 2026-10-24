@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7, REQ-REL-012-AC8
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
 # pull request into the release carries a passed-audit record for its exact head, or it cannot merge"), offline. The record is the branch
 # audit/<the pull request's head sha>: ONE commit whose only parent is that head, verified by GitHub, authored by the writer the policy file
@@ -10,7 +10,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 python3 -I - "$here/audit-record.py" "$here/audit-record-judge.sh" <<'PY'
-import copy, importlib.util, json, os, re, subprocess, sys, tempfile
+import copy, importlib.util, json, os, re, subprocess, sys, tempfile, yaml
 spec = importlib.util.spec_from_file_location("ar", sys.argv[1]); A = importlib.util.module_from_spec(spec); spec.loader.exec_module(A)
 JUDGE_SH = sys.argv[2]
 passed = failed = 0
@@ -271,6 +271,150 @@ r, c = request(wf_fail=True); check("request: a failing dispatch -> exit 1 sayin
 r, c = request(pr="7; rm -rf /"); check("request: a pull request number that is not digits -> nothing called", r.returncode == 1 and c == "", (r.returncode, c))
 r, c = request(head="abc"); check("request: a head that is not 40 hex -> nothing called", r.returncode == 1 and c == "", (r.returncode, c))
 r, c = request(repo="o/r x"); check("request: a repository that is not owner/name -> nothing called", r.returncode == 1 and c == "", (r.returncode, c))
+
+# GATE 7 (rule 7): a release tag needs a passed audit of the whole release and the owner's approval of that audit. The record is the same audit/<sha> branch, for the TAGGED
+# commit; the owner's approval is one line of the owner-signed tag message naming the record commit. Patch tags (vX.Y.Z, Z >= 1) need nothing more.
+SIG = "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"
+def tagobj(msg_lines, sig=SIG):
+    return "object %s\ntype commit\ntag v0.3.0\ntagger Owner <o@x> 1 +0000\n\n%s\n%s" % (HEAD, "\n".join(msg_lines), sig)
+APPROVED = tagobj(["Release v0.3.0", "Audit-approved: " + REC])
+def rel(tag="v0.3.0", obj=APPROVED, sha=HEAD, ref=REF, commit=COMMIT, policy=WRITERS):
+    return A.verify_release(tag, obj, sha, ref, commit, policy)
+ok, why = rel(); check("release: an owner-signed v0.3.0 whose message approves the record of the tagged commit -> passes", ok and why == "", (ok, why))
+ok, why = rel(tag="v0.3.0-rc.1"); check("release: a release candidate tag is held to the same rule", ok, (ok, why))
+ok, why = rel(obj=tagobj(["-----BEGIN EXAMPLE SIGNATURE-----", "Release v0.3.0", "-----END EXAMPLE SIGNATURE-----", "Audit-approved: " + REC])); check("release: an example block before the approval line is message text, not the signature: still passes", ok, (ok, why))
+ok, why = rel(tag="v0.3.1", obj="", ref=None, commit=None); check("release: a patch tag needs no record and no approval line", ok, (ok, why))
+ok, why = rel(tag="v0.3.12", obj=None, ref=None, commit=None); check("release: a two-digit patch tag is a patch tag too", ok, (ok, why))
+for name, kw in (
+    ("no approval line", dict(obj=tagobj(["Release v0.3.0"]))),
+    ("an approval line for another commit", dict(obj=tagobj(["Audit-approved: " + "d" * 40]))),
+    ("two approval lines", dict(obj=tagobj(["Audit-approved: " + REC, "Audit-approved: " + REC]))),
+    ("two approval lines naming different commits", dict(obj=tagobj(["Audit-approved: " + REC, "Audit-approved: " + "d" * 40]))),
+    ("the line in upper case", dict(obj=tagobj(["AUDIT-APPROVED: " + REC]))),
+    ("the sha shortened", dict(obj=tagobj(["Audit-approved: " + REC[:12]]))),
+    ("trailing text on the line", dict(obj=tagobj(["Audit-approved: " + REC + " ok"]))),
+    ("the line indented", dict(obj=tagobj(["  Audit-approved: " + REC]))),
+    ("the line inside the signature block", dict(obj=tagobj(["Release v0.3.0"], sig="-----BEGIN SSH SIGNATURE-----\nAudit-approved: " + REC + "\n-----END SSH SIGNATURE-----\n"))),
+    ("a second approval line inside an example block that is message text, not the signature", dict(obj=tagobj(["Audit-approved: " + REC, "-----BEGIN EXAMPLE SIGNATURE-----", "Audit-approved: " + "d" * 40, "-----END EXAMPLE SIGNATURE-----"]))),
+    ("no tag object", dict(obj=None)), ("an empty tag object", dict(obj="")),
+    ("no record branch", dict(ref=None)), ("no record commit", dict(commit=None)),
+    ("a record for another tagged commit", dict(sha="c" * 40)),
+    ("an unverified record", dict(commit=mut(COMMIT, ["commit", "verification", "verified"], False))),
+    ("a record by someone else", dict(commit=mut(COMMIT, ["author", "login"], "someone"))),
+    ("a record whose commit is not the approved one", dict(obj=tagobj(["Audit-approved: " + "e" * 40]))),
+    ("a missing policy", dict(policy=None)),
+    ("a tag that is not a release version", dict(tag="v0.3")), ("a tag with a suffix that is not rc.N", dict(tag="v0.3.0-beta")), ("an empty tag", dict(tag="")),
+):
+    ok, why = rel(**kw); check("release refused: " + name, (not ok) and bool(why), (ok, why))
+# the command line and the wrapper in release mode
+open(os.path.join(d, "tagobj.txt"), "w").write(APPROVED)
+def relcli(tag="v0.3.0", obj="tagobj.txt", ref=REF, commit=COMMIT, sha=HEAD):
+    cmd = [sys.executable, "-I", sys.argv[1], "release", "--tag", tag, "--tag-object", os.path.join(d, obj), "--tagged-sha", sha, "--base-root", base]
+    if ref is not None: cmd += ["--ref-json", w("ref.json", ref)]
+    if commit is not None: cmd += ["--commit-json", w("commit.json", commit)]
+    return subprocess.run(cmd, capture_output=True, text=True)
+r = relcli(); check("cli release: a good approval exits 0", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+r = relcli(ref=None); check("cli release: no record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = relcli(obj="missing.txt"); check("cli release: an unreadable tag object exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = relcli(tag="v0.3.1", ref=None, commit=None, obj="missing.txt"); check("cli release: a patch tag exits 0 without reading anything", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+def wrap_rel(tag="v0.3.0", ref=REF, commit=COMMIT, ref_err=None, obj_text=APPROVED):
+    fk = tempfile.mkdtemp(dir=d)
+    for name, o, err in (("ref", ref, ref_err), ("commit", commit, None)):
+        if err is not None: open(os.path.join(fk, name + ".err"), "w").write(err)
+        elif o is not None: open(os.path.join(fk, name + ".json"), "w").write(json.dumps(o))
+        else: open(os.path.join(fk, name + ".err"), "w").write("gh: Not Found (HTTP 404)")
+    calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    tf = os.path.join(fk, "tagobj"); open(tf, "w").write(obj_text)
+    open(fake + "/gh", "w").write('''#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS"
+case "$2" in
+  repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref" ;;
+  repos/o/r/commits/*) f="$FAKE/commit" ;;
+  *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
+esac
+if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
+cat "$f.json"
+''')
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x")
+    r = subprocess.run(["bash", root + "/bin/audit-record-judge.sh", HEAD, "main", "--release", tag, tf], capture_output=True, text=True, env=env)
+    return r, open(calls).read()
+r, c = wrap_rel(); check("wrapper --release: a good approval exits 0 after reading the record", r.returncode == 0 and c.count("gh api") == 2, (r.returncode, r.stdout, r.stderr, c))
+r, c = wrap_rel(ref=None); check("wrapper --release: no record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r, c = wrap_rel(ref_err="gh: HTTP 502"); check("wrapper --release: an API error exits 3", r.returncode == 3, (r.returncode, r.stderr))
+r, c = wrap_rel(obj_text=tagobj(["no line"])); check("wrapper --release: a tag without the approval line exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r, c = wrap_rel(tag="v0.3.2", ref=None); check("wrapper --release: a patch tag exits 0 and calls nothing", r.returncode == 0 and c == "", (r.returncode, c))
+
+# the writer's release mode: the commit to be tagged must be on main (the whole release is the commit main holds), the same dispatcher rule
+CMP = {"status": "ahead", "ahead_by": 4, "behind_by": 0}
+def plan_rel(cmp=CMP, head=HEAD, actor="fosterstack-admin", policy=WRITERS):
+    return A.plan_release(head, cmp, actor, policy)
+ok, why = plan_rel(); check("plan release: a commit that main contains (main is ahead of it) may be recorded", ok and why == "", (ok, why))
+ok, why = plan_rel(cmp={"status": "identical"}); check("plan release: the tip of main itself may be recorded", ok, (ok, why))
+for name, kw in (("a commit main does not contain (diverged)", dict(cmp={"status": "diverged"})), ("a commit ahead of main", dict(cmp={"status": "behind"})),
+                 ("no answer", dict(cmp=None)), ("a malformed answer", dict(cmp=[])), ("an actor who is not a dispatcher", dict(actor="someone")),
+                 ("a head that is not 40 hex", dict(head="abc")), ("no policy", dict(policy=None))):
+    ok, why = plan_rel(**kw); check("plan release refused: " + name, (not ok) and bool(why), (ok, why))
+
+# release mode of the prepare and request scripts (fake gh answers `api .../compare/...`)
+def gh_cmp(status, fail=False):
+    open(fake + "/gh", "w").write('''#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS"
+case "$1 $2" in
+  "api repos/o/r/compare/"*) [ -n "$CMP_FAIL" ] && { echo "HTTP 502" >&2; exit 1; }; if [ "$3" = -q ]; then echo "$CMP_STATUS"; else echo "{\\"status\\": \\"$CMP_STATUS\\"}"; fi ;;
+  "api repos/o/r/git/ref/heads/audit/"*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  "workflow run") exit 0 ;;
+  *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
+esac
+''')
+def run_rel(script, args, status="ahead", fail=False, actor="fosterstack-admin"):
+    gh_cmp(status)
+    fk = tempfile.mkdtemp(dir=d); calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    cwd = tempfile.mkdtemp(dir=d)
+    for name in ("bin", ".github"): os.symlink(os.path.join(wroot, name), os.path.join(cwd, name))
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], CALLS=calls, CMP_STATUS=status, CMP_FAIL=("1" if fail else ""), GITHUB_REPOSITORY="o/r", GH_TOKEN="x", AUDIT_ACTOR=actor)
+    r = subprocess.run(["bash", script] + args, capture_output=True, text=True, env=env, cwd=cwd)
+    f = os.path.join(cwd, "audit-record")
+    return r, open(calls).read(), (open(f).read() if os.path.exists(f) else None)
+for name, dst in (("audit-record-request.sh", None),):
+    open(wroot + "/bin/" + name, "w").write(open(os.path.join(os.path.dirname(JUDGE_SH), name)).read()); os.chmod(wroot + "/bin/" + name, 0o755)
+open(wroot + "/bin/audit-record-prepare.sh", "w").write(open(PREP_SH).read())
+r, c, f = run_rel("bin/audit-record-prepare.sh", ["release", HEAD]); check("prepare release: a commit main contains, a named dispatcher, no record yet -> proceed and the file holds the commit", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and f == HEAD + "\n", (r.returncode, r.stdout, r.stderr, f))
+r, c, f = run_rel("bin/audit-record-prepare.sh", ["release", HEAD], status="identical"); check("prepare release: the tip of main itself -> proceed", r.returncode == 0 and "proceed" in r.stdout, (r.returncode, r.stdout, r.stderr))
+for name, kw in (("a commit main does not contain", dict(status="diverged")), ("a commit ahead of main", dict(status="behind")), ("an actor who is not a dispatcher", dict(actor="someone")), ("an API error comparing", dict(fail=True))):
+    r, c, f = run_rel("bin/audit-record-prepare.sh", ["release", HEAD], **kw); check("prepare release refused: %s -> exit 1, nothing written" % name, r.returncode == 1 and f is None and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, c, f = run_rel("bin/audit-record-request.sh", ["release", HEAD]); check("request release: a commit on main -> the record job is started with audit_pr=release", r.returncode == 0 and ("workflow run agent-review-gate.yml -R o/r --ref main -f audit_pr=release -f audit_head=" + HEAD) in c.replace("fosterstack/cache", "o/r"), (r.returncode, r.stdout, r.stderr, c))
+r, c, f = run_rel("bin/audit-record-request.sh", ["release", HEAD], status="diverged"); check("request release: a commit not on main -> nothing requested, exit 1", r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
+
+# the admission step: after the tag's signature and the on-main check, main's copies only, the job's own read token, nothing swallowed
+def adm_problems(w):
+    steps = w["jobs"]["admit"]["steps"]
+    names = [x.get("name", "") for x in steps]
+    idx = [i for i, n in enumerate(names) if n.startswith("a passed whole-release audit")]
+    if len(idx) != 1: return ["the whole-release audit step is not there exactly once"]
+    i = idx[0]; bad = []
+    if not any("verify the annotated tag signature" in n for n in names[:i]): bad.append("it must come after the tag signature check")
+    if not any(n == "the tagged commit must be on main" for n in names[:i]): bad.append("it must come after the on-main check")
+    st = steps[i]
+    if st.get("env") != {"GH_TOKEN": "${{ github.token }}"} or set(st) - {"name", "env", "run"}: bad.append("env or keys")
+    run = st.get("run", "")
+    for need in ("set -euo pipefail", "git show origin/main:bin/audit-record.py", "git show origin/main:bin/audit-record-judge.sh", "git show origin/main:.github/policy/audit-writers.json",
+                 'bash /tmp/audit-root/bin/audit-record-judge.sh "${GITHUB_SHA}" main --release "${GITHUB_REF_NAME}" /tmp/tag-object'):
+        if need not in run: bad.append("lacks: " + need)
+    if re.search(r"\|\|\s*(true|:)|continue-on-error", run) or "${{" in run: bad.append("swallows a failure or interpolates an expression")
+    return bad
+root_repo = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
+adm = yaml.load(open(root_repo + "/.github/workflows/stage-admission.yml"), Loader=yaml.BaseLoader)
+check("stage-admission.yml: the whole-release audit step is the reviewed one", adm_problems(adm) == [], adm_problems(adm))
+def adm_mut(fn):
+    m = copy.deepcopy(adm); fn(m["jobs"]["admit"]["steps"]); return m
+for name, fn, frag in (
+    ("the step removed", lambda st: st.pop([i for i, x in enumerate(st) if x.get("name", "").startswith("a passed whole-release audit")][0]), "exactly once"),
+    ("a swallowed failure", lambda st: [x.update({"run": x["run"] + "\n|| true"}) for x in st if x.get("name", "").startswith("a passed whole-release audit")], "swallows"),
+    ("a continue-on-error", lambda st: [x.update({"continue-on-error": "true"}) for x in st if x.get("name", "").startswith("a passed whole-release audit")], "env or keys"),
+    ("the tagged commit's own judge", lambda st: [x.update({"run": x["run"].replace("git show origin/main:bin/audit-record.py", "cp bin/audit-record.py")}) for x in st if x.get("name", "").startswith("a passed whole-release audit")], "lacks"),
+    ("a non-release mode", lambda st: [x.update({"run": x["run"].replace(" --release ", " --verify ")}) for x in st if x.get("name", "").startswith("a passed whole-release audit")], "lacks"),
+):
+    probs = adm_problems(adm_mut(fn)); check("stage-admission.yml: a copy with %s is refused" % name, any(frag in x for x in probs), probs)
 
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

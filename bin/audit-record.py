@@ -94,6 +94,66 @@ def verify_record(head, base_ref, ref, commit, writers):
     return True, ""
 
 
+_RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$")
+_PATCH_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$")
+_APPROVED = re.compile(r"^Audit-approved: ([0-9a-f]{40})$")
+_SIG_BEGIN = ("-----BEGIN SSH SIGNATURE-----", "-----BEGIN SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----")
+
+
+def is_patch_tag(tag):
+    return isinstance(tag, str) and bool(_PATCH_TAG.match(tag))
+
+
+def _approval(tag_object):
+    """The record commit sha the owner approved in the signed tag message, else None. Exactly one line `Audit-approved: <40 hex>` in the message (above the signature block);
+    any other line that starts like an approval, in any case or indented, refuses (an ambiguous approval is no approval)."""
+    if not isinstance(tag_object, str) or "\n\n" not in tag_object:
+        return None
+    msg = tag_object.split("\n\n", 1)[1]
+    found = []
+    for ln in msg.split("\n"):
+        if ln in _SIG_BEGIN:      # exactly the labels the admission signer recognises (bin/admission-tag-signer.py BLOCKS); any other PEM-looking block is message text
+            break
+        if ln.strip().lower().startswith("audit-approved"):
+            m = _APPROVED.match(ln)
+            if not m:
+                return None
+            found.append(m.group(1))
+    return found[0] if len(found) == 1 else None
+
+
+def verify_release(tag, tag_object, tagged_sha, ref, commit, policy):
+    """Gate 7 (release process rule 7): (True, "") for a patch tag or for a release tag whose commit has a passed-audit record that the owner's signed tag message approves; else (False, reason).
+    The tag's signature is verified by the admission step before this runs, so a line in the message is the owner's own."""
+    if not isinstance(tag, str) or not _RELEASE_TAG.match(tag):
+        return False, "the tag is not a release version"
+    if _PATCH_TAG.match(tag):
+        return True, ""
+    approved = _approval(tag_object)
+    if approved is None:
+        return False, "the signed tag message does not carry exactly one 'Audit-approved: <40-hex record commit>' line (the owner's approval of the whole-release audit)"
+    ok, why = verify_record(tagged_sha, "main", ref, commit, policy)
+    if not ok:
+        return False, "the whole-release audit: " + why
+    if commit.get("sha") != approved:
+        return False, "the owner approved record commit %s, but the record of this commit is %s" % (approved, commit.get("sha"))
+    return True, ""
+
+
+def plan_release(head, cmp_json, actor=None, policy=None):
+    """(True, "") when a whole-release record may be written for this commit now, on the request of this actor: the commit is on main (main is identical to it or ahead of it)."""
+    pol = _policy(policy)
+    if pol is None:
+        return False, "the audit policy (%s of the default branch) is missing or malformed" % WRITERS_PATH
+    if not isinstance(actor, str) or actor not in pol[1]:
+        return False, "the dispatching actor is not named as a dispatcher in %s" % WRITERS_PATH
+    if not isinstance(head, str) or not _SHA.match(head):
+        return False, "the commit sha is not 40 lower-case hex"
+    if not isinstance(cmp_json, dict) or cmp_json.get("status") not in ("identical", "ahead"):
+        return False, "the commit is not on main (compare main...commit)"
+    return True, ""
+
+
 def plan_record(number, head, pr, actor=None, policy=None):
     """(True, "") when a record may be written for this pull request and head now, on the request of this actor; (False, reason) otherwise. The writer checks the pull request
     itself, so a record is never made for a closed or merged pull request, for another base, or for a head that has since moved, and only an actor the policy names as a
@@ -139,6 +199,18 @@ def main(argv):
     v.add_argument("--base-root", required=True)
     v.add_argument("--ref-json")
     v.add_argument("--commit-json")
+    r = sub.add_parser("release")
+    r.add_argument("--tag", required=True)
+    r.add_argument("--tag-object", required=True)
+    r.add_argument("--tagged-sha", required=True)
+    r.add_argument("--base-root", required=True)
+    r.add_argument("--ref-json")
+    r.add_argument("--commit-json")
+    q = sub.add_parser("plan-release")
+    q.add_argument("--head", required=True)
+    q.add_argument("--cmp-json", required=True)
+    q.add_argument("--actor", required=True)
+    q.add_argument("--base-root", required=True)
     p = sub.add_parser("plan")
     p.add_argument("--pr", required=True, type=int)
     p.add_argument("--head", required=True)
@@ -149,6 +221,18 @@ def main(argv):
         a = ap.parse_args(argv)
     except SystemExit:
         return 2
+    if a.cmd == "release":
+        try:
+            obj = open(a.tag_object).read()
+        except OSError:
+            obj = None
+        ok, why = verify_release(a.tag, obj, a.tagged_sha, _load(a.ref_json), _load(a.commit_json), _load(os.path.join(a.base_root, WRITERS_PATH)))
+        print("audit-record: " + ("release %s: %s" % (a.tag, "no whole-release record needed" if is_patch_tag(a.tag) else "the owner's approval matches the passed-audit record") if ok else why))
+        return 0 if ok else 1
+    if a.cmd == "plan-release":
+        ok, why = plan_release(a.head, _load(a.cmp_json), a.actor, _load(os.path.join(a.base_root, WRITERS_PATH)))
+        print("audit-record: " + ("a whole-release record may be written for %s" % a.head if ok else why))
+        return 0 if ok else 1
     if a.cmd == "plan":
         ok, why = plan_record(a.pr, a.head, _load(a.pr_json), a.actor, _load(os.path.join(a.base_root, WRITERS_PATH)))
         print("audit-record: " + ("a record may be written for #%d at %s" % (a.pr, a.head) if ok else why))

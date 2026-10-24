@@ -201,6 +201,21 @@ jobs:
           git merge-base --is-ancestor "${GITHUB_SHA}" origin/main \
             || { echo "::error::tagged commit is not an ancestor of origin/main" >&2; exit 1; }
 
+      # REQ-REL-012 (release process rule 7, owner Oct 23: "a release tag needs a passed audit of the whole release and the owner's approval of that audit"): for every tag that is
+      # not a patch tag (vX.Y.Z, Z >= 1), the tagged commit needs the same passed-audit record as a pull request into main (the branch audit/<sha>, one verified commit by the writer
+      # named in main's policy, parented on the tagged commit) AND the owner's signed tag message must carry exactly one line `Audit-approved: <that record commit's sha>`. The tag's
+      # signature was verified above, so the line is the owner's. The judge and the policy are main's copies (never the tagged commit's), like the signer policy above.
+      - name: a passed whole-release audit, and the owner's approval of it in the signed tag (patch tags need neither)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/audit-root/bin /tmp/audit-root/.github/policy
+          git show origin/main:bin/audit-record.py                > /tmp/audit-root/bin/audit-record.py
+          git show origin/main:bin/audit-record-judge.sh          > /tmp/audit-root/bin/audit-record-judge.sh
+          git show origin/main:.github/policy/audit-writers.json  > /tmp/audit-root/.github/policy/audit-writers.json
+          bash /tmp/audit-root/bin/audit-record-judge.sh "${GITHUB_SHA}" main --release "${GITHUB_REF_NAME}" /tmp/tag-object
+
       # F02/F03: two evidence classes, no status fallback.
       #   scope=push          -> the check ran on the EXACT tagged SHA.
       #   scope=pull_request  -> the check never runs on main commits;
