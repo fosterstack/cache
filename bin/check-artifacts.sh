@@ -53,9 +53,10 @@ checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
 # healthy PORT [PID]: /healthz answers within 10 s; with a PID, a server that is gone ends the wait at once
 healthy() {
+  local pid=${2:-}
   for _ in $(seq 20); do
     lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0
-    [ -z "${2:-}" ] || kill -0 "$2" > /dev/null 2>&1 || return 1
+    if [ -n "$pid" ] && ! kill -0 "$pid" > /dev/null 2>&1; then return 1; fi
     sleep 0.5
   done
   return 1
@@ -88,13 +89,17 @@ bound_port() {
   local i addr
   for i in $(seq 80); do
     addr=$(jq -nRr 'first(inputs | fromjson? | select(.msg == "fscache: starting") | .addr) // empty' "$2")
-    [ -z "$addr" ] || { echo "${addr##*:}"; return 0; }
+    if [ -n "$addr" ]; then
+      echo "${addr##*:}"
+      return 0
+    fi
     kill -0 "$1" > /dev/null 2>&1 || return 1
     sleep 0.25
   done
   return 1
 }
-# start_server NAME BINARY DESCRIPTION [GODEBUG]: runs one server of this run and sets $port. GODEBUG is always set
+last_output() { tail -n 3 "$1" | tr '\n' ' '; }
+# start_server NAME BINARY DESCRIPTION [GODEBUG]: runs one server of this run and sets $port. GODEBUG is always given
 # (empty when not asked), so a runner's own value never reaches the binary under test. A server that dies or never
 # answers fails the check with its last output.
 start_server() {
@@ -103,7 +108,7 @@ start_server() {
   pid=$!
   pids+=("$pid")
   port=$(bound_port "$pid" "$log") && healthy "$port" "$pid" ||
-    fail "$3 never answered /healthz: it does not execute (its last output: $(tail -n 3 "$log" | tr '\n' ' '))"
+    fail "$3 never answered /healthz: it does not execute; its last output: $(last_output "$log")"
 }
 # the server answering on a port must be the one this run started: after its answers the process must still be there
 still_ours() { sleep 0.5; kill -0 "$1" > /dev/null 2>&1; }

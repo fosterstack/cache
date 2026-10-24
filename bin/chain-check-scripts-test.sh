@@ -966,13 +966,16 @@ t0=$(date +%s); arun -- "${ART[@]}"; took=$(( $(date +%s) - t0 ))
 if [ "$rc" = 1 ] && grep -Fq healthz <<< "$out" && grep -Fq "boom cannot bind" <<< "$out" && [ "$took" -le 5 ]; then ok "PLAT-001-AC1 a server that dies before it answers fails within 5 s, naming healthz and carrying its own last log line"; else bad "PLAT-001-AC1 a dead server: rc=$rc after ${took}s: ${out:0:200}"; fi
 mkarch "$fa/dist"
 # the check never guesses a port: each of its three servers is told to listen on port 0 of the loopback and reports the port it got
+servers_given() { cat "$work"/fakedir/addr-* 2> /dev/null | sort | uniq -c | tr -s ' ' | tr '\n' ';'; }   # the addresses the check gave its servers
 arun -- "${ART[@]}"
-addrs=$(cat "$work"/fakedir/addr-* 2> /dev/null | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+addrs=$(servers_given)
 if [ "$rc" = 0 ] && [ "$addrs" = " 3 127.0.0.1:0;" ]; then ok "PLAT-001-AC1 the check starts its three servers on 127.0.0.1:0 and reads the bound port from their log"; else bad "PLAT-001-AC1 the servers were given [$addrs] (rc=$rc): ${out:0:160}"; fi
 # REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
 if grep -Fq -- '--platform linux/arm64' "$work/log" && [ -f "$fa/out/artifacts-result-arm64.json" ] && jq -e '.arch == "arm64" and .production.digest and .fips.digest' "$fa/out/artifacts-result-arm64.json" > /dev/null 2>&1; then ok "AC17 the arm64 images run with --platform linux/arm64 and the result names the arch and the same candidate digests"; else bad "AC17 arm64 run: no --platform linux/arm64, or artifacts-result-arm64.json incomplete"; fi
+addrs=$(servers_given)   # the arm64 run above: the same start code, the same port 0 (a second flake died waiting on the arm64 -fips server)
+if [ "$addrs" = " 3 127.0.0.1:0;" ]; then ok "AC17 the arm64 run also starts its three servers on 127.0.0.1:0"; else bad "AC17 the arm64 servers were given [$addrs]"; fi
 arun -- "${ART[@]}"; if ! grep -Fq -- '--platform' "$work/log"; then ok "AC17 the default (amd64) run passes no --platform"; else bad "AC17 the amd64 run passed --platform"; fi
 # round 1 F1: the images and archives are the ones Build recorded, bound before anything is loaded or executed
 mkarch "$fa/dist"
@@ -1625,7 +1628,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=576
+EXPECT=577
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
