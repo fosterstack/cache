@@ -2554,5 +2554,15 @@
       "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     }
+  ],
+  "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
+  "file_pins": [
+    {
+        "file": ".github/policy/gradle-wrapper-jar-sha256.txt",
+        "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+        "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256 (the sum equals Gradle's published gradle-9.7.1-wrapper.jar.sha256; release https://github.com/gradle/gradle/releases/tag/v9.7.1)",
+        "version": "9.7.1",
+        "published": "2026-08-19T15:30:28Z"
+    }
   ]
 }
