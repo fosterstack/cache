@@ -1259,5 +1259,47 @@ for info in ({"Version": "v1.0.0"}, {"Version": "v1.0.0", "Time": None}, {"Versi
     age._pr_clock = lambda *a, **k: None
     assert age.live_proofs(it, ".") == [], info      # no go-index proof, no crash: the pin then fails as unprovable
 PY
+CASE="shapes (round 3 findings): a wrong-shaped but valid answer is CouldNotLook, never a traceback or 'nothing there' - one case per consumer (go index rows, PyPI release files, Docker Hub tags, the advisory tool's PyPI info and release list)"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def must_refuse(label, fn):
+    try:
+        fn()
+    except age.CouldNotLook:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:80]))
+    raise AssertionError((label, "no CouldNotLook"))
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+# 1. go index rows
+for body in (b"[]\n", b"null\n", b'{"Path":null,"Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n', b'{"Path":"github.com/o/r","Version":"v1.0.0"}\n', b'{"Path":"github.com/o/r","Version":"v1.0.0","Timestamp":5}\n'):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+# 2. PyPI release files (age proof)
+pkg = pa.inv.Item("package", "pypi/p", "1.0")
+for ans in ([], {"urls": 5}, {"urls": [1]}, {"urls": [{"upload_time_iso_8601": 7}]}):
+    age._http_json = lambda url, timeout=30, _a=ans: _a
+    age._pr_clock = lambda *a, **k: None
+    must_refuse(("pypi", ans), lambda: age.live_proofs(pkg, "."))
+# 3. Docker Hub tags
+img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
+for ans in ([], {"results": 5}, {"results": [1]}, {"results": [{"digest": "x", "images": 5}]}):
+    age._http_json = lambda url, timeout=30, _a=ans: _a
+    must_refuse(("hub", ans), lambda: age._registry_push(img))
+# 4. the advisory tool's PyPI info (published name) and release list
+net = pa.LiveNet(["false"], ".")
+for ans in ([], {"info": []}, {"info": 5}):
+    age._http_json = lambda url, timeout=30, _a=ans: _a
+    net._osv_records = lambda *a, **k: {}
+    net._gh_json = lambda *a, **k: []
+    must_refuse(("pypi info", ans), lambda: net._lists_for(pkg, "1.0"))
+for ans in ([], {"releases": []}, {"releases": {"1.0": 5}}, {"releases": {"1.0": [1]}}):
+    age._http_json = lambda url, timeout=30, _a=ans: _a
+    must_refuse(("releases", ans), lambda: net.versions(pkg))
+PY
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

@@ -155,6 +155,21 @@ def _http_json(url, timeout=30):
         return None
 
 
+def _http_dict(url, timeout=30):
+    """_http_json for an endpoint that answers with a JSON object: valid JSON of another shape is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+    d = _http_json(url, timeout)
+    if d is not None and not isinstance(d, dict):
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with something that is not a JSON object")
+    return d
+
+
+def _dicts(value, what):
+    """A list of JSON objects, or CouldNotLook: an element of another shape is an answer we cannot read."""
+    if not isinstance(value, list) or not all(isinstance(x, dict) for x in value):
+        raise CouldNotLook(f"{what} is not a list of JSON objects")
+    return value
+
+
 def _http_json_strict(url, timeout=30):
     """Like _http_json, but only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
     try:
@@ -251,7 +266,9 @@ def _go_index_time(mod, version, vcs_time):
         except (OSError, ValueError, http.client.HTTPException):
             return None
         for row in rows:
-            if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
+            if not (isinstance(row, dict) and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
+                raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")      # an unreadable row is never skipped as 'not this module'
+            if row["Path"].lower() == mod.lower() and row["Version"] == version:
                 return row["Timestamp"]
         if len(rows) < 2000:
             return None
@@ -376,8 +393,10 @@ def live_proofs(item, root, base=None, head="HEAD"):
                 out.append((t, "go-index"))
     elif item.kind == "package":
         name = item.name.split("/", 1)[1]
-        d = _http_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
-        ups = [u.get("upload_time_iso_8601") for u in (d or {}).get("urls", []) if u.get("upload_time_iso_8601")]
+        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
+        ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {}).get("urls", []), "pypi urls") if u.get("upload_time_iso_8601")]
+        if not all(isinstance(x, str) for x in ups):
+            raise CouldNotLook("pypi.org answered with an upload time that is not text")
         if ups:
             out.append((max(ups), "pypi"))  # the newest file: a wheel added later to an old release is young
     elif item.kind == "image" and item.version:
@@ -408,11 +427,11 @@ def _registry_push(item):
         ns, repo = parts[-2], parts[-1]
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
-            d = _http_json(url)
+            d = _http_dict(url)
             if not d:
                 return None
-            for tag in d.get("results", []):
-                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in tag.get("images", [])):
+            for tag in _dicts(d.get("results", []), "hub.docker.com results"):
+                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images")):
                     return tag.get("tag_last_pushed")
             url = d.get("next")
             if not url:

@@ -526,8 +526,12 @@ class LiveNet:
             page = []
             asked = list(dict.fromkeys([pkg, *paths]))
             if q["package"]["ecosystem"] == "PyPI":
-                info = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
-                published = (info.get("info") or {}).get("name")
+                info = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
+                inner = info.get("info")
+                inner = {} if inner is None else inner
+                if not isinstance(inner, dict):
+                    raise age.CouldNotLook("pypi.org answered with an info block that is not a JSON object")
+                published = inner.get("name")
                 if published and published != pkg:
                     asked.append(published)            # jaraco.context vs jaraco-context: GitHub matches the exact published name
             for typ in ("", "&type=malware"):
@@ -682,12 +686,16 @@ class LiveNet:
     def versions(self, item):
         """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody searched, and it is a decision)."""
         if item.kind == "package":
-            d = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json")
+            d = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json")
             if not d:
                 return None
             out = []
-            for ver, files in (d.get("releases") or {}).items():
-                ups = [f.get("upload_time_iso_8601") for f in files if f.get("upload_time_iso_8601") and not f.get("yanked")]
+            releases = d.get("releases")
+            releases = {} if releases is None else releases
+            if not isinstance(releases, dict):
+                raise age.CouldNotLook("pypi.org answered with a release list that is not a JSON object")
+            for ver, files in releases.items():
+                ups = [f.get("upload_time_iso_8601") for f in age._dicts(files, "pypi release files") if f.get("upload_time_iso_8601") and not f.get("yanked")]
                 if ups:
                     out.append({"version": ver, "sha": None, "published": min(ups), "_item": inv.Item("package", item.name, ver, ver)})
             return out
