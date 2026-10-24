@@ -397,7 +397,6 @@ else:
     if not pk_ or "packages:$k" not in g_.replace(" ", ""):
         bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
     else:   # the count is run on an inventory: only a package URL (pkg:<type>/<name>) is a package, never a file, a number or a string like not-a-purl
-        import subprocess
         inv = {"components": [{"purl": "pkg:deb/debian/glibc@2.36"}, {"purl": "not-a-purl"}, {"purl": "pkg:"}, {"purl": "pkg:/"}, {"purl": "pkg:deb/"},
                               {"purl": 7}, {"purl": None}, {"type": "file", "name": "/x"}, {"purl": "pkg:golang/github.com/a/b@v1"}]}
         got = subprocess.run(["jq", pk_.group(1)], input=json.dumps(inv), capture_output=True, text=True).stdout.strip()
