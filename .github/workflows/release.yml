@@ -717,8 +717,10 @@ jobs:
           got=$(crane digest localhost:5000/cache:rc)
           [ "$got" = "$want" ] || { echo "::error::the pushed digest ${got} is not the one Build attested (${want})"; exit 1; }
 
-      - name: install the pinned kind binary
-        run: ./bin/install-scanner.sh kind
+      - name: kind from the runner image
+        run: |
+          command -v kind > /dev/null || { echo "::error::kind is not on the runner image (PIPELINE failure, not a finding)"; exit 1; }
+          kind version
 
       - name: pin pip (hash-checked)
         run: |

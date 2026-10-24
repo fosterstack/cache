@@ -69,8 +69,12 @@ jobs:
           path: govulncheck-dl
       - name: install govulncheck from its build job (its download was digest-checked)
         run: bash bin/unpack-govulncheck.sh
-      - name: install kind and kubectl (exact versions, committed checksums)
-        run: bash bin/install-kind.sh
+      - name: kind and kubectl from the runner image
+        run: |
+          command -v kind > /dev/null || { echo "::error::kind is not on the runner image (PIPELINE failure, not a finding)"; exit 1; }
+          command -v kubectl > /dev/null || { echo "::error::kubectl is not on the runner image (PIPELINE failure, not a finding)"; exit 1; }
+          kind version
+          kubectl version --client
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed-witness-build
