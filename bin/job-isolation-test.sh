@@ -131,6 +131,11 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                 bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(w)))
             if re.search(r"\bwitnessed\.sh\b", stext):
                 bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and also runs the keyless witnessed.sh: a build-side job signs with the throwaway key only" % (key[0], jn))
+        if w:   # fail closed: a credential job never runs a script whose path under bin/ is built from a variable (it could hide the wrapper or a build from the rules above)
+            for s_ in (j.get("steps") or []):
+                for l_ in steps_text(s_).split("\n"):
+                    if re.search(r"\bbin/[^\s;&|)]*\$", re.sub(r"['\"\\]", "", l_)):
+                        bad.append("%s/%s holds %s and runs a script whose path under bin/ is built from a variable: %r" % (key[0], jn, ", ".join(w), l_.strip()[:100]))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
 # a listed installer exception must name a job that exists, and scan.yml's matrix (the one tool word read from a list) must be exactly the pr_gate-driven shape
@@ -300,6 +305,13 @@ edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    permissions:\n)", lambda m
   mutate "$wf job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
 edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
 done
+want_msg=""
+# fail closed (round 2, reviewer A): a job that holds a credential never runs a script whose path is built from a variable under bin/ (bash "bin/${helper}-local.sh" would hide the wrapper and the build from the rules above)
+want_msg="runs a script whose path under bin/ is built from a variable"
+mutate "a credential job runs bash \"bin/\${helper}-local.sh\" (the wrapper named through a variable)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          helper=witnessed\n          bash \"bin/${helper}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+mutate "a credential job runs bash \"bin/\${helper}.sh\" (the keyless wrapper named through a variable)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash \"bin/${helper}.sh\" x bin/x.sh\n", s, count=1, flags=re.S))'
 want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
