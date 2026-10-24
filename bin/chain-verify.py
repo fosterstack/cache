@@ -671,8 +671,8 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
         sig = b64d(entry["sig"])
     except Exception as ex:
         refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
+    chain = check_chain(stage, pol, cert_pem, intermediates, tmp)   # rc-2 R8: the chain is verified before any field of the certificate is read (the DER reader's own boundary note)
     check_identity(stage, pol, leaf)
-    chain = check_chain(stage, pol, cert_pem, intermediates, tmp)
     check_signature(stage, chain[0], ptype, payload, sig, tmp)
     stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
     chain_valid_at(stage, chain, stamped)

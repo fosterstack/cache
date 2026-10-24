@@ -469,6 +469,7 @@ add("sign_callertag", STAGES["sign"], T, PROV, D, config_ref=T2)                
 add("sign_callerbranch", STAGES["sign"], T, PROV, D, config_ref="refs/heads/main")        # right SAN, caller on a branch
 add("sign_noconfig", STAGES["sign"], T, PROV, D, no_config=True)                          # Build Config URI extension absent
 add("sign_wrongroot", STAGES["sign"], T, PROV, D, ca="otherroot")
+add("sibling_wrongroot", "other.yml", T, PROV, D, ca="otherroot")   # rc-2 R8: wrong in both ways, a sibling file's identity under an attacker root
 add("sign_otherdigests", STAGES["sign"], T, PROV, dict(D, apk="sha256:" + "d" * 64))
 add("sign_coll", STAGES["sign"], T, COLL, D, stmt="v0.1")
 # ---- timestamps (002-AC1). Stamps are taken at generation time (real wall clock = "now"); each case isolates its cause.
@@ -1686,6 +1687,8 @@ ln -sf attacker.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/oth
 cp "$work/othertsaroot.pem" "$work/certdir/attacker-tsa.pem"   # the attacker's TIMESTAMP root is trusted by the store too, so the TSA path is exercised
 ln -sf attacker-tsa.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/othertsaroot.pem").0"
 expect_refuse "B-1 a record that chains only to an attacker root is refused (no trust store)" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
+# rc-2 R8 (Fable R8): the certificate chain is verified BEFORE any field of the certificate is read; a record that is wrong in both ways (Check's identity, issued under the attacker root) is refused for its chain, not for the identity parsed from an unverified certificate
+expect_refuse "R8 a record with the wrong identity AND an attacker chain is refused for the chain first (fields of an unverified certificate are not read)" "root|!identity" verify $(V) --stage sign $(rec sibling_wrongroot) $(R)
 SSL_CERT_FILE="$work/otherroot.pem" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_FILE trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_DIR trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 SSL_CERT_FILE="$work/othertsaroot.pem" SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 a stamp from an attacker timestamp authority is STILL refused when the trust store knows its root" "timestamp" verify $(V) --stage sign $(rec sign_othertsa) $(R)
@@ -2347,7 +2350,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=855
+EXPECT=856
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
