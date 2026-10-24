@@ -1267,6 +1267,8 @@ class Run(Base):
         m = dict({"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"}}, **panel_manifest_fields(self.tmp))
         m.update(m_extra or {})
         out = self.d("out")
+        adj = os.path.join(self.d("adj"), os.path.basename(adjudicator))   # the run fingerprints its adjudicator file: a real file of the same name (no test touches /x)
+        open(adj, "w").write("# a stand-in adjudicator\n"); adjudicator = adj
         ask = ask or mock.Mock(side_effect=AssertionError("no model call expected"))
         with mock.patch.object(R.C, "manifest_findings", return_value=(m, groups)), \
                 mock.patch.object(R, "_consistency", return_value=consistency or {"problems": []}), \
