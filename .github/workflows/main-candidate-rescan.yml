@@ -183,7 +183,6 @@ jobs:
       - name: Grype every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
           # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
           # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
@@ -197,8 +196,8 @@ jobs:
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
-              grype "docker:${ref}" -c "$RUNNER_TEMP/empty-grype.yaml" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "${d}.tar" "${ref}" > /dev/null || continue
+              grype "docker-archive:${d}.tar" -c "$RUNNER_TEMP/empty-grype.yaml" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
                 || { rm -rf "${d}"; echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
@@ -463,15 +462,14 @@ jobs:
         id: insp-scan
         run: |
           set -uo pipefail
-          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           # Same-day reuse (REQ-REL-004-AC8): an inventory Inspector already scanned today is copied from the cache
           # to scan.json; anything else calls ScanSbom once and stores the answer. The tally reads scan.json either way.
           cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
-              if ! inspector-sbomgen container --image "${ref}" --outfile "${d}/sbom.cdx.json" --disable-progress-bar; then
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "${d}.tar" "${ref}" > /dev/null || continue
+              if ! inspector-sbomgen container --image "${d}.tar" --outfile "${d}/sbom.cdx.json" --disable-progress-bar; then
                 echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue
               fi
               key=$(python3 bin/inspector-reuse.py key "${d}/sbom.cdx.json") \
@@ -548,10 +546,9 @@ jobs:
       - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
         run: |
           set -uo pipefail
-          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            skopeo copy --override-arch amd64 --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
+            ./bin/layout-archive.sh "/tmp/oci/${v}" amd64 "${d}.tar" "${ref}" > /dev/null && docker load -i "${d}.tar" > /dev/null || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"
