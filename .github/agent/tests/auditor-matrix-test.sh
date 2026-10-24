@@ -1414,7 +1414,7 @@ EOF
 cat > "$fb/git" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$gitlog"
-if [ "\$1" = "show" ]; then case "\$2" in origin/main:*) echo "fatal: path '\${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
+if [ "\$1" = "show" ]; then case "\$2" in *:*) echo "fatal: path '\${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
 if [ "\$1" = "status" ]; then printf ' M .vex/fosterstack-cache.openvex.json\\0'; fi
 if [ "\$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
@@ -1574,7 +1574,8 @@ exit 0
 EOF
 cat > "$fb/git" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = "show" ]; then case "$2" in origin/main:*) echo "fatal: path '${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
+if [ "$1" = "show" ]; then case "$2" in *:*) echo "fatal: path '${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
+if [ "$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
 EOF
 chmod +x "$fb/gh" "$fb/git"
@@ -1933,6 +1934,7 @@ from unittest.mock import patch
 tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
 def fake(cmd,*a,**kw):
     if cmd[:2]==["git","show"]: return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:3]==["git","rev-parse","origin/main"]: return subprocess.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
@@ -1943,6 +1945,7 @@ def fake(cmd,*a,**kw):
 import subprocess as _sp
 def fake2(cmd,*a,**kw):
     if cmd[:2]==["git","show"]: return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:3]==["git","rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
@@ -2069,7 +2072,11 @@ tmp=tempfile.mkdtemp(); ws=os.path.join(tmp,"ws"); os.makedirs(os.path.join(ws,"
 c="CVE-2099-9200"   # the finding in manifest-mediumnofix
 mp=os.environ["FXRUN"]+"/manifest-mediumnofix.json"
 def fake(cmd,*a,**kw):
-    if cmd[:2]==["git","show"]: return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:2]==["git","show"]:           # origin/main is the workspace here: each run merge writes into it and the next run delivers against what it holds
+        _p=os.path.join(ws,cmd[2].split(":",1)[1])
+        if os.path.isfile(_p): return subprocess.CompletedProcess(cmd,0,open(_p,"rb").read(),b"")
+        return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:3]==["git","rev-parse","origin/main"]: return subprocess.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd and cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
@@ -4278,6 +4285,16 @@ eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and re
 # rc-5b fix 13 (R6, Fable): a reviewed file on main that is PRESENT but unreadable or malformed is a stop (main() returns 3), never a guess: an unreadable VEX must not become "no
 # statements" (the PR would delete every statement) and an unreadable accepted-items file must not renew every time box. A missing file is the first run and stays allowed.
 # Every case drives main() and records every git/gh call: a stop makes NO mutating call (no issue, no PR, no git beyond reads).
+cat > "$WORK/mutclass.py" <<'PP'
+"""The one classifier of the matrix, in ALLOWLIST form (cache#708 ruling): a git or gh call counts as mutating unless it is listed read-only here; any other program (go, python) is not counted."""
+READ_GIT = {"fetch", "show", "rev-parse", "status", "diff", "log", "ls-files", "cat-file", "merge-base", "rev-list", "symbolic-ref"}
+READ_GH = {("issue", "list"), ("issue", "view"), ("pr", "list"), ("pr", "view"), ("pr", "status"), ("pr", "checks"), ("label", "list"), ("auth", "status"), ("repo", "view")}
+def mutating(cmd):
+    if not cmd: return False
+    if cmd[0] == "git": return not (len(cmd) > 1 and cmd[1] in READ_GIT)
+    if cmd[0] == "gh": return not (len(cmd) > 2 and (cmd[1], cmd[2]) in READ_GH)
+    return False
+PP
 cat > "$WORK/r6main.py" <<'PP'
 import json,os,sys,io,contextlib,importlib.util,tempfile,subprocess as _sp
 FX,variant=sys.argv[1],sys.argv[2]
@@ -4325,13 +4342,16 @@ calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
+        _led=tmp+"/out/.auditor/reopened-expired.json"
+        if corrupt_at=="reopened" and os.path.exists(_led) and open(_led).read()!=reopened_body:      # the first git call after the run wrote its ledger: the file is damaged now (the base check ran before it existed)
+            open(_led,"w").write(reopened_body)
         if cmd[1:2]==["fetch"]:      # the delivery base turns bad / the run's own ledger is damaged AFTER the run wrote it, before any checkout (the first moment the delivery looks)
             if corrupt_at=="delivery": open(ap,"w").write("{bad")
             if corrupt_at=="delivery-vex": open(vp,"w").write("{}")
             if corrupt_at=="delivery-items": open(ap,"w").write('{"other": []}')
-            if corrupt_at=="reopened":
-                os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write(reopened_body)
-        if cmd[1:2]==["show"] and len(cmd)>2 and cmd[2].startswith("origin/main:"):      # origin/main is the workspace's own reviewed files here
+            pass
+        if cmd[1:3]==["rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
+        if cmd[1:2]==["show"] and len(cmd)>2 and (cmd[2].startswith("origin/main:") or cmd[2].startswith("a"*40+":")):      # origin/main is the workspace's own reviewed files here
             _rel=cmd[2].split(":",1)[1]; _p=ws+"/"+_rel
             if os.path.isfile(_p): return _sp.CompletedProcess(cmd,0,open(_p).read(),"")
             return _sp.CompletedProcess(cmd,128,"","fatal: path '%s' does not exist in 'origin/main'"%_rel)
@@ -4350,7 +4370,7 @@ with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),
     except Exception as e: rc="EXC %s"%type(e).__name__
 try: os.chmod(ws+"/.vex",0o755)
 except OSError: pass
-mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","issue","comment"],["gh","issue","close"],["gh","pr","create"],["gh","pr","merge"],["gh","pr","comment"]) or x[:2] in (["git","checkout"],["git","push"],["git","commit"]) or x[:2]==["gh","api"]]   # every mutating kind: issues, PRs, the API, and the workspace-changing git calls (cache#701 ruling F3/B3)
+import mutclass; mut=[x for x in calls if mutclass.mutating(x)]   # the shared allowlist-form classifier
 print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=="delivery" else ""))
 PP
 cat > "$WORK/r7main.py" <<'PP'
@@ -4372,7 +4392,12 @@ calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
-        if cmd[1:2]==["show"]: return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")
+        if cmd[1:3]==["rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
+        if cmd[1:2]==["show"]:
+            _rel=cmd[2].split(":",1)[1]
+            if variant=="base-vex-empty" and _rel.startswith(".vex/"): return _sp.CompletedProcess(cmd,0,"{}","")
+            if variant=="base-items-keyless" and _rel.startswith(".auditor/"): return _sp.CompletedProcess(cmd,0,'{"other": []}',"")
+            return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")
         return _sp.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
     return _sp.run(cmd,*a,**kw)
@@ -4381,7 +4406,7 @@ with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),
     try: rc=R.main()
     except Exception as e: rc="EXC %s"%type(e).__name__
 issues=[x for x in calls if x[:3]==["gh","issue","create"]]
-mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","issue","comment"],["gh","issue","close"],["gh","pr","create"],["gh","pr","merge"],["gh","pr","comment"]) or x[:2] in (["git","checkout"],["git","push"],["git","commit"]) or x[:2]==["gh","api"]]
+import mutclass; mut=[x for x in calls if mutclass.mutating(x)]   # the shared allowlist-form classifier
 print("rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
@@ -4425,10 +4450,46 @@ for variant in delivery-base-vex-empty delivery-base-items-keyless; do
 done
 r7="$("$PY" "$WORK/r7main.py" "$FXRUN" control 2>/dev/null | tail -1)"
 case "$r7" in "rc=3 "*|"rc=EXC"*|"") no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; *) ok ;; esac
+for variant in base-vex-empty base-items-keyless; do
+  r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding AND a damaged delivery base ($variant) stops the run (exit 3) before the owner-decision issue: the base is fetched and validated once, before the first issue" "$r7"
+done
 for variant in finding-vex-empty-object finding-vex-invalid-statement; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged ($variant) stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
 done
+while read -r want cmdline; do
+  got="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import mutclass; print(int(mutclass.mutating(sys.argv[2:])))' "$WORK" $cmdline)"
+  eq "$got" "$want" && ok || no "the matrix classifier counts '$cmdline' as mutating=$want (allowlist form: read-only commands are listed, everything else counts)" "$got"
+done <<'LIST'
+1 gh issue create --title t
+1 gh issue comment 1 --body b
+1 gh issue close 1
+1 gh issue reopen 1
+1 gh issue edit 1
+1 gh label create x
+1 gh pr create --base main
+1 gh pr merge 1
+1 gh pr comment 1
+1 gh pr edit 1
+1 gh pr close 1
+1 gh pr ready 1
+1 gh api graphql
+1 gh release create v1
+1 git checkout -B b origin/main
+1 git push origin b
+1 git commit -m x
+1 git reset --hard
+1 git add x
+1 git rebase main
+0 git fetch origin main
+0 git show origin/main:x
+0 git rev-parse origin/main
+0 git status --porcelain
+0 gh issue list
+0 gh pr list
+0 go get x
+LIST
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"

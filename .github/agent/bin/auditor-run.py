@@ -334,28 +334,49 @@ def _find_pr(ws, branch):
     return (q.stdout or "").strip(), None
 
 
-def _base_file_ok(ws, rel):
-    """The reviewed file `rel` as the delivery base (origin/main) holds it, read as a git object so the workspace is not touched: absent = the first run, anything else must be the
-    JSON object the reader requires (the checks _merge_suppressions makes AFTER the checkout, made before it), or ReviewedInputInvalid."""
-    r = subprocess.run(["git", "show", "origin/main:" + rel], cwd=ws, capture_output=True, text=True)
+BASE_VEX, BASE_ITEMS = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"      # the two reviewed files the delivery merges into
+
+
+def _fetch_base(ws):
+    """One `git fetch origin main` (it changes no ref the workspace stands on) and the sha origin/main resolved to, or None when either step fails: the delivery then reports its own
+    fetch failure, as it always did. The sha is what the base is read at and what the delivery branch is cut from, so the validated bytes are the bytes merged into (cache#708 ruling 1)."""
+    r = subprocess.run(["git", "fetch", "origin", "main"], cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
-        if "does not exist in" in (r.stderr or "") or "exists on disk, but not in" in (r.stderr or ""):
-            return
-        raise ReviewedInputInvalid("origin/main:%s cannot be read (%s)" % (rel, (r.stderr or "").strip()[:200]))
-    reviewed.parse(r.stdout, "origin/main:" + rel, as_name=rel)
+        return None
+    s = subprocess.run(["git", "rev-parse", "origin/main"], cwd=ws, capture_output=True, text=True)
+    sha = (s.stdout or "").strip()
+    return sha if s.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
-def _preflight_delivery(ws, out, supp):
-    """Everything _merge_suppressions reads, validated BEFORE `git checkout -B` touches the workspace (cache#701 ruling F3/B3: exit 3 never follows a mutating call): the delivery base's
-    two reviewed files (git show), and the files this run wrote (the consolidated VEX, the reopened-expired ledger, the accepted-items inventory)."""
-    _base_file_ok(ws, ".vex/fosterstack-cache.openvex.json")
-    _base_file_ok(ws, ".auditor/accepted-items.json")
+def _base_file(ws, sha, rel):
+    """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is not touched: the parsed JSON object the reader requires, None for
+    the first run, or ReviewedInputInvalid. A file git says exists on disk but not in the base is untracked: the checkout would leave it in place and the merge would read it, so it is
+    held to the same rules (read through the shared reader)."""
+    r = subprocess.run(["git", "show", sha + ":" + rel], cwd=ws, capture_output=True)
+    if r.returncode != 0:
+        err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
+        if "does not exist in" in err:
+            return None
+        if "exists on disk, but not in" in err:
+            return _read_reviewed_json(os.path.join(ws, rel))
+        raise ReviewedInputInvalid("%s:%s cannot be read (%s)" % (sha[:12], rel, err.strip()[:200]))
+    return reviewed.parse(r.stdout, "%s:%s" % (sha[:12], rel), as_name=rel)
+
+
+def _base_docs(ws, sha):
+    """Both reviewed files of the delivery base, parsed and validated: {path: document or None}."""
+    return {BASE_VEX: _base_file(ws, sha, BASE_VEX), BASE_ITEMS: _base_file(ws, sha, BASE_ITEMS)}
+
+
+def _preflight_delivery(out, supp):
+    """What _merge_suppressions reads of the files THIS run wrote (the consolidated VEX, the reopened-expired ledger, the accepted-items inventory), validated BEFORE
+    `git checkout -B` touches the workspace (cache#701 ruling F3/B3: exit 3 never follows a mutating call)."""
     _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))      # absent is the staging error _merge_suppressions reports; present must be the VEX object
     _read_reopened(os.path.join(out, ".auditor", "reopened-expired.json"))
     _read_reviewed_json(os.path.join(out, ".auditor", "accepted-items.json"))
 
 
-def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
+def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json (the only exception there is, rule 4) in a single commit
     by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
@@ -415,11 +436,17 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
-    r = _git("fetch", "origin", "main")
-    if r.returncode != 0:
-        return None, ("git fetch: " + (r.stderr or "").strip())
-    _preflight_delivery(ws, out, supp)                    # every read the merge makes after the checkout, made before it: a stop (exit 3) leaves the workspace as it was
-    r = _git("checkout", "-B", branch, "origin/main")     # off main => not stacked
+    if base_sha is None:                                  # run() fetched and validated the base once before the first owner issue and hands the sha down; a direct caller fetches here
+        r = _git("fetch", "origin", "main")
+        if r.returncode != 0:
+            return None, ("git fetch: " + (r.stderr or "").strip())
+        r = _git("rev-parse", "origin/main")
+        base_sha = (r.stdout or "").strip()
+        if r.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+            return None, ("git rev-parse: " + (r.stderr or base_sha).strip())
+    base_docs = _base_docs(ws, base_sha)                  # the belt: the base read again at the sha, with the run's own outputs, before anything touches the workspace
+    _preflight_delivery(out, supp)
+    r = _git("checkout", "-B", branch, base_sha)          # off main => not stacked
     if r.returncode != 0:
         return None, ("git checkout: " + (r.stderr or "").strip())
     try:
@@ -428,7 +455,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         # absent from a production scan) must survive, and the document version continues.
         # _merge_suppressions merges the VEX AND the coupled .auditor/accepted-items.json (retained affected statements keep their
         # inventory entry, R1 outer round-5 #2) — no wholesale copy of the run's inventory.
-        _merge_suppressions(ws, supp)
+        _merge_suppressions(ws, supp, base=base_docs)
         # copy the run's proposals + generated knowledge into the checkout so they ride the PR.
         for p in extra:
             s = os.path.join(out, p); d = os.path.join(ws, p)
@@ -703,7 +730,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     return (None, err, "error") if err else (url, None, "delivered")
 
 
-def _merge_suppressions(ws, supp):
+def _merge_suppressions(ws, supp, base=None):
     """Merge this run's consolidated suppressions INTO the existing reviewed files in the
     checkout, preserving statements/entries this run does not touch and continuing the VEX
     document version (R1 outer round-4 #3). Statements are keyed by @id (this run replaces a
@@ -713,7 +740,7 @@ def _merge_suppressions(ws, supp):
     newdoc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     if newdoc is None:                              # the run's own consolidated VEX must exist (as before: a missing file is a staging error)
         raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
-    existing = _read_reviewed_json(vp) or {}
+    existing = (base[BASE_VEX] if base is not None else _read_reviewed_json(vp)) or {}      # the delivery hands down the base documents it validated at the sha: the tree is not read again
     # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
     # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
     # same-scope statement — this run's or a carried one — has the same key and the incoming
@@ -750,7 +777,7 @@ def _merge_suppressions(ws, supp):
     for k in ("@context", "@id", "author", "role"):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
-    old_ai = _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
+    old_ai = base[BASE_ITEMS] if base is not None else _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
     new_ai = _read_reviewed_json(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))     # the run's own inventory too
     os.makedirs(os.path.dirname(vp), exist_ok=True)       # the working tree is touched only after every read above has passed
     cli.writej(vp, merged)
@@ -844,14 +871,23 @@ def _merge_suppressions(ws, supp):
 def _collect_vex(out, ts):
     """Read every per-CVE VEX this run wrote and validate the merged document; writes nothing. Returns (document, statements). run() calls it BEFORE the first owner-decision issue
     so a damaged per-finding VEX stops the run (exit 3) while nothing outside the run's own directory has been touched (cache#701 ruling F3/B3); _consolidate does the same read."""
-    import glob
+    vdir = os.path.join(out, "vex")
+    try:
+        names = sorted(n for n in os.listdir(vdir) if n.endswith(".openvex.json") and not n.startswith("."))
+    except FileNotFoundError:
+        names = []                                    # the run wrote no per-finding VEX
+    except OSError as ex:                             # unreadable, or not a directory: a stop, never "no statements" (glob turned it into an empty list)
+        raise ReviewedInputInvalid("%s cannot be listed (%s)" % (vdir, type(ex).__name__))
     statements = []
-    for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
-        statements.extend((_read_reviewed_json(vf) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+    for n in names:
+        statements.extend((_read_reviewed_json(os.path.join(vdir, n)) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
     document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
                 "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
                 "statements": statements}
-    vex.validate(document)
+    try:
+        vex.validate(document)
+    except ValueError as ex:
+        raise ReviewedInputInvalid("the per-finding VEX the run wrote does not make a valid statement set (%s)" % ex)
     return document, statements
 
 
@@ -1864,6 +1900,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
     _collect_vex(out, ts)       # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never follows a mutating call (cache#701 ruling F3/B3)
+    base_sha = None             # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh call (cache#708 ruling 1); the delivery cuts its branch from this sha
+    if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and (m.get("provenance") or {}).get("source") != "test-image":
+        base_sha = _fetch_base(_workspace())
+        if base_sha:
+            _base_docs(_workspace(), base_sha)
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
@@ -2002,7 +2043,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     consistency = _consistency(out, supp, manifest_path)
     cons_failed = any(p.get("type", "").startswith("consistency-check-") for p in (consistency or {}).get("problems", []))
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
-    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
+    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test, base_sha=base_sha)
     # Decision 2: the auditor DELIVERS its own Go-module bumps as draft PRs through the App path
     # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one
     # draft PR; an unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy
