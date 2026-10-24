@@ -1474,23 +1474,23 @@ for body in (b"[]\n", b"null\n", b'{"Path":null,"Version":"v1.0.0","Timestamp":"
 # 2. PyPI release files (age proof)
 pkg = pa.inv.Item("package", "pypi/p", "1.0")
 for ans in ([], {"urls": 5}, {"urls": [1]}, {"urls": [{"upload_time_iso_8601": 7}]}):
-    age._fetch_json = lambda url, timeout=30, _a=ans: _a
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
     age._pr_clock = lambda *a, **k: None
     must_refuse(("pypi", ans), lambda: age.live_proofs(pkg, "."))
 # 3. Docker Hub tags
 img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
 for ans in ([], {"results": 5}, {"results": [1]}, {"results": [{"digest": "x", "images": 5}]}):
-    age._fetch_json = lambda url, timeout=30, _a=ans: _a
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
     must_refuse(("hub", ans), lambda: age._registry_push(img))
 # 4. the advisory tool's PyPI info (published name) and release list
 net = pa.LiveNet(["false"], ".")
 for ans in ([], {"info": []}, {"info": 5}):
-    age._fetch_json = lambda url, timeout=30, _a=ans: _a
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
     net._osv_records = lambda *a, **k: {}
     net._gh_json = lambda *a, **k: []
     must_refuse(("pypi info", ans), lambda: net._lists_for(pkg, "1.0"))
 for ans in ([], {"releases": []}, {"releases": {"1.0": 5}}, {"releases": {"1.0": [1]}}):
-    age._fetch_json = lambda url, timeout=30, _a=ans: _a
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
     must_refuse(("releases", ans), lambda: net.versions(pkg))
 PY
 CASE="absence (round 4 rulings): a malformed index line, a valid match followed by a bad row, a JSON null body (PyPI, Docker Hub, the lenient proxy) and a Docker Hub next link that is not a hub URL are CouldNotLook, never 'nothing there'"
@@ -1552,7 +1552,7 @@ REFUSE = (age.CouldNotLook, pa.Fail)
 tmp = tempfile.mkdtemp()
 
 # ---- 1. no reader has a default: the caller must say what it reads
-for fn, name in ((age._http_dict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
+for fn, name in ((age._http_dict, "need"), (age._http_json_strict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
     assert inspect.signature(fn).parameters[name].default is inspect.Parameter.empty, (fn.__name__, name, "has a default")
 net0 = pa.LiveNet(["false"], ".")
 for kw in ({}, {"need": (), "rows": ()}):
@@ -1564,7 +1564,7 @@ for kw in ({}, {"need": (), "rows": ()}):
         raise AssertionError(("_gh_json accepted", kw))
 
 # ---- 2. every site that reads an answer is in the table below, and every site has its case
-READERS = {"_http_dict", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
+READERS = {"_http_dict", "_http_json_strict", "_gh_json_raw", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
 def sites(path):
     tree = ast.parse(open(path).read()); parents = {}
     for n in ast.walk(tree):
@@ -1581,6 +1581,7 @@ def sites(path):
             if isinstance(p, ast.FunctionDef): break
         found[(os.path.basename(path), p.name if isinstance(p, ast.FunctionDef) else "<module>", name)] += 1
         # a reader call names what it reads (a shape argument), never a bare read
+        if name == "_http_json_strict": assert len(n.args) + len(n.keywords) >= 2, ("_http_json_strict without need", n.lineno)
         if name == "_http_dict": assert len(n.args) + len(n.keywords) >= 2, ("_http_dict without need", n.lineno)
         if name in ("_gh_api", "_gh_pages", "_gh_list"): assert len(n.args) + len(n.keywords) >= 2, (name + " without a shape", n.lineno)
         if name == "_gh_json": assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
@@ -1639,6 +1640,15 @@ def c_fetch_and_dict():
     for body in (b"{}", b"null", b"[]", b"[{}]"):
         http(body); refuse(("http_dict", body), lambda: age._http_dict("https://h.example/x", OBJ))
 def c_http_strict():
+    for body in (b"{}", b"null", b"[]", b"[{}]"):
+        http(body); refuse(("http_json_strict", body), lambda: age._http_json_strict("https://h.example/x", OBJ))
+    def err(code):
+        def f(*a, **k): raise urllib.error.HTTPError("https://h.example/x", code, "x", {}, None)
+        return f
+    for code in (404, 410):
+        urllib.request.urlopen = err(code); assert accepts(("strict", code), lambda: age._http_json_strict("https://h.example/x", OBJ)) is None
+    for code in (500, 403):
+        urllib.request.urlopen = err(code); refuse(("strict http", code), lambda: age._http_json_strict("https://h.example/x", OBJ))
     for body in (b"{}", b"null", b"[{}]"):
         http(body); refuse(("go strict", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True))
 def c_go_lenient():
@@ -1747,6 +1757,13 @@ def c_lists_for():
     http(b'{"info": {"name": 7}}'); refuse("pypi name 7", lambda: net._lists_for(pk, "1.0"))
     http(b'{"info": {"name": "p"}}'); gh({"advisories?": "[{}]"}); refuse("advisory list [{}]", lambda: net._lists_for(pk, "1.0"))
     gh({"advisories?": "{}"}); refuse("advisory list {}", lambda: net._lists_for(pk, "1.0"))
+    # the GHSA-alias lookup (the first _gh_json call of _lists_for): an alias answered {} is refused, and a failure that is not a 404 is a Fail, never 'no advisory'
+    net._osv_records = lambda *a, **k: {"k": [{"id": "GHSA-aaaa-bbbb-cccc", "aliases": [], "affected": []}]}
+    http(b'{"info": {"name": "p"}}')
+    net._memo.clear(); gh({"advisories/GHSA-aaaa-bbbb-cccc": "{}"}); refuse("alias {}", lambda: net._lists_for(pk, "1.0"))
+    def run500(cmd, **k):
+        r = P("", 1); r.stderr = "HTTP 500: Server Error"; return r
+    net._memo.clear(); pa._run = run500; age._gh_run = run500; refuse("alias 500", lambda: net._lists_for(pk, "1.0"))
 def c_upstream():
     def run(cmd, **k):
         line = " ".join(map(str, cmd))
@@ -1810,14 +1827,14 @@ def c_file_issues():
 CASES = {
     ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, ("pin-age-check.py", "_gh_api", "loads"): c_gh_api, ("pin-age-check.py", "_gh_list", "loads"): c_gh_list,
     ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
-    ("pin-age-check.py", "_http_json_strict", "load"): c_http_strict, ("pin-age-check.py", "_go_module", "_fetch_json"): c_go_lenient,
+    ("pin-age-check.py", "_http_json_strict", "_http_dict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_json_strict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_dict"): c_go_lenient,
     ("pin-age-check.py", "_go_index_time", "loads"): c_go_index, ("pin-age-check.py", "_release_time", "_gh_api"): c_release_time,
     ("pin-age-check.py", "_commit_date", "_gh_api"): c_commit_date, ("pin-age-check.py", "observed", "_gh_api"): c_observed,
     ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
     ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
     ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
     ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
-    ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
+    ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
     ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
     ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
     ("pin-audit.py", "upstream", "_gh_json"): c_upstream, ("pin-audit.py", "nested", "_gh_json"): c_nested,
@@ -1828,6 +1845,10 @@ CASES = {
 }
 # a function with more than one call of the same reader lists how many; each call has its probe in the named case (a new call in a known function changes the count and fails here)
 CALLS = {("pin-age-check.py", "observed", "_gh_api"): 2, ("pin-audit.py", "_lists_for", "_gh_json"): 2, ("pin-audit.py", "resolve_ref", "_gh_json"): 2, ("pin-audit.py", "versions", "_gh_json"): 3}
+# raw decoding is private: _fetch_json has exactly one caller, _http_dict, and _gh_json_raw exactly one, _gh_json; each of them shapes the answer before anyone else sees it
+for raw, only in (("_fetch_json", ("pin-age-check.py", "_http_dict")), ("_gh_json_raw", ("pin-audit.py", "_gh_json"))):
+    callers = {k: v for k, v in actual.items() if k[2] == raw}
+    assert callers == {(only[0], only[1], raw): 1}, (raw + " must have exactly one caller, which shapes the answer", callers)
 expect = collections.Counter({k: CALLS.get(k, 1) for k in CASES})
 assert not set(CALLS) - set(CASES), ("CALLS names a site with no case", sorted(set(CALLS) - set(CASES)))
 missing, stale = set(actual) - set(CASES), set(CASES) - set(actual)

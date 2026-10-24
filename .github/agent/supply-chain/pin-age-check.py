@@ -194,41 +194,41 @@ def _gh_list(path, rows):
     return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-_FAILED = object()
+_FAILED = object()      # the server could not be asked (lenient mode)
+_GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
 
 
-def _fetch_json(url, timeout=30):
-    """The decoded answer (a JSON null included) or _FAILED when the server could not be asked or its body is not JSON."""
+def _fetch_json(url, timeout=30, strict=False):
+    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
+    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
+    or a body that is not JSON means we could not look (CouldNotLook)."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
-    except (OSError, ValueError, http.client.HTTPException):
-        return _FAILED
+    except urllib.error.HTTPError as e:
+        if not strict:
+            return _FAILED
+        if e.code in (404, 410):
+            return _GONE
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        if not strict:
+            return _FAILED
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
 
 
-def _http_dict(url, need, timeout=30):
-    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked;
-    valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
-    d = _fetch_json(url, timeout)
-    if d is _FAILED:
+def _http_dict(url, need, timeout=30, strict=False):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked
+    (strict: when it said 404/410); valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+    d = _fetch_json(url, timeout, strict)
+    if d is _FAILED or d is _GONE:
         return None
     return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
 
 
-def _http_json_strict(url, timeout=30):
-    """Like _http_json, but only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            got = json.load(r)
-    except urllib.error.HTTPError as e:
-        if e.code in (404, 410):
-            return None
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
-    except (OSError, ValueError, http.client.HTTPException) as e:
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
-    if got is None:
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with an empty body")      # "not there" is a 404, never a null answer
-    return got
+def _http_json_strict(url, need, timeout=30):
+    """_http_dict where only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
+    return _http_dict(url, need, timeout, strict=True)
 
 
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
@@ -304,20 +304,20 @@ def _go_escape(path):
     return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
 
 
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+
+
 def _go_module(path, version, strict=False):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
         url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
-        info = _http_json_strict(url) if strict else _fetch_json(url)
-        if info is _FAILED:
-            continue      # lenient mode: the proxy could not be asked: no answer (the strict mode raised already)
-        if info is None and not strict:
-            raise CouldNotLook("proxy.golang.org answered with an empty body")
-        if info is not None and not (isinstance(info, dict) and isinstance(info.get("Version"), str) and info["Version"]):
+        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+        if info is None:
+            continue      # not there (strict) or the proxy could not be asked (lenient): try the shorter module path
+        if not info["Version"]:
             raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
-        if info is not None:
-            return mod, info
+        return mod, info
     return None, None
 
 
