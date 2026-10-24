@@ -1453,7 +1453,7 @@ for info in ({"Version": "v1.0.0"}, {"Version": "v1.0.0", "Time": None}, {"Versi
 PY
 CASE="shapes (round 3 findings): a wrong-shaped but valid answer is CouldNotLook, never a traceback or 'nothing there' - one case per consumer (go index rows, PyPI release files, Docker Hub tags, the advisory tool's PyPI info and release list)"
 check python3 - "$aud" <<'PY'
-import importlib.util, io, sys, urllib.request
+import importlib.util, io, json, sys, urllib.request
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 age = pa.age
 def must_refuse(label, fn):
