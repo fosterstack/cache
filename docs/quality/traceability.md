@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 100 |
-| Acceptance criteria | 486 |
+| Acceptance criteria | 487 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 475 |
+| ACs with mapped evidence | 476 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 48 |
@@ -1552,3 +1552,4 @@ Every suite named in test-evidence/suite-floors.json is run once per workflow ru
 | REQ-CI-005-AC2 | Given a counting step in ci.yml; when it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`; then `suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it | unit |  | approved | 2 item(s) |
 | REQ-CI-005-AC3 | Given a suite run by a counting step; when it loses cases (below its floor), prints no case count, or exits non-zero; then its step fails | unit |  | approved | 1 item(s) |
 | REQ-CI-005-AC4 | Given the suite guard's floors; when a pull request lowers or drops a floor; then the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised | unit |  | approved | 1 item(s) |
+| REQ-CI-005-AC5 | Given the committed ci.yml and floors file (PLANNED, Fable ruling on cache#695: the split of the wrap; the requirements tool accepts only approved or proposed, so the status field reads approved and this word says planned); when the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them; then it runs exactly these eight: auditor-labels-test.sh, auditor-matrix-test.sh, required-check-guard-test.sh, suite-guard-test.sh, vex-index-test.sh and vex-scope-test.sh (six whose steps are not counting steps yet, so they run twice until PR 3 migrates them; this AC then shrinks to the last two) and marker-gate-test.sh and pin-audit-go-major-test.sh (known-red by design: no step of their own, run only by `all`) | unit |  | approved | 1 item(s) |

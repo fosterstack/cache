@@ -4772,3 +4772,9 @@ requirements:
         then: "the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-CI-005-AC5
+        given: "the committed ci.yml and floors file (PLANNED, Fable ruling on cache#695: the split of the wrap; the requirements tool accepts only approved or proposed, so the status field reads approved and this word says planned)"
+        when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
+        then: "it runs exactly these eight: auditor-labels-test.sh, auditor-matrix-test.sh, required-check-guard-test.sh, suite-guard-test.sh, vex-index-test.sh and vex-scope-test.sh (six whose steps are not counting steps yet, so they run twice until PR 3 migrates them; this AC then shrinks to the last two) and marker-gate-test.sh and pin-audit-go-major-test.sh (known-red by design: no step of their own, run only by `all`)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
