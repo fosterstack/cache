@@ -23,7 +23,7 @@
   },
   {
    "path": ".grype.yaml",
-   "sha256": "cc0183aab1495abcf08889e81df796123703308d55f56a523300a28565db4d35",
+   "sha256": "bcf4bd305be8bb2f00c913923ddc1c78e0c4d933b7fec43db45a281574159c7a",
    "reason": "the grype scanner configuration"
   }
  ]

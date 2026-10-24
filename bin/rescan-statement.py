@@ -141,7 +141,7 @@ def cmd_find_issue(args):
 
 
 OUR_OCI_REPOS = ("ghcr.io/fosterstack/cache", "ghcr.io/fosterstack/cache-candidates")
-VEX_VARIANTS = ("production", "debug", "fips")
+VEX_VARIANTS = ("production", "fips")   # v0.3.0 ships no :debug image (rc-5a H)
 VEX_ARCHS = ("amd64", "arm64")
 _PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")
 _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
@@ -170,8 +170,9 @@ def _sub_purl(sid):
 
 def _same_package(name, version, sub_name, sub_version):
     """namespace-preserving: the finding's full package name (namespace included) equals the subcomponent's, case-sensitively, and the versions are equal.
+    A subcomponent that names NO version stands for every version of that package (the same reading as the generated Inspector rule).
     busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg."""
-    return name == sub_name and version == sub_version
+    return name == sub_name and (not sub_version or version == sub_version)
 
 
 def _parse_product(pid):
@@ -180,6 +181,9 @@ def _parse_product(pid):
     could parse as unscoped or as another product makes the whole document unreadable. Otherwise ("go",), ("go-versioned",) or ("oci", repository, variant|None, arch|None)."""
     if not isinstance(pid, str):
         raise ValueError("a product identifier that is not a string")
+    go = "pkg:golang/github.com/fosterstack/cache"
+    if pid.startswith(go) and pid[len(go):len(go) + 1] in ("/", "#", "&", "\n"):
+        raise ValueError("the Go product %r has a suffix (another module's name or a part these readers cannot place): the exact product only" % pid)
     if not _gate.OUR_PRODUCTS.match(pid):
         return None
     base, _, query = pid.partition("?")
@@ -188,6 +192,8 @@ def _parse_product(pid):
             raise ValueError("a qualifier on the Go product %r" % pid)
         if "@" in base:
             return ("go-versioned",)   # a version-pinned module cannot be tied to the release being scanned: it never applies
+        if pid != "pkg:golang/github.com/fosterstack/cache":
+            raise ValueError("the Go product %r has a suffix (another module's name, a trailing newline): the exact product only" % pid)
         return ("go",)
     names = {"pkg:oci/cache": OUR_OCI_REPOS[0], "pkg:oci/cache-candidates": OUR_OCI_REPOS[1]}
     if base not in names:
@@ -228,9 +234,9 @@ def _vex_validate(doc):
             idf = p.get("identifiers", {})
             if not isinstance(idf, dict) or ("purl" in idf and not isinstance(idf["purl"], str)):
                 raise ValueError("product identifiers that are not an object with a string purl")
-            if "@id" in p and "purl" in idf and p["@id"] != idf["purl"]:
+            if p.get("@id") is not None and "purl" in idf and p["@id"] != idf["purl"]:
                 raise ValueError("a product whose @id and identifiers.purl differ")
-            pid = p.get("@id") if "@id" in p else idf.get("purl")
+            pid = p.get("@id") if p.get("@id") is not None else idf.get("purl")
             _parse_product(pid)
             subs = p.get("subcomponents", [])
             if not isinstance(subs, list) or not all(isinstance(x, dict) and isinstance(x.get("@id"), str) for x in subs):
@@ -270,15 +276,18 @@ def _vex_match(doc, finding, variant, image_repo):
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
-    for st in doc["statements"]:
+    dead = _gate.superseded(doc["statements"])
+    for si, st in enumerate(doc["statements"]):
         if st["status"] not in _gate.SUPPRESSING:
             continue
         v = st["vulnerability"]
         if not ({v["name"]} | set(v.get("aliases", []))) & ids:
             continue
-        for p in st["products"]:
+        for pi, p in enumerate(st["products"]):
+            if (si, pi) in dead:   # a later statement of the same vulnerability, product and subcomponents replaces this one
+                continue
             idf = p.get("identifiers", {})
-            pp = _parse_product(p.get("@id") if "@id" in p else idf.get("purl"))
+            pp = _parse_product(p.get("@id") if p.get("@id") is not None else idf.get("purl"))
             if pp is None or pp[0] == "go-versioned":
                 continue
             if pp[0] == "go" and image_repo is None:
@@ -599,6 +608,10 @@ def _merge_raw(scanner, valid_reports):
 # B04d + B04e — statement assembly and classification.
 # --------------------------------------------------------------------------
 
+# the scanners whose workflow step records each child's package count (the ones scanners.json lists); the retired trivy and snyk paths record none and are unchanged
+COUNTED = ("grype", "osv-scanner")
+
+
 def cmd_statement(args):
     scanner = args.scanner
     if scanner not in CONTRACTS:
@@ -613,11 +626,16 @@ def cmd_statement(args):
             if line:
                 children.append(json.loads(line))
 
+    op_fail = False
+    if args.expect_children is not None and len(children) != args.expect_children:
+        # a child's record is written after its scan: a scan that died before writing its line leaves a manifest shorter than the enumeration
+        err("the manifest holds %d child record(s) but %d child(ren) were enumerated; the rescan is incomplete, never clean" % (len(children), args.expect_children))
+        op_fail = True
+
     findings = []
     consistent = True   # every child exited clean, or exited with the findings code AND the report really held findings
     valid_reports = []
     scanned_platforms = []
-    op_fail = False
     max_rc = 0
 
     for child in children:
@@ -652,6 +670,12 @@ def cmd_statement(args):
             op_fail = True
             continue
         valid_reports.append(report)
+        pk = child.get("packages")
+        if scanner in COUNTED and (isinstance(pk, bool) or not isinstance(pk, int) or pk <= 0):
+            # Register row 53 (zero packages = did not run): a scanner that completed but inventoried no package looked at nothing, so `no findings` proves
+            # nothing. The workflow records each child's package count; a missing, zero, negative or non-numeric one is an error, never clean.
+            err("the %s report of %s completed but the scan inventoried no package (packages=%r); the rescan is incomplete, never clean" % (scanner, platform, pk))
+            op_fail = True
         bad = []
         got = _normalize(scanner, report, platform, bad)
         if bad:
@@ -804,6 +828,7 @@ def main(argv):
     ps.add_argument("--meta")
     ps.add_argument("--vex")
     ps.add_argument("--scope-file")
+    ps.add_argument("--expect-children", type=int, help="how many children the workflow enumerated; fewer records than that is an incomplete rescan")
     ps.add_argument("--release", default="")
     ps.add_argument("--variant", default="")
     ps.add_argument("--digest", default="")

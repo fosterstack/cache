@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-CI-005-AC1, REQ-CI-005-AC2, REQ-CI-005-AC3, REQ-CI-005-AC4 — a floored suite is run once by the step that counts it; `all` runs only the rest (the REQ-CI-005 cases)
 # Tests for bin/suite-guard.sh (self-contained: needs only bash, git, python3). Proves:
 #  - no tracked test file of any suite is zero bytes or whitespace-only (an empty script exits 0 and proves nothing);
 #  - a suite that prints no case count, or a count below its committed floor, or a count of zero, fails;
@@ -160,7 +161,65 @@ expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- al
 # round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
 if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.py all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=67
+# ---- REQ-CI-005: a suite is run once, by the step that counts it; `all` runs only the rest ------------------------------------------------
+# run shows the suite's own output (the step log keeps what `bash PATH` would have shown), exactly once
+printf '#!/usr/bin/env bash\necho "marker-line-from-the-suite"\necho "x: 60 passed, 0 failed"\n' > "$work/s/chatty.sh"; printf '{"chatty": 50}\n' > "$work/rc.json"
+expect 0 "REQ-CI-005-AC1 run: the suite's own output is shown, not swallowed" "marker-line-from-the-suite" -- run "$work/rc.json" chatty "$work/s/chatty.sh"
+n=$(python3 -I "$runner" run "$work/rc.json" chatty "$work/s/chatty.sh" 2>&1 < /dev/null | grep -c 'marker-line-from-the-suite' || true)
+if [ "$n" = 1 ]; then ok "REQ-CI-005-AC1 run: the suite's output appears exactly once"; else bad "REQ-CI-005-AC1 run: the suite's output appeared $n times"; fi
+ln -s "$work/s/chatty.sh" "$work/s/link.sh"; printf '{"link": 50}\n' > "$work/rl.json"
+expect 1 "REQ-CI-005-AC3 run: a suite that is a symlink is refused (as all always held)" "empty or missing" -- run "$work/rl.json" link "$work/s/link.sh"
+# a repo with a workflow: trusted counting steps keep their suites out of `all`; the rest still runs; a bad counting step fails
+mkdir -p "$work/cw/bin" "$work/cw/.github/workflows" "$work/cw/test-evidence" "$work/cw/tools"
+for sname in a b c; do printf '#!/usr/bin/env bash\necho "ran-%s-in-all"\necho "x: 60 passed, 0 failed"\n' "$sname" > "$work/cw/bin/$sname-test.sh"; done
+printf '{"a-test.sh": 50, "b-test.sh": 50, "c-test.sh": 50}\n' > "$work/cw/test-evidence/suite-floors.json"
+F=test-evidence/suite-floors.json
+CNT="python3 -I bin/suite-guard-run.py run $F"
+# cwf JOB-KEYS-BLOCK STEP... : one job `j` (plus the optional extra keys) whose steps are the arguments, each a `run:` of its own; a step may carry extra keys as "RUN|key: value"
+cwf() { local keys=$1; shift; { printf 'jobs:\n  j:\n    runs-on: x\n%s    steps:\n' "$keys"; local st; for st in "$@"; do
+    if [[ "$st" == *"|"* ]]; then printf '      - run: %s\n        %s\n' "${st%%|*}" "${st#*|}"; else printf '      - run: %s\n' "$st"; fi; done; } > "$work/cw/.github/workflows/ci.yml"; }
+cwall() { (cd "$work/cw" && python3 -I "$runner" all --count-only "$F" . 2>&1 < /dev/null); }
+cwf "" "bash bin/a-test.sh"
+out=$(cwall) || true; if grep -q ran-a-in-all <<< "$out" && grep -q ran-b-in-all <<< "$out"; then ok "REQ-CI-005-AC1 all: with no counting step every floored suite is run (as before)"; else bad "all with no counting step did not run every suite: ${out:0:200}"; fi
+cwf "" "$CNT a-test.sh bin/a-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 $CNT b-test.sh bin/b-test.sh </dev/null"
+out=$(cwall) && rc=0 || rc=$?
+if [ "$rc" = 0 ] && grep -q ran-c-in-all <<< "$out" && ! grep -q ran-a-in-all <<< "$out" && ! grep -q ran-b-in-all <<< "$out" && grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a suite that a counting step runs (plain, or with the one env prefix and </dev/null) is not run again, says so, and the rest is run"; else bad "all with counting steps: rc=$rc ${out:0:300}"; fi
+cwf "" "$CNT zz-test.sh bin/zz-test.sh"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'unfloored' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting step that names an unfloored suite fails"; else bad "unfloored counting step: rc=$rc ${out:0:200}"; fi
+cwf "" "$CNT a-test.sh bin/b-test.sh"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'file name of its PATH' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting step whose NAME is not the file name of its PATH fails"; else bad "name/path mismatch: rc=$rc ${out:0:200}"; fi
+cwf "" "python3 -I bin/suite-guard-run.py run other-floors.json a-test.sh bin/a-test.sh"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ]; then ok "REQ-CI-005-AC2 all: a counting step that reads another floors file fails"; else bad "other floors file: rc=$rc ${out:0:200}"; fi
+cwf "" "$CNT a-test.sh bin/a-test.sh extra"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'not `run FLOORS NAME PATH`' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting step in another form (extra argument) fails"; else bad "odd form: rc=$rc ${out:0:200}"; fi
+cwf "" "BASH_ENV=prelude.sh $CNT a-test.sh bin/a-test.sh"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'not `run FLOORS NAME PATH`' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting step with an env prefix other than the one floored step's fails (no shell hook)"; else bad "env prefix: rc=$rc ${out:0:200}"; fi
+# a counting line is trusted only as the WHOLE of its step: a line inside a here-document or after exit is no run, and is refused
+{ printf 'jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: |\n          exit 0\n          %s a-test.sh bin/a-test.sh\n' "$CNT"; } > "$work/cw/.github/workflows/ci.yml"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'not the whole of its step' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting line after exit 0 (not the whole step) is refused, the suite is not skipped"; else bad "inert line: rc=$rc ${out:0:200}"; fi
+{ printf 'jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: |\n          cat <<EOF >/dev/null\n          %s a-test.sh bin/a-test.sh\n          EOF\n' "$CNT"; } > "$work/cw/.github/workflows/ci.yml"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'not the whole of its step' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting line inside a here-document is refused"; else bad "here-doc line: rc=$rc ${out:0:200}"; fi
+# a step or job that may not run does not count: the suite is still run here
+for label in "a job with an if" "a job that needs another" "a job with a strategy" "a job with continue-on-error"; do
+  case "$label" in "a job with an if") k=$'    if: false\n' ;; "a job that needs another") k=$'    needs: k\n' ;; "a job with a strategy") k=$'    strategy: {matrix: {x: [1]}}\n' ;; *) k=$'    continue-on-error: true\n' ;; esac
+  cwf "$k" "$CNT a-test.sh bin/a-test.sh"
+  out=$(cwall) || true; if grep -q ran-a-in-all <<< "$out"; then ok "REQ-CI-005-AC1 all: a suite counted only by a step of $label is still run here"; else bad "$label was trusted: ${out:0:200}"; fi
+done
+for label in "if: false" "continue-on-error: true" "env: {A: b}" "shell: bash"; do
+  cwf "" "$CNT a-test.sh bin/a-test.sh|$label"
+  out=$(cwall) || true; if grep -q ran-a-in-all <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step with '$label' is not trusted: its suite is still run here"; else bad "step with $label was trusted: ${out:0:200}"; fi
+done
+# a decoy PATH: the counting step runs another file of that name, so the real one would be skipped: refused
+cwf "" "$CNT a-test.sh tools/a-test.sh"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'not bin/a-test.sh\|the one file of that name' <<< "$out"; then ok "REQ-CI-005-AC2 all: a counting step whose PATH is not the one file of that name under ROOT fails (the decoy)"; else bad "decoy path: rc=$rc ${out:0:300}"; fi
+cwf "" "$CNT a-test.sh bin/../bin/a-test.sh"
+out=$(cwall) || true; if grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: the same file spelled with a .. component is still that file"; else bad "normalised path not accepted: ${out:0:200}"; fi
+# a counted suite that is wrong is caught by its own step (AC3): below its floor, no count, non-zero exit
+printf '{"chatty": 70}\n' > "$work/rc2.json"
+expect 1 "REQ-CI-005-AC3 run: a counted suite that lost cases (below its floor) fails its step" "below its floor" -- run "$work/rc2.json" chatty "$work/s/chatty.sh"
+expect 1 "REQ-CI-005-AC3 run: a counted suite that prints no count fails its step" "no case count" -- run "$work/rc.json" silent "$work/s/silent.sh"
+
+EXPECT=91
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
