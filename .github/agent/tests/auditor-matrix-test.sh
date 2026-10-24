@@ -906,6 +906,32 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   runs="$(pj "$WORK/sh.json" 'd.get("runs_auditor_run")')"
   eq "$runs" "true" && ok || no "run step invokes auditor-run.py with inputs.dry_run" "runs_auditor_run=$runs"; fi
 
+begin "req15-workflow-installs-the-pinned-go-for-the-records-step" "auditor.yml (REQ-VEND-001-AC15): the pinned Go toolchain is installed at its fixed path (bin/install-scanner.sh go) INSIDE the existing manifest step, as a warning-only step of that step (it never fails the audit), with no step added before the audited download exception's step; the 'Run the auditor' step's text is untouched; the pin checker finds nothing in the tree"
+if ! have "$WF"; then no "$WF present" "absent"; else
+  r="$(WF="$WF" "$PY" - <<'PY'
+import hashlib, os, re, subprocess, sys, yaml
+wf = yaml.safe_load(open(os.environ["WF"]))
+steps = wf["jobs"]["audit"]["steps"]
+bad = []
+m = next((s for s in steps if "auditor-manifest.py" in (s.get("run") or "")), None)
+if not m: bad.append("no manifest step")
+else:
+    r = m["run"]
+    if not re.search(r"^\s*\./bin/install-scanner\.sh go\s*\\?\n?\s*\|\| echo \"::warning::", r, re.M): bad.append("the manifest step does not install the pinned go as a warning-only command")
+    g = r.find("install-scanner.sh go")
+    if g < 0 or g > r.index("auditor-manifest.py"): bad.append("the go install must be present and come before the manifest is built")
+run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
+sys.path.insert(0, ".github/agent/bin")
+spec = __import__("importlib.util").util.spec_from_file_location("cap", ".github/agent/bin/check-action-pins.py"); cap = __import__("importlib.util").util.module_from_spec(spec); spec.loader.exec_module(cap)
+idx = steps.index(run); sha = hashlib.sha256(run["run"].encode()).hexdigest()
+if (".github/workflows/auditor.yml", "audit", idx, sha) not in cap.DOWNLOAD_EXCLUSIONS: bad.append("the 'Run the auditor' step moved or changed: its audited download exception (index %d, sha256 %s) no longer matches" % (idx, sha[:12]))
+rc = subprocess.run([sys.executable, ".github/agent/bin/check-action-pins.py"], capture_output=True, text=True)
+if rc.returncode != 0: bad.append("the pin checker fails the tree: " + rc.stdout[-200:])
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  eq "$r" "ok" && ok || no "install inside the manifest step, run step untouched, pin checker clean" "$r"; fi
+
 begin "req12-schedule-mode-unset-is-dry" "a scheduled run is DRY unless the repo variable AUDITOR_SCHEDULE_MODE is exactly 'live' (unset => dry); both the dry flag and the App-token step follow it; dispatch follows dry_run"
 if ! have "$WF"; then no "$WF present" "absent"; else
   r="$(WF="$WF" "$PY" - <<'PY'
@@ -1099,7 +1125,7 @@ begin "dadj-1-adjudicator-unavailable-one-issue-incomplete" "when the adjudicato
 o="$WORK/dadj1"; shim="$WORK/dadj1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$F/adjudicator/fail-on-call.py" --out "$o" >/dev/null 2>&1
 inc="$(grep -c 'AUDIT INCOMPLETE:.*adjudicator unavailable' "$o/report.md" 2>/dev/null)"; inc="${inc:-0}"
-agg="$(grep -cE "issue create.*adjudicator unavailable — [0-9]+ findings unassessed" "$shim" 2>/dev/null)"; agg="${agg:-0}"
+agg="$(grep -cE "issue create.*adjudicator unavailable — findings unassessed" "$shim" 2>/dev/null)"; agg="${agg:-0}"
 perfinding="$(grep -c 'issue create.*unassessed-after-fallback' "$shim" 2>/dev/null)"; perfinding="${perfinding:-0}"
 hdr="$(grep -c 'UNAVAILABLE' "$o/report.md" 2>/dev/null)"; hdr="${hdr:-0}"
 { [ "$inc" -ge 1 ] 2>/dev/null && eq "$agg" "1" && eq "$perfinding" "0" && [ "$hdr" -ge 1 ] 2>/dev/null; } \
@@ -4004,6 +4030,105 @@ rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/m
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
+# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue
+# (stable title, the count in the body; a budget stop opens none), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
+begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, an iteration stop opens exactly ONE owner issue for all stopped findings with a stable title, a budget stop opens none, a failed delivery marks the run incomplete, the lists show their full counts, and the header fields are escaped"
+r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
+FX=sys.argv[1]; tmp=tempfile.mkdtemp()
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+def adj(usage):
+    fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":%d})+\"\\n\")\n    sys.stdout.flush()\n"%usage); return fa
+v0=json.load(open(FX+"/panel-mediumnofix/verdict.json"))
+def manifest(nfind, name, ver="v1.2.3"):
+    d=tmp+"/"+name; os.makedirs(d, exist_ok=True)
+    v=copy.deepcopy(v0); f0=v["findings"][0]; fs=[]
+    for i in range(nfind):
+        f=copy.deepcopy(f0); f["id"]="CVE-2099-92%02d"%i; f["package"]="libmed%d"%i
+        f["purls"]=["pkg:deb/debian/libmed%d@1?arch=amd64&distro=debian-12.0"%i]; f["details"]["grype"]["purl"]=f["purls"][0]; fs.append(f)
+    v["findings"]=fs; v["unique"]=fs
+    json.dump(v,open(d+"/verdict.json","w"))
+    m=json.load(open(FX+"/manifest-mediumnofix.json"))
+    for s in m["scanner_reports"]: m["scanner_reports"][s]=d+"/verdict.json"
+    m["panel"]["verdict"]=d+"/verdict.json"
+    for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
+    m["scanner_status"]["grype"]["version"]=ver; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
+    json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
+def run(mp, fa, dry=True, limit=None, shim=None, fail=False):
+    ws=tmp+"/ws"; os.makedirs(ws, exist_ok=True); os.environ["GITHUB_WORKSPACE"]=ws
+    if shim: os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
+    else: os.environ.pop("AUDITOR_GIT_SHIM_LOG",None)
+    if fail: os.environ["AUDITOR_SHIM_ISSUE_FAIL"]="1"
+    else: os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL",None)
+    keep=R.policy.MAX_ITERATIONS
+    if limit: R.policy.MAX_ITERATIONS=limit
+    out=tempfile.mkdtemp(dir=tmp)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
+    finally: R.policy.MAX_ITERATIONS=keep
+    return open(out+"/report.md").read()
+bad=[]
+def line(rep,start): return [l for l in rep.split("\n") if l.startswith(start)]
+name_re=re.compile(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",re.I)
+# 1: two findings stopped by the iteration limit: one issue naming both, no per-finding issue, refusals and stops with counts and roles, versions
+rep=run(manifest(2,"two"), adj(1), limit=1)
+iss=[l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]
+refs=line(rep,"**Model refusals:**"); stops=line(rep,"**Model stops:**"); vers=line(rep,"**Scanner versions:**")
+if not (len(iss)==1 and "2 finding(s)" in iss[0]): bad.append("stop issue %r"%iss)
+if [l for l in rep.split("\n") if "unassessed-after-fallback" in l or "escalation pending" in l]: bad.append("per-finding path also taken")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 3: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
+if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(iterations)" in stops[0]): bad.append("stops %r"%stops)
+if not (len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0]): bad.append("vers %r"%vers)
+if "none called" in rep: bad.append("role header says none called after refused calls")
+if name_re.search(rep): bad.append("a model/vendor name in the report")
+# 2: a token-budget stop is section 4 with no owner issue at all
+rep=run(manifest(2,"budget"), adj(R.policy.TOKEN_BUDGET+1))
+if [l for l in rep.split("\n") if "owner-decision issue" in l]: bad.append("budget stop opened an issue")
+if not any("(token budget)" in l for l in line(rep,"**Model stops:**")): bad.append("budget stop not listed")
+# 2b: an adjudicator that ERRORS (does not refuse) and meets the stop is an outage, not a stop: one adjudicator-unavailable issue, no stop issue, no stop recorded, the run incomplete
+fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nfor line in sys.stdin:\n    sys.exit(3)\n")
+rep=run(manifest(2,"errored"), fe, limit=1)
+if [l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]: bad.append("an errored finding opened a stop issue")
+if line(rep,"**Model stops:**"): bad.append("an errored finding was reported as a stop %r"%line(rep,"**Model stops:**"))
+if len([l for l in rep.split("\n") if l.startswith("- would open") and "owner-decision issue" in l and "adjudicator unavailable" in l])!=1: bad.append("no single adjudicator-unavailable issue %r"%[l[:160] for l in rep.split("\n") if "owner-decision" in l or "navailable" in l][:6])
+if "AUDIT INCOMPLETE" not in rep: bad.append("an adjudicator outage left the run complete")
+# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64)
+rep=run(manifest(21,"many"), adj(1))
+refs=line(rep,"**Model refusals:**")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 64: ") and refs[0].endswith("; ...")): bad.append("refs cap %r"%[r[:60] for r in refs])
+rep=run(manifest(21,"manystop"), adj(1), limit=1)
+st=line(rep,"**Model stops:**")
+if not (len(st)==1 and st[0].startswith("**Model stops:** 21: ")): bad.append("stops count %r"%[x[:60] for x in st])
+# 4: the stop issue has a stable title across runs with a different count (one create, then an update), and the adjudicator-unavailable title is stable too
+shim=tmp+"/shim.log"
+run(manifest(1,"d1"), adj(1), dry=False, limit=1, shim=shim); run(manifest(3,"d3"), adj(1), dry=False, limit=1, shim=shim)
+log=open(shim).read()
+c=len([l for l in log.split("\n") if l.startswith("gh issue create") and "iteration stop" in l]); u=len([l for l in log.split("\n") if l.startswith("gh issue comment") and "iteration stop" in l])
+if (c,u)!=(1,1): bad.append("stop issue create/update %r"%((c,u),))
+t1=R.policy.subject("owner-decision: adjudicator unavailable — findings unassessed")
+src=open(".github/agent/bin/auditor-run.py").read()
+if "adjudicator unavailable — %d findings" in src: bad.append("count in the unavailable title")
+# 5: a failed delivery of the stop issue marks the run incomplete
+rep=run(manifest(1,"f1"), adj(1), dry=False, limit=1, shim=tmp+"/shim2.log", fail=True)
+if "AUDIT COMPLETE" in rep or "failed to open" not in rep: bad.append("failed stop-issue delivery not incomplete")
+# 6: a pullability refusal is logged with its role and billed
+st={"tokens":0}
+R._pullability(adj(5),{"finding_id":"CVE-P"},st)
+if not (st.get("tokens")==5 and st.get("refusals")==[{"finding_id":"CVE-P","attempt":"pullability","role":"primary"}] and "primary" in st.get("roles_used",())): bad.append("pullability refusal %r"%st)
+# 7: a narrative refusal is logged and billed too
+st={"tokens":0}
+R._conclusion(adj(7),{n:[] for n in range(1,8)},json.load(open(manifest(1,"n"))),st)
+if not (st.get("tokens")==7 and st.get("refusals")==[{"finding_id":"CONCLUSION","attempt":"narrative","role":"primary"}]): bad.append("narrative refusal %r"%st)
+# 8: scanner version text is escaped in the header
+rep=run(manifest(1,"esc","v`x`|[1]"), adj(1), limit=1)
+vers=line(rep,"**Scanner versions:**")
+if not (len(vers)==1 and "v\\`x\\`\\|\\[1\\]" in vers[0]): bad.append("unescaped version %r"%vers)
+print("OK" if not bad else "BAD "+"; ".join(bad))
+PP
+)"
+eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged and billed, one stop issue with a stable title, budget stop silent, full counts, failed delivery incomplete, header escaped" "$r14"
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 # rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
@@ -4046,6 +4171,138 @@ print("OK" if (rejudged and not hid and parsed_ok and not rej_b and len(hid_b)==
 PP
 )"
 eq "$r5" "OK" && ok || no "rc-5b fix 5: a carried statement hidden by our VEX from Inspector is re-judged (flagged carried by the parser, resolved to its scope), one no scanner reports is listed 'not re-checkable', an unmatched entry is dropped" "$r5"
+# rc-5b fix 12 (R4 + R5): the production client reads the category and the refusal from the JSON answer's own keys (exact), and the driver refuses a model proposal by shape and by
+# vendor/model name (the proposal, not the run).
+begin "rc5b-12-client-category-is-exact-json" "the adjudicator client takes the category and the refusal from the JSON keys, exact match: 'not a false_positive' in prose is not false_positive, a word 'cannot' in prose is not a refusal, no JSON is under_investigation"
+r12="$("$PY" -c "
+import importlib.util,os,json
+os.environ['AUDITOR_MODEL_PRIMARY']='m'
+spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+def ask(text):
+    class B: pass
+    b=B(); b.text=text
+    class Msg: content=[b]; usage=None
+    class _M:
+        @staticmethod
+        def create(**k): return Msg()
+    class Client: messages=_M()
+    a=C._handle({'finding_id':'CVE-X','package':'p','kind':'disposition'},Client())
+    return a.get('category'), a.get('refused')
+got=[ask('{\"category\": \"false_positive\"}'), ask('This is not a false_positive; it is real_fixable.'), ask('{\"category\": \"not a false_positive\"}'),
+     ask('I cannot assess this.'), ask('{\"refused\": true}'), ask('{\"category\": \"real_fixable\", \"x\": 1}'), ask('{\"category\": \"real_fixable or false_positive\"}'), ask('Example: {\"category\": \"false_positive\"} then {\"refused\": true}'), ask('{\"refused\": true, \"category\": \"real_fixable\"}'), ask('{\"refused\": true, \"refused\": false, \"category\": \"false_positive\"}'), ask('Analysis: {\"category\": \"real_fixable\"}')]
+want=[('false_positive',False),('under_investigation',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('real_fixable',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('under_investigation',False),('under_investigation',False)]
+print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
+eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
+begin "rc5b-12-proposals-validated-by-shape-and-name" "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap and no vendor/model name; a refused proposal does not stop the run"
+r12p="$("$PY" -c "
+import importlib.util,os,sys
+sys.path.insert(0,'.github/agent/bin')
+spec=importlib.util.spec_from_file_location('r','.github/agent/bin/auditor-run.py'); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','finding_id':'CVE-2099-PROPOSE','purl':'pkg:deb/debian/libpropose@1.0'}],'note':'generalises from a recorded no-DSA pattern','evidence':'debian security tracker: no-DSA (minor)'}
+bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,package=3), dict(good,keys='x'),
+     dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
+     dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
+     dict(good,note='x'*2001), None, 'x', [], {},
+     {'kind':'knowledge'}, {'evidence':'e'}, {'kind':'knowledge','evidence':'e'}, dict(good,keys=[]), {k:v for k,v in good.items() if k!='keys'},
+     dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,package='Cl',note='au',evidence='de'), dict(good,note='gpt - 5'), dict(good,note='reviewed by private - model'), dict(good,package='zlib',note='aude',keys=[{'scanner':'grype','finding_id':'CVE-2099-1','purl':'pkg:generic/cl'}]), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
+     dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,note='Clau',evidence='de says no'),
+     dict(good,package='an',note='thropic'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
+ok=R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e','note':'n'})=={'kind':'knowledge','evidence':'e','note':'n'}
+rej=[b for b in bad if R._valid_proposal(b) is not None]
+# configured model identifiers of this run, one at a time (no minimum length), each also against the kind field
+cfg_rej=[]
+for k,v,prop in (('AUDITOR_MODEL_PRIMARY','secret-model-id-7',dict(good,note='uses secret-model-id-7')), ('AUDITOR_MODEL_FALLBACK','q2',dict(good,note='the q2 route')), ('AUDITOR_MODEL_FALLBACK','knowledge',{'kind':'knowledge','evidence':'e','note':'n'})):
+    os.environ[k]=v
+    if R._valid_proposal(prop) is not None: cfg_rej.append(v)
+    del os.environ[k]
+import time
+os.environ['AUDITOR_MODEL_PRIMARY']='a'*13+'b'
+t0=time.time(); R._valid_proposal(dict(good,keys=[{'scanner':'a','finding_id':'a','purl':'a'}]*20)); fast=time.time()-t0<2
+del os.environ['AUDITOR_MODEL_PRIMARY']
+print('OK' if ok and fast and not rej and not cfg_rej else 'BAD kept=%r cfg=%r ok=%s'%(rej,cfg_rej,ok))" 2>/dev/null | tail -1)"
+eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and refuses every mis-shaped or name-bearing one" "$r12p"
+# rc-5b fix 13 (R6, Fable): a reviewed file on main that is PRESENT but unreadable or malformed is a stop (main() returns 3), never a guess: an unreadable VEX must not become "no
+# statements" (the PR would delete every statement) and an unreadable accepted-items file must not renew every time box. A missing file is the first run and stays allowed.
+# Every case drives main() and records every git/gh call: a stop makes NO mutating call (no issue, no PR, no git beyond reads).
+cat > "$WORK/r6main.py" <<'PP'
+import json,os,sys,io,contextlib,importlib.util,tempfile,subprocess as _sp
+FX,variant=sys.argv[1],sys.argv[2]
+tmp=tempfile.mkdtemp(); ws=tmp+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex
+from unittest.mock import patch
+c="CVE-2099-9300"; purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+old=vex.doc(c,"affected","2026-08-24T00:00:00Z",action="tracked",subcomponents=[purl])
+vp=ws+"/.vex/fosterstack-cache.openvex.json"; ap=ws+"/.auditor/accepted-items.json"
+good_items={"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","threshold":"below","owner_issue":None,"vex_id":old["statements"][0]["@id"],"expiry":"2026-12-31"}]}
+def write_good():
+    json.dump(old,open(vp,"w")); json.dump(good_items,open(ap,"w"))
+write_good()
+corrupt_at="start"
+if variant=="vex-malformed": open(vp,"w").write("{not json")
+elif variant=="vex-notobject": open(vp,"w").write("[]")
+elif variant=="vex-null-statement": json.dump(dict(old,statements=[None]),open(vp,"w"))
+elif variant=="items-malformed": open(ap,"w").write("{not json")
+elif variant=="items-notobject": open(ap,"w").write("[]")
+elif variant=="items-null-entry": json.dump({"accepted_items":[good_items["accepted_items"][0],None]},open(ap,"w"))
+elif variant=="items-scalar-entry": json.dump({"accepted_items":[3]},open(ap,"w"))
+elif variant=="items-bad-fields": json.dump({"accepted_items":[{"cve":"CVE-A","expiry":"2026-01-01","scope_purls":["p"],"not_pullable":True},{"cve":"CVE-B","expiry":"2026-01-01","scope_purls":5}]},open(ap,"w"))
+elif variant=="items-mixed-expiry": json.dump({"accepted_items":[dict(good_items["accepted_items"][0],expiry=5),dict(good_items["accepted_items"][0],expiry="2026-12-31")]},open(ap,"w"))
+elif variant=="vex-bad-vulnerability": json.dump(dict(old,statements=[dict(old["statements"][0],vulnerability="x")]),open(vp,"w"))
+elif variant=="vex-dir": os.remove(vp); os.mkdir(vp)
+elif variant=="items-dir": os.remove(ap); os.mkdir(ap)
+elif variant=="items-bad-at-delivery": corrupt_at="delivery"
+elif variant=="missing": os.remove(vp); os.remove(ap)
+elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
+elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
+calls=[]
+def fake(cmd,*a,**kw):
+    calls.append(list(cmd))
+    if cmd and cmd[0]=="git":
+        if corrupt_at=="delivery" and cmd[1:2]==["checkout"]: open(ap,"w").write("{bad")
+        if corrupt_at=="reopened" and cmd[1:2]==["checkout"]:
+            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write("{bad")
+        return _sp.CompletedProcess(cmd,0,"","")
+    if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+    return _sp.run(cmd,*a,**kw)
+mp=FX+"/manifest-mediumnofix.json"
+R.cli.ARGS[:]=["--manifest",mp,"--out",tmp+"/out","--dry-run","false","--today","2026-09-24","--adjudicator","offline-probe"]
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    try: rc=R.main()
+    except Exception as e: rc="EXC %s"%type(e).__name__
+try: os.chmod(ws+"/.vex",0o755)
+except OSError: pass
+mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","pr","create"]) or x[:2] in (["git","push"],["git","commit"]) or x[:2]==["gh","api"]]
+print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=="delivery" else ""))
+PP
+begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
+is_root=0; [ "$(id -u)" = 0 ] && is_root=1
+for variant in vex-malformed vex-notobject vex-null-statement items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable or malformed reviewed input ($variant) stops the run: main() returns 3 and makes no mutating git/gh call" "$r6"
+done
+if [ "$is_root" = 0 ]; then
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" vex-parent-noaccess 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable PARENT folder of a reviewed file (EACCES on lstat) is a stop, not 'absent'" "$r6"
+else ok; fi
+r6="$("$PY" "$WORK/r6main.py" "$FXRUN" reopened-bad-at-delivery 2>/dev/null | tail -1)"
+eq "$r6" "rc=3 mutating=0" && ok || no "a reopened-expired.json this run wrote that does not parse stops the run (exit 3) at every reader, nothing delivered" "$r6"
+r6g="$("$PY" - <<'PP' 2>&1 | tail -1
+import os,sys,tempfile,importlib.util
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+t=tempfile.mkdtemp(); os.makedirs(t+"/vex")
+open(t+"/vex/CVE-2099-1.openvex.json","w").write("{bad")
+try: R._consolidate(t,"2026-09-24T00:00:00Z"); print("RAN")
+except R.ReviewedInputInvalid: print("STOP")
+PP
+)"
+eq "$r6g" "STOP" && ok || no "a per-finding VEX file this run wrote that does not parse stops _consolidate instead of producing 'statements: []'" "$r6g"
+r6="$("$PY" "$WORK/r6main.py" "$FXRUN" items-bad-at-delivery 2>/dev/null | tail -1)"
+case "$r6" in rc=3\ mutating=0*) ok ;; *) no "a reviewed input that stops parsing only in the delivery checkout also stops the run (exit 3), not an ordinary staging error" "$r6" ;; esac
+r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
+case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"

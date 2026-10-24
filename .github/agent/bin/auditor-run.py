@@ -137,6 +137,47 @@ def _issue_pending_note(ref):
     return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
 
 
+class ReviewedInputInvalid(Exception):
+    """A reviewed file on main (the published VEX, the accepted-items inventory) is present but unreadable or not the JSON object it must be: the run stops (exit 3) rather than guess an
+    empty one, which would delete every statement or renew every time box (rc-5b fix 13; REQ-AUD-13 AC6, REQ-AUD-2 AC5c)."""
+
+
+def _read_reviewed_json(path):
+    """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object is a stop."""
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None                                # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
+    except OSError as ex:
+        raise ReviewedInputInvalid("%s cannot be looked at (%s)" % (path, type(ex).__name__))
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError, UnicodeError) as ex:
+        raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
+    if not isinstance(doc, dict):
+        raise ReviewedInputInvalid("%s is not a JSON object" % path)
+    key = "statements" if "openvex" in os.path.basename(path) else "accepted_items" if os.path.basename(path) == "accepted-items.json" else None
+    if key and key in doc and (not isinstance(doc[key], list) or not all(isinstance(x, dict) for x in doc[key])):
+        raise ReviewedInputInvalid("%s: %r is not a list of objects" % (path, key))
+    return doc
+
+
+def _workspace():
+    """The one checkout the run reads and delivers against: GITHUB_WORKSPACE, else the current directory (what delivery always did)."""
+    return os.environ.get("GITHUB_WORKSPACE") or os.getcwd()
+
+
+def _read_reopened(path):
+    """The scopes this run reopened (reopened-expired.json, written by the run itself): a list of [cve, products, purls]. Absent = none; present and unreadable or mis-shaped means the run
+    is broken, so it stops (exit 3) rather than deliver without the removals (rc-5b fix 13, item 6)."""
+    doc = _read_reviewed_json(path)
+    rows = (doc or {}).get("reopened", [])
+    if not isinstance(rows, list) or not all(isinstance(x, list) and len(x) == 3 and isinstance(x[0], str) and all(isinstance(y, list) and all(isinstance(z, str) for z in y) for y in x[1:]) for x in rows):
+        raise ReviewedInputInvalid("%s: 'reopened' is not a list of [cve, [products], [purls]] with strings" % path)
+    return rows
+
+
 class DefectLogInvalid(Exception):
     """The known-defect log exists but is not a JSON object — a log problem, never reported as
     a manifest problem, and never a traceback."""
@@ -174,21 +215,15 @@ def _plan(would, kind, target, cves=(), cmd="", note="", key=None):
 
 def _supp_cves(supp):
     """The CVE IDs the consolidated suppression package carries (its VEX statements)."""
-    try:
-        doc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
-    except Exception:
-        return []
+    doc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json")) or {}
     return sorted({(s.get("vulnerability") or {}).get("name") for s in doc.get("statements", [])} - {None})
 
 
 def _supp_removed(supp):
     """The scopes the suppression PR REMOVES this run — expired, or lifted because a fix became
     pullable (the record does not say which): (cve ids, scope count)."""
-    try:
-        sc = json.load(open(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))).get("reopened", [])
-    except Exception:
-        return [], 0
-    return sorted({x[0] for x in sc if x}), len(sc)
+    sc = _read_reopened(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))
+    return sorted({x[0] for x in sc}), len(sc)
 
 
 def _supp_target(supp, nstmt):
@@ -360,11 +395,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     test image always forces dry_run — REQ-AUD-15 AC9)."""
     # nstmt==0 with NO removals means nothing to deliver. But an expiry reopen (AC5c) produces
     # zero NEW statements yet must still REMOVE a carried statement/ignore — deliver that.
-    has_removals = False
-    try:
-        has_removals = bool(json.load(open(os.path.join(out, ".auditor", "reopened-expired.json"))).get("reopened"))
-    except Exception:
-        has_removals = False
+    has_removals = bool(_read_reopened(os.path.join(out, ".auditor", "reopened-expired.json")))
     # A run that produced ONLY model proposals (no statements, no removals) still opens the draft
     # PR so the proposals reach audit-lane review (REQ-AUD-16 AC4; Codex round-1 P2).
     has_proposals = os.path.exists(os.path.join(out, ".auditor", "proposals", "adjudicator-proposals.json"))
@@ -409,7 +440,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         _plan(would, "suppression PR", *_supp_target(supp, nstmt), note="not delivered: delivery disabled (no authorized delivery step)")
         return None, None
     import shutil
-    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    ws = _workspace()
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
@@ -431,6 +462,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
             s = os.path.join(out, p); d = os.path.join(ws, p)
             os.makedirs(os.path.dirname(d), exist_ok=True)
             shutil.copyfile(s, d)
+    except ReviewedInputInvalid:
+        raise                                       # a reviewed file of the delivery checkout that does not parse stops the run (exit 3), it is not a staging error to carry on from
     except Exception as e:
         return None, "stage files: %s" % e
     # the files THIS run changed against main (as `git add` + `git commit` once found them: a path that is absent and untracked is skipped)
@@ -606,7 +639,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
         _plan(would, "bump PR", target, cves, note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
         return None, None, "pending"
-    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    ws = _workspace()
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
@@ -705,14 +738,10 @@ def _merge_suppressions(ws, supp):
     same-@id statement, adds new ones, keeps the rest)."""
     import shutil
     vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
-    os.makedirs(os.path.dirname(vp), exist_ok=True)
-    newdoc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
-    existing = {}
-    if os.path.exists(vp):
-        try:
-            existing = json.load(open(vp))
-        except Exception:
-            existing = {}
+    newdoc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
+    if newdoc is None:                              # the run's own consolidated VEX must exist (as before: a missing file is a staging error)
+        raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
+    existing = _read_reviewed_json(vp) or {}
     # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
     # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
     # same-scope statement — this run's or a carried one — has the same key and the incoming
@@ -730,12 +759,8 @@ def _merge_suppressions(ws, supp):
     # reopened this run because its time box expired (identified by statement @id); sibling
     # scopes and permanent statements of the same vulnerability are retained.
     reopened = set()
-    try:
-        for sc in json.load(open(os.path.join(os.path.dirname(supp), ".auditor",
-                                              "reopened-expired.json"))).get("reopened", []):
-            reopened.add((sc[0], tuple(sc[1]), tuple(sc[2])))     # (cve, products, purls)
-    except Exception:
-        reopened = set()
+    for sc in _read_reopened(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json")):
+        reopened.add((sc[0], tuple(sc[1]), tuple(sc[2])))     # (cve, products, purls)
     if reopened:
         survivors = [s for s in survivors
                      if ((s.get("vulnerability") or {}).get("name"), _scope_key(s)[0], _scope_key(s)[1]) not in reopened]
@@ -753,6 +778,9 @@ def _merge_suppressions(ws, supp):
     for k in ("@context", "@id", "author", "role"):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
+    old_ai = _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
+    new_ai = _read_reviewed_json(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))     # the run's own inventory too
+    os.makedirs(os.path.dirname(vp), exist_ok=True)       # the working tree is touched only after every read above has passed
     cli.writej(vp, merged)
 
     # accepted-items.json is COUPLED to the VEX: an affected statement that survives the VEX
@@ -760,14 +788,7 @@ def _merge_suppressions(ws, supp):
     # rejects the package as inconsistent (R1 outer round-5 #2). Merge like the VEX — this
     # run's items win; carry an old item forward for any affected CVE still in the merged
     # document; drop acceptances whose statement is no longer affected.
-    def _loadj(p):
-        try:
-            return json.load(open(p))
-        except Exception:
-            return None
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
-    new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
-    old_ai = _loadj(aip)
     out_ai = {}
     if new_ai is not None or old_ai is not None:
         def _cve(it):
@@ -857,10 +878,7 @@ def _consolidate(out, ts):
     import glob
     statements = []
     for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
-        try:
-            statements.extend(json.load(open(vf)).get("statements", []))
-        except Exception:
-            pass
+        statements.extend((_read_reviewed_json(vf) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
     supp = os.path.join(out, "suppressions")
     document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
                 "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
@@ -880,14 +898,20 @@ def adjudicate(adjudicator, ctx, state):
     iters = 0; errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
+            if errored and not refused:
+                return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
             state["stops"] = state.get("stops", 0) + 1
-            return "adjudicator_error" if (errored and not refused) else "refused"
+            by_iters = iters >= policy.MAX_ITERATIONS
+            state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "iterations" if by_iters else "token budget"})
+            return "iteration_stop" if by_iters else "budget_stop"     # neither is a genuine refusal: the iteration stop has its one aggregate issue, the budget stop goes to section 4 with no issue
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused as e:
             state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a refusal is still billed
             refused = True
+            state.setdefault("roles_used", set()).add(role)          # a refused call still ran that model
+            state.setdefault("refusals", []).append({"finding_id": ctx["finding_id"], "attempt": attempt, "role": role})     # logged for the report (REQ-AUD-8 AC3): finding, attempt, model role, never a model id
             continue
         except Exception as e:
             errored = True
@@ -908,10 +932,12 @@ def adjudicate(adjudicator, ctx, state):
         # this run — it takes effect only after the owner merges the audit-lane PR. A proposal is
         # kept ONLY when it names a recognized kind AND carries evidence (AC4 "with evidence"); a
         # malformed / evidence-free / unsupported-kind proposal is dropped, never forwarded.
-        _pr = ans.get("propose")
-        if isinstance(_pr, dict) and _pr.get("kind") in ("defect_log", "knowledge") and _pr.get("evidence"):
+        _pr = _valid_proposal(ans.get("propose"))
+        if _pr is not None:
             state.setdefault("proposals", []).append(
                 {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
+        elif ans.get("propose") is not None:
+            state["proposals_refused"] = state.get("proposals_refused", 0) + 1      # the proposal is refused, not the run (rc-5b R4)
         return ans.get("category") or "unknown"
     return "adjudicator_error" if (errored and not refused) else "refused"
 
@@ -943,6 +969,8 @@ def _pullability(adjudicator, ctx, state):
         ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt="pullability", model="primary", context=ctx)
     except cli.Refused as e:
         state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+        state.setdefault("roles_used", set()).add("primary")
+        state.setdefault("refusals", []).append({"finding_id": ctx["finding_id"], "attempt": "pullability", "role": "primary"})      # REQ-AUD-8 AC3: every refusal is logged
         return None
     except Exception as e:
         msg = "%s: %s" % (type(e).__name__, _mask(str(e)))
@@ -1383,6 +1411,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        reason="adjudicator unavailable (model calls failed)",
                        cause="adjudicator unavailable", adjudicator_error=True)
             return row, m_inc
+        elif cat in ("iteration_stop", "budget_stop"):
+            # the loop or the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding. An iteration stop is carried by run()'s ONE
+            # aggregate owner issue (REQ-AUD-9 AC3); a budget stop notifies no one (nothing else notifies anyone). Section 4 either way, no per-finding issue.
+            row.update(section=4, disposition="under investigation",
+                       action="none (%s)" % ("iteration stop: named in the one aggregate owner issue" if cat == "iteration_stop" else "token budget reached"),
+                       reason="adjudication stopped", cause="iteration stop" if cat == "iteration_stop" else "token budget reached")
+            return row, m_inc
         elif cat == "refused":
             # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
             # not a silent §4 (R1 outer round-1 #4). A stub run cannot escalate; say so.
@@ -1647,16 +1682,16 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
     carried_lift_trigger = {}
     carried_stmts = []
-    ws0 = os.environ.get("GITHUB_WORKSPACE")
+    ws0 = _workspace()
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
         # foreign/legacy @id is matched by the scope it addresses, not its literal id spelling
         # (R1 refactor round-1 #5). Keyed by scope, per scope — never CVE-wide.
         prev_id_to_scope = {}
+        pv = _read_reviewed_json(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json"))
         try:
-            pv = json.load(open(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json")))
-            carried_stmts = list(pv.get("statements", []))
-            for s in pv.get("statements", []):
+            carried_stmts = list((pv or {}).get("statements", []))
+            for s in (pv or {}).get("statements", []):
                 if s.get("@id"):
                     prev_id_to_scope[s["@id"]] = _scope_key(s)
                 nm = (s.get("vulnerability") or {}).get("name")
@@ -1670,11 +1705,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     # (e.g. new unreachability evidence) is NOT yet published as not_affected, so it
                     # must render "proposed", not "in force (main)" (Codex round-2 residual #3).
                     carried_status[(nm, _scope_key(s))] = s.get("status")
-        except Exception:
-            prev_id_to_scope = {}
+        except Exception as ex:
+            raise ReviewedInputInvalid("the published VEX has a statement the run cannot read (%s): it stops rather than guess a partial state" % type(ex).__name__)
+        prev = _read_reviewed_json(os.path.join(ws0, ".auditor", "accepted-items.json"))
         try:
-            prev = json.load(open(os.path.join(ws0, ".auditor", "accepted-items.json")))
-            for it in prev.get("accepted_items", []):
+            for it in (prev or {}).get("accepted_items", []):
                 if not it.get("expiry"):
                     continue
                 cve = it.get("cve") or it.get("id")
@@ -1690,8 +1725,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     carried_not_pullable.add(key)
                     if it.get("lift_trigger"):           # preserve the machine-checkable condition
                         carried_lift_trigger[key] = it["lift_trigger"]
-        except Exception:
-            carried_expiry = {}
+        except Exception as ex:
+            raise ReviewedInputInvalid("accepted-items.json has an entry the run cannot read (%s): it stops rather than renew or drop a time box" % type(ex).__name__)
     state["not_rechecked"] = _resolve_carried(groups, carried_stmts)      # carried statements no scanner reports: listed in the report, never kept silently
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
@@ -1791,13 +1826,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
-        title = policy.subject("owner-decision: adjudicator unavailable — %d findings unassessed" % n)
+        title = policy.subject("owner-decision: adjudicator unavailable — findings unassessed")      # stable, so the next run finds and updates this issue (REQ-AUD-9 AC2); the count is in the body
         body = ("The adjudicator was unavailable this run: %d finding(s) could not be assessed "
                 "(primary/rephrase/fallback all failed). Cause: %s. The run is INCOMPLETE; no "
                 "disposition was inferred for these findings. Findings: %s"
                 % (n, adj_cause, ids[:1500]))
         ok, ref = _emit_owner_issue(title, body, dry, would, cves=[r["id"] for r in adj_unavailable],
-                                    target="adjudicator unavailable — %d findings unassessed" % n)
+                                    target="adjudicator unavailable — findings unassessed")
         _delivered = ok and ref not in ("dry", "skipped")
         for r in adj_unavailable:
             r["owner_issue"] = ref if ok else None
@@ -1808,6 +1843,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             else:
                 r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
+    # (a2) The five-iteration stop (REQ-AUD-9 AC3, register row 38: the owner hears on a loop): a finding the model could not settle within MAX_ITERATIONS calls opens exactly ONE
+    # owner-decision issue naming them all, never one per finding.
+    _loops = sorted({x["finding_id"] for x in state.get("stopped", []) if x.get("why") == "iterations"})
+    if _loops:
+        title = policy.subject("owner-decision: the model hit the %d-iteration stop" % policy.MAX_ITERATIONS)      # stable title, the count in the body (REQ-AUD-9 AC2)
+        body = ("The adjudicator hit the %d-iteration stop (primary, rephrase and fallback without a settled disposition) on %d finding(s) this run. No disposition was inferred; each "
+                "stays open for a human decision. Findings: %s" % (policy.MAX_ITERATIONS, len(_loops), ", ".join(_loops)[:1500]))
+        ok, ref = _emit_owner_issue(title, body, dry, would, cves=_loops, target="%d-iteration stop on %d finding(s)" % (policy.MAX_ITERATIONS, len(_loops)))
+        state["iteration_stop_issue"] = ref if ok else "FAILED"
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
     _intents = {}
@@ -1851,7 +1895,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     r["action"] = "OWNER ESCALATION FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
-    issue_failures = sum(1 for r in rows if r.get("issue_failed"))
+    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0)
     # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
     # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
     # owner_issue=None for every at-or-above item, and the release gate then HELD every such
@@ -2035,6 +2079,96 @@ def _configured_model_values():
     return out
 
 
+_PROP_KEYS = {"kind", "package", "keys", "note", "evidence"}
+_PROP_REQUIRED = {"kind", "evidence", "note"}
+_PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
+_PROP_MAX = 2000
+# lookalike letters (Cyrillic, Greek) folded to Latin, so a vendor name written with one of them is still a vendor name
+_LOOKALIKE = str.maketrans({"\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0441": "c", "\u0440": "p", "\u0456": "i", "\u0455": "s", "\u0443": "y", "\u0445": "x", "\u0501": "d",
+                            "\u03bf": "o", "\u03bd": "v", "\u03b9": "i", "\u03c1": "p", "\u03b1": "a", "\u03b5": "e", "\u03ba": "k", "\u043d": "h", "\u0442": "t", "\u043c": "m"})
+
+
+def _fold(x):
+    """NFKC, format characters (zero-width and the like) removed, lookalikes folded, lower-cased."""
+    import unicodedata
+    y = unicodedata.normalize("NFKC", x)
+    y = "".join(c for c in y if unicodedata.category(c) not in ("Cf", "Cc") or c in "\n\t")
+    return y.lower().translate(_LOOKALIKE)
+
+
+_FORBIDDEN_LITERALS = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in FORBIDDEN_NAMES.pattern.split("|")]       # the same names with every separator removed
+
+
+def _split_across(lit, squashed):
+    """True when `lit` can be read off the squashed fields laid end to end in SOME order: a suffix of one field, then whole fields, then a prefix of another. A field may be
+    reused, which makes the search a walk over positions in `lit` (at most len(lit) x fields steps, never exponential) and only widens what is refused: fail-closed (it may refuse
+    an innocent proposal, never pass a split name)."""
+    fields = [f for f in set(squashed) if f]
+    reach = set()
+    for f in fields:
+        for a in range(len(f)):
+            suf = f[a:]
+            if len(suf) < len(lit) and lit.startswith(suf):
+                reach.add(len(suf))
+    seen = set(reach)
+    while reach:
+        pos = reach.pop()
+        r = lit[pos:]
+        for f in fields:
+            if f.startswith(r):
+                return True
+            if r.startswith(f) and pos + len(f) not in seen:
+                seen.add(pos + len(f)); reach.add(pos + len(f))
+    return False
+
+
+def _scrubbed_all(texts):
+    """True when no string, taken alone, joined with the others, or split across them in any order (separators removed), holds a vendor/model name or any configured model
+    identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers. A character outside ASCII after folding refuses the proposal."""
+    folded = [_fold(t) for t in texts]
+    if any(not f.isascii() for f in folded):
+        return False                                               # fail closed: a letter outside ASCII after folding cannot be judged a lookalike or not
+    squashed = [re.sub(r"[^a-z0-9]", "", f) for f in folded]
+    joined = "".join(squashed)
+    cfg = [re.sub(r"[^a-z0-9]", "", _fold(v)) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip()]
+    lits = [w for w in _FORBIDDEN_LITERALS if w] + [c for c in cfg if c]
+    if any(FORBIDDEN_NAMES.search(h) for h in folded + [" ".join(folded)]) or any(w in sq for w in lits for sq in squashed + [joined]):
+        return False
+    return not any(_split_across(w, squashed) for w in lits)
+
+
+def _valid_proposal(pr):
+    """A model-proposed defect-log/knowledge entry, validated by SHAPE (rc-5b R4; REQ-AUD-17 AC4 "code validation"): the keys are within kind/package/keys/note/evidence and
+    kind and evidence are present; kind is defect_log|knowledge; evidence a non-empty string; the other fields strings (keys: a list of objects with exactly scanner, finding_id
+    and purl, all strings); each at most 2000 characters; and no string, alone or joined with the others, names a vendor or model. Anything else returns None: the proposal
+    is refused (and counted), never forwarded, and the run goes on."""
+    if not isinstance(pr, dict) or set(pr) - _PROP_KEYS or _PROP_REQUIRED - set(pr) or pr.get("kind") not in ("defect_log", "knowledge"):
+        return None
+    ev = pr.get("evidence")
+    if not isinstance(ev, str) or not ev.strip():
+        return None
+    texts = [pr["kind"], ev]
+    if not isinstance(pr["note"], str) or not pr["note"].strip():
+        return None
+    for k in ("package", "note"):
+        if k in pr:
+            if not isinstance(pr[k], str):
+                return None
+            texts.append(pr[k])
+    if pr["kind"] == "defect_log" and not pr.get("keys"):
+        return None                                                # a defect-log entry names the findings it is about
+    if "keys" in pr:
+        if not isinstance(pr["keys"], list) or len(pr["keys"]) > 20:
+            return None
+        for kk in pr["keys"]:
+            if not isinstance(kk, dict) or set(kk) != _PROP_KEY_KEYS or not all(isinstance(v, str) for v in kk.values()):
+                return None
+            texts += [kk["scanner"], kk["finding_id"], kk["purl"]]
+    if any(len(t) > _PROP_MAX for t in texts) or not _scrubbed_all(texts):
+        return None
+    return pr
+
+
 def _narrative_ok(text, sections):
     if FORBIDDEN_NAMES.search(text):     # no vendor/model attribution in the report
         return False
@@ -2072,6 +2206,12 @@ def _conclusion(adjudicator, sections, m, state=None):
         if state is not None:
             state["tokens"] += int(ans.get("token_usage") or 0)   # narrative counts against the budget too
             state.setdefault("roles_used", set()).add("primary")
+    except cli.Refused as e:
+        if state is not None:                                      # a refusal is billed and logged like any other (REQ-AUD-8 AC3)
+            state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+            state.setdefault("roles_used", set()).add("primary")
+            state.setdefault("refusals", []).append({"finding_id": "CONCLUSION", "attempt": "narrative", "role": "primary"})
+        return "conclusion withheld: the narrative could not be produced this run."
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
         # SDK error. A generic withheld line only.
@@ -2307,6 +2447,20 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         L.append("**Did not run:** " + "; ".join(notrun_lines))
     if (state or {}).get("not_rechecked"):       # a carried statement no scanner reports this run (our VEX hides it from every scanner): kept as it is, never re-judged, and said so
         L.append("**Not re-checkable (hidden from all scanners):** " + ", ".join(state["not_rechecked"]))
+    # each scanner's version and database date (REQ-AUD-7 AC1): what the manifest recorded, else "not recorded by <scanner>" - never a blank
+    vparts = []
+    for sc_ in _scanners(m):
+        info_ = st.get(sc_) or {}
+        vparts.append("%s %s, database %s" % (_text(sc_), _text(info_.get("version") or "not recorded by %s" % sc_), _text(info_.get("db_date") or "not recorded by %s" % sc_)))
+    L.append("**Scanner versions:** " + "; ".join(vparts))
+    # the model's refusals and loop stops this run (REQ-AUD-8 AC3 "logging every refusal"): finding, attempt, role - no model identifier. Both lines print the FULL count; the
+    # list is capped at 60 entries and says so.
+    _refs = (state or {}).get("refusals") or []
+    _stops = (state or {}).get("stopped") or []
+    L.append("**Model refusals:** " + (("%d: " % len(_refs)) + "; ".join("%s (%s, %s)" % (_text(x["finding_id"]), x["attempt"], x["role"]) for x in _refs[:60]) + ("; ..." if len(_refs) > 60 else "") if _refs else "none"))
+    if _stops:
+        L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else "")
+                 + ("; owner-decision issue: %s" % _text(str((state or {}).get("iteration_stop_issue"))) if (state or {}).get("iteration_stop_issue") else ""))
     # Inventory quorum honesty (scanner-panel rule 3): which images counted, which scanners ran everywhere, which did not run.
     qi = quorum_info or {}
     agreed = qi.get("agreed") or []
@@ -2476,6 +2630,9 @@ def main():
         complete = run(manifest, dry, out, today, kevpath=kev)
     except DefectLogInvalid as e:
         print("daily CVE auditor: known-defect log invalid — %s" % e)
+        return 3
+    except ReviewedInputInvalid as e:
+        print("daily CVE auditor: a reviewed input is unreadable, the run stops — %s" % e)
         return 3
     except ValueError as e:
         print("daily CVE auditor: manifest invalid — %s" % e)

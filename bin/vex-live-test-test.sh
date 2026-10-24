@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5, REQ-SCAN-012-AC6
+# proves: REQ-SCAN-011-AC3, REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5, REQ-SCAN-012-AC6
 # Scanner-panel rule 12 (owner RATIFIED Oct 2; read-back approved, advisor 0098), offline: the live test's plan runs the
 # guide's command blocks byte for byte (only its settings blocks take test values); the test copy of the Inspector file
 # differs from the generator's output only in the live-test tag and the test name prefix (plus exactly the fixture's
