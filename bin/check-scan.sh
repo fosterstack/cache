@@ -145,8 +145,13 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
 # an explicit member list ONLY, in this order: the manifest.json generated here from the child's own manifest, then that child's config blob and its layer blobs.
 # Nothing else of the layout goes in: the reader takes the FIRST member named manifest.json, and check-bind lets a layout carry extra files (a root manifest.json
 # would replace the generated one, a stray tar could be named by it). Every digest must be sha256:<64 hex> and the layer list must not be empty, or no archive is made.
-vex_image_repo() {   # the one repository the published VEX names for the cache image (pkg:oci/cache?repository_url=REPO, qualifiers after it dropped), or nothing
-  jq -r '[.statements[]?.products[]? | (.["@id"] // .identifiers.purl // empty) | select(type == "string" and startswith("pkg:oci/cache?repository_url=")) | sub("^pkg:oci/cache[?]repository_url="; "") | sub("&.*$"; "")] | unique | if length == 1 then .[0] else empty end' "$VEX" 2> /dev/null
+vex_image_repo() {   # the one repository the published VEX names for the cache image (pkg:oci/cache[@sha256:<64 hex>]?[...&]repository_url=REPO[&...][#...]), or nothing.
+  # Every identifier of every product counts (grype's VEX reader considers @id and identifiers.* alike): a product that is not an object, or a cache identifier
+  # (pkg:oci/cache followed by @ ? # / or the end) in any other form or with two repository_url, or a conflicting second repository, leaves nothing (fail closed).
+  jq -r '[.statements[]?.products[]? | if type == "object" then ((.["@id"]?), ((.identifiers? | objects | .[]?))) else "pkg:oci/cache?malformed" end
+          | select(type == "string" and test("^pkg:oci/cache([@?#/]|$)"))] as $ids
+    | if any($ids[]; (test("^pkg:oci/cache(@sha256:[0-9a-f]{64})?[?]([^#]*&)?repository_url=[a-z0-9][a-z0-9._:/-]*(&[^#]*)?(#.*)?$") | not) or ([match("repository_url=";"g")] | length) != 1) then empty
+      else [$ids[] | capture("repository_url=(?<r>[a-z0-9][a-z0-9._:/-]*)") | .r] | unique | if length == 1 then .[0] else empty end end' "$VEX" 2> /dev/null
 }
 osv_archive() {
   local layout=$1 child=$2 arc=$3 tag=${4:-} abs m prog   # tag: the image name the archive carries (RepoTags); grype reads its identity from it, osv-scanner takes none

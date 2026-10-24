@@ -432,8 +432,8 @@ done; done
 vexrepo() { # vexrepo PRODUCT... -> a VEX document whose one statement has exactly these products
   python3 - "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYR'
 import json, sys
-d = json.load(open("/dev/stdin" if False else sys.argv[1]))
-st = d["statements"][0]; st["products"] = [{"@id": x} for x in sys.argv[2:]]; d["statements"] = [st]
+d = json.load(open(sys.argv[1]))
+st = d["statements"][0]; st["products"] = [json.loads(x) if x[:1] in "{\"" else {"@id": x} for x in sys.argv[2:]]; d["statements"] = [st]
 json.dump(d, open(sys.argv[1], "w"))
 PYR
 }
@@ -448,7 +448,27 @@ if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I a VEX with no cache image 
 vexrepo "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "pkg:oci/cache?repository_url=ghcr.io/other/cache"; : > "$work/log"
 want_fail "AC4 I a VEX that names two different cache image repositories cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
 if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I two repositories scan nothing under an image name"; else bad "AC4 I two-repository VEX scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80; cp "$work/log.keep" "$work/log"; rm -rf "$fx/out"; cp -R "$work/out.keep" "$fx/out"
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80; vexrepo "pkg:oci/cache?arch=amd64&repository_url=registry.example/team/cache#frag"; : > "$work/log"
+want_ok "AC4 I a qualifier before repository_url and a fragment after it still name the repository" "${SCAN[@]}"
+if grep -Fxq "grype-tag registry.example/team/cache:cand-fips-arm64" "$work/log"; then ok "AC4 I the repository is read whatever the qualifier order"; else bad "AC4 I qualifier order: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache@sha256:$(printf 'a%.0s' $(seq 64))?repository_url=registry.example/team/cache"; : > "$work/log"
+want_ok "AC4 I the digest form of the cache image product names the repository too" "${SCAN[@]}"
+# every identifier of a product counts (grype's reader takes @id and identifiers.* alike), and a cache identifier in any form the check cannot read is not guessed at
+while IFS='|' read -r label p1 p2; do
+  vexrepo "$p1" ${p2:+"$p2"}; : > "$work/log"
+  want_fail "AC4 I $label cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
+  if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I $label scans nothing under an image name"; else bad "AC4 I $label scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+done <<'CASES'
+a second repository only in identifiers.purl|{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/other/cache"}}|
+a second repository after the qualifier arch|pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache|pkg:oci/cache?arch=amd64&repository_url=ghcr.io/other/cache
+a duplicate repository_url|pkg:oci/cache?repository_url=ghcr.io/a/cache&repository_url=ghcr.io/a/cache|
+an empty repository_url|pkg:oci/cache?repository_url=|
+a percent-encoded repository|pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache|
+a path after the image name|pkg:oci/cache/extra?repository_url=ghcr.io/fosterstack/cache|
+a product that is not an object|"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"|
+CASES
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80
+cp "$work/log.keep" "$work/log"; rm -rf "$fx/out"; cp -R "$work/out.keep" "$fx/out"
 bare_=$(grep -cE '^grype oci-dir:' "$work/log" || true)   # a count, not a pipe into grep -q (pipefail + SIGPIPE)
 if [ "$bare_" != 0 ]; then bad "AC4 S1 a grype image scan read the layout directly (no image name, so no VEX applies)"; else ok "AC4 S1 no grype image scan reads the layout directly"; fi
 for v in production fips; do for a in amd64 arm64; do
@@ -1290,7 +1310,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=427
+EXPECT=444
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
