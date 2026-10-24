@@ -125,7 +125,7 @@ def produce(a):
             by[k] = obj
         for k in sorted(by):
             if tuple(k.split("@", 1)) not in want:
-                refuse("module %s is in the toolchain's answer but not in vendor/modules.txt" % k)
+                refuse("module %s is in the toolchain's answer but not in the module list (modules.txt)" % k)
         sumdb, origins, lic = {}, {}, {}
         for p, v in ordered:
             key = "%s@%s" % (p, v)
