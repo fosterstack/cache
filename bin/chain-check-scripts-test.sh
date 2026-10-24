@@ -437,18 +437,18 @@ st = d["statements"][0]; st["products"] = [{"@id": x} for x in sys.argv[2:]]; d[
 json.dump(d, open(sys.argv[1], "w"))
 PYR
 }
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+cp "$work/log" "$work/log.keep"; rm -rf "$work/out.keep"; cp -R "$fx/out" "$work/out.keep"; cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
 vexrepo "pkg:oci/cache?repository_url=registry.example/team/cache&arch=amd64" "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
 mkfake grype 0 120; mkfake osv-scanner 0 80; : > "$work/log"
 want_ok "AC4 I the repository comes from the VEX: a VEX naming registry.example/team/cache is scanned under that name" "${SCAN[@]}"
 if grep -Fxq "grype-tag registry.example/team/cache:cand-production-amd64" "$work/log" && ! grep -q '^grype-tag ghcr.io' "$work/log"; then ok "AC4 I the archive name carries the VEX's repository (its qualifiers dropped), not a fixed one"; else bad "AC4 I the archive name is not the VEX's repository: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
 vexrepo "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"; : > "$work/log"
-want_rc "AC4 I a VEX that names no cache image repository cannot be judged: exit 2" 2 "${SCAN[@]}"
-if grep -qi "names no single cache image repository" <<< "$out" && ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I a VEX with no cache image repository scans nothing under an image name and says why"; else bad "AC4 I no-repository VEX: log $(grep '^grype-tag' "$work/log" | tr '\n' ' ') out ${out:0:140}"; fi
+want_fail "AC4 I a VEX that names no cache image repository cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
+if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I a VEX with no cache image repository scans nothing under an image name"; else bad "AC4 I no-repository VEX scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
 vexrepo "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "pkg:oci/cache?repository_url=ghcr.io/other/cache"; : > "$work/log"
-want_rc "AC4 I a VEX that names two different cache image repositories cannot be judged: exit 2" 2 "${SCAN[@]}"
+want_fail "AC4 I a VEX that names two different cache image repositories cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
 if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I two repositories scan nothing under an image name"; else bad "AC4 I two-repository VEX scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80; : > "$work/log"
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80; cp "$work/log.keep" "$work/log"; rm -rf "$fx/out"; cp -R "$work/out.keep" "$fx/out"
 bare_=$(grep -cE '^grype oci-dir:' "$work/log" || true)   # a count, not a pipe into grep -q (pipefail + SIGPIPE)
 if [ "$bare_" != 0 ]; then bad "AC4 S1 a grype image scan read the layout directly (no image name, so no VEX applies)"; else ok "AC4 S1 no grype image scan reads the layout directly"; fi
 for v in production fips; do for a in amd64 arm64; do
@@ -1290,7 +1290,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=421
+EXPECT=427
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

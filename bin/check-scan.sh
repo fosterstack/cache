@@ -145,6 +145,9 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
 # an explicit member list ONLY, in this order: the manifest.json generated here from the child's own manifest, then that child's config blob and its layer blobs.
 # Nothing else of the layout goes in: the reader takes the FIRST member named manifest.json, and check-bind lets a layout carry extra files (a root manifest.json
 # would replace the generated one, a stray tar could be named by it). Every digest must be sha256:<64 hex> and the layer list must not be empty, or no archive is made.
+vex_image_repo() {   # the one repository the published VEX names for the cache image (pkg:oci/cache?repository_url=REPO, qualifiers after it dropped), or nothing
+  jq -r '[.statements[]?.products[]? | (.["@id"] // .identifiers.purl // empty) | select(type == "string" and startswith("pkg:oci/cache?repository_url=")) | sub("^pkg:oci/cache[?]repository_url="; "") | sub("&.*$"; "")] | unique | if length == 1 then .[0] else empty end' "$VEX" 2> /dev/null
+}
 osv_archive() {
   local layout=$1 child=$2 arc=$3 tag=${4:-} abs m prog   # tag: the image name the archive carries (RepoTags); grype reads its identity from it, osv-scanner takes none
   shift $(( $# < 4 ? $# : 4 ))
@@ -224,10 +227,14 @@ for s in "${scanners[@]}"; do
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       grype:*)
         # An oci-dir: layout carries no tag and no repo digest, so grype derives no image identity from it and applies NO VEX statement (rc-5a I, ruling R1; probed on
-        # the pinned grype). The child is read from an image archive that names it ghcr.io/fosterstack/cache:cand-<variant>-<arch>, the name the cache image
-        # statements are matched by (the same name the rescan and the PR gate scan under), so the one published VEX applies here as everywhere.
+        # the pinned grype). The child is read from an image archive that names it <repository>:cand-<variant>-<arch>, the name the cache image statements are
+        # matched by (the same name the rescan and the PR gate scan under), so the one published VEX applies here as everywhere. A check script knows no registry
+        # (REQ-CHAIN-006-AC8): the repository is the one the VEX itself names for the cache image; none, or two, cannot be judged and nothing is scanned under an image name.
         arc="$tmp/grype-${name//\//-}.tar"
-        if osv_archive "$path" "$digest" "$arc" "ghcr.io/fosterstack/cache:cand-${name%"/$plat"}-${plat#linux/}"; then
+        imgrepo=$(vex_image_repo) || imgrepo=""
+        if [ -z "$imgrepo" ]; then
+          echo "check-scan: grype: the published VEX names no single cache image repository, so $name cannot be scanned under its image name" >&2; rc=2
+        elif osv_archive "$path" "$digest" "$arc" "${imgrepo}:cand-${name%"/$plat"}-${plat#linux/}"; then
           GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "docker-archive:$arc" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$?
         else
           echo "check-scan: grype: the archive of $name could not be made from its manifest" >&2; rc=2
