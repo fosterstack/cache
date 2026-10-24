@@ -1099,7 +1099,7 @@ begin "dadj-1-adjudicator-unavailable-one-issue-incomplete" "when the adjudicato
 o="$WORK/dadj1"; shim="$WORK/dadj1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$F/adjudicator/fail-on-call.py" --out "$o" >/dev/null 2>&1
 inc="$(grep -c 'AUDIT INCOMPLETE:.*adjudicator unavailable' "$o/report.md" 2>/dev/null)"; inc="${inc:-0}"
-agg="$(grep -cE "issue create.*adjudicator unavailable — [0-9]+ findings unassessed" "$shim" 2>/dev/null)"; agg="${agg:-0}"
+agg="$(grep -cE "issue create.*adjudicator unavailable — findings unassessed" "$shim" 2>/dev/null)"; agg="${agg:-0}"
 perfinding="$(grep -c 'issue create.*unassessed-after-fallback' "$shim" 2>/dev/null)"; perfinding="${perfinding:-0}"
 hdr="$(grep -c 'UNAVAILABLE' "$o/report.md" 2>/dev/null)"; hdr="${hdr:-0}"
 { [ "$inc" -ge 1 ] 2>/dev/null && eq "$agg" "1" && eq "$perfinding" "0" && [ "$hdr" -ge 1 ] 2>/dev/null; } \
@@ -4003,37 +4003,100 @@ rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/m
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
-begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
-REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
-# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue,
-# and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
-begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "the report lists the model refusals and the iteration stop, one owner-decision issue is opened for the stops, and the header names each scanner's version and database date or 'not recorded by <scanner>'"
+# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue
+# (stable title, the count in the body; a budget stop opens none), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
+begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, an iteration stop opens exactly ONE owner issue for all stopped findings with a stable title, a budget stop opens none, a failed delivery marks the run incomplete, the lists show their full counts, and the header fields are escaped"
 r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
-import sys,os,io,contextlib,importlib.util,tempfile,json,re
+import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
 FX=sys.argv[1]; tmp=tempfile.mkdtemp()
 sys.path.insert(0,".github/agent/bin")
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
-R.policy.MAX_ITERATIONS=1
-mp=FX+"/manifest-mediumnofix.json"; m=json.load(open(mp))
-m["scanner_status"]["grype"]["version"]="v1.2.3"; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
-mp2=tmp+"/m.json"; json.dump(m,open(mp2,"w"))
-ws=tmp+"/ws"; os.makedirs(ws); os.environ["GITHUB_WORKSPACE"]=ws
-with contextlib.redirect_stdout(io.StringIO()):
-    R.run(mp2,True,tmp+"/out","2026-09-24",adjudicator=fa)
-rep=open(tmp+"/out/report.md").read()
-lines=rep.split("\n")
-vers=[l for l in lines if l.startswith("**Scanner versions:**")]
-refs=[l for l in lines if l.startswith("**Model refusals:**")]
-stops=[l for l in lines if l.startswith("**Model stops:**")]
-issues=[l for l in lines if "iteration stop on" in l and "owner-decision issue" in l]
-bad_name=re.search(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",rep,re.I)
-good=(len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0] and ", ," not in vers[0]
-      and len(refs)==1 and "(primary, primary)" in refs[0] and len(stops)==1 and "(iterations)" in stops[0] and len(issues)==1 and not bad_name)
-print("OK" if good else "BAD vers=%r refs=%r stops=%r issues=%r name=%r"%(vers,refs,stops,issues,bad_name))
+def adj(usage):
+    fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":%d})+\"\\n\")\n    sys.stdout.flush()\n"%usage); return fa
+v0=json.load(open(FX+"/panel-mediumnofix/verdict.json"))
+def manifest(nfind, name, ver="v1.2.3"):
+    d=tmp+"/"+name; os.makedirs(d, exist_ok=True)
+    v=copy.deepcopy(v0); f0=v["findings"][0]; fs=[]
+    for i in range(nfind):
+        f=copy.deepcopy(f0); f["id"]="CVE-2099-92%02d"%i; f["package"]="libmed%d"%i
+        f["purls"]=["pkg:deb/debian/libmed%d@1?arch=amd64&distro=debian-12.0"%i]; f["details"]["grype"]["purl"]=f["purls"][0]; fs.append(f)
+    v["findings"]=fs; v["unique"]=fs
+    json.dump(v,open(d+"/verdict.json","w"))
+    m=json.load(open(FX+"/manifest-mediumnofix.json"))
+    for s in m["scanner_reports"]: m["scanner_reports"][s]=d+"/verdict.json"
+    m["panel"]["verdict"]=d+"/verdict.json"
+    for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
+    m["scanner_status"]["grype"]["version"]=ver; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
+    json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
+def run(mp, fa, dry=True, limit=None, shim=None, fail=False):
+    ws=tmp+"/ws"; os.makedirs(ws, exist_ok=True); os.environ["GITHUB_WORKSPACE"]=ws
+    if shim: os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
+    else: os.environ.pop("AUDITOR_GIT_SHIM_LOG",None)
+    if fail: os.environ["AUDITOR_SHIM_ISSUE_FAIL"]="1"
+    else: os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL",None)
+    keep=R.policy.MAX_ITERATIONS
+    if limit: R.policy.MAX_ITERATIONS=limit
+    out=tempfile.mkdtemp(dir=tmp)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
+    finally: R.policy.MAX_ITERATIONS=keep
+    return open(out+"/report.md").read()
+bad=[]
+def line(rep,start): return [l for l in rep.split("\n") if l.startswith(start)]
+name_re=re.compile(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",re.I)
+# 1: two findings stopped by the iteration limit: one issue naming both, no per-finding issue, refusals and stops with counts and roles, versions
+rep=run(manifest(2,"two"), adj(1), limit=1)
+iss=[l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]
+refs=line(rep,"**Model refusals:**"); stops=line(rep,"**Model stops:**"); vers=line(rep,"**Scanner versions:**")
+if not (len(iss)==1 and "2 finding(s)" in iss[0]): bad.append("stop issue %r"%iss)
+if [l for l in rep.split("\n") if "unassessed-after-fallback" in l or "escalation pending" in l]: bad.append("per-finding path also taken")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 3: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
+if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(iterations)" in stops[0]): bad.append("stops %r"%stops)
+if not (len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0]): bad.append("vers %r"%vers)
+if "none called" in rep: bad.append("role header says none called after refused calls")
+if name_re.search(rep): bad.append("a model/vendor name in the report")
+# 2: a token-budget stop is section 4 with no owner issue at all
+rep=run(manifest(2,"budget"), adj(R.policy.TOKEN_BUDGET+1))
+if [l for l in rep.split("\n") if "owner-decision issue" in l]: bad.append("budget stop opened an issue")
+if not any("(token budget)" in l for l in line(rep,"**Model stops:**")): bad.append("budget stop not listed")
+# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64)
+rep=run(manifest(21,"many"), adj(1))
+refs=line(rep,"**Model refusals:**")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 64: ") and refs[0].endswith("; ...")): bad.append("refs cap %r"%[r[:60] for r in refs])
+rep=run(manifest(21,"manystop"), adj(1), limit=1)
+st=line(rep,"**Model stops:**")
+if not (len(st)==1 and st[0].startswith("**Model stops:** 21: ")): bad.append("stops count %r"%[x[:60] for x in st])
+# 4: the stop issue has a stable title across runs with a different count (one create, then an update), and the adjudicator-unavailable title is stable too
+shim=tmp+"/shim.log"
+run(manifest(1,"d1"), adj(1), dry=False, limit=1, shim=shim); run(manifest(3,"d3"), adj(1), dry=False, limit=1, shim=shim)
+log=open(shim).read()
+c=len([l for l in log.split("\n") if l.startswith("gh issue create") and "iteration stop" in l]); u=len([l for l in log.split("\n") if l.startswith("gh issue comment") and "iteration stop" in l])
+if (c,u)!=(1,1): bad.append("stop issue create/update %r"%((c,u),))
+t1=R.policy.subject("owner-decision: adjudicator unavailable — findings unassessed")
+src=open(".github/agent/bin/auditor-run.py").read()
+if "adjudicator unavailable — %d findings" in src: bad.append("count in the unavailable title")
+# 5: a failed delivery of the stop issue marks the run incomplete
+rep=run(manifest(1,"f1"), adj(1), dry=False, limit=1, shim=tmp+"/shim2.log", fail=True)
+if "AUDIT COMPLETE" in rep or "failed to open" not in rep: bad.append("failed stop-issue delivery not incomplete")
+# 6: a pullability refusal is logged with its role and billed
+st={"tokens":0}
+R._pullability(adj(5),{"finding_id":"CVE-P"},st)
+if not (st.get("tokens")==5 and st.get("refusals")==[{"finding_id":"CVE-P","attempt":"pullability","role":"primary"}] and "primary" in st.get("roles_used",())): bad.append("pullability refusal %r"%st)
+# 7: a narrative refusal is logged and billed too
+st={"tokens":0}
+R._conclusion(adj(7),{n:[] for n in range(1,8)},json.load(open(manifest(1,"n"))),st)
+if not (st.get("tokens")==7 and st.get("refusals")==[{"finding_id":"CONCLUSION","attempt":"narrative","role":"primary"}]): bad.append("narrative refusal %r"%st)
+# 8: scanner version text is escaped in the header
+rep=run(manifest(1,"esc","v`x`|[1]"), adj(1), limit=1)
+vers=line(rep,"**Scanner versions:**")
+if not (len(vers)==1 and "v\\`x\\`\\|\\[1\\]" in vers[0]): bad.append("unescaped version %r"%vers)
+print("OK" if not bad else "BAD "+"; ".join(bad))
 PP
 )"
-eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged, one owner issue for the iteration stop, scanner versions or 'not recorded by'" "$r14"
+eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged and billed, one stop issue with a stable title, budget stop silent, full counts, failed delivery incomplete, header escaped" "$r14"
+begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
+REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
