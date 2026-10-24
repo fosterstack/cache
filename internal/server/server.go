@@ -17,6 +17,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -422,7 +423,7 @@ func handleGet(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 		cfg.Metrics.BytesRead.Add(float64(n))
 	}
 	if err != nil {
-		cfg.Log.Warn("server: GET: short write to client", "key", key, "error", err)
+		cfg.Log.Warn("server: GET: short write to client", "key", key, "error", loggableErr(err))
 	}
 }
 
@@ -463,22 +464,37 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// gaugesReadHook runs after a gauge refresh has read the totals and before it
+// sets the gauges. Production does nothing there; a test holds the refresh at
+// that point to make an overlapping upload's refresh run inside the window.
+var gaugesReadHook = func() {}
+
+// gaugesMu orders gauge refreshes: the last refresh to run also read last, so
+// the gauges end at the totals the last completed upload saw.
+var gaugesMu sync.Mutex
+
 // updateStoreGauges refreshes the store_bytes/store_entries gauges after a
-// successful write. Two extra read-only lookups per PUT (cheap: an
-// in-memory bbolt view transaction each) versus letting these gauges sit
-// at zero forever — which is what "Prometheus metrics" in the README
-// would otherwise silently not mean for the two numbers an operator
-// actually needs (bytes used vs. configured cap).
+// successful write. Each refresh makes two read-only passes over the metadata
+// index (TotalSize and Count each visit every record, so the cost grows with
+// the number of entries; a running total would be a metadata-layer change).
+// The whole refresh runs under gaugesMu: the reads and the sets of one
+// refresh cannot interleave with another's, so overlapping uploads cannot
+// leave the gauges at an older total.
 func updateStoreGauges(cfg Config) {
-	if total, err := cfg.Cache.TotalSize(); err == nil {
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	total, totalErr := cfg.Cache.TotalSize()
+	n, countErr := cfg.Cache.EntryCount()
+	gaugesReadHook()
+	if totalErr == nil {
 		cfg.Metrics.StoreBytesTotal.Set(float64(total))
 	} else {
-		cfg.Log.Error("server: store_bytes gauge update failed", "error", err)
+		cfg.Log.Error("server: store_bytes gauge update failed", "error", totalErr)
 	}
-	if n, err := cfg.Cache.EntryCount(); err == nil {
+	if countErr == nil {
 		cfg.Metrics.StoreEntries.Set(float64(n))
 	} else {
-		cfg.Log.Error("server: store_entries gauge update failed", "error", err)
+		cfg.Log.Error("server: store_entries gauge update failed", "error", countErr)
 	}
 }
 
@@ -503,7 +519,7 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		cfg.Log.Error("server: store error", "method", method, "key", key, "error", err)
+		cfg.Log.Error("server: store error", "method", method, "key", key, "error", loggableErr(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
@@ -589,4 +605,21 @@ func classifyPutError(err, ctxErr error) (reason string, counted bool) {
 		return "client_aborted", true
 	}
 	return "other", true
+}
+
+// loggableErr is the text a failure log may carry for err. A *net.OpError
+// formats the local and remote socket addresses, so a dropped client would
+// put its IP:port in the log; REQ-OBS-006 forbids that. An error whose
+// chain holds one is reduced to its operation and underlying cause, and the
+// result passes through scrubAddrs, so an address nested deeper in the
+// cause is replaced too.
+func loggableErr(err error) string {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		if op.Err == nil {
+			return scrubAddrs("net " + op.Op)
+		}
+		return scrubAddrs("net " + op.Op + ": " + op.Err.Error())
+	}
+	return scrubAddrs(err.Error())
 }

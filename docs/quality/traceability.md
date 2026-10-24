@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 99 |
-| Acceptance criteria | 479 |
+| Active requirements | 100 |
+| Acceptance criteria | 486 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 468 |
+| ACs with mapped evidence | 475 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 47 |
+| Confidence: documented | 48 |
 | Confidence: implementation-only | 51 |
 
 ## Cache protocol
@@ -64,6 +64,7 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 | REQ-PROTO-003-AC3 | Given a key whose leaf segment starts with two dots; when it is stored and read; then it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path | component | yes | approved | 8 item(s) |
 | REQ-PROTO-003-AC4 | Given a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory; when the store is reconciled at startup; then the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path | component | yes | approved | 14 item(s) |
+| REQ-PROTO-003-AC5 | Given a key that was never stored whose path in the store is a directory, a symbolic link or any other file that is not a regular file (for example the key `ab` after the key `ab/ab` was stored), or a key whose path lies below a stored blob; when a client sends HEAD or GET for it, or the startup walk meets that path; then the answer is 404, never 200, and neither HEAD nor GET opens anything at that path; the walk reports no entry for it | component |  | approved | 11 item(s) |
 
 ### REQ-PROTO-004 — Method surface
 
@@ -326,6 +327,7 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 | REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
 | REQ-STORE-005-AC4 | Given a data directory with an unclean-shutdown marker, and a startup reconciliation that fails partway, returning an error after some index changes; when the server starts; then it exits non-zero without serving, naming the reconciliation failure; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles again | component | yes | approved | 3 item(s) |
 | REQ-STORE-005-AC5 | Given a started server (startup reconciliation completed) with an upload in flight, and a serving error or a shutdown error (the HTTP server is forced closed before the handler finishes); when the process exits through that error; then it exits non-zero naming the serving or shutdown error; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles and adopts any blob that was stored but not indexed (adopted_blobs counted) | component | yes | approved | 9 item(s) |
+| REQ-STORE-005-AC6 | Given a metadata record whose value is not exactly 16 bytes (on-disk corruption), at any key; when the index is read for that key or scanned (touch, total size, least recently used, list); then the read returns a corrupt-record error naming the problem; it never indexes past the end of the value, so the process does not panic | unit |  | approved | 3 item(s) |
 
 ## Eviction
 
@@ -406,6 +408,7 @@ GET /statusz shall return the server's state — version, revision, FIPS posture
 | REQ-OBS-003-AC5 | Given /statusz and /metrics requested within the same 5-second sample lifetime (either order); when both responses are compared; then the disk values are identical, because both returned the one cached sample; neither request caused the other to see an older or newer measurement (if the sample expires between the two requests the second re-measures; the equality rule is guaranteed within a sample) | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-003-AC6 | Given a request with an HTML Accept header, on a healthy and on a read-only server; when /statusz is fetched; then the page shows a "Data directory" row ("writable, X GiB free" or "NOT writable, X GiB free") and PUT errors by reason; still no form, button, or state-changing control (extends AC2) | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-003-AC7 | Given auth enabled; when /statusz, /metrics, /healthz are fetched without credentials; then /statusz is refused as today; /metrics and /healthz stay open as today (/metrics now exposes the free bytes of the data volume: operational, not secret, the same exposure level as store_bytes) | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC8 | Given two uploads that overlap in time, the first upload's gauge refresh held after it read the totals and before it set the gauges; when the second upload completes and then the first refresh continues; then the store_bytes and store_entries gauges end equal to the store's totals (the last refresh to run also read last) | component |  | approved | 1 item(s) |
 
 ### REQ-OBS-004 — Startup announcement
 
@@ -435,7 +438,7 @@ The server shall write no per-request access log; the only per-request logging s
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-006-AC1 | Given the server's logging call sites; when they are inspected; then per-request logging exists only on failure paths and logs only method, key, and error | inspection |  | approved | 1 item(s) |
+| REQ-OBS-006-AC1 | Given the server's logging call sites; when they are inspected; then per-request logging exists only on failure paths and logs only method, key, and error | inspection |  | approved | 7 item(s) |
 
 ## Privacy
 
@@ -1534,3 +1537,18 @@ When a required CI job of .github/workflows/ci.yml is split into parallel jobs t
 | REQ-CI-001-AC2 | Given the same workflow; when the gate job is read; then a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass | unit |  | approved | 1 item(s) |
 | REQ-CI-001-AC3 | Given any job of the split; when its keys are read; then no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step | unit |  | approved | 1 item(s) |
 | REQ-CI-001-AC4 | Given the pin-wiring judge; when it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened; then it fails for each of those mutations, and it accepts the real workflow | unit |  | approved | 1 item(s) |
+
+### REQ-CI-005 — A floored suite is run once, by the step that counts it
+
+Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the step that re-runs the suites of the floors file runs only those that no counting step runs.
+
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor); the suite guard (bin/suite-guard-run.py); the pin-wiring judge (pin-wiring-test.sh)*
+
+> A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that is not the file name of its PATH. The floors only rise as before.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CI-005-AC1 | Given a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no if, needs, strategy or continue-on-error can skip it), whose PATH is the one file of that name; when the floor check of the workflow run (`suite-guard-run.py all`) runs; then the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; any other suite is still run by `all`, and a counting line that is not the whole of its step is refused | unit |  | approved | 1 item(s) |
+| REQ-CI-005-AC2 | Given a counting step in ci.yml; when it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`; then `suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it | unit |  | approved | 2 item(s) |
+| REQ-CI-005-AC3 | Given a suite run by a counting step; when it loses cases (below its floor), prints no case count, or exits non-zero; then its step fails | unit |  | approved | 1 item(s) |
+| REQ-CI-005-AC4 | Given the suite guard's floors; when a pull request lowers or drops a floor; then the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised | unit |  | approved | 1 item(s) |

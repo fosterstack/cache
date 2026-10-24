@@ -155,6 +155,28 @@ mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"
 mkdir -p "$out"
 
 # ---- 4. the sealed call ----
+# tree-exclude begin
+# The job's own directories and files are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file: archive/,
+# host-tools/, out/ and witness-apk/ and admission.json (Build), build-in/, witness-build/, witness-rapk/ and policy.json (Rebuild: its downloaded inputs,
+# the witness-<step> directory and the policy it writes). These nine paths, anchored at the root, go into the exclude file of the checkout (never committed).
+# Every other untracked or modified file still makes the tree dirty, and the dirty-tree checks below and in both recipes are unchanged.
+excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || die "cannot locate the exclude file of $src (git rev-parse failed)" 1
+exdir=${excl%/*}
+mkdir -p "$exdir" 2>/dev/null || true   # a checkout made with an empty template has no info/ directory; if it cannot be made the test below says so
+[ -d "$exdir" ] && [ ! -d "$excl" ] || die "the exclude file $excl cannot be used: its directory $exdir is not a directory, or the exclude path itself is a directory" 1
+lines=()
+[ ! -f "$excl" ] || mapfile -t lines <"$excl"
+first=1
+for p in /archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /witness-build/ /witness-rapk/ /policy.json; do
+  seen=0
+  for line in "${lines[@]}"; do [ "$line" != "$p" ] || seen=1; done
+  if [ "$seen" = 0 ]; then
+    [ "$first" = 0 ] || echo >>"$excl"   # a final line with no newline would swallow the pattern
+    first=0
+    echo "$p" >>"$excl"
+  fi
+done
+# tree-exclude end
 "$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns (not needed off Ubuntu 24.04)" >&2
 margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"
   --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"

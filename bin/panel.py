@@ -53,9 +53,9 @@ def _load(path):
 
 
 def _product_id(p):
-    """A product's identifier as the PR gate's vex_index reads it: @id, else identifiers.purl."""
+    """A product's identifier as the PR gate's vex_index reads it: @id when the key is present, else identifiers.purl."""
     ids = p.get("identifiers")
-    return p.get("@id") or (ids.get("purl") if isinstance(ids, dict) else None) or ""
+    return p.get("@id") if p.get("@id") is not None else ((ids.get("purl") if isinstance(ids, dict) else None) or "")   # an @id that is present (even "") is the id, as the rescan reads it
 
 
 def _covers(product, image):
@@ -98,7 +98,7 @@ def load_vex(path):
 def _cdx_packages(doc):
     """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("purl")]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and isinstance(c.get("purl"), str) and c["purl"]]
 
 
 def _purl_name_version(purl):
@@ -173,11 +173,18 @@ def _cdx_findings(doc, comps, inspector=False):
               if c.get("bom-ref")}
     out = []
     for v in doc.get("vulnerabilities") or []:
-        for a in v.get("affects") or []:
-            c = by_ref.get(a.get("ref"), {})
+        affects = v.get("affects") or []
+        if not affects or not all(isinstance(a, dict) for a in affects):   # a vulnerability nobody can attribute (none, or an entry that is not an object) is an incomplete report: did not run, never silence
+            raise ValueError("vulnerability %s has no usable affects list: the report is incomplete" % (v.get("id") or "?"))
+        for a in affects:
+            c = by_ref.get(a.get("ref"))
+            if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
+                raise ValueError("vulnerability %s affects %r, which is not a component of the report: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
+            if name == "?":   # the component has neither a package URL nor a name: still a finding nobody can attribute
+                raise ValueError("vulnerability %s affects the component %r, which has neither a package URL nor a name: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             # Grype writes its CISA KEV listing as a rating (source 'CISA KEV Catalog', method other, justification 'Listed in CISA KEV'): that is the known-exploited
             # marker, not a severity; its 'Negligible' is CycloneDX 'none'
             rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
@@ -217,7 +224,12 @@ def read_scout(d):
         ids = [i.get("value") for i in v.get("identifiers") or [] if i.get("value")]
         dep = (v.get("location") or {}).get("dependency") or {}
         name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
-        purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
+        purl = None
+        if name.startswith("pkg:"):   # Scout's GitLab report puts the package URL in name (scout-selfcheck.py:124): name it as the other scanners do
+            purl = name
+            name, pver = _purl_name_version(purl)
+            ver = ver or pver
+        purl = purl or next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
         out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
     return len(arts), out
 
