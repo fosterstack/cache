@@ -577,6 +577,7 @@ badvex id-purl-conflict '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not
 for suf in '/extra' '#sub' '&arch=arm64' '&x'; do
   badvex "go-suffix-$(printf '%s' "$suf" | tr -c 'A-Za-z0-9' _)" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",\"products\":[{\"@id\":\"pkg:golang/github.com/fosterstack/cache$suf\"}]}"
 done
+badvex go-suffix-newline '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:golang/github.com/fosterstack/cache\n"}]}'
 # a product with a NULL @id and an identifiers.purl is that purl (as the gate and the panel read it); an EMPTY @id is not replaced (it differs from the purl: refused)
 vexdoc "$D/v/nullid.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":null,"identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/nullid.json"
 expect "a null @id beside an identifiers.purl is that purl (suppressed)" clean false 0 1

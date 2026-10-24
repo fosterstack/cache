@@ -193,9 +193,9 @@ row("index: an empty @id beside an identifiers.purl of our image covers nothing"
 row("index: an @id equal to the identifiers.purl covers", G.covered(G.vex_index(idoc(OCI, OCI)), "CVE-9999-1", PKG, None) is True)
 print("index-cases-run")
 PYI
-)"
+)"; idx_rc=$?
 echo "$IDXOUT" | sed 's/^/  /'
-[ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 34 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 34 (a crash or a skipped case)"; fail=$((fail+1)); }
+[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 34 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 34, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
 pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
 
 echo "----"
