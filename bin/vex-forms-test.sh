@@ -523,6 +523,8 @@ for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.
 check("G a double-encoded delimiter is decoded once and stays a literal name (never the Go module it spells after a second decoding)",
       V._scopes(scoped("CVE-G8", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/github.com%252Fgolang-jwt%252Fjwt%252Fv4"}]}]), [D("1")])
       == [([D("1")], ("github.com%2Fgolang-jwt%2Fjwt%2Fv4", ""))])
+check("G an encoded dot in the host segment is still a Go module path (decoded once, then judged)",
+      V._scopes(scoped("CVE-G10", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/github%2Ecom/golang-jwt/jwt/v4"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
 check("G the empty version leaves no stray space in the published text",
       "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
 check("G the published document no longer describes a :debug image or busybox",

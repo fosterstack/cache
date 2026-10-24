@@ -185,7 +185,7 @@ def _scopes(statement, digests):
             pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", sid)
             if not pm:
                 pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
-                if pm and "." not in pm.group(1).split("/")[0]:
+                if pm and "." not in urllib.parse.unquote(pm.group(1)).split("/")[0]:
                     pm = None                            # a module path starts with a domain (github.com/…); anything else is not one
             if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
