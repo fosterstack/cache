@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "8466d10c222192c5e4363b2eaa038faae003d2696128e528d5e4acd7f9cb1f2f",
+      "sha256": "06d532be94eec391f6068401bb571ba2b28b7ad7cd5f3725ebb1090a827b55da",
       "tools": [
         "make",
         "at",
@@ -764,14 +764,15 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "50c24d360d311fa88bfba26fc2734c5e2622319bf1d966623aa6aa171bb888c4",
+      "sha256": "3b61991b22cf0c4b005da92c2aacd5b2200b93aa3b3053646448c85d004c118f",
       "tools": [
         "env",
+        "go",
         "source"
       ],
       "runs": [],
       "signs": false,
-      "reason": "Check's Go scan of the module's code: `govulncheck -json ./...` in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the pinned Go first on the tool's search path), the stream written unchanged to check-results/govulncheck.json, a called symbol fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs",
+      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, its GOFIPS140 selection; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with the FIPS recipe's GOFIPS140 selection on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
       "env_mentions": [
         {
           "name": "PATH",

@@ -906,6 +906,57 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   runs="$(pj "$WORK/sh.json" 'd.get("runs_auditor_run")')"
   eq "$runs" "true" && ok || no "run step invokes auditor-run.py with inputs.dry_run" "runs_auditor_run=$runs"; fi
 
+begin "req3-ac3-workflow-carries-the-nochange-state" "auditor.yml (REQ-AUD-3 AC3): the state is fetched only from a successful schedule/dispatch run of THIS workflow on main, handed to the driver as --prev-state, and uploaded as its own artifact (3 days, real adjudicator on the day's candidate only); the audit trail's retention is unchanged; every action reference stays a commit digest"
+if ! have "$WF"; then no "$WF present" "absent"; else
+  r="$(WF="$WF" "$PY" - <<'PY'
+import os, re, yaml
+wf = yaml.safe_load(open(os.environ["WF"]))
+steps = wf["jobs"]["audit"]["steps"]
+by = {s.get("name"): s for s in steps}
+f = by.get("Select and download the day's main-candidate-rescan artifacts")     # the fetch lives in this existing step: no step is inserted before the audited download exception's index
+u = by.get("Upload the no-change state"); t = by.get("Upload the full audit trail")
+run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
+bad = []
+r = (f or {}).get("run", "")
+for need in ("--workflow auditor.yml", "--branch main", "--status success", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
+    if need not in r: bad.append("fetch lacks " + need)
+if r.count("--branch main") < 3 or r.count("--status success") < 2 or r.count("--workflow auditor.yml") < 2:
+    bad.append("each auditor-state run listing must be limited to this workflow, branch main and success")
+if "pull_request" in r: bad.append("fetch names pull_request")
+if (f or {}).get("env", {}).get("GH_TOKEN") != "${{ github.token }}": bad.append("fetch token is not the job token")
+if "--prev-state" in run["run"]: bad.append("the run step's text changed (its sha256 is bound by the pin checker's download exception)")
+if run.get("env", {}).get("AUDITOR_PREV_STATE") != "${{ runner.temp }}/prev-state/auditor-state.json": bad.append("run step does not set AUDITOR_PREV_STATE")
+if not u: bad.append("no upload step")
+else:
+    w = u["with"]
+    if w.get("name") != "auditor-state": bad.append("upload name")
+    if w.get("retention-days") != 3: bad.append("upload retention is not 3 days")
+    if not re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", u["uses"].split(" ")[0]): bad.append("upload action not a digest")
+    cond = u.get("if", "")
+    for need in ("inputs.adjudicator == 'real'", "inputs.test_image == ''", "inputs.known_defect_log == '.github/agent/known-defect-log.json'"):
+        if need not in cond: bad.append("upload not limited by " + need)
+    if not str(w.get("path", "")).endswith("auditor-out/.auditor/auditor-state.json"): bad.append("upload path")
+if "retention-days" in (t or {}).get("with", {}): bad.append("the audit trail's retention was changed")
+# EVALUATE the upload condition for the runs that must / must not write the state (a schedule run has no inputs at all)
+if u:
+    expr = u.get("if", "").strip()
+    assert expr.startswith("${{") and expr.endswith("}}"), expr
+    py = expr[3:-2].strip().replace("&&", " and ").replace("||", " or ").replace("always()", "True")
+    class NS(dict):
+        __getattr__ = dict.get
+    def ev(event, **inp):
+        ns = {"github": NS(event_name=event), "inputs": NS({k: v for k, v in inp.items()})}
+        return bool(eval(py, {"__builtins__": {}}, ns))
+    real = dict(adjudicator="real", test_image="", known_defect_log=".github/agent/known-defect-log.json")
+    for label, got, want in (("schedule (no inputs)", ev("schedule"), True), ("dispatch real, day's candidate, committed log", ev("workflow_dispatch", **real), True),
+                             ("dispatch stub", ev("workflow_dispatch", **dict(real, adjudicator="stub")), False),
+                             ("dispatch with a test image", ev("workflow_dispatch", **dict(real, test_image="x@sha256:1")), False),
+                             ("dispatch with another defect log", ev("workflow_dispatch", **dict(real, known_defect_log="fixtures/log.json")), False)):
+        if got != want: bad.append("upload condition for %s is %s, want %s" % (label, got, want))
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  eq "$r" "ok" && ok || no "fetch/pass/upload shape" "$r"; fi
 begin "req15-workflow-installs-the-pinned-go-for-the-records-step" "auditor.yml (REQ-VEND-001-AC15): the pinned Go toolchain is installed at its fixed path (bin/install-scanner.sh go) INSIDE the existing manifest step, as a warning-only step of that step (it never fails the audit), with no step added before the audited download exception's step; the 'Run the auditor' step's text is untouched; the pin checker finds nothing in the tree"
 if ! have "$WF"; then no "$WF present" "absent"; else
   r="$(WF="$WF" "$PY" - <<'PY'
@@ -2792,6 +2843,45 @@ calls="$(grep -c 'CVE-2099-KNOWN' "$LEDGER" 2>/dev/null)"; calls="${calls:-0}"
 closed="$(sed -n '/^## 5\./,/^## /p' "$o/report.md" 2>/dev/null | grep -c 'CVE-2099-KNOWN')"; closed="${closed:-0}"
 { [ "$calls" -eq 0 ] 2>/dev/null && [ "$closed" -ge 1 ] 2>/dev/null; } \
   && ok || no "pure log-covered finding closes with no model call" "ledger_calls=$calls closed_in_s5=$closed"
+
+begin "req3-ac3-driver-nochange-zero-model" "the DRIVER (REQ-AUD-3 AC3): a second run with yesterday's auditor-state makes zero model calls and keeps the same finding-set hash; a state for another finding set, a garbage state and a missing one are ignored (model calls as today)"
+nl() { if [ -s "$LEDGER" ]; then wc -l < "$LEDGER" | tr -d ' '; else echo 0; fi; }
+drv() { # drv OUTDIR [prev-state]
+  local o="$1"; shift; local extra=(); [ -n "${1:-}" ] && extra=(--prev-state "$1")
+  "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/nc-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" "${extra[@]}" --out "$o" >/dev/null 2>&1; }
+n1="$WORK/dn1"; n2="$WORK/dn2"; n3="$WORK/dn3"; n4="$WORK/dn4"; n5="$WORK/dn5"; rm -rf "$n1" "$n2" "$n3" "$n4" "$n5"; # the same fixture with the second finding carrying an id the stub answers (a false positive): a unique-lineage, no-fix finding the model judges
+eval "$(declare -f _req16_src | sed 's/CVE-2099-NEW/CVE-2016-2781/g; s/_req16_src/_nc_src/')"; _nc_src "$WORK/nc-src"
+: > "$LEDGER"; drv "$n1"; calls1="$(nl)"; : > "$LEDGER"; st1="$n1/.auditor/auditor-state.json"
+drv "$n2" "$st1"; calls2="$(nl)"; : > "$LEDGER"
+h1="$(pj "$st1" 'd["finding_set_hash"]')"; h2="$(pj "$n2/.auditor/auditor-state.json" 'd["finding_set_hash"]')"
+"$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1])); d["finding_set_hash"]="0"*64; json.dump(d,open(sys.argv[2],"w"))' "$st1" "$WORK/other-state.json"
+drv "$n3" "$WORK/other-state.json"; calls3="$(nl)"; : > "$LEDGER"
+echo '{"garbage": true' > "$WORK/bad-state.json"; drv "$n4" "$WORK/bad-state.json"; calls4="$(nl)"; : > "$LEDGER"
+drv "$n5" "$WORK/missing-state.json"; calls5="$(nl)"; : > "$LEDGER"
+valid="$(printf '%s' "$h1" | grep -Eq '^[0-9a-f]{64}$' && echo y || echo n)"
+{ eq "$valid" "y" && [ "$calls1" -gt 0 ] && eq "$calls2" "0" && eq "$h1" "$h2" && eq "$calls3" "$calls1" && eq "$calls4" "$calls1" && eq "$calls5" "$calls1"; } \
+  && ok || no "run 1 calls>0, run 2 (with state) 0 calls and the same hash, other/garbage/missing state = run 1's calls" "calls=$calls1/$calls2/$calls3/$calls4/$calls5 h1=$h1 h2=$h2 valid=$valid state=$(tr -d "\n " < "$st1" | head -c 700)"
+
+begin "req3-ac3-driver-incomplete-run-leaves-no-usable-state" "the DRIVER (REQ-AUD-3 AC3, Fable ruling on cache#684): a run where a model call ended without a cacheable result (here: every answer is 'unknown' and the narrative is empty) writes a state with NO verdicts, pullability or narrative, so the next run repeats the same calls instead of making zero"
+nl() { if [ -s "$LEDGER" ]; then wc -l < "$LEDGER" | tr -d ' '; else echo 0; fi; }
+cat > "$WORK/unknown-adj.py" <<'PYA'
+import json, os, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    if os.environ.get("AUDITOR_MODEL_LEDGER"):
+        open(os.environ["AUDITOR_MODEL_LEDGER"], "a").write("%s|%s|%s\n" % (req.get("finding_id"), req.get("attempt"), req.get("model")))
+    print(json.dumps({"refused": False, "category": "unknown", "token_usage": 1}), flush=True)
+PYA
+drvu() { # drvu OUTDIR [prev-state]
+  local o="$1"; shift; local extra=(); [ -n "${1:-}" ] && extra=(--prev-state "$1")
+  "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/nc-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$WORK/unknown-adj.py" "${extra[@]}" --out "$o" >/dev/null 2>&1; }
+u1="$WORK/du1"; u2="$WORK/du2"; rm -rf "$u1" "$u2"
+: > "$LEDGER"; drvu "$u1"; ucalls1="$(nl)"; : > "$LEDGER"; ust1="$u1/.auditor/auditor-state.json"
+drvu "$u2" "$ust1"; ucalls2="$(nl)"; : > "$LEDGER"
+uhollow="$(pj "$ust1" 'len(d["verdicts"])==0 and len(d["pullability"])==0 and d["narrative"] is None' 2>/dev/null)"
+{ [ "$ucalls1" -gt 0 ] && eq "$ucalls2" "$ucalls1" && eq "$uhollow" "true"; } \
+  && ok || no "run 1 calls>0 and leaves an empty state, run 2 repeats run 1's calls" "calls=$ucalls1/$ucalls2 hollow=$uhollow state=$(tr -d "\n " < "$ust1" 2>/dev/null | cut -c1-200)"
 
 begin "req16-ac2-versioned-prompt-file" "the model's standing instructions are a versioned prompt FILE (public; names no vendor/model); the adjudicator client loads them from the file, not an inline string"
 a2="$("$PY" -c "

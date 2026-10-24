@@ -220,7 +220,7 @@ def judge_rest():
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
     ci = open(CI).read()
     for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f"bash .github/agent/tests/{t}" not in ci:
+        if f"bash .github/agent/tests/{t}" not in ci and f"suite-floors.json {t} .github/agent/tests/{t}" not in ci:     # plain, or the counting step of REQ-CI-005
             bad.append(f"ci.yml does not run .github/agent/tests/{t}")
     return bad
 
