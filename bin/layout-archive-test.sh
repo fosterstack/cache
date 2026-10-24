@@ -83,6 +83,22 @@ json.dump(m, open(root + "/blobs/sha256/" + kid, "w"))
 PY
 refused "a layer digest that is not sha256:<64 hex>" "$work/traversal" amd64
 refused "a layout with no index" "$work/missing" amd64
+cp -R "$work/layout" "$work/tworoots"
+python3 - "$work/tworoots" <<'PY'
+import json, sys
+p = sys.argv[1] + "/index.json"
+d = json.load(open(p))
+d["manifests"].append(dict(d["manifests"][0]))
+json.dump(d, open(p, "w"))
+PY
+refused "an index.json with two roots" "$work/tworoots" amd64
+cp -R "$work/layout" "$work/wrongbytes"
+layer=$(ls -S "$work/wrongbytes/blobs/sha256" | tail -1)
+printf 'not the layer' > "$work/wrongbytes/blobs/sha256/$layer"
+refused "a blob whose bytes are not its digest" "$work/wrongbytes" amd64
+cp -R "$work/layout" "$work/badindex"
+printf '{"manifests":[{"digest":"sha256:../../../etc/passwd"}]}' > "$work/badindex/index.json"
+refused "an index digest that is not sha256:<64 hex>" "$work/badindex" amd64
 
 echo "layout-archive: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

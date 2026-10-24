@@ -916,7 +916,7 @@ sys.stdout.write(t)' "$1"; }
 CLEAN='{"sbom":{"bomFormat":"CycloneDX","components":[],"vulnerabilities":[]}}'
 
 # --- scan.yml: the PR gate
-extract scan.yml inspector "Amazon Inspector scan every loaded image" > "$sim/scan-raw.sh" || { bad "extract scan.yml's Inspector step"; }
+extract scan.yml inspector "Amazon Inspector scan every image tar" > "$sim/scan-raw.sh" || { bad "extract scan.yml's Inspector step"; }
 sandbox < "$sim/scan-raw.sh" > "$sim/scan-step.sh"
 reset_scan() { rm -rf "$sim/tmp"; mkdir -p "$sim/tmp"; printf 'ghcr.io/fosterstack/cache:cand-production-amd64\nghcr.io/fosterstack/cache:cand-production-arm64\nghcr.io/fosterstack/cache:cand-debug-amd64\n' > "$sim/tmp/refs.txt"; }
 gate_lines() { grep -c '^- ' "$sim/summary.md" | tr -d ' '; }  # one verdict line per image, plus the "SBOMs assessed" line
@@ -1269,7 +1269,7 @@ if which == "scan":
     IF_REST = FORK
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
-    job, scan_name, marker = "inspector", "Amazon Inspector scan every loaded image", "python3 bin/inspector-gate.py"
+    job, scan_name, marker = "inspector", "Amazon Inspector scan every image tar", "python3 bin/inspector-gate.py"
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
              "rebuild": {"contents": "read"}, "reproducibility": None, "scanners": None,
              "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
@@ -1513,7 +1513,7 @@ mut_def W_INSPECTOR_DAY_BACK <<'EOF'
 if 'EXPECTED_REFS: "4"' in t:
     t = t.replace('          EXPECTED_REFS: "4"', '          EXPECTED_REFS: "4"\n          INSPECTOR_DAY: x', 1)
 else:
-    t = t.replace("      - name: Amazon Inspector scan every loaded image\n", "      - name: Amazon Inspector scan every loaded image\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every loaded" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
+    t = t.replace("      - name: Amazon Inspector scan every image tar\n", "      - name: Amazon Inspector scan every loaded image\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every loaded" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
 EOF
 for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   set -- $pair; f=$1; k=$2

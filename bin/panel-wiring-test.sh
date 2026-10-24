@@ -357,9 +357,9 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
 # rc-5a D1 (Fable R4, astra B4): Grype runs with an empty config file and refuses GRYPE_* variables (as bin/grype-scan.sh does), and a failed Grype or Scout
 # command removes that image's output directory, so a readable partial report can never count as "ran" (the contract: fewer outputs = did not run)
 tg_ = text("panel-grype")
-if not re.search(r'grype "docker-archive:\$\{d\}\.tar" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
+if not re.search(r'grype "docker-archive:/tmp/arc/\$\{v\}-\$\{arch\}\.tar" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
     bad.append("panel-grype does not run grype with -c on an empty file made in the step")
-if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker:\$\{ref\}\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
+if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker(?:-archive)?:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker-archive:[^\"]*\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
     bad.append("panel-grype runs a grype command (the database update or a scan) without -c on the empty config")
 if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in tg_:
     bad.append("panel-grype's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
@@ -586,6 +586,7 @@ case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run']
 case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
 case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
 case_ grype-update-repo-config bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype db update -c \"\$RUNNER_TEMP/empty-grype.yaml\"', 'grype db update')"
+case_ grype-extra-archive-scan bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + chr(10) + 'grype \"docker-archive:/tmp/arc/x.tar\" -o json'"
 case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
 case_ pub-grype-repo-config   bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -c /tmp/empty-grype.yaml', '')"
 case_ pub-grype-no-env-refusal bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"

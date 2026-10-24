@@ -193,11 +193,13 @@ jobs:
           fi
           : > "$RUNNER_TEMP/empty-grype.yaml"
           grype db update -c "$RUNNER_TEMP/empty-grype.yaml" >/dev/null 2>&1 || true
+          mkdir -p /tmp/arc   # the tars stay out of /tmp/panel, which is uploaded
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
-              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "${d}.tar" "${ref}" > /dev/null || continue
-              grype "docker-archive:${d}.tar" -c "$RUNNER_TEMP/empty-grype.yaml" \
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "${ref}" > /dev/null \
+                || continue
+              grype "docker-archive:/tmp/arc/${v}-${arch}.tar" -c "$RUNNER_TEMP/empty-grype.yaml" \
                 --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
                 || { rm -rf "${d}"; echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
@@ -560,10 +562,11 @@ jobs:
       - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
         run: |
           set -uo pipefail
+          mkdir -p /tmp/arc
           for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            ./bin/layout-archive.sh "/tmp/oci/${v}" amd64 "${d}.tar" "${ref}" > /dev/null \
-              && docker load -i "${d}.tar" > /dev/null || continue
+            ./bin/layout-archive.sh "/tmp/oci/${v}" amd64 "/tmp/arc/${v}-amd64.tar" "${ref}" > /dev/null \
+              && docker load -i "/tmp/arc/${v}-amd64.tar" > /dev/null || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"

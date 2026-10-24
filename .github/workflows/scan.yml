@@ -125,7 +125,7 @@ jobs:
           echo "::error::scanners.json pr_gate names a scanner this job does not run; only grype is wired into it" >&2
           exit 1
 
-      # grype reads the OCI images and scans the release archives: the image download + daemon load,
+      # grype reads the OCI images and scans the release archives: the image download + tar,
       # the archive download and the archive verify all run in this job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -170,7 +170,7 @@ jobs:
           done
           echo "tars to scan:"; cat /tmp/refs.txt; cat /tmp/arc/*.id
 
-      - name: Grype scan every loaded image and every archive
+      - name: Grype scan every image tar and every archive
         if: matrix.scanner == 'grype'
         run: |
           set -euo pipefail
@@ -178,12 +178,15 @@ jobs:
           echo "## Grype" >> "$GITHUB_STEP_SUMMARY"
           # bin/grype-scan.sh: one pass per target, counts, VEX, zero packages = red.
           g() { ./bin/grype-scan.sh "$1" "$2"; }
+          rc=0   # a finding in one image must not hide the rest: every target is scanned
           while read -r ref; do
             tag="${ref##*:}"
             # the report's image ID must be the config digest of the child the tar was made from
-            EXPECT_IMAGE_ID="$(awk '{print $4}' "/tmp/arc/${tag}.id")" g "docker-archive:/tmp/arc/${tag}.tar" "${tag}"
+            EXPECT_IMAGE_ID="$(awk '{print $4}' "/tmp/arc/${tag}.id")" \
+              g "docker-archive:/tmp/arc/${tag}.tar" "${tag}" || rc=1
           done < /tmp/refs.txt
-          for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}"; done
+          for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}" || rc=1; done
+          exit "$rc"
 
   inspector:
     name: scan (inspector)
@@ -199,7 +202,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Inspector reads the same OCI images (no archives): the image download + daemon load run here too.
+      # Inspector reads the same OCI images (no archives): the image download + tar run here too.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
@@ -245,10 +248,10 @@ jobs:
           key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}-miss
           restore-keys: inspector-${{ steps.insp-date.outputs.date }}-
 
-      - name: Amazon Inspector scan every loaded image
+      - name: Amazon Inspector scan every image tar
         id: insp-scan
         env:
-          EXPECTED_REFS: "4"      # production and fips, each on amd64 and arm64: a load step that left fewer must not turn into a clean pass
+          EXPECTED_REFS: "4"      # production and fips, each on amd64 and arm64: a tar step that left fewer must not turn into a clean pass
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
           nrefs=$(grep -c . /tmp/refs.txt 2>/dev/null)

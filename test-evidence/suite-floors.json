@@ -33,7 +33,7 @@
  "inspector-gate-test.sh": 83,
  "install-scanner-test.sh": 15,
  "k8s-harness-fence-test.sh": 26,
- "layout-archive-test.sh": 11,
+ "layout-archive-test.sh": 14,
  "marker-gate-test.sh": 51,
  "panel-test.sh": 92,
  "panel-wiring-test.sh": 124,
