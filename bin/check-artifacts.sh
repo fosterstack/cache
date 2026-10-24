@@ -67,8 +67,9 @@ for n in fscache fscache-fips; do
   tar -xzf "${sel[0]}" -C "$tmp/bin" "$n" || fail "the $arch archive of $n holds no binary named $n"
 done
 
-# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed.
-python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
+# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed; the bind also
+# lists the files of each layout docker may be given (REQ-SUP-001-AC33).
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
 # three free ports for this run's servers (suites running side by side, or a server left on a fixed port, must never answer for the binary under test)
@@ -126,7 +127,7 @@ for v in production fips; do
   for want in linux/amd64 linux/arm64; do
     grep -qx "$want" <<< "$plats" || fail "the $v image archive has no $want platform entry"
   done
-  tar -C "$images/$v" -cf "$tmp/$v.tar" . || fail "the $v image layout could not be archived"
+  tar -C "$images/$v" -cf "$tmp/$v.tar" -T "$tmp/$v.members" || fail "the $v image layout could not be archived"
   loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"

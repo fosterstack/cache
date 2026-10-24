@@ -2,6 +2,7 @@
 # proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the split form of allowlist-chain is accepted only exactly (the chain-split cases)
 # proves: REQ-CI-005-AC2 — a counting step is accepted only in exactly its form (the count-step cases)
+# proves: REQ-REL-004-AC1 — the pull-request gate's govulncheck job judges the way Check does: it is accepted only in exactly its form (the govulncheck-gate cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -782,6 +783,37 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+# PR B (read-back approved by the advisor, Oct 23; Fable ruling of record cache#703): the pull-request gate's govulncheck job (the required context) installs the pinned Go, installs
+# govulncheck at the version tools/govulncheck pins, and runs bin/check-govulncheck.py by its fixed path on the repository's scanner list, as its LAST step and with nothing between:
+# the step list is exactly checkout, setup-go, the installer, the install and the script; the job keeps its name, contents: read, and holds no secret, id-token or environment.
+# It is defined BEFORE judge mode because the trusted gate (which re-runs main's copy of this script over the PR head) runs it there too (REQ-REL-004-AC1; the scan is REQ-CHAIN-006-AC18).
+gvgate_judge() { # gvgate_judge CIYML GOMOD : exit 0 when the job named govulncheck is exactly the Check-equivalent form (the pin is the one in GOMOD)
+  python3 - "$1" "$2" <<'PY'
+import re, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+pin = None
+for line in open(sys.argv[2]):
+    m = re.match(r"^\s*(?:require\s+)?golang\.org/x/vuln\s+(v\d+\.\d+\.\d+)\b", line)
+    if m: pin = m.group(1); break
+if not pin: sys.exit(1)
+j = (d.get("jobs") or {}).get("govulncheck")
+if not isinstance(j, dict): sys.exit(1)
+bad = []
+if j.get("name") != "govulncheck": bad.append("name")
+if j.get("permissions") != {"contents": "read"}: bad.append("permissions")
+if set(j) - {"name", "runs-on", "permissions", "steps"}: bad.append("job keys")
+steps = j.get("steps") or []
+if len(steps) != 5: bad.append("step count")
+else:
+    s0, s1, s2, s3, s4 = steps
+    if not str(s0.get("uses", "")).startswith("actions/checkout@") or set(s0) - {"uses"}: bad.append("checkout step")
+    if not str(s1.get("uses", "")).startswith("actions/setup-go@") or set(s1) - {"uses", "with"}: bad.append("setup-go step")
+    if s2.get("run") != "bash bin/install-scanner.sh go" or set(s2) - {"name", "run"}: bad.append("installer step")
+    if s3.get("run") != "go install golang.org/x/vuln/cmd/govulncheck@" + pin or set(s3) - {"name", "run"}: bad.append("install step")
+    if s4.get("run") != 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"' or set(s4) - {"name", "run"}: bad.append("script step")
+sys.exit(1 if bad else 0)
+PY
+}
 # judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
 # object (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
@@ -792,8 +824,10 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
   git show "${PIN_WIRING_JUDGE_GIT}:test-evidence/suite-floors.json" > "$work/head-floors.json" 2> /dev/null || echo '{}' > "$work/head-floors.json"     # REQ-CI-005: the floors file of the judged commit, as the policy file is
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_FLOORS_FILE="$work/head-floors.json" judge "$work/head-ci.yml" && exit 0
-  exit 1
+  git show "${PIN_WIRING_JUDGE_GIT}:tools/govulncheck/go.mod" > "$work/head-gomod" || { echo "pin-wiring: no tools/govulncheck/go.mod at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_FLOORS_FILE="$work/head-floors.json" judge "$work/head-ci.yml" || exit 1
+  gvgate_judge "$work/head-ci.yml" "$work/head-gomod" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
+  exit 0
 fi
 
 case_() {  # case_ <name> <expect ok|bad> <python edit of the parsed copy, or empty>
@@ -817,12 +851,12 @@ steps='d["jobs"]["allowlist"]["steps"]'
 pick='[s for s in '"$steps"' if (s.get("run") or "").startswith("python3 .github/agent/bin/check-action-pins.py")][0]'
 case_ the-real-hygiene      ok  ""
 # REQ-CI-005: a floored suite's step may call the counting runner instead of `bash PATH`; exactly that form is read back to the plain line, anything else is judged as unknown text
-CW="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]"
+CW="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/inspector-gate-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh')][0]"
 CF="python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json"
 case_ count-step-wrapped-ok         ok  "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
 case_ count-step-devnull-added      bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh </dev/null'"
-case_ count-step-devnull-kept       ok  "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/verify-release-guide-test.sh </dev/null'][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null'"
-case_ count-step-devnull-dropped    bad "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/verify-release-guide-test.sh </dev/null'][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh'"
+case_ count-step-devnull-kept       ok  "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/verify-release-guide-test.sh </dev/null', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null')][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null'"
+case_ count-step-devnull-dropped    bad "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/verify-release-guide-test.sh </dev/null', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null')][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh'"
 case_ count-step-name-not-path      bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/inspector-gate-test.sh'"
 case_ count-step-other-path         bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/install-scanner-test.sh'"
 case_ count-step-unfloored-name     bad "w = $CW; w['run'] = '$CF zz-not-floored-test.sh bin/zz-not-floored-test.sh'"
@@ -847,16 +881,16 @@ case_ push-paths-ignore     bad "d['on']['push']['paths-ignore'] = ['**']"
 case_ step-shell-override   bad "$pick['shell'] = \"bash -c 'true' {0}\""
 case_ job-defaults-shell    bad "d['jobs']['allowlist']['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ workflow-defaults     bad "d['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
-case_ wiring-step-removed   bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/pin-wiring-test.sh']"
+case_ wiring-step-removed   bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash .github/agent/tests/pin-wiring-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-wiring-test.sh .github/agent/tests/pin-wiring-test.sh')]"
 case_ bash-env-on-step      bad "$pick['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ bash-env-on-job       bad "d['jobs']['allowlist']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ path-on-workflow      bad "d['env'] = {'PATH': '/tmp/fake:/usr/bin'}"
 case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
-case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
-case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
-case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
+case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
+case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
+case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -919,12 +953,23 @@ for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowl
 sys.exit(1)
 PYF
 }
+actual_of() { python3 - "$here/.github/workflows/ci.yml" "$1" <<'PYA'
+import re, sys
+ci, r = open(sys.argv[1]).read(), sys.argv[2]
+m = re.fullmatch(r'((?:CHAIN_TEST_REQUIRE_NETCUT=1 )?)bash ((?:bin|\.github/agent/tests)/(\S+))( </dev/null)?', r)
+if m:
+    w = m.group(1) + "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json " + m.group(3) + " " + m.group(2) + (m.group(4) or "")
+    if ("run: " + w + "\n") in ci:
+        print(w); sys.exit(0)
+print(r)
+PYA
+}
 for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
-  n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$r")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$r'][0]"
-  case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$r']"
+  ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
+  case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
   case_ "$n-continue"    bad "$cs['continue-on-error'] = 'true'"
-  case_ "$n-or-true"     bad "$cs['run'] = '$r || true'"
+  case_ "$n-or-true"     bad "$cs['run'] = '$ar || true'"
   case_ "$n-renamed"     bad "$cs['name'] = 'chain tests'"
   case_ "$n-env"         bad "$cs['env'] = {'CHAIN_X': '1'}"
   case_ "$n-shell"       bad "$cs['shell'] = \"bash -c 'true' {0}\""
@@ -935,7 +980,7 @@ for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash b
   case_ "$n-twice"       bad "$csteps.append(dict($cs))"
 done
 # the two suite-floor guard steps (an `if` or an `env` on purpose): every key and value is judged
-for g in "floors-vs-base" "suite-guard-run.py"; do
+for g in "floors-vs-base" "suite-guard-run.py all"; do
   csteps="d[\"jobs\"][\"$(shard_of has "$g")\"][\"steps\"]"; gs="[s for s in $csteps if '$g' in (s.get('run') or '')][0]"
   case_ "guard-$g-removed"  bad "$csteps[:] = [s for s in $csteps if '$g' not in (s.get('run') or '')]"
   case_ "guard-$g-if"       bad "$gs['if'] = 'false'"
@@ -957,6 +1002,7 @@ gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
+  mkdir -p "$r/tools/govulncheck"; cp "$here/tools/govulncheck/go.mod" "$r/tools/govulncheck/go.mod"      # the pin the govulncheck-gate judge reads at the judged commit
   mkdir -p "$r/test-evidence"; cp "$here/test-evidence/suite-floors.json" "$r/test-evidence/suite-floors.json"     # REQ-CI-005: the judge reads the floors file of the judged commit
   if [ -n "${GIT_FLOORS_EDIT:-}" ]; then python3 - "$r/test-evidence/suite-floors.json" "$GIT_FLOORS_EDIT" <<'PY'
 import sys, json
@@ -978,11 +1024,16 @@ PY
   else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
 }
 gitcase the-real-ci-at-a-commit   ok  ""
-WRAP="w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]; w['run'] = 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+WRAP="w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/inspector-gate-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh')][0]; w['run'] = 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
 gitcase counting-step-at-a-commit ok  "$WRAP"
 GIT_FLOORS_EDIT="d.pop('inspector-gate-test.sh')" gitcase counting-step-unfloored-at-that-commit bad "$WRAP"     # the floors file of the judged commit decides, not the checkout's
 # the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
 
+# the govulncheck-gate judge runs in judge mode too, over the head's own ci.yml (the trusted gate path)
+GVJ="[j for j in [d['jobs']['govulncheck']]][0]['steps']"
+gitcase govulncheck-gate-old-step-at-a-commit  bad "$GVJ[-1]['run'] = 'govulncheck ./...'"
+gitcase govulncheck-gate-no-installer-at-a-commit  bad "$GVJ[:] = [s for s in $GVJ if s.get('run') != 'bash bin/install-scanner.sh go']"
+gitcase govulncheck-gate-extra-step-at-a-commit  bad "$GVJ.insert(3, {'run': 'cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck'})"
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
@@ -1111,7 +1162,7 @@ then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers →
 # the judge keeps refusing the old shape with a leftover shard (a half-done split)
 case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
-PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
+PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
 case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
 case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
@@ -1260,6 +1311,34 @@ else: json.dump(d, open(sys.argv[2], "w"))
 PY
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
+
+gvgate_ci="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}/ci.yml"
+if gvgate_judge "$gvgate_ci" "$here/tools/govulncheck/go.mod"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi
+gvgate_mut() { # gvgate_mut LABEL OLD NEW : the ci.yml with one change inside the govulncheck job must be refused
+  python3 - "$gvgate_ci" "$work/gvgate-ci.yml" "$2" "$3" <<'PY'
+import sys
+t = open(sys.argv[1]).read(); a, b = sys.argv[3], sys.argv[4]
+i = t.index("  govulncheck:\n    name: govulncheck")
+head, job = t[:i], t[i:]
+j = job.index("\n\n")
+body, rest = job[:j], job[j:]
+assert a in body, a
+open(sys.argv[2], "w").write(head + body.replace(a, b, 1) + rest)
+PY
+  if gvgate_judge "$work/gvgate-ci.yml" "$here/tools/govulncheck/go.mod"; then failn=$((failn+1)); echo "FAIL govulncheck-gate $1 accepted"; else pass=$((pass+1)); echo "PASS govulncheck-gate $1 → refused"; fi
+}
+gvgate_mut "old-bare-step" 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"' 'govulncheck ./...'
+gvgate_mut "no-installer" 'bash bin/install-scanner.sh go' 'true'
+gvgate_mut "script-path" 'bin/check-govulncheck.py' 'bin/check-other.py'
+gvgate_mut "scanner-list" '.github/policy/scanners.json' '/tmp/scanners.json'
+gvgate_mut "no-isolation-flags" 'python3 -I -B bin' 'python3 bin'
+gvgate_mut "id-token" 'contents: read' 'contents: read
+      id-token: write'
+gvgate_mut "job-renamed" 'name: govulncheck' 'name: govulncheck-gate'
+gvgate_mut "install-and-copy" 'govulncheck@v1.7.0' 'govulncheck@v1.7.0 && cp /bin/true ~/go/bin/govulncheck'
+gvgate_mut "planted-binary-step" '      - name: govulncheck (the same judgment as Check)' '      - name: plant
+        run: cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck
+      - name: govulncheck (the same judgment as Check)'
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
