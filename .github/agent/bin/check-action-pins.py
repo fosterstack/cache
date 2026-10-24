@@ -125,6 +125,10 @@ Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or c
 --config are refused, and so are DOCKER_HOST, DOCKER_CONTEXT, BUILDKIT_HOST and any DOCKER_CONFIG but a fresh
 $(mktemp -d), in scripts or env blocks; plugin, context, import, system, trust, secret, config and buildx create/use
 are off the reviewed list (refused).
+Inside a container (#593 review): the command `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` runs, and the words after the
+image of `… run [opts] IMAGE CMD…` (led by an --entrypoint program), are read as a command of their own and judged like a top-level
+one: `docker exec C docker pull alpine:latest` is the same finding `docker pull alpine:latest` is. An exec option this check does not
+know is a finding (it cannot tell which word is the container).
 Round 12 (NEW-14/15): every verb of docker/podman/nerdctl, skopeo and crane is either read (run/create/pull/build/
 scout/…), on a reviewed list of verbs that pull or run nothing remote, or refused (podman kube play, skopeo sync, crane
 append/mutate, …). Tool words match by exact case (the scope is ubuntu runners, where `Docker` is not found); PATH
@@ -603,6 +607,8 @@ RUN_VAL = {"--add-host", "--annotation", "-a", "--attach", "--blkio-weight", "--
 RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--interactive", "--no-healthcheck",
             "--oom-kill-disable", "--privileged", "-P", "--publish-all", "-q", "--quiet", "--read-only", "--rm",
             "--sig-proxy", "-t", "--tty"}
+EXEC_VAL = {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys"}
+EXEC_BOOL = {"-d", "--detach", "-i", "--interactive", "--privileged", "-t", "--tty"}
 PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
@@ -1033,7 +1039,57 @@ def _command_words(toks):
     return words
 
 
-def _commands(script, depth=0):
+def _container_inner(tool, args):
+    """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
+    container, for `… run|create [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
+    container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
+    was a safe verb, so `docker exec C docker pull alpine:latest` was invisible). None when there is no inner command or it cannot be placed
+    (an option this check does not know is a finding elsewhere)."""
+    if tool not in ("docker", "podman", "nerdctl"):
+        return None
+    k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
+    rest = args[k:]
+    if unknown or not rest:
+        return None
+    verb, rest = rest[0], rest[1:]
+    if verb == "container" and rest[:1] in (["exec"], ["run"], ["create"]):
+        verb, rest = rest[0], rest[1:]
+    if verb == "exec":  # INNER-EXEC
+        k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+        return None if unknown or k >= len(rest) else rest[k + 1:]
+    if verb in ("run", "create"):  # INNER-RUN
+        k, unknown = _options(rest, RUN_VAL, RUN_BOOL)
+        if unknown or k >= len(rest):
+            return None
+        entry, j = None, 0
+        while j < k:                       # the same walk _options makes: a value of another option (--label '--entrypoint=x', -il '--entrypoint=x') is not the entrypoint
+            a = rest[j]
+            if a == "--":
+                break
+            if a == "--entrypoint" and j + 1 < k:
+                entry, j = rest[j + 1], j + 2
+            elif a.startswith("--entrypoint="):
+                entry, j = a.split("=", 1)[1], j + 1
+            elif a.startswith("--"):
+                j += 2 if (a in RUN_VAL) else 1
+            else:                          # a short option cluster (or a stray word: one step)
+                step = 1
+                for c, ch in enumerate(a[1:], 1):
+                    o = "-" + ch
+                    if o in RUN_BOOL:
+                        continue
+                    if o in RUN_VAL:
+                        step = 1 if c + 1 < len(a) else 2     # the value is attached, or the next word
+                    break
+                j += step
+        inner = rest[k + 1:]
+        if entry:  # INNER-ENTRYPOINT
+            inner = [entry] + inner
+        return inner
+    return None
+
+
+def _commands(script, depth=0, in_container=False):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
@@ -1044,9 +1100,9 @@ def _commands(script, depth=0):
     if depth < 6:
         for sub in inner:
             if sub.startswith("(") and sub.endswith(")"):     # $(( … )) arithmetic: only its own $( … ) run
-                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1)]
+                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1, in_container)]
             else:
-                out += _commands(sub, depth + 1)
+                out += _commands(sub, depth + 1, in_container)
     elif inner:
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
@@ -1069,11 +1125,11 @@ def _commands(script, depth=0):
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
                 elif c is not None:
-                    out += _commands(toks[c + 1], depth + 1) if c + 1 < len(toks) else []
+                    out += _commands(toks[c + 1], depth + 1, in_container) if c + 1 < len(toks) else []
                 elif trap_cmd is not None:
-                    out += _commands(trap_cmd, depth + 1)
+                    out += _commands(trap_cmd, depth + 1, in_container)
                 else:
-                    out += _commands(" ".join(toks[i + 1:]), depth + 1)
+                    out += _commands(" ".join(toks[i + 1:]), depth + 1, in_container)
                 break
         inline = next((w for w in _command_words(toks) if _base(w) in INTERPRETERS and any(
             re.match(INTERPRETERS[_base(w)], t) for t in toks[toks.index(w) + 1:])), None)
@@ -1131,6 +1187,16 @@ def _commands(script, depth=0):
         at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
+            inner = _container_inner(_base(toks[at]), toks[at + 1:])
+            if inner:         # the command run inside the container is a command of its own
+                if depth >= 4:
+                    out.append(["__too_deep__", _base(toks[at])])
+                else:
+                    out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1, True)
+    if in_container:
+        # a script path in the PLAIN inner command of a container names the container's file, never the checkout's: it is not bound to a committed file (the
+        # bytes are the image's, pinned by digest) and, as before, not read. A `sh -c` / eval body on the line keeps the rule it had on main.
+        out = [c for c in out if c[0] not in ("__script__", "__exec__", "__globexec__", "__foreign__")]
     return out
 
 
@@ -1693,6 +1759,11 @@ def script_images(script):
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
                 ev.append(("tag", rest[-2], rest[-1]))      # judged in check_runs: the source must be ours (NEW-21)
+            elif verb == "exec":
+                k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+                if unknown:
+                    ev.append(("finding", "`%s exec` has an option this check does not know (%s): it cannot tell which word is "
+                                          "the container, so the command inside cannot be read" % (cmd, unknown)))
             elif verb in DOCKER_SAFE:
                 pass
             elif verb not in ("build",):
