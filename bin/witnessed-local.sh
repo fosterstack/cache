@@ -3,8 +3,9 @@
 # (ops/docs/ratify/2026-10-22-witness-signed-outside-build.md, option 1): the build job records its provenance with a THROWAWAY ed25519 key made in the job, which holds no
 # identity token; the record leaves as <step>-collection.local.json, a file nothing trusts. The Sign stage checks the record's product digests against the artifacts it
 # receives and re-signs the payload keyless; verifiers trust only Sign's identity and refuse a record whose only signature is the throwaway one.
-# STEP is one of a CLOSED list: apk, build, rapk, rebuild (a release) and snapshot-apk, snapshot-build, snapshot-rapk, snapshot-rebuild (the snapshot mode). The Check and
-# Release steps stay on the keyless helper, which signs in their own jobs.
+# STEP is one of a CLOSED list: apk, build, rapk, rebuild (a release), snapshot-apk, snapshot-build, snapshot-rapk, snapshot-rebuild (the snapshot mode) and Check's four steps
+# scanners, acceptance, runtime and arm64 (they build and run workloads, so their jobs hold no identity token either; REQ-REL-011-AC1). The Release steps stay on the keyless helper,
+# which signs in their own job.
 #  - The record is witness-DIR/STEP-collection.local.json, where DIR is STEP without a leading snapshot-: a snapshot job uploads the same directory as a release job, and the
 #    snapshot marker is the step name inside the record (every verifier refuses a snapshot- name, REQ-CHAIN-004-AC13).
 #  - The key is key hygiene, not the trust boundary: it is made in a directory of mode 0700 under the runner temp folder (umask 077), handed to Witness by path only, never
@@ -18,7 +19,7 @@
 set -euo pipefail
 step="$1"
 shift
-case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac
+case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN
 umask 077
