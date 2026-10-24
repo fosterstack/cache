@@ -295,7 +295,7 @@ class SourceBinding(Harness):
 
     def test_a_commit_that_is_not_40_hex_is_refused(self):
         self.rules(GOOD_RULES)
-        for bad in ("abc123", "", HEAD40.upper(), HEAD40 + "0", HEAD40[:-1] + "g", "HEAD", HEAD40[:-1] + "\n"):
+        for bad in ("abc123", "", "unknown", HEAD40.upper(), HEAD40 + "0", HEAD40[:-1] + "g", "HEAD", HEAD40[:-1] + "\n"):
             with self.assertRaises(SystemExit, msg=repr(bad)):
                 self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", bad))
         self.assertFalse(os.path.exists(self.out))

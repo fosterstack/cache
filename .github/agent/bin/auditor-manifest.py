@@ -305,8 +305,8 @@ def _archives(rescan_dir, test_image, oci, tar):
 def main():
     rescan = cli.opt("--rescan-dir"); reports = cli.opt("--reports")
     source = cli.opt("--source-dir"); out = cli.opt("--out")
-    commit = cli.opt("--commit", "unknown")          # never the run's own sha: the field says which head the scanned image was built from
-    if commit != "unknown" and not re.fullmatch(r"[0-9a-f]{40}", commit or ""):
+    commit = cli.opt("--commit", "unknown")          # never the run's own sha: the field says which head the scanned image was built from; absent = "unknown"
+    if cli.flag("--commit") and not re.fullmatch(r"[0-9a-f]{40}", commit or ""):   # a supplied value is 40-hex, whatever it is ("unknown" included)
         sys.exit("auditor-manifest: --commit must be a 40-hex commit id (the head the scanned image was built from) or absent, got %r" % (commit,))
     test_image = cli.opt("--test-image") or os.environ.get("AUDITOR_TEST_IMAGE") or ""
     kdl = cli.opt("--known-defect-log", ".github/agent/known-defect-log.json")
