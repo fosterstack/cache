@@ -14,6 +14,7 @@
 #
 # Usage: grype-scan.sh <grype-target> <label>
 #   e.g. grype-scan.sh docker:ghcr.io/fosterstack/cache:cand-production-amd64 cand-production-amd64
+# EXPECT_IMAGE_ID=<config digest> (optional) makes grype's reported image ID have to equal it (exit 2 otherwise).
 # Appends "- <label>: N packages, M finding(s)" to $GITHUB_STEP_SUMMARY when set.
 # Exit: grype's own status (0 clean, non-zero findings or error); 1 when grype exits 0 but findings survive the VEX (UNKNOWN severity, which
 # --fail-on negligible does not fire on) or something other than the VEX hid a finding; 2 on zero packages, on a GRYPE_* setting, or when an output
@@ -37,6 +38,16 @@ cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$
 
 # GRYPE is a test seam (a stand-in for the grype binary); no workflow ever sets it, so CI always runs the pinned grype.
 "${GRYPE:-grype}" "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
+# EXPECT_IMAGE_ID (optional): the config digest of the image the caller built the scanned tar from
+# (bin/layout-archive.sh). A tar's image ID is its config
+# digest, so grype's report must name it: the image scanned is then the one we ship, not another tar in its place.
+if [ -n "${EXPECT_IMAGE_ID:-}" ] && jq -e . "$js" >/dev/null 2>&1; then
+  got=$(jq -r '.source.target.imageID // empty' "$js" 2>/dev/null) || got=""
+  if [ "$got" != "$EXPECT_IMAGE_ID" ]; then
+    echo "::error::grype ${label}: image ID '${got:-none}', expected '${EXPECT_IMAGE_ID}': not the image we ship" >&2
+    exit 2
+  fi
+fi
 # A grype that failed before writing leaves a file that is empty or not one complete JSON document: that is 0 packages here ("did not run").
 if jq -e . "$cdx" >/dev/null 2>&1; then
   # packages are the components that carry a package URL (pkg:deb/debian/glibc@2.36, not any string); grype also lists every file it catalogued as a component (946 of 965 on a real image), and a

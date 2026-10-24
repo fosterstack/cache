@@ -106,8 +106,9 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
+bin/layout-archive.sh bin/layout-archive-test.sh
 """.split())
-if len(DECLARED) != 54: errs.append("declared list is not 54 paths: %d" % len(DECLARED))
+if len(DECLARED) != 56: errs.append("declared list is not 56 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -117,12 +118,13 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 199 (rc-5a K removed ^bin/scout-vex-scan\.sh$); 200 (- ^bin/install-kind\.sh$, kind comes from the runner image,
-# cache#735); 201 (+ ^bin/check-records-digests\.sh$, REQ-REL-011-AC1, cache#606, taken from chain-v030); 200 (+
-# ^bin/vendor-provenance-records\.py$, REQ-VEND-001-AC15, taken from main); 199 (+ ^bin/(un)?pack-govulncheck\.sh$,
-# REQ-REL-011-AC1, F9, taken from chain-v030); 198 (+ ^bin/rebuild-records-digests\.sh$, the list of the records
-# Rebuild's assemble job made); 197 (+ ^bin/witness-sign-staged\.sh$, Sign's signing step for the building jobs'
-# records); 196 (+ ^bin/witnessed-local\.sh$, the Witness wrapper of the building steps, owner Oct 22); 195 (main's +
+# 200 (rc-5a K removed ^bin/scout-vex-scan\.sh$); 201 (+ ^bin/layout-archive(-test)?\.sh$, 0674); 200 (-
+# ^bin/install-kind\.sh$, kind comes from the runner image, cache#735); 201 (+ ^bin/check-records-digests\.sh$,
+# REQ-REL-011-AC1, cache#606, taken from chain-v030); 200 (+ ^bin/vendor-provenance-records\.py$, REQ-VEND-001-AC15,
+# taken from main); 199 (+ ^bin/(un)?pack-govulncheck\.sh$, REQ-REL-011-AC1, F9, taken from chain-v030); 198 (+
+# ^bin/rebuild-records-digests\.sh$, the list of the records Rebuild's assemble job made); 197 (+
+# ^bin/witness-sign-staged\.sh$, Sign's signing step for the building jobs' records); 196 (+
+# ^bin/witnessed-local\.sh$, the Witness wrapper of the building steps, owner Oct 22); 195 (main's +
 # ^bin/job-isolation-test\.sh$, REQ-REL-011, and + ^bin/release-layout\.py$, handoff 0521, taken into the chain); 193
 # (+ ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$, REQ-REFRESH-001-AC35); 191 (- main's two
 # suppression/set-01 fixture patterns .snyk and osv-scanner.toml, PR 2b-2c); 193 (+
@@ -144,7 +146,7 @@ ALLOWED_MENTIONS = {
 # suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 +
 # ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR
 # 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 199, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 200, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
