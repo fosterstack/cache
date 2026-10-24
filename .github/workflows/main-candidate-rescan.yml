@@ -853,6 +853,14 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config (never the repository's), and a GRYPE_* variable stops the step,
+          # as in bin/grype-scan.sh and bin/check-scan.sh (names only are printed). Zero packages = did not run (row 53): the inventory is written too.
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > /tmp/empty-grype.yaml
           ./bin/install-scanner.sh grype
           rc=0
           child_no=0
@@ -868,19 +876,22 @@ jobs:
           while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
-            out="/tmp/grype-child-${child_no}.json"
+            out="/tmp/grype-child-${child_no}.json"; sbom="/tmp/grype-child-${child_no}.cdx.json"
             echo "grype: ${platform} ${ref}"
             plat_arg=""
             case "$platform" in */*) plat_arg="--platform ${platform}";; esac
             code=0
             # shellcheck disable=SC2086
-            grype "registry:${ref}" $plat_arg \
+            grype "registry:${ref}" $plat_arg -c /tmp/empty-grype.yaml \
               --fail-on negligible \
               --vex .vex/fosterstack-cache.openvex.json \
-              -o json --file "$out" || code=$?
+              -o "json=${out}" -o "cyclonedx-json=${sbom}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+            # packages = components that carry a package URL (grype also lists files); unreadable = 0, which bin/rescan-statement.py refuses
+            pk=$(jq '[.components[]? | select((.purl // "") != "")] | length' "${sbom}" 2>/dev/null) || pk=0
+            [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0                  # an empty or odd result must not stop the loop before this child's record is written
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
+              '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
 
@@ -891,6 +902,13 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # An empty config, every package and every vulnerability listed, and an OSV_SCANNER_* variable stops the step (as in bin/check-scan.sh).
+          bad_env=$(compgen -e | grep '^OSV_SCANNER_' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::osv-scanner: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > /tmp/empty-osv.toml
           ./bin/install-scanner.sh osv-scanner
           rc=0
           child_no=0
@@ -905,10 +923,12 @@ jobs:
             out="/tmp/osv-child-${child_no}.json"
             echo "osv-scanner: ${platform} ${ref}"
             code=0
-            osv-scanner scan image --format json --output "$out" "${ref}" || code=$?
+            osv-scanner scan image --config /tmp/empty-osv.toml --all-packages --all-vulns --format json --output "$out" "${ref}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+            pk=$(jq '[.results[]?.packages[]?] | length' "${out}" 2>/dev/null) || pk=0
+            [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
+              '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
 
@@ -948,6 +968,7 @@ jobs:
           python3 bin/rescan-statement.py statement \
             --scanner "$TARGET_SCANNER" \
             --children /tmp/children-scanned.jsonl \
+            --expect-children "$(grep -c . /tmp/children.txt)" \
             --meta /tmp/scanner-meta \
             --vex .vex/fosterstack-cache.openvex.json \
             --scope-file /tmp/scan-scope.json \
