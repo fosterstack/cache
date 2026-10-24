@@ -782,7 +782,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "62e453e653c7b693a6c31f4667c8c99556485ed454d5571eafdb6d866b554f56",
+      "sha256": "4b6ad729091e1c4cdd03b8851c14a55d5c0a6b9c92d0aedeefe2d6215bc26d92",
       "tools": [
         "find",
         "python3",
@@ -2045,7 +2045,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "ab22b7ea9d1647f60b784f9c99b134db89f239e5f0b19e43eb4d373e565069a2",
+      "sha256": "17b8fd7cd291e117570cd12a78e0594bbe35af2511661e2b46d554fb6b35aa7a",
       "tools": [
         "at",
         "gh",
@@ -2088,7 +2088,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "9db200e54fd88015ed5dca3c9e1e53634b14fb12a55ebb959e2d609b645804c9",
+      "sha256": "7148c225516cd40d754c40f93b58e1c54c4af1ebea78c39b5ab644e7d9b2ebf2",
       "tools": [
         "at",
         "python3"
@@ -2279,7 +2279,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
+      "sha256": "d4a5b950ee47a116b69b199636d78085d77f2cf91b77dce0cf58f24ec658ca05",
       "exceptions": [
         {
           "rule": "script-name",

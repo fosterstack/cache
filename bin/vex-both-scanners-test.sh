@@ -114,9 +114,9 @@ exit 0
 SH
   chmod +x "$w/$1"
 }
-OKCDX='{"components":[{"name":"busybox","version":"1.36.0"}],"vulnerabilities":[]}'
+OKCDX='{"components":[{"name":"busybox","version":"1.36.0","purl":"pkg:generic/busybox@1.36.0"}],"vulnerabilities":[]}'
 OKJSON='{"matches":[],"ignoredMatches":[]}'
-fake_grype grype-badvulns '{"components":[{"name":"busybox","version":"1.36.0"}],"vulnerabilities":"not a list"}' "$OKJSON"
+fake_grype grype-badvulns '{"components":[{"name":"busybox","version":"1.36.0","purl":"pkg:generic/busybox@1.36.0"}],"vulnerabilities":"not a list"}' "$OKJSON"
 fake_grype grype-garbage "$OKCDX trailing-garbage" "$OKJSON"
 fake_grype grype-jsongarbage "$OKCDX" "$OKJSON trailing-garbage"
 fake_grype grype-matchesnolist "$OKCDX" '{"matches":"oops","ignoredMatches":[]}'
@@ -213,6 +213,22 @@ shape mixed 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[
 # the VEX itself still passes with the native JSON present: every ignoredMatches entry of the covered case is a VEX rule.
 out="$(GRYPE="$grype" bash "$gs" "sbom:$w/g-cov.json" cov-json 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "grype: VEX-covered busybox 1.37.0 still passes with the native JSON checked (every ignored entry is a VEX rule)" || bad "grype: covered case with the JSON check (rc $rc)" "$out"
+
+# rc-5a C (astra B3): the package count is the components that carry a package URL; files, which grype also lists as components (946 of 965 on a real
+# image), are not packages. A file-only inventory is 0 packages = did not run (row 53), never a pass.
+fake_grype grype-fileonly '{"components":[{"type":"file","name":"/usr/lib/f0"},{"type":"file","name":"/usr/lib/f1"}],"vulnerabilities":[]}' "$OKJSON"
+fake_grype grype-emptypurl '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":""}],"vulnerabilities":[]}' "$OKJSON"
+fake_grype grype-nullpurl '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":null}],"vulnerabilities":[]}' "$OKJSON"
+fake_grype grype-filesandone '{"components":[{"type":"file","name":"/usr/lib/f0"},{"type":"file","name":"/usr/lib/f1"},{"type":"library","name":"busybox","version":"1.36.0","purl":"pkg:generic/busybox@1.36.0"}],"vulnerabilities":[]}' "$OKJSON"
+fake_grype grype-numpurl '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":7},{"type":"library","name":"x","purl":{}},{"type":"library","name":"y","purl":[]},{"type":"library","name":"z","purl":true}],"vulnerabilities":[]}' "$OKJSON"
+for g in grype-fileonly grype-emptypurl grype-nullpurl grype-numpurl; do
+  out="$(GRYPE="$w/$g" bash "$here/grype-scan.sh" "sbom:$w/does-not-matter.json" "$g" 2>&1)"; rc=$?
+  [ "$rc" -eq 2 ] && grep -q "$g: 0 packages" <<<"$out" && grep -q "0 packages in $g.*did not run" <<<"$out" \
+    && ok "grype: $g is 0 packages (components without a package URL are not packages), exit 2" || bad "grype: $g (rc $rc)" "$out"
+done
+out="$(GRYPE="$w/grype-filesandone" bash "$here/grype-scan.sh" "sbom:$w/does-not-matter.json" filesandone 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "filesandone: 1 packages, 0 finding" <<<"$out" \
+  && ok "grype: two files and one package are 1 package, and the scan passes" || bad "grype: files and one package (rc $rc)" "$out"
 
 echo "----"
 echo "vex-both-scanners: ${pass} passed, ${fail} failed"

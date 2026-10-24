@@ -1259,6 +1259,7 @@ M = {   # name -> [(old, new), ...]; each old must occur exactly once in the cop
  "ba-sha256sum":  [('got=$("$SHA256SUM" ', 'got=$(sha256sum ')],
  "ba-python3":    [('"$PY3" -I -B bin/build-apk-helper.py sealed-env', 'python3 -I -B bin/build-apk-helper.py sealed-env')],
  "ba-git":        [('headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null)', 'headrev=$(git -C "$src" rev-parse HEAD)')],
+ "ba-git-excl":   [('excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || die', 'excl=$(git -C "$src" rev-parse --path-format=absolute --git-path info/exclude) || die')],
  "ba-go":         [('"$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off "$GO_TOOL" version -m', '"$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off go version -m')],
  "ba-env-go":     [('gov=$("$ENVBIN" GOTOOLCHAIN=local', 'gov=$(env GOTOOLCHAIN=local')],
  "ba-openssl":    [('tmp=$(mktemp -d)\n', 'openssl version >/dev/null\ntmp=$(mktemp -d)\n')],      # inserted call: the script has no openssl site of its own
@@ -1298,6 +1299,7 @@ for m in ba-brace ba-brace-set ba-quote ba-ansic ba-printf ba-default ba-append 
   rp_refused $m melange "melange assembled by $m is not found"; done
 # git: its own diagnostic is hidden by 2>/dev/null in the production line, so the mutant removes the redirect: the name is then reported
 rp_refused ba-git git "git called by bare name is not found"
+rp_refused ba-git-excl git "git called by bare name in the exclude-file lookup is not found"
 # go and env at the go call site: the production line captures the diagnostic into a file and treats exit 127 as "no toolchain on PATH". In CI that
 # is fatal, outside CI the run says 'not verified': either way the stub go is never reached and the run is not the control's.
 for m in ba-go ba-env-go; do
@@ -1310,7 +1312,7 @@ done
 # the restriction is what bites: the same four direct-call mutants COMPLETE when the search path also holds sudo, sha256sum, python3 and git
 restricted_path_dir "$work/rp-open" $RP_COREUTILS python3 git && ln -s "$stubs/uname" "$work/rp-open/uname" && ln -s "$rpw/sudo" "$work/rp-open/sudo" && ln -s "$rpw/sha256sum" "$work/rp-open/sha256sum" \
   || { echo "FIXTURE SETUP FAILED: open path"; exit 1; }
-for m in ba-sudo ba-sha256sum ba-python3 ba-git; do
+for m in ba-sudo ba-sha256sum ba-python3 ba-git ba-git-excl; do
   o=$(mo); RP_PATH="$work/rp-open" rp_build "$rpm/$m.sh" "$o"
   t "AC9" "$m: with the tool on the search path the same mutant completes (so the restricted path is what makes it fail)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log'"
 done
