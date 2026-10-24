@@ -4055,6 +4055,88 @@ t0=time.time(); R._valid_proposal(dict(good,keys=[{'scanner':'a','finding_id':'a
 del os.environ['AUDITOR_MODEL_PRIMARY']
 print('OK' if ok and fast and not rej and not cfg_rej else 'BAD kept=%r cfg=%r ok=%s'%(rej,cfg_rej,ok))" 2>/dev/null | tail -1)"
 eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and refuses every mis-shaped or name-bearing one" "$r12p"
+# rc-5b fix 13 (R6, Fable): a reviewed file on main that is PRESENT but unreadable or malformed is a stop (main() returns 3), never a guess: an unreadable VEX must not become "no
+# statements" (the PR would delete every statement) and an unreadable accepted-items file must not renew every time box. A missing file is the first run and stays allowed.
+# Every case drives main() and records every git/gh call: a stop makes NO mutating call (no issue, no PR, no git beyond reads).
+cat > "$WORK/r6main.py" <<'PP'
+import json,os,sys,io,contextlib,importlib.util,tempfile,subprocess as _sp
+FX,variant=sys.argv[1],sys.argv[2]
+tmp=tempfile.mkdtemp(); ws=tmp+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex
+from unittest.mock import patch
+c="CVE-2099-9300"; purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+old=vex.doc(c,"affected","2026-08-24T00:00:00Z",action="tracked",subcomponents=[purl])
+vp=ws+"/.vex/fosterstack-cache.openvex.json"; ap=ws+"/.auditor/accepted-items.json"
+good_items={"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","threshold":"below","owner_issue":None,"vex_id":old["statements"][0]["@id"],"expiry":"2026-12-31"}]}
+def write_good():
+    json.dump(old,open(vp,"w")); json.dump(good_items,open(ap,"w"))
+write_good()
+corrupt_at="start"
+if variant=="vex-malformed": open(vp,"w").write("{not json")
+elif variant=="vex-notobject": open(vp,"w").write("[]")
+elif variant=="vex-null-statement": json.dump(dict(old,statements=[None]),open(vp,"w"))
+elif variant=="items-malformed": open(ap,"w").write("{not json")
+elif variant=="items-notobject": open(ap,"w").write("[]")
+elif variant=="items-null-entry": json.dump({"accepted_items":[good_items["accepted_items"][0],None]},open(ap,"w"))
+elif variant=="items-scalar-entry": json.dump({"accepted_items":[3]},open(ap,"w"))
+elif variant=="items-bad-fields": json.dump({"accepted_items":[{"cve":"CVE-A","expiry":"2026-01-01","scope_purls":["p"],"not_pullable":True},{"cve":"CVE-B","expiry":"2026-01-01","scope_purls":5}]},open(ap,"w"))
+elif variant=="items-mixed-expiry": json.dump({"accepted_items":[dict(good_items["accepted_items"][0],expiry=5),dict(good_items["accepted_items"][0],expiry="2026-12-31")]},open(ap,"w"))
+elif variant=="vex-bad-vulnerability": json.dump(dict(old,statements=[dict(old["statements"][0],vulnerability="x")]),open(vp,"w"))
+elif variant=="vex-dir": os.remove(vp); os.mkdir(vp)
+elif variant=="items-dir": os.remove(ap); os.mkdir(ap)
+elif variant=="items-bad-at-delivery": corrupt_at="delivery"
+elif variant=="missing": os.remove(vp); os.remove(ap)
+elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
+elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
+calls=[]
+def fake(cmd,*a,**kw):
+    calls.append(list(cmd))
+    if cmd and cmd[0]=="git":
+        if corrupt_at=="delivery" and cmd[1:2]==["checkout"]: open(ap,"w").write("{bad")
+        if corrupt_at=="reopened" and cmd[1:2]==["checkout"]:
+            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write("{bad")
+        return _sp.CompletedProcess(cmd,0,"","")
+    if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+    return _sp.run(cmd,*a,**kw)
+mp=FX+"/manifest-mediumnofix.json"
+R.cli.ARGS[:]=["--manifest",mp,"--out",tmp+"/out","--dry-run","false","--today","2026-09-24","--adjudicator","offline-probe"]
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    try: rc=R.main()
+    except Exception as e: rc="EXC %s"%type(e).__name__
+try: os.chmod(ws+"/.vex",0o755)
+except OSError: pass
+mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","pr","create"]) or x[:2] in (["git","push"],["git","commit"]) or x[:2]==["gh","api"]]
+print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=="delivery" else ""))
+PP
+begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
+is_root=0; [ "$(id -u)" = 0 ] && is_root=1
+for variant in vex-malformed vex-notobject vex-null-statement items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable or malformed reviewed input ($variant) stops the run: main() returns 3 and makes no mutating git/gh call" "$r6"
+done
+if [ "$is_root" = 0 ]; then
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" vex-parent-noaccess 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable PARENT folder of a reviewed file (EACCES on lstat) is a stop, not 'absent'" "$r6"
+else ok; fi
+r6="$("$PY" "$WORK/r6main.py" "$FXRUN" reopened-bad-at-delivery 2>/dev/null | tail -1)"
+eq "$r6" "rc=3 mutating=0" && ok || no "a reopened-expired.json this run wrote that does not parse stops the run (exit 3) at every reader, nothing delivered" "$r6"
+r6g="$("$PY" - <<'PP' 2>&1 | tail -1
+import os,sys,tempfile,importlib.util
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+t=tempfile.mkdtemp(); os.makedirs(t+"/vex")
+open(t+"/vex/CVE-2099-1.openvex.json","w").write("{bad")
+try: R._consolidate(t,"2026-09-24T00:00:00Z"); print("RAN")
+except R.ReviewedInputInvalid: print("STOP")
+PP
+)"
+eq "$r6g" "STOP" && ok || no "a per-finding VEX file this run wrote that does not parse stops _consolidate instead of producing 'statements: []'" "$r6g"
+r6="$("$PY" "$WORK/r6main.py" "$FXRUN" items-bad-at-delivery 2>/dev/null | tail -1)"
+case "$r6" in rc=3\ mutating=0*) ok ;; *) no "a reviewed input that stops parsing only in the delivery checkout also stops the run (exit 3), not an ordinary staging error" "$r6" ;; esac
+r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
+case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
