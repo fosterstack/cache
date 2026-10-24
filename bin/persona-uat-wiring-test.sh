@@ -1022,8 +1022,9 @@ result(not good, "a clean source set is accepted by the source judge" + ("" if n
 def synth_steps(weekly):
     pre = ""
     cos = [{"uses": "actions/checkout@" + "0" * 40}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
-    pip = ("python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r "
-           + pre + "bin/persona-uat-requirements.txt")
+    words = ["python3", "-m", "pip", "install", "--quiet", "--break-system-packages", "--require-hashes",
+             "--only-binary=:all:", "-r", pre + "bin/persona-uat-requirements.txt"]
+    pip = " ".join(words)
     return pre, cos + [{"run": KIND_RUN}, {"run": PIN_PIP_RUN}, {"run": pip},
                        {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
