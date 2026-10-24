@@ -124,27 +124,69 @@ def _gh_failed(r):
     return True
 
 
-def _gh_pages(path):
-    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line)."""
+_NULL = type(None)
+
+
+def _shaped(value, need, what):
+    """The one way to read a JSON object answer: `need` is ((key, type or tuple of types), ...), given by every caller (no default). An answer that is not an object,
+    or lacks a needed key, or holds it as another type, is an answer we cannot read (CouldNotLook): never 'nothing there'. Keys a caller reads with .get are the
+    optional ones; each of those is type-checked where it is used."""
+    if not isinstance(value, dict):
+        raise CouldNotLook(f"{what} is not a JSON object")
+    for key, typ in need:
+        types = typ if isinstance(typ, tuple) else (typ,)
+        got = value.get(key, _FAILED)
+        if got is _FAILED or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
+            raise CouldNotLook(f"{what} lacks {key!r} of the expected type")
+    return value
+
+
+def _dicts(value, what, need):
+    """A list of JSON objects each holding every key of `need` (CouldNotLook otherwise): an element of another shape is an answer we cannot read."""
+    if not isinstance(value, list):
+        raise CouldNotLook(f"{what} is not a list of JSON objects")
+    for x in value:
+        _shaped(x, need, what)
+    return value
+
+
+def _gh_pages(path, rows):
+    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line); every row must hold the keys of `rows`."""
     r = _gh_run(["gh", "api", "--paginate", path, "--jq", ".[]"], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
     try:
-        return [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
+        got = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
     except ValueError:
-        return None
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _gh_api(path):
+def _gh_api(path, need):
+    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
     r = _gh_run(["gh", "api", path], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
     try:
-        return json.loads(r.stdout)
+        got = json.loads(r.stdout)
     except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _shaped(got, need, f"GitHub API {path.split('?')[0]}")
+
+
+def _gh_list(path, rows):
+    """One page of a GitHub list answer, every row holding the keys of `rows`; None only for a plain miss (404)."""
+    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
+    if r.returncode:
+        _gh_failed(r)
         return None
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
 _FAILED = object()
@@ -159,26 +201,13 @@ def _fetch_json(url, timeout=30):
         return _FAILED
 
 
-def _http_json(url, timeout=30):
-    d = _fetch_json(url, timeout)
-    return None if d is _FAILED else d
-
-
-def _http_dict(url, timeout=30):
-    """_http_json for an endpoint that answers with a JSON object: valid JSON of another shape is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+def _http_dict(url, need, timeout=30):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked;
+    valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
     d = _fetch_json(url, timeout)
     if d is _FAILED:
         return None
-    if not isinstance(d, dict):
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with something that is not a JSON object")      # a JSON null too: a decoded null is not 'nothing there'
-    return d
-
-
-def _dicts(value, what):
-    """A list of JSON objects, or CouldNotLook: an element of another shape is an answer we cannot read."""
-    if not isinstance(value, list) or not all(isinstance(x, dict) for x in value):
-        raise CouldNotLook(f"{what} is not a list of JSON objects")
-    return value
+    return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
 
 
 def _http_json_strict(url, timeout=30):
@@ -204,10 +233,13 @@ TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version
 }
 
 
+_RELEASE = (("published_at", (str, _NULL)), ("draft", bool))      # a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
+
+
 def _release_time(repo, tags):
     for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE)
+        if rel and rel["published_at"] and not rel["draft"]:
             return rel["published_at"]
     return None
 
@@ -250,8 +282,16 @@ def _tag_for_commit(repo, sha):
 
 
 def _commit_date(repo, sha):
-    c = _gh_api(f"repos/{repo}/commits/{sha}")
-    return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
+    c = _gh_api(f"repos/{repo}/commits/{sha}", (("commit", dict),))
+    if c is None:
+        return None
+    committer = c["commit"].get("committer")      # optional: a commit without a committer has no date
+    if committer is None:
+        return None
+    date = _shaped(committer, (), "the commit's committer").get("date")
+    if date is not None and not isinstance(date, str):
+        raise CouldNotLook("GitHub API commit answered with a committer date that is not text")
+    return date
 
 
 def _go_module(path, version, strict=False):
@@ -318,11 +358,13 @@ def observed():
     repo = os.environ.get("GITHUB_REPOSITORY")
     state = None
     if repo:
-        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100") or {}
-        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
+        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+        wruns = _dicts(data["workflow_runs"], "the scheduled workflow runs", (("id", int),))
+        runs = sorted((r for r in wruns if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
         for run in runs[:30]:
-            arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
-            art = next((x for x in arts if x.get("name") == tobs.STATE_NAME and not x.get("expired")), None)
+            adata = _gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts", (("artifacts", list),)) or {"artifacts": []}
+            arts = _dicts(adata["artifacts"], "the artifacts of a scheduled run", (("id", int), ("name", str)))
+            art = next((x for x in arts if x["name"] == tobs.STATE_NAME and not x.get("expired")), None)
             if art:
                 raw = _gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")
                 try:
@@ -356,17 +398,19 @@ def _pr_clock(item, root, base, head="HEAD"):
             continue
     if not first:
         return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
-    times = [x["created_at"] for x in runs if x.get("created_at")]
+    rdata = _gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+    runs = _dicts(rdata["workflow_runs"], "the workflow runs of the first commit", (("created_at", (str, _NULL)),))
+    times = [x["created_at"] for x in runs if x["created_at"]]
     r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:
         for line in r2.stdout.splitlines():
             try:
-                c = json.loads(line).get("created_at")
+                row = json.loads(line)
             except ValueError:
-                continue
+                raise CouldNotLook("GitHub API check-suites answered with a line that is not JSON")
+            c = _shaped(row, (("created_at", (str, _NULL)),), "a check suite of the first commit")["created_at"]
             if c:
                 times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
     return min(times) if times else None
@@ -374,8 +418,9 @@ def _pr_clock(item, root, base, head="HEAD"):
 
 def _release_with_assets(repo, tags):
     for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE + (("assets", list),))
+        if rel and rel["published_at"] and not rel["draft"]:
+            _dicts(rel["assets"], "the assets of a release", ())      # name, created_at and updated_at are optional: an asset without a name matches no download, so the release lends no proof (the pin then fails as unprovable)
             return rel
     return None
 
@@ -416,10 +461,8 @@ def live_proofs(item, root, base=None, head="HEAD"):
                 out.append((t, "go-index"))
     elif item.kind == "package":
         name = item.name.split("/", 1)[1]
-        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
-        if d is not None and "urls" not in d:
-            raise CouldNotLook("pypi.org answered without the list of release files")      # {} is an answer we cannot read, not a release with no files
-        ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {}).get("urls", []), "pypi urls") if u.get("upload_time_iso_8601")]
+        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json", (("urls", list),))
+        ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {"urls": []})["urls"], "pypi urls", ()) if u.get("upload_time_iso_8601")]      # the upload time is optional, text when there
         if not all(isinstance(x, str) for x in ups):
             raise CouldNotLook("pypi.org answered with an upload time that is not text")
         if ups:
@@ -440,7 +483,7 @@ def _registry_push(item):
         owner, _, pkg = name[len("ghcr.io/"):].partition("/")
         for scope in ("orgs", "users"):
             for page in (1, 2, 3):
-                vs = _gh_api(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}")
+                vs = _gh_list(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}", (("name", str), ("created_at", (str, _NULL))))
                 if not vs:
                     break
                 for v in vs:
@@ -452,14 +495,15 @@ def _registry_push(item):
         ns, repo = parts[-2], parts[-1]
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
-            d = _http_dict(url)
+            d = _http_dict(url, (("results", list),))
             if d is None:
                 return None
-            if "results" not in d:
-                raise CouldNotLook("hub.docker.com answered without the list of tags")      # {} is an answer we cannot read, not a repository with no tags
-            for tag in _dicts(d["results"], "hub.docker.com results"):
-                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images")):
-                    return tag.get("tag_last_pushed")
+            for tag in _dicts(d["results"], "hub.docker.com results", ()):
+                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images", ())):      # digest, images and tag_last_pushed are optional
+                    pushed = tag.get("tag_last_pushed")
+                    if pushed is not None and not isinstance(pushed, str):
+                        raise CouldNotLook("hub.docker.com answered with a push time that is not text")
+                    return pushed
             url = d.get("next")
             if not url:
                 break

@@ -345,7 +345,7 @@ CASE="a tool's release proof is the newest asset time: an asset replaced yesterd
 check python3 - "$chk" "$stubpy" "$work" <<'PY'
 import importlib.util, json, os, subprocess, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-json.dump({"repos/aquasecurity/trivy/releases/tags/0.75.0": {"message": "x"}, "repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
+json.dump({"repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
            "assets": [{"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-10-04T00:00:00Z"}]}}, open(sys.argv[3] + "/map.json", "w"))
 os.environ["GH_MAP"] = sys.argv[3] + "/map.json"
 orig = subprocess.run

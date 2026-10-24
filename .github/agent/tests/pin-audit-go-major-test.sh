@@ -776,7 +776,7 @@ def slow(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd, kw.get("timeout") or 0)
 pa.subprocess.run = slow
 net = pa.LiveNet(["gh"], ".")
-try: net._gh_json("advisories/x", strict=True); raise AssertionError("no Fail")
+try: net._gh_json("advisories/x", need=(), strict=True); raise AssertionError("no Fail")
 except pa.Fail: pass
 try: pa.Gh("gh").run("api", "x"); raise AssertionError("no Fail")
 except pa.Fail: pass
@@ -897,8 +897,8 @@ os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 assert getattr(age, "GH_TIMEOUT", 0) > 0
 age.GH_TIMEOUT = 1
 t0 = time.time()
-for fn in (age._gh_pages, age._gh_api, age._gh_bytes):
-    try: fn("repos/x/y"); raise AssertionError(fn.__name__ + ": no CouldNotLook")
+for fn in (lambda p: age._gh_pages(p, ()), lambda p: age._gh_api(p, ()), age._gh_bytes):
+    try: fn("repos/x/y"); raise AssertionError("no CouldNotLook")
     except age.CouldNotLook: pass
 assert time.time() - t0 < 20, "the helpers waited for the hanging gh"
 os.remove(d + "/gh"); os.rmdir(d)
