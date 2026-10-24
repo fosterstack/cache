@@ -39,9 +39,9 @@ cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$
 "${GRYPE:-grype}" "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
 # A grype that failed before writing leaves a file that is empty or not one complete JSON document: that is 0 packages here ("did not run").
 if jq -e . "$cdx" >/dev/null 2>&1; then
-  # packages are the components that carry a package URL (pkg:<type>/<name>, not any string); grype also lists every file it catalogued as a component (946 of 965 on a real image), and a
+  # packages are the components that carry a package URL (pkg:deb/debian/glibc@2.36, not any string); grype also lists every file it catalogued as a component (946 of 965 on a real image), and a
   # file-only inventory is not a scan that ran (row 53; rc-5a C)
-  n=$(jq -e '[.components[]? | select((.purl | type) == "string" and (.purl | test("^pkg:[a-z][a-z0-9.+-]*/.")))] | length' "$cdx" 2>/dev/null) || n=0
+  n=$(jq -e '[.components[]? | select((.purl | type) == "string" and (.purl | startswith("pkg:") and contains("/")))] | length' "$cdx" 2>/dev/null) || n=0
   f=$(jq -e 'if .vulnerabilities == null then 0 elif (.vulnerabilities | type) == "array" then (.vulnerabilities | length) else error("vulnerabilities is not a list") end' "$cdx" 2>/dev/null) || f="?"
 else
   n=0; f="?"

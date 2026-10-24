@@ -240,9 +240,9 @@ def main(argv):
               '(expected {"sbom": {"bomFormat": "CycloneDX", ...}}) — did not run, not a clean pass')
         return 2
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-    # packages are the components that carry a package URL, pkg:<type>/<name>, not any string (the grype gate and the panel count the same way; files and an
+    # packages are the components that carry a package URL (pkg:deb/debian/glibc@2.36), not any string (the grype gate and the panel count the same way; files and an
     # operating-system component are not packages): none = the scanner looked at nothing (row 53)
-    n_pkg = sum(1 for c in comps if isinstance(c.get("purl"), str) and re.match(r"pkg:[a-z][a-z0-9.+-]*/.", c["purl"]))
+    n_pkg = sum(1 for c in comps if isinstance(c.get("purl"), str) and c["purl"].startswith("pkg:") and "/" in c["purl"])
     if not n_pkg:
         print(f"::error::inspector {label}: 0 packages inventoried — did not run (row 53), not a clean pass")
         return 2

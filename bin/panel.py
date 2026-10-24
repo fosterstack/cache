@@ -95,13 +95,14 @@ def load_vex(path):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
-_PACKAGE_URL = re.compile(r"pkg:[a-z][a-z0-9.+-]*/.")   # a package URL: scheme, type, slash, something after it (not any non-empty string)
+def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl" and a bare "pkg:" are not
+    return isinstance(purl, str) and purl.startswith("pkg:") and "/" in purl
 
 
 def _cdx_packages(doc):
     """Rule 3's package count: components that are packages (carry a package URL, pkg:<type>/<name>). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and isinstance(c.get("purl"), str) and _PACKAGE_URL.match(c["purl"])]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and _is_package_url(c.get("purl"))]
 
 
 def _purl_name_version(purl):
@@ -219,7 +220,8 @@ def read_grype(d):
 def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
-    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and isinstance(a.get("purl"), str) and _PACKAGE_URL.match(a["purl"])]
+    arts = [a for a in sbom.get("artifacts") or []
+            if isinstance(a, dict) and a.get("name") and _is_package_url(a.get("purl"))]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
