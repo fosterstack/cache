@@ -57,9 +57,9 @@ type Cache struct {
 	onEvict  func(key string, size int64)
 
 	// evictMu serializes eviction passes. Without it concurrent Puts each read
-	// a stale total and select the same LRU candidates, so onEvict fires many
-	// times for one real eviction and every extra pass is wasted I/O. Only the
-	// evict-and-recheck loop is serialized, not the blob write.
+	// a stale total and select the same LRU candidates, repeating the lookups
+	// and delete attempts for one real eviction. Only the evict-and-recheck
+	// loop is serialized, not the blob write.
 	evictMu sync.Mutex
 
 	// keyMu guards keys, the per-key locks that order a key's blob replace and
