@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 99 |
-| Acceptance criteria | 480 |
+| Active requirements | 100 |
+| Acceptance criteria | 486 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 469 |
+| ACs with mapped evidence | 475 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 47 |
+| Confidence: documented | 48 |
 | Confidence: implementation-only | 51 |
 
 ## Cache protocol
@@ -64,6 +64,7 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 | REQ-PROTO-003-AC3 | Given a key whose leaf segment starts with two dots; when it is stored and read; then it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path | component | yes | approved | 8 item(s) |
 | REQ-PROTO-003-AC4 | Given a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory; when the store is reconciled at startup; then the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path | component | yes | approved | 14 item(s) |
+| REQ-PROTO-003-AC5 | Given a key that was never stored whose path in the store is a directory, a symbolic link or any other file that is not a regular file (for example the key `ab` after the key `ab/ab` was stored), or a key whose path lies below a stored blob; when a client sends HEAD or GET for it, or the startup walk meets that path; then the answer is 404, never 200, and neither HEAD nor GET opens anything at that path; the walk reports no entry for it | component |  | approved | 11 item(s) |
 
 ### REQ-PROTO-004 — Method surface
 
@@ -1536,3 +1537,18 @@ When a required CI job of .github/workflows/ci.yml is split into parallel jobs t
 | REQ-CI-001-AC2 | Given the same workflow; when the gate job is read; then a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass | unit |  | approved | 1 item(s) |
 | REQ-CI-001-AC3 | Given any job of the split; when its keys are read; then no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step | unit |  | approved | 1 item(s) |
 | REQ-CI-001-AC4 | Given the pin-wiring judge; when it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened; then it fails for each of those mutations, and it accepts the real workflow | unit |  | approved | 1 item(s) |
+
+### REQ-CI-005 — A floored suite is run once, by the step that counts it
+
+Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the step that re-runs the suites of the floors file runs only those that no counting step runs.
+
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor); the suite guard (bin/suite-guard-run.py); the pin-wiring judge (pin-wiring-test.sh)*
+
+> A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that is not the file name of its PATH. The floors only rise as before.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CI-005-AC1 | Given a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no if, needs, strategy or continue-on-error can skip it), whose PATH is the one file of that name; when the floor check of the workflow run (`suite-guard-run.py all`) runs; then the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; any other suite is still run by `all`, and a counting line that is not the whole of its step is refused | unit |  | approved | 1 item(s) |
+| REQ-CI-005-AC2 | Given a counting step in ci.yml; when it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`; then `suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it | unit |  | approved | 2 item(s) |
+| REQ-CI-005-AC3 | Given a suite run by a counting step; when it loses cases (below its floor), prints no case count, or exits non-zero; then its step fails | unit |  | approved | 1 item(s) |
+| REQ-CI-005-AC4 | Given the suite guard's floors; when a pull request lowers or drops a floor; then the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised | unit |  | approved | 1 item(s) |

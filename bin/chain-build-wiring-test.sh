@@ -232,9 +232,20 @@ jobs:
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
+  sign-check:
+    needs: [build, check]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: check
+      records: ${{ needs.check.outputs.records }}
+      records-arm64: ${{ needs.check.outputs.records-arm64 }}
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [check, sign, sign-rebuild]
+    needs: [check, sign, sign-rebuild, sign-check]
     concurrency:
       group: release-publish
       cancel-in-progress: false
@@ -260,7 +271,7 @@ jobs:
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build, sign, rebuild, sign-rebuild, check, release]
+    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -604,7 +615,7 @@ hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
 hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
-hm fopen   "AC2 the step list is open" 'scanners|acceptance|runtime|arm64' '*'
+hm fopen   "AC2 the step list is open" 'release-verify' '*'
 hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value)' '| jq -r .value | tee /tmp/leak)'
 hm ffile "AC2 the token in a file again (the older form): a file under the runner temp folder while the command runs" \
@@ -624,8 +635,8 @@ hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads w
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
        '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in scanners|' \
-    'in snapshot-evil|scanners|'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
+    'in snapshot-evil|release-verify|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -663,7 +674,7 @@ lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded
 lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
 lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
 lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
-lm lrelease "WIT1 a non-building step in the list (Check and Release keep the keyless helper)" 'snapshot-rebuild)' 'snapshot-rebuild|release-sign)'
+lm lrelease "WIT1 a Release step in the list (Release keeps the keyless helper)" 'snapshot-rebuild|scanners' 'snapshot-rebuild|release-sign|scanners'
 lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
@@ -1180,15 +1191,15 @@ RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"
-REL_HEAD="  release:\n    if: $RELIF\n    needs: [check, sign, sign-rebuild]"
+REL_HEAD="  release:\n    if: $RELIF\n    needs: [check, sign, sign-rebuild, sign-check]"
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: [build, sign]' '  rebuild:\n    needs: [build, sign, check]' "rebuild must need exactly"
 gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: [build, sign]' '  check:\n    needs: [build, sign, rebuild]' "check must need exactly"
 # REQ-CHAIN-005-AC5 (Witness move): Rebuild and Check each need Build and Sign (they start from Build's record as Sign signed it) and run side by side.
 gr g2b "005-AC5 check starts without Sign (it would read an unsigned local record)" '  check:\n    needs: [build, sign]' '  check:\n    needs: build' \
        "check must need exactly"
 gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, sign]' '  check:\n    needs: sign' "check must need exactly"
-gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign]' "release must need exactly"
-gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign, rebuild]' "release must need exactly"
+gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, sign-check]' "release must need exactly"
+gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, rebuild, sign-check]' "release must need exactly"
 gr g3c "005-AC5 sign-rebuild does not wait for rebuild" '  sign-rebuild:\n    needs: [build, rebuild]' '  sign-rebuild:\n    needs: build' "sign-rebuild must need exactly"
 gr g3x1 "R2 (round 6) sign-rebuild drops the records input (it would sign whatever arrives under the artifact names)" '      records: ${{ needs.rebuild.outputs.records }}\n' '' "sign-rebuild must pass exactly"
 gr g3f "R2 (round 6) sign-rebuild takes its records from Build's output" 'records: ${{ needs.rebuild.outputs.records }}' 'records: ${{ needs.build.outputs.digests }}' "sign-rebuild must pass exactly"
@@ -1199,13 +1210,13 @@ gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n 
 gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: [build, sign]' \
        '  rebuild:\n    needs: [build, sign]\n    if: always()' "rebuild may not carry an if"
 gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: [build, sign]' "  check:\n    needs: [build, sign]\n    if: $GATE" "check may not carry an if"
-gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [check, sign, sign-rebuild]' \
+gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [check, sign, sign-rebuild, sign-check]' \
        "release must carry exactly the if"
-gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [check, sign, sign-rebuild]' \
+gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [check, sign, sign-rebuild, sign-check]' \
        "release must carry exactly the if"
-gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [check, sign, sign-rebuild]" \
+gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [check, sign, sign-rebuild, sign-check]" \
        "release must carry exactly the if"
-gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [check, sign, sign-rebuild]" \
+gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [check, sign, sign-rebuild, sign-check]" \
        "release must carry exactly the if"
 gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: [build, sign]' \
        '  rebuild:\n    continue-on-error: true\n    needs: [build, sign]' "keys outside"
@@ -1223,7 +1234,7 @@ gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-
 gr g10 "005-AC5 secrets: inherit on a stage call" 'uses: ./.github/workflows/stage-reproducibility.yml' \
        'uses: ./.github/workflows/stage-reproducibility.yml\n    secrets: inherit' "keys outside"
 gr g11 "005-AC5 the Rebuild job is not named rebuild (a failure would not name the stage)" '  rebuild:' '  reproducibility:' "rebuild is missing"
-gr g12 "005-AC5 release without sign" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign-rebuild]' "release must need exactly"
+gr g12 "005-AC5 release without sign" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign-rebuild]' "release must need exactly"
 FAST='  release-fast:\n    needs: [build, sign]\n    uses: ./.github/workflows/stage-promote.yml\n    secrets: inherit\n  decide:'
 EARLY='  publish-early:\n    needs: [build, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -1262,8 +1273,8 @@ HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissi
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
 gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
     "patch-notes must need exactly"
-gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, release]" \
-    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, release]" "may not name an environment"
+gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" \
+    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
 gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
        "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
@@ -1296,7 +1307,7 @@ gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mod
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
 gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
-       "    needs: [build, sign, rebuild, sign-rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
+       "    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
 # REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly three non-chain jobs: the two that federate into the dedicated live-test accounts and persona-uat (the release candidate's persona run, REQ-UAT-001-AC1: needs Build only, publishes nothing).
@@ -1521,21 +1532,21 @@ for tag in fixture real; do
     done
     continue
   fi
-  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-scanners/scanners-collection.json" ] && grep -Fq -- '--step scanners' <<< "$calls" \
+  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && [ -f "$d/witness-release-verify/release-verify-collection.json" ] && grep -Fq -- '--step release-verify' <<< "$calls" \
      && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
     ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
   else
     bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-scanners/scanners-collection.json" ] && [ ! -e "$d/digests.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ] && [ ! -e "$d/digests.json" ]; then
     ok "AC2 $tag helper: a command that outlives the (test) timeout fails the job and leaves no record and no digests.json"
   else
-    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-scanners" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
+    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-release-verify" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners WRAPPED_RC=3)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-scanners/scanners-collection.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify WRAPPED_RC=3)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ]; then
     ok "AC2 $tag helper: a failing command fails the job and leaves no record"
   else
     bad "AC2 $tag helper: failing command -> rc=$rc"
@@ -1568,7 +1579,7 @@ for tag in fixture real; do
   else
     bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
   fi
-  for other in release-publish release-assets scanners; do
+  for other in release-publish release-assets release-postverify; do
     helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
     if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
       ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
@@ -1590,14 +1601,14 @@ for tag in fixture real; do
   else
     bad "AC2 $tag helper: unknown step -> rc=$rc calls=$calls"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
   if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep -q '^::add-mask::' < <(grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed") \
      && ! grep -q SENTINEL-BEARER <<< "$printed"; then
     ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
   else
     bad "AC2 $tag helper: the token was printed more than in the add-mask line, or the bearer leaked"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify)
   if [ "$rc" = 0 ] && [ "$(cat "$d/signer-token.txt" 2> /dev/null)" = FAKE-JWT-TOKEN-VALUE ] && [ -f "$d/tokfiles-while-running.txt" ] \
      && [ ! -s "$d/tokfiles-at-start.txt" ] && [ ! -s "$d/tokfiles-while-running.txt" ] && [ -z "$(ls "$d/tmp" 2> /dev/null)" ] \
      && ! grep -q FAKE-JWT-TOKEN-VALUE "$d/wrapped-env.txt"; then
@@ -2965,7 +2976,46 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=1031
+# REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/,
+# admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
+# exactly those nine paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json; Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
+TREE=$(mktemp -d)/tree.sh
+{ echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
+tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+  mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > "$f/f"; done; echo '{}' > admission.json ); echo "$d"; }
+d=$(tree_repo)
+[ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: the job's directories make the tree dirty without the block (the cause of vcs.modified=true)" || bad "REQ-BUILDAPK-001-AC4 tree: the cause did not reproduce"
+trc=127; if [ -f "$TREE" ]; then trc=0; bash "$TREE" "$d" > /dev/null 2>&1 || trc=$?; fi
+[ "$trc" = 0 ] && ok "REQ-BUILDAPK-001-AC4 tree: the block runs in a git checkout (exit 0)" || bad "REQ-BUILDAPK-001-AC4 tree: the block did not run (exit $trc)"
+[ -z "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with the block the job paths no longer dirty the tree" || bad "REQ-BUILDAPK-001-AC4 tree: the tree is still dirty after the block: $(git -C "$d" status --porcelain | tr '\n' ' ')"
+if [ -f "$TREE" ]; then bash "$TREE" "$d" > /dev/null 2>&1; fi
+[ "$(grep -c . "$d/.git/info/exclude")" = "$(sort -u "$d/.git/info/exclude" | grep -c .)" ] && ok "REQ-BUILDAPK-001-AC4 tree: running the block twice adds no line twice" || bad "REQ-BUILDAPK-001-AC4 tree: the block is not idempotent"
+echo s > "$d/stray.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a stray untracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a stray file is hidden"
+rm "$d/stray.go"; mkdir -p "$d/pkg/archive" && echo s > "$d/pkg/archive/x.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a nested archive/ below the root still makes the tree dirty (the exclusions are anchored)" || bad "REQ-BUILDAPK-001-AC4 tree: a nested archive/ is hidden"
+rm -r "$d/pkg"; echo b >> "$d/tracked"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a modified tracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a modified tracked file is hidden"
+n=$(mktemp -d); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
+[ "$nrc" = 1 ] && [ -z "$(ls -A "$n")" ] && ok "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block refuses (exit 1) and writes nothing" || bad "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block did not refuse with exit 1 and write nothing (exit $nrc)"
+r=$(mktemp -d); ( cd "$r" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+  mkdir build-in witness-build witness-rapk && for f in build-in witness-build witness-rapk; do echo x > "$f/f"; done; echo '{}' > policy.json; mkdir archive out witness-apk host-tools; echo x > archive/f; echo x > out/f; echo x > witness-apk/f; echo x > host-tools/f; echo '{}' > admission.json )
+[ -n "$(git -C "$r" status --porcelain)" ] && bash "$TREE" "$r" > /dev/null 2>&1 && [ -z "$(git -C "$r" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout (build-in/, witness-build/, witness-rapk/, policy.json beside the Build paths) is clean after the block" || bad "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout is still dirty after the block: $(git -C "$r" status --porcelain | tr '\n' ' ')"
+f=$(mktemp -d); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
+bash "$TREE" "$f" > /dev/null 2>&1; [ -z "$(git -C "$f" status --porcelain)" ] && [ "$(head -1 "$f/.git/info/exclude")" = "# local excludes" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline keeps its last line and still takes the patterns" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline swallowed a pattern: $(head -3 "$f/.git/info/exclude" | tr '\n' '|')"
+g=$(mktemp -d); ( cd "$g" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir out && echo x > out/f && printf ' /out/\n' > .git/info/exclude )
+bash "$TREE" "$g" > /dev/null 2>&1; [ -z "$(git -C "$g" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' (a different pattern to git) is not taken for /out/, and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' left the tree dirty: $(git -C "$g" status --porcelain | tr '\n' ' ')"
+m=$(mktemp -d); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
+bash "$TREE" "$m" > /dev/null 2>&1; [ -z "$(git -C "$m" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the block makes it and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the tree is dirty or the block failed: $(git -C "$m" status --porcelain | tr '\n' ' ')"
+n=$(mktemp -d); ( cd "$n" && git init -q && rm -rf .git/info && echo x > .git/info )
+nrc=0; nerr=$(bash "$TREE" "$n" 2>&1 >/dev/null) || nrc=$?
+[ "$nrc" = 1 ] && case "$nerr" in *"the exclude file"*) true ;; *) false ;; esac && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block exits 1 and names the exclude file" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block did not exit 1 naming the exclude file (rc=$nrc: $nerr)"
+python3 - << 'PY' && ok "REQ-BUILDAPK-001-AC4 tree: build-apk.sh holds the exclusion block once, before the sealed melange call" || bad "REQ-BUILDAPK-001-AC4 tree: the exclusion block is missing, repeated or after the sealed melange call"
+t = open("bin/build-apk.sh").read().splitlines()
+b = [i for i, l in enumerate(t) if l == "# tree-exclude begin"]
+e = [i for i, l in enumerate(t) if l == "# tree-exclude end"]
+m = [i for i, l in enumerate(t) if l.startswith('melange_bin=')]
+assert len(b) == 1 and len(e) == 1 and b[0] < e[0] < m[0]
+PY
+grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange.yaml && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
+EXPECT=1046
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
