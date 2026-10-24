@@ -1057,9 +1057,9 @@ rm -rf "$work/keep-p"; cp -R "$fx/images/production" "$work/keep-p"; rm -rf "$fx
 want_fail "AC5 F1 a valid OCI layout that is not Build's production image (digests.json intact) is refused naming the image before the suite or docker" image-production check-acceptance.sh gradle --digests digests.json --images images --out out
 if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind the refused production layout"; else bad "AC5 F1 docker ran: $(head -2 "$work/log" | tr '\n' '|')"; fi
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
-# ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
+# ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed-local.sh (Check's four steps hold no identity token; REQ-REL-011-AC1) and its 9-minute cap -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
-cp "$root/bin/witnessed.sh" "$root/bin/loopback-get.sh" "$hw/bin/" 2> /dev/null || true
+cp "$root/bin/witnessed-local.sh" "$hw/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
 FXD_1="$hw/fakebin/curl"
 cat > "$FXD_1" <<'EOF'
@@ -1076,35 +1076,42 @@ cat > "$hw/fakebin/witness" <<'EOF'
 #!/usr/bin/env bash
 echo "witness $*" >> "$HW_ARGV"
 out=""; a=("$@"); for i in "${!a[@]}"; do [ "${a[$i]}" = -o ] && out=${a[$((i + 1))]}; [ "${a[$i]}" = -- ] && { cmd=("${a[@]:$((i + 1))}"); break; }; done
-for i in "${!a[@]}"; do [ "${a[$i]}" = --signer-fulcio-token-path ] && { [ "$(cat "${a[$((i + 1))]}")" = fake-token-value ] || exit 9; }; done
+for i in "${!a[@]}"; do [ "${a[$i]}" = --signer-file-key-path ] && { [ -s "${a[$((i + 1))]}" ] || exit 9; }; done
+echo "tokenvars=[${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}${ACTIONS_ID_TOKEN_REQUEST_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${ACTIONS_RUNTIME_URL:-}${SIGSTORE_ID_TOKEN:-}]" >> "$HW_ARGV"
 "${cmd[@]}" || exit $?
 printf '{"fake":"record"}' > "$out"
+EOF
+cat > "$hw/fakebin/openssl" <<'EOF'
+#!/usr/bin/env bash
+# openssl genpkey -algorithm ed25519 -out FILE (the local ed25519 build of the test host may lack ed25519): write a key-shaped file
+[ "$1 $2 $3 $4" = "genpkey -algorithm ed25519 -out" ] && [ $# = 5 ] || { echo "fake openssl: unexpected arguments: $*" >&2; exit 64; }
+printf 'fake-key' > "$5"
 EOF
 chmod +x "$hw/fakebin/"*
 hrun() { # hrun [VAR=val...] -- STEP SCRIPT ARGS...  (runs in the helper tree, fakes first on PATH)
   local env=(); while [ "$1" != -- ]; do env+=("$1"); shift; done; shift; rc=0
   out=$( (cd "$hw" && env "${env[@]}" PATH="$hw/fakebin:$PATH" HW_LOG="$work/hwlog" HW_ARGV="$work/hwargv" RUNNER_TEMP="$hw/tmp" \
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://x/?a=b" bash bin/witnessed.sh "$@") 2>&1) || rc=$?
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://x/?a=b" ACTIONS_RUNTIME_TOKEN=rt ACTIONS_RUNTIME_URL="https://x/rt" SIGSTORE_ID_TOKEN=st bash bin/witnessed-local.sh "$@") 2>&1) || rc=$?
 }
 reset_h() { rm -rf "$hw"/witness-*; : > "$work/hwlog"; : > "$work/hwargv"; }
 reset_h; hrun X=1 -- scanners bin/step.sh scanners
-h_ok=0; [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.json" ] && h_ok=1
-if [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.json" ] && grep -q '^step scanners' "$work/hwlog"; then ok "AC11 the helper runs the script with its arguments under Witness and writes witness-scanners/scanners-collection.json (PR 2's naming)"; else bad "AC11 helper normal run -> rc=$rc ${out:0:140}"; fi
+h_ok=0; [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.local.json" ] && h_ok=1
+if [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.local.json" ] && grep -q '^step scanners' "$work/hwlog"; then ok "AC11 the helper runs the script with its arguments under Witness and writes witness-scanners/scanners-collection.local.json (PR 2's naming)"; else bad "AC11 helper normal run -> rc=$rc ${out:0:140}"; fi
 if [ "$(grep -c '^timeout ' "$work/hwlog")" = 1 ] && grep -qx 'timeout -k 20 540' "$work/hwlog"; then ok "AC11 the wrapped command is run through exactly one timeout of 540 seconds (9 minutes) with a kill-after of 20 seconds"; else bad "AC11 the helper must run the command through exactly one 'timeout -k 20 540': $(tr '\n' ' ' < "$work/hwlog")"; fi
-if grep -q -- '--step scanners' "$work/hwargv" && grep -q -- '-o witness-scanners/scanners-collection.json' "$work/hwargv" && grep -q -- '-t https://timestamp.sigstore.dev/api/v1/timestamp' "$work/hwargv" \
-   && grep -q -- '--env-filter-sensitive-vars' "$work/hwargv" && ! grep -Eq -- '-a [a-z,-]*(github|slsa)' "$work/hwargv"; then ok "AC9 the helper gives Witness the step name, the record path, the Sigstore timestamp authority and the environment filter, and never the github or slsa attestor"; else bad "AC9 witness argv: $(cat "$work/hwargv" | cut -c1-200)"; fi
-if [ "$h_ok" = 1 ] && ! grep -rq 'fake-token-value' "$work/hwargv" "$work/hwlog" "$hw/witness-records" 2> /dev/null; then ok "AC9 the token value is in no argument, log or record (Witness reads it once through a process substitution)"; else bad "AC9 the token value leaked into the argv, log or record"; fi
+if grep -q -- '--step scanners' "$work/hwargv" && grep -q -- '-o witness-scanners/scanners-collection.local.json' "$work/hwargv" && grep -q -- '--signer-file-key-path' "$work/hwargv" \
+   && grep -q -- '--env-filter-sensitive-vars' "$work/hwargv" && ! grep -Eq -- '-a [a-z,-]*(github|slsa)' "$work/hwargv" && ! grep -q -- 'fulcio' "$work/hwargv"; then ok "AC9 the helper gives Witness the step name, the local record path, the throwaway key and the environment filter, and never the github or slsa attestor or a Fulcio signer"; else bad "AC9 witness argv: $(cat "$work/hwargv" | cut -c1-200)"; fi
+if [ "$h_ok" = 1 ] && grep -qx 'tokenvars=\[\]' "$work/hwargv"; then ok "AC9 the identity-token request variables never reach Witness (the helper unsets them; Check holds no token)"; else bad "AC9 an identity-token variable reached Witness: $(grep tokenvars "$work/hwargv")"; fi
 reset_h; hrun FAKE_OUTLIVE=1 -- scanners bin/step.sh scanners
-if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-scanners/scanners-collection.json" ]; then ok "AC11 a command that outlives the cap makes the helper fail (exit $rc) and leaves no record"; else bad "AC11 an overrun must fail with no record: rc=$rc"; fi
+if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-scanners/scanners-collection.local.json" ]; then ok "AC11 a command that outlives the cap makes the helper fail (exit $rc) and leaves no record"; else bad "AC11 an overrun must fail with no record: rc=$rc"; fi
 reset_h; hrun STEP_FAIL=1 -- acceptance bin/step.sh acceptance
-if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-acceptance/acceptance-collection.json" ]; then ok "AC11 a failing script makes the helper fail and leaves no record"; else bad "AC11 a failing script must fail with no record: rc=$rc"; fi
+if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-acceptance/acceptance-collection.local.json" ]; then ok "AC11 a failing script makes the helper fail and leaves no record"; else bad "AC11 a failing script must fail with no record: rc=$rc"; fi
 reset_h; hrun X=1 -- '../x' bin/step.sh a
 if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ]; then ok "AC11 a step name that is not a plain lower-case word is refused (exit 2) before anything runs"; else bad "AC11 bad step name -> rc=$rc, log: $(cat "$work/hwlog")"; fi
 reset_h; hrun X=1 -- extra bin/step.sh extra
 if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ] && [ ! -s "$work/hwargv" ]; then ok "AC11 a fourth step outside the closed list (extra) is refused (exit 2) before anything runs"; else bad "AC11 unknown step extra -> rc=$rc"; fi
 reset_h; for s in scanners acceptance runtime; do hrun X=1 -- "$s" bin/step.sh "$s"; done
 got=$(cd "$hw" && find . -path './witness-*' -type f | sed 's|^\./||' | sort | tr '\n' ' ')
-if [ "$got" = "witness-acceptance/acceptance-collection.json witness-runtime/runtime-collection.json witness-scanners/scanners-collection.json " ]; then ok "AC12 the three steps are accepted and leave exactly three records, one per step (the next stage verifies the list)"; else bad "AC12 the records: $got"; fi
+if [ "$got" = "witness-acceptance/acceptance-collection.local.json witness-runtime/runtime-collection.local.json witness-scanners/scanners-collection.local.json " ]; then ok "AC12 the three steps are accepted and leave exactly three records, one per step (the next stage verifies the list)"; else bad "AC12 the records: $got"; fi
 # ---- REQ-CHAIN-006-AC3 / AC11: bin/check-stage.sh, the fixed dispatcher (verify first, then only the phase's checks) -------------------
 dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-stage.sh" "$dp/bin/" 2> /dev/null || true
 cat > "$dp/bin/chain-verify.py" <<'EOF'
@@ -1261,7 +1268,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=417
+EXPECT=421
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
