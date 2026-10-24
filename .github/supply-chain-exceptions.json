@@ -2560,7 +2560,7 @@
     {
         "file": ".github/policy/gradle-wrapper-jar-sha256.txt",
         "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
-        "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256 (the sum equals Gradle's published gradle-9.7.1-wrapper.jar.sha256; release https://github.com/gradle/gradle/releases/tag/v9.7.1)",
+        "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256",
         "version": "9.7.1",
         "published": "2026-08-19T15:30:28Z"
     }
