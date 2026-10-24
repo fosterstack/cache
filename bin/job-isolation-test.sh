@@ -124,6 +124,13 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
         if w and unresolved:
             bad.append("%s/%s holds %s and runs the line %r in the step %r: a credential job may name install-scanner.sh only as exactly `bash bin/install-scanner.sh TOOL` (TOOL a literal word, not govulncheck) or a listed exception" % (key[0], jn, ", ".join(w), unresolved[0][1], unresolved[0][0]))
+        # a job that records a step with bin/witnessed-local.sh (Build, Rebuild, Check: the throwaway-key Witness records, owner Oct 22) is a build-side job whatever its scripts hide: no credential, and never the keyless bin/witnessed.sh
+        stext = "\n".join(steps_text(s_) for s_ in (j.get("steps") or []))
+        if re.search(r"\bwitnessed-local\.sh\b", stext):
+            if w:
+                bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(w)))
+            if re.search(r"\bwitnessed\.sh\b", stext):
+                bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and also runs the keyless witnessed.sh: a build-side job signs with the throwaway key only" % (key[0], jn))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
 # a listed installer exception must name a job that exists, and scan.yml's matrix (the one tool word read from a list) must be exactly the pr_gate-driven shape
@@ -280,6 +287,14 @@ mutate "docker build added to a job that reads a secret (release.yml decide)" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
 mutate "id-token: write granted to a job that builds (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+# the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only Sign signs keyless; cache-2a, handoff 0671)
+for spec in stage-build.yml:apk stage-build.yml:assemble stage-reproducibility.yml:rapk stage-reproducibility.yml:rapk-arm stage-reproducibility.yml:assemble stage-verify.yml:check stage-verify.yml:check-arm64; do
+  wf=${spec%%:*} job=${spec##*:}
+  mutate "$wf job $job is granted id-token: write" '
+edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+  mutate "$wf job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
+edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
+done
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant one\n        run: go build ./a\n      - name: mutant two\n        run: go build ./b\n", s, count=1, flags=re.S))'
