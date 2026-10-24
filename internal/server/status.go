@@ -134,7 +134,7 @@ func (s *statusSource) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := statusTmpl.Execute(w, st.view()); err != nil {
-		s.cfg.Log.Error("server: status template", "error", err)
+		s.cfg.Log.Error("server: status template", "error", loggableErr(err))
 	}
 }
 
@@ -147,7 +147,7 @@ func (s *statusSource) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *statusSource) handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := landingTmpl.Execute(w, s.snapshot().view()); err != nil {
-		s.cfg.Log.Error("server: landing template", "error", err)
+		s.cfg.Log.Error("server: landing template", "error", loggableErr(err))
 	}
 }
 

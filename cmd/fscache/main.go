@@ -546,8 +546,9 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	// Go's own server errors (TLS handshake failures and the like) go
 	// through the process logger at DEBUG, not as bare lines on stderr: they
 	// carry only client-supplied values, and a client can cause them at will,
-	// so at the default level a flood of them writes nothing.
-	httpServer.ErrorLog = slog.NewLogLogger(log.Handler(), slog.LevelDebug)
+	// so at the default level a flood of them writes nothing. NewErrorLog
+	// also strips the socket addresses from each line (REQ-OBS-006).
+	httpServer.ErrorLog = server.NewErrorLog(log.Handler())
 
 	authNote := "disabled"
 	if cfg.username != "" {
