@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 91 |
-| Acceptance criteria | 388 |
+| Acceptance criteria | 389 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 368 |
+| ACs with mapped evidence | 369 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -1204,7 +1204,7 @@ The image digest shall be the digest of the OCI index of the image tar (bin/oci-
 
 The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code; dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin, commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vendor-provenance.py; bin/vendor-check.sh; bin/vendoring-test.sh; bin/vendor-provenance-test.sh; .github/workflows/ci.yml; bin/check-file-allowlist.sh; vendor/modules.txt; dependency-provenance.json*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vendor-provenance.py; bin/vendor-provenance-records.py; bin/vendor-check.sh; bin/vendoring-test.sh; bin/vendor-provenance-test.sh; .github/workflows/ci.yml; bin/check-file-allowlist.sh; vendor/modules.txt; dependency-provenance.json*
 
 > Landed in two parts: the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist pattern (AC2, AC3, AC11 for bin/vendor-check.sh) in the vendor-check PR; the vendored tree, the provenance file and its check, the evidence file and the public wording (AC1, AC4-AC10, AC12-AC14, the provenance step of AC3 and AC11 for bin/vendor-provenance.py) in the vendored-tree PR, whose tests are bin/vendor-provenance-test.sh; the vendor-check cases stay in bin/vendoring-test.sh. The vendor job runs the provenance check; the release stage that assembles the evidence file is a separate release-chain change. AC13's public text (docs/dependencies.md) is a DRAFT held for the owner's discussion. build reads the sumdb record, the origins and the reviewed licenses file as files, so the network fetch of those records is a separate CI step outside this requirement. The SPDX licence id comes from a committed, reviewed licenses file, never from detection.
 
@@ -1224,6 +1224,7 @@ The release source shall include vendor/ generated in CI from checksum-verified 
 | REQ-VEND-001-AC12 | Given bin/vendor-provenance.py; when it is read and run; then it writes no signature, calls no signing tool and holds no key; vendor-evidence.json is signed afterwards, as a blob with a bundle, by release-sign.sh (REQ-CHAIN-007-AC8), and the claim of what that signature means is the chain's | unit |  | approved | 1 item(s) |
 | REQ-VEND-001-AC13 | Given README.md, docs/, the www site and the release notes; when the wording check runs; then a line that speaks of dependencies, vendored code or modules never says audited; the allowed claim reads "verified to be the same source the public checksum log records, from the stated upstream commit or tag" | unit |  | approved | 1 item(s) |
 | REQ-VEND-001-AC14 | Given a module whose module-cache record has no Origin; when dependency-provenance.json is built; then its origin is taken from test-evidence/dependency-origins.yaml, one entry per such module with module, version, repository URL, commit and the command that produced it; an entry for any other module (one the cache has an Origin for, or one not in the build list), or a commit that does not match the pseudo-version's hash, is refused; no other gap is filled | unit |  | approved | 1 item(s) |
+| REQ-VEND-001-AC15 | Given a go.mod, go.sum and vendor/ tree after a dependency bump, the committed reviewed files test-evidence/dependency-licenses.yaml and test-evidence/dependency-origins.yaml, and `bin/vendor-provenance-records.py --vendor-dir vendor --go-sum go.sum --licenses test-evidence/dependency-licenses.yaml [--recorded-origins test-evidence/dependency-origins.yaml] --out-dir DIR` with DIR absent; when it runs on a runner with network access; then it asks the Go toolchain (`go mod download -json`, at the toolchain's fixed install path, in an empty scratch module, with a closed environment: GOTOOLCHAIN=local, GOENV=off, the checksum database on at its default and no opt-out) for every module of vendor/modules.txt, and writes into DIR only the three files bin/vendor-provenance.py build reads (the checksum-log record, the origins the toolchain verified, the licences copied from the reviewed file); a module the toolchain cannot verify, that it does not report, that appears twice or is not in modules.txt, whose verified hash differs from go.sum, whose origin is not a git https address with the tagged version's tag ref or the pseudo-version's 40-hex commit, that has no origin and no entry in the recorded-origins file, or that has no licence in the reviewed file makes it exit 2 naming the module and write nothing; an existing DIR is refused; it never invents a licence, an origin or a commit and never writes dependency-provenance.json | unit |  | approved | 1 item(s) |
 
 ## BUILDAPK
 
