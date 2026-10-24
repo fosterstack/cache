@@ -933,8 +933,9 @@ def _pullability(adjudicator, ctx, state):
     state["tokens"] += int(ans.get("token_usage") or 0)
     state.setdefault("roles_used", set()).add("primary")
     rec = nochange.pull_record(ans)
-    if rec is not None:
-        state.setdefault("nc_pull", {})[nc_key] = rec
+    if rec is None:
+        return None          # an answer the router cannot read safely is as good as none: the finding stays on the actionable route
+    state.setdefault("nc_pull", {})[nc_key] = rec
     return ans
 
 
@@ -1612,8 +1613,8 @@ def _adjudication_fingerprint(adjudicator):
         except OSError:
             h.update(("unreadable:%s" % path).encode("utf-8"))
         h.update(b"\0")
-    for v in sorted(_configured_model_values()):
-        h.update(v.encode("utf-8")); h.update(b"\0")
+    for k, v in sorted((k, v.strip()) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and len(v.strip()) >= 3):
+        h.update(("%s=%s" % (k, v)).encode("utf-8")); h.update(b"\0")       # the role name with its value: swapping primary and fallback is a change
     return h.hexdigest()
 
 

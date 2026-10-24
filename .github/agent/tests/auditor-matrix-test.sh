@@ -937,6 +937,22 @@ else:
         if need not in cond: bad.append("upload not limited by " + need)
     if not str(w.get("path", "")).endswith("auditor-out/.auditor/auditor-state.json"): bad.append("upload path")
 if "retention-days" in (t or {}).get("with", {}): bad.append("the audit trail's retention was changed")
+# EVALUATE the upload condition for the runs that must / must not write the state (a schedule run has no inputs at all)
+if u:
+    expr = u.get("if", "").strip()
+    assert expr.startswith("${{") and expr.endswith("}}"), expr
+    py = expr[3:-2].strip().replace("&&", " and ").replace("||", " or ").replace("always()", "True")
+    class NS(dict):
+        __getattr__ = dict.get
+    def ev(event, **inp):
+        ns = {"github": NS(event_name=event), "inputs": NS({k: v for k, v in inp.items()})}
+        return bool(eval(py, {"__builtins__": {}}, ns))
+    real = dict(adjudicator="real", test_image="", known_defect_log=".github/agent/known-defect-log.json")
+    for label, got, want in (("schedule (no inputs)", ev("schedule"), True), ("dispatch real, day's candidate, committed log", ev("workflow_dispatch", **real), True),
+                             ("dispatch stub", ev("workflow_dispatch", **dict(real, adjudicator="stub")), False),
+                             ("dispatch with a test image", ev("workflow_dispatch", **dict(real, test_image="x@sha256:1")), False),
+                             ("dispatch with another defect log", ev("workflow_dispatch", **dict(real, known_defect_log="fixtures/log.json")), False)):
+        if got != want: bad.append("upload condition for %s is %s, want %s" % (label, got, want))
 print("ok" if not bad else "; ".join(bad))
 PY
 )"

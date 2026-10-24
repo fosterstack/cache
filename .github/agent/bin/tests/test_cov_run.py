@@ -304,20 +304,35 @@ class NoChange(Base):
         self.assertEqual(a, b); self.assertNotIn("days_behind", a); self.assertIs(a["behind_beyond_threshold"], True)
         self.assertIs(R._stable_base({"days_behind": 3})["behind_beyond_threshold"], False)
         self.assertEqual(R._stable_base({"release": "x"}), {"release": "x"})
+        at, over = (R._stable_base({"behind_threshold_days": 30, "days_behind": d}) for d in (30, 31))
+        self.assertNotEqual(at, over)                                              # crossing the threshold is a change
         self.assertEqual(R._stable_base(None), {})
 
     def test_the_adjudication_fingerprint_follows_prompt_adjudicator_and_model(self):
         adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
-        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one"}):
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one", "AUDITOR_MODEL_FALLBACK": "m-two"}):
             base = R._adjudication_fingerprint(adj)
+            os.environ["AUDITOR_MODEL_PRIMARY"], os.environ["AUDITOR_MODEL_FALLBACK"] = "m-two", "m-one"      # the roles swapped
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"], os.environ["AUDITOR_MODEL_FALLBACK"] = "m-one", "m-two"
             self.assertEqual(base, R._adjudication_fingerprint(adj))
-            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-two"
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-three"
             self.assertNotEqual(base, R._adjudication_fingerprint(adj))
             os.environ["AUDITOR_MODEL_PRIMARY"] = "m-one"
             open(adj, "w").write("print(2)")
             self.assertNotEqual(base, R._adjudication_fingerprint(adj))
             self.assertNotEqual(R._adjudication_fingerprint(os.path.join(self.tmp, "missing.py")), base)
         self.assertNotIn("m-one", R._adjudication_fingerprint(adj))          # a digest, never the identifier itself
+
+    def test_the_adjudication_fingerprint_follows_the_standing_prompt(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        bindir = self.d("fake", "bin"); self.d("fake", "prompts")
+        prompt = os.path.join(self.tmp, "fake", "prompts", "adjudicator.md")
+        with mock.patch.object(R, "HERE", bindir):
+            open(prompt, "w").write("answer in one word")
+            a = R._adjudication_fingerprint(adj)
+            open(prompt, "w").write("answer in two words")
+            self.assertNotEqual(a, R._adjudication_fingerprint(adj))
 
     def test_a_reused_pullability_verdict_makes_no_call(self):
         ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
@@ -339,13 +354,15 @@ class NoChange(Base):
         self.assertEqual(got, ans)
         self.assertEqual(st["nc_pull"], {key: {"pullable": False, "lift_trigger": "x", "evidence": {"how": "e"}}})
 
-    def test_a_pullability_answer_that_cannot_be_kept_whole_is_not_cached(self):
+    def test_a_pullability_answer_the_router_cannot_read_is_unusable_and_not_cached(self):
         ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
-        st = self.state()
-        ans = {"pullable": False, "lift_trigger": "x" * 5000, "token_usage": 5}
-        with mock.patch.object(R.cli, "ask_model", return_value=ans):
-            self.assertEqual(R._pullability("/x/real.py", ctx, st), ans)
-        self.assertEqual(st["nc_pull"], {})
+        for bad in ({"pullable": False, "lift_trigger": 12}, {"pullable": False, "lift_trigger": "x", "hold": "arbitrary"},
+                    {"pullable": "no"}, {"pullable": False, "lift_trigger": "x" * 5000}, {"evidence": ["x"]}):
+            st = self.state()
+            with mock.patch.object(R.cli, "ask_model", return_value=dict(bad, token_usage=5)):
+                self.assertIsNone(R._pullability("/x/real.py", ctx, st), bad)       # as if the model had been unavailable: the finding stays actionable
+            self.assertEqual(st["nc_pull"], {}, bad)
+            self.assertEqual(st["tokens"], 5)                                     # the call was made and billed
 
     def test_a_reused_narrative_is_marked_unchanged_and_makes_no_call(self):
         secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
