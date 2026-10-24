@@ -1356,7 +1356,10 @@ def cmd_sign(a):
 # ---- sign-records (the Witness move; owner Oct 22): Sign's check-and-stage step for the building jobs' local records ---------------------------------------
 # Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This step is the check that comes before Sign re-signs the
 # payloads keyless: it signs nothing, calls no tool and reads no token. A shell step of the Sign job signs each staged payload and `verify` checks the result.
-SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}
+SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}
+SR_CHECK_FOLDER = {"witness-scanners": "scanners", "witness-acceptance": "acceptance", "witness-runtime": "runtime", "witness-arm64": "arm64"}     # Check's four record folders, each named for its one step
+SR_CHECK_GROUPS = (("check-results", ("witness-scanners", "witness-acceptance", "witness-runtime")), ("check-results-arm64", ("witness-arm64",)))     # (artifact folder under --artifacts-dir, the records whose products it carries)
+SR_CHECK_PREFIX = "check-results/"
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
 SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}   # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in witness-rebuild/; matched in full, never by basename
@@ -1408,11 +1411,13 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     fname = locals_[0]
     if fname.startswith("snapshot-"):
         refuse(stage, "snapshot record: %s/%s is a snapshot step's file name" % (name, fname))
-    m = re.fullmatch(r"([a-z]+)-collection\.local\.json", fname)
+    m = re.fullmatch(r"([a-z][a-z0-9]*)-collection\.local\.json", fname)
     if not m or m.group(1) not in steps:
         refuse(stage, "step: %s/%s is not a record of the %s stage (%s-collection.local.json)" % (name, fname, stage, " or ".join(steps)))
     step = m.group(1)
     for n in names:
+        if stage == "check" and n != fname:
+            refuse(stage, "record: %s holds %s: a Check record folder holds only its record (%s), nothing else is staged or signed" % (name, n, fname))
         if n != fname and n not in SR_DATA:
             refuse(stage, "record: %s holds %s, which is neither the record (%s) nor a data file (%s)" % (name, n, fname, " ".join(SR_DATA)))
     try:
@@ -1451,6 +1456,13 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
             products.setdefault(x["name"][len(PRODUCT_PREFIX):], []).append(x["digest"].get("sha256"))
     if step == "rapk" and art_dir and os.path.lexists(os.path.join(art_dir, name)):
         refuse(stage, "rapk: %s has artifacts under %s, but Rebuild's apks never reach Sign" % (name, art_dir))
+    if stage == "check":
+        if SR_CHECK_FOLDER.get(name) != step:
+            refuse(stage, "record: the folder %s holds the %s record; Check's folders are %s, each named for its step" % (name, step, " ".join(sorted(SR_CHECK_FOLDER))))
+        mats = [x for x in subs if x["name"] == MATERIAL]
+        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+            refuse(stage, "material: the %s record's file:witness-build/digests.json is not Build's attested digests.json (--digests)" % step)
+        return step, payload, [n for n in names if n != fname], {k: v for k, v in products.items() if k.startswith(SR_CHECK_PREFIX)}
     received = sr_received(stage, rec_dir, art_dir, name)
     wrong = sorted(n for n, h in received.items() if products.get(n) != [h])
     if wrong:
@@ -1466,7 +1478,18 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
         mats = [x for x in subs if x["name"] == MATERIAL]
         if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
             refuse(stage, "material: the record's file:witness-build/digests.json is not Build's attested digests.json (--digests)")
-    return step, payload, [n for n in names if n != fname]
+    return step, payload, [n for n in names if n != fname], {}
+
+
+def sr_expected_many(stage, paths):
+    """One or more lists of the records the producing jobs made (Check has two: the check job and check-arm64). The folder sets must be disjoint."""
+    merged = {}
+    for path in paths:
+        for folder, files in sr_expected(stage, path).items():
+            if folder in merged:
+                refuse(stage, "expect-digests: the folder %s is listed twice (%s)" % (folder, path))
+            merged[folder] = files
+    return merged
 
 
 def sr_expected(stage, path):
@@ -1504,6 +1527,43 @@ def sr_check_expected(stage, expected, rec_dirs):
                 refuse(stage, "expect-digests: %s/%s is not the file the Rebuild job made (sha256 differs)" % (name, n))
 
 
+def sr_check_results(stage, art_dir, products):
+    """Check's results: each record folder group has its artifact folder under --artifacts-dir (check-results for scanners, acceptance and runtime; check-results-arm64 for arm64). Every
+    file received must be a product `check-results/<path>` of exactly one record of its group with the same sha256, and every such product the records name must be received; products
+    elsewhere in the repository (a log in a scratch folder) are not Sign's concern, as for Build."""
+    if not art_dir:
+        refuse(stage, "artifacts: --artifacts-dir is required for the check stage (the check-results artifacts)")
+    for art, folders in SR_CHECK_GROUPS:
+        base = os.path.join(art_dir, art)
+        if not os.path.isdir(base) or os.path.islink(base):
+            refuse(stage, "artifacts: %s is missing or not a plain folder under %s" % (art, art_dir))
+        def walk_failed(ex):
+            refuse(stage, "unreadable: %s (%s)" % (ex.filename, type(ex).__name__))
+        links, got = [], {}
+        for here, dirs, files in os.walk(base, onerror=walk_failed):
+            for n in dirs + files:
+                if os.path.islink(os.path.join(here, n)):
+                    links.append(os.path.relpath(os.path.join(here, n), base))
+        if links:
+            refuse(stage, "symlink: %s" % " ".join(sorted(links)))
+        for here, _dirs, files in os.walk(base, onerror=walk_failed):
+            for n in files:
+                full = os.path.join(here, n)
+                got[SR_CHECK_PREFIX + os.path.relpath(full, base)] = _sha256_bytes_of(full, stage, n)
+        named = {}
+        for f in folders:
+            for pn, hs in products[f].items():
+                if pn in named or len(hs) != 1:
+                    refuse(stage, "digest: the product %s is named twice in the records of %s" % (pn, art))
+                named[pn] = hs[0]
+        wrong = sorted(n for n, h in got.items() if named.get(n) != h)
+        if wrong:
+            refuse(stage, "digest: a received file of %s is not a product of its records with the same sha256: %s" % (art, " ".join(wrong)))
+        lacking = sorted(n for n in named if n not in got)
+        if lacking:
+            refuse(stage, "missing: the records of %s name products that were not received: %s" % (art, " ".join(lacking)))
+
+
 def cmd_sign_records(a):
     stage = a.stage
     require_fresh_out(a.out)
@@ -1512,18 +1572,25 @@ def cmd_sign_records(a):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         refuse(stage, "commit: GITHUB_SHA is not a 40-hex commit")
     digests_sha = _sha256_bytes_of(a.digests, stage, "--digests")
-    if stage == "rebuild" and not a.expect_digests:
-        refuse(stage, "expect-digests: --expect-digests FILE is required for the rebuild stage (the Rebuild job's list of the records it made)")
-    if stage == "rebuild":
-        sr_check_expected(stage, sr_expected(stage, a.expect_digests), a.record_dir)   # before any record is read: a folder that is not what the Rebuild job made is never parsed
-    seen, plan = set(), []
+    if stage in ("rebuild", "check") and not a.expect_digests:
+        refuse(stage, "expect-digests: --expect-digests FILE is required for the %s stage (the producing job's list of the records it made)" % stage)
+    if stage == "rebuild" and len(a.expect_digests) != 1:
+        refuse(stage, "expect-digests: the rebuild stage takes exactly one list")
+    if stage in ("rebuild", "check"):
+        sr_check_expected(stage, sr_expected_many(stage, a.expect_digests), a.record_dir)   # before any record is read: a folder that is not what the Rebuild job made is never parsed
+    seen, plan, check_products = set(), [], {}
     for rec_dir in a.record_dir:
         name = os.path.basename(rec_dir.rstrip("/"))
         if name in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or not os.path.isdir(rec_dir) or os.path.islink(rec_dir):
             refuse(stage, "record: %r is not a distinct plain record directory" % rec_dir)
         seen.add(name)
-        step, payload, data = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha)
+        step, payload, data, prods = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha)
         plan.append((rec_dir, name, step, payload, data))
+        check_products[name] = prods
+    if stage == "check":
+        if sorted(seen) != sorted(SR_CHECK_FOLDER):
+            refuse(stage, "record: Check's records are exactly %s, got %s" % (" ".join(sorted(SR_CHECK_FOLDER)), " ".join(sorted(seen))))
+        sr_check_results(stage, a.artifacts_dir, check_products)
     make_out(a.out)
     try:
         lines = []
@@ -1790,7 +1857,7 @@ def build_parser():
     sr.add_argument("--out", required=True)
     sr.add_argument("--record-dir", action="append", required=True)
     sr.add_argument("--artifacts-dir")
-    sr.add_argument("--expect-digests")
+    sr.add_argument("--expect-digests", action="append")
     for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
         sr.add_argument("--" + n)
     st = sub.add_parser("stage-start")
