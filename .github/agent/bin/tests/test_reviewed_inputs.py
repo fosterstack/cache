@@ -38,6 +38,7 @@ EXEMPT = {n: _RUN_INTERNAL for n in (
 EXEMPT["openvex-schema.json"] = "the JSON schema the VEX documents are validated against: a checked-in constant, not an input of a run"
 _PENDING = "persists across runs and is NOT run-internal: it is read by auditor-panel.py with a default for a missing or empty document; its required structure and its reader are the own PR named in ops/audits/reviews/cache-701.md (round 2 ruling), so until it lands the gap is declared here, not hidden"
 EXEMPT["panel-state.json"] = _PENDING
+EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py with its own strict loader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
 EXEMPT["scanner-profiles.json"] = _PENDING.replace("persists across runs and is NOT run-internal", "is reviewed policy (.github/policy/scanner-profiles.json) and NOT run-internal")
 
 # every json.load( / json.loads( in the agent programs outside auditorlib/reviewed.py: the file and how many, with the reason it is not a reviewed input read through the reader
@@ -61,6 +62,7 @@ _SITES = {
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),
     "auditor-vex-scope-check.py": (1, "a candidate VEX document: an empty one fails closed (no products, all_scoped false, nothing re-emitted)"),
+    "auditorlib/nochange.py": (1, "the no-change-day state: its own strict loader, an unusable file is no state (see EXEMPT auditor-state.json)"),
     "auditorlib/parsers.py": (2, "the scanners' own reports"),
     "auditorlib/vex.py": (1, "the checked-in VEX schema"),
     "auditorlib/cli.py": (1, "the model client's reply"),
