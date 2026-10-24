@@ -999,6 +999,70 @@ print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
 assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
 PY
 
+# --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
+# new tree re-reads only the files that changed. The verdicts must not move: byte-identical items, a changed callee invalidates its caller, a raise is never cached. ---
+CASE="file memo: over a real slice of this repository's history the memoised inventories equal the unmemoised ones, field for field, in history order and in a scrambled order"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, random, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+for order in (list(reversed(revs)), random.Random(7).sample(revs, len(revs))):   # oldest first, then scrambled
+    inv._FILE_MEMO.clear()
+    for r in order:
+        assert dump(inv.load_at(root, r)) == ref[r], r
+assert any(len(v) > 2 for v in ref.values()), "the slice held no items"
+PY
+CASE="file memo: a changed callee invalidates its caller (the same caller blob, a local reusable workflow gaining then losing workflow_call)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+keys = lambda files: sorted(inv.inventory(files))
+inv._MEMO_ON[0] = False
+plain = {c: keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) == plain[c]
+# the callee leaves the tree altogether: the caller's items follow it
+alone = {".github/workflows/caller.yml": caller}
+got = keys(alone); inv._MEMO_ON[0] = False
+assert got == keys(alone)
+PY
+CASE="file memo: a file that does not parse raises every time (a raise is never remembered) and one file is read once per distinct blob across a history scan"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+bad = {".github/workflows/x.yml": "on: [\n  broken: : :\n"}
+for _ in range(2):
+    try:
+        inv.inventory(dict(bad)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+calls = [0]; real = inv._file_found
+def counting(path, text):
+    calls[0] += 1
+    return real(path, text)
+inv._file_found = counting
+inv._FILE_MEMO.clear()
+files = {".github/workflows/a.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n", "bin/install-scanner.sh": "TRIVY_VER=0.74.0\n"}
+for n in range(5):
+    inv.inventory(dict(files, **{".github/workflows/b%d.yml" % n: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %d\n" % n}))
+assert calls[0] == 2 + 5, calls[0]    # a.yml and the script once, each b file once
+PY
+
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
