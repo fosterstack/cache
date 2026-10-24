@@ -501,6 +501,23 @@ def tally_cli(d):
     return p.returncode, p.stdout + p.stderr
 good = as_artifacts(tree())
 check("artifact layout: the normal download (one panel-<scanner> folder each) is accepted", layout_error(good) == "", layout_error(good))
+# rc-5a D1 round 2 (first look): a Scout step that fails on every image removes every image directory (so no partial report counts as ran); the artifact then holds
+# only scout-diag. That is a scanner with no results, which the tally calls did-not-run; it is not a layout refusal (a refusal would discard the other scanners' results too)
+nores = as_artifacts(tree(skip={("scout", "production-amd64"), ("scout", "production-arm64"), ("scout", "fips-amd64"), ("scout", "fips-arm64")}))
+os.makedirs(os.path.join(nores, "panel-scout"), exist_ok=True)
+check("artifact layout: a Scout artifact that holds only scout-diag (every image failed) is accepted as a scanner with no results", layout_error(nores) == "", layout_error(nores))
+check("artifact layout: and Scout is then absent from the scanner folders", "scout" not in P.scanner_dirs(nores), sorted(P.scanner_dirs(nores)))
+# a diagnostics entry that is a link or a plain file is still a layout refusal (the diag-only exemption checks every entry)
+for kind in ("symlink", "file"):
+    bad_ = as_artifacts(tree(skip={("scout", "production-amd64"), ("scout", "production-arm64"), ("scout", "fips-amd64"), ("scout", "fips-arm64")}))
+    shutil.rmtree(os.path.join(bad_, "panel-scout", "scout-diag"))
+    if kind == "symlink":
+        os.symlink(os.path.join(bad_, "panel-grype"), os.path.join(bad_, "panel-scout", "scout-diag"))
+    else:
+        open(os.path.join(bad_, "panel-scout", "scout-diag"), "w").write("x")
+    check("artifact layout: a diag-only Scout artifact whose scout-diag is a %s is refused" % kind, "scout-diag" in layout_error(bad_), layout_error(bad_))
+rc_, o_ = tally_cli(nores)
+check("artifact layout: the tally still runs and records Scout as did not run on all four images (the other scanners' results are kept)", rc_ == 2 and "scout" in o_ and "Traceback" not in o_, (rc_, o_[:200]))
 dirs = P.scanner_dirs(good)
 check("artifact layout: the tally of the downloaded layout equals the tally of the direct tree",
       json.dumps(P.tally(good, P.load_vex(VEX), dirs), sort_keys=True) == json.dumps(judge(tree()), sort_keys=True))

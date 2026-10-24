@@ -882,7 +882,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
+      "sha256": "5f021d2ae72110ec0ac030d9a216a9c0fd4da01c33591282441b150315ce77f0",
       "tools": [
         "curl",
         "docker",
@@ -902,7 +902,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "e4e68f95fd045da4878c68f71298306367f884143b12a420ec5af2d6151e7647",
+      "sha256": "625139a11962384c52752c283bd4b3f7c968c5be56329605cc8eb1b8c5434a17",
       "tools": [
         "bash",
         "docker",
@@ -1955,7 +1955,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
+      "sha256": "56fa6d8abe7d4bf2d85b8fc8920d5fa3031a63c794732a80dc4e501b45798b6b",
       "tools": [
         "at",
         "curl",
@@ -2026,7 +2026,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
       "tools": [],
       "runs": [
         "bin/chain_items.py"

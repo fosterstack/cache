@@ -1867,9 +1867,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is consolidated to the ratified 23 files
+    title: The workflow set is consolidated to the ratified list (ratified 32 → 23; 19 files today)
     statement: >
-      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge
+      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), and to the 19 files that remain today after the v0.3.0 chain's ratified removals (AC1 fixes the list), each merge
       keeping every required check's name, top-level placement and events, and no new workflow file added without the
       owner's ratification.
     source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
@@ -2856,6 +2856,12 @@ requirements:
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC33
+        given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
+        when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
+        then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3442,7 +3448,7 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC11
-        given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
+        given: "the Build stage file and its bin/build-stage-*.sh scripts (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
         then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
         verification: { method: ci-workflow, release_blocking: true }
