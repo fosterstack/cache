@@ -518,8 +518,11 @@ check("G the published document holds exactly one statement, CVE-2024-51744", [s
 oci = [p_ for s_ in sts for p_ in s_["products"]]
 check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
       oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
-for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4"):
+for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4", "pkg:generic/busybox%401.37.0", "pkg:generic/busybox@1.37.0%2F1", "pkg:golang/github.com/golang-jwt/jwt%40v4"):
     check("G a subcomponent that is not a Go module path nor a plain generic name stops generation: " + sub_, refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+check("G a double-encoded delimiter is decoded once and stays a literal name (never the Go module it spells after a second decoding)",
+      V._scopes(scoped("CVE-G8", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/github.com%252Fgolang-jwt%252Fjwt%252Fv4"}]}]), [D("1")])
+      == [([D("1")], ("github.com%2Fgolang-jwt%2Fjwt%2Fv4", ""))])
 check("G the empty version leaves no stray space in the published text",
       "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
 check("G the published document no longer describes a :debug image or busybox",
