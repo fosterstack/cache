@@ -1384,6 +1384,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
                "severity": gf["severity"], "reachability": row["reachability"], "candidate_digest": env["digest"],
                "knowledge": env.get("knowledge")}   # REQ-AUD-16 AC3: generated patterns, for judgment
         cat = adjudicate(env["adjudicator"], ctx, env["state"]); m_inc = 1
+        if cat not in nochange.SETTLED:
+            env["state"].setdefault("unsettled_now", set()).add(c)        # no disposition from the model today: one more run unsettled (REQ-AUD-9 AC3)
         if cat == "false_positive":
             fev = C.fp_verified(ids, env["logpath"], findings)
             if fev:
@@ -1701,8 +1703,14 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         "digests": m.get("candidate_digests"), "knowledge": hashlib.sha256(knowledge_doc.encode("utf-8")).hexdigest(),
         "gvc": [gvc, module, gvc_usable], "carriers": m.get("carriers") or [], "base": _stable_base(m.get("base")),
         "adjudication": _adjudication_fingerprint(adjudicator)})
-    state.update(nc_verdicts={}, nc_pull={}, nc_narr=None, nc_today=today,
-                 nc_prev=nochange.matching(nochange.load(cli.opt("--prev-state") or os.environ.get("AUDITOR_PREV_STATE")), nc_hash))
+    prev_path = cli.opt("--prev-state") or os.environ.get("AUDITOR_PREV_STATE")
+    state.update(nc_verdicts={}, nc_pull={}, nc_narr=None, nc_today=today, nc_prev=nochange.matching(nochange.load(prev_path), nc_hash))
+    # REQ-AUD-9 AC3 "a five-iteration stop" (register row 38; advisor reading, Oct 24: a five-iteration loop = five CONSECUTIVE runs with the same finding unsettled): the counts ride in the
+    # same state file. A missing state (the first run, or the artifact expired) restarts them and the run SAYS so; a present state that cannot be trusted stops the run.
+    state["counter_status"], state["unsettled_prev"] = nochange.load_unsettled(prev_path)
+    state["unsettled_now"] = set()
+    if state["counter_status"] == "missing":
+        print("daily CVE auditor: counter state missing, counts restart")
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
@@ -1876,6 +1884,17 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 "stays open for a human decision. Findings: %s" % (policy.MAX_ITERATIONS, len(_loops), ", ".join(_loops)[:1500]))
         ok, ref = _emit_owner_issue(title, body, dry, would, cves=_loops, target="%d-iteration stop on %d finding(s)" % (policy.MAX_ITERATIONS, len(_loops)))
         state["iteration_stop_issue"] = ref if ok else "FAILED"
+    # (a2) "a five-iteration stop" (REQ-AUD-9 AC3, register row 38): findings left unsettled by the model in policy.UNSETTLED_RUNS consecutive runs are named in ONE owner-decision
+    # issue, never one per finding. The title is stable (the next run updates the open issue, AC2); the findings and their run counts are in the body.
+    state["unsettled_counts"] = nochange.advance(state["unsettled_prev"], state["unsettled_now"], today)
+    _stuck = nochange.at_limit(state["unsettled_counts"], policy.UNSETTLED_RUNS)
+    if _stuck:
+        title = policy.subject("owner-decision: the model left findings unsettled for %d consecutive runs" % policy.UNSETTLED_RUNS)
+        body = ("The adjudicator left %d finding(s) without a disposition in %d or more consecutive runs (primary, rephrase and fallback without a settled answer, or no answer at all). "
+                "No disposition was inferred; each stays open for a human decision. Findings (consecutive runs): %s"
+                % (len(_stuck), policy.UNSETTLED_RUNS, ", ".join("%s (%d)" % x for x in _stuck)[:1500]))
+        ok, ref = _emit_owner_issue(title, body, dry, would, cves=[x[0] for x in _stuck], target="unsettled for %d consecutive runs on %d finding(s)" % (policy.UNSETTLED_RUNS, len(_stuck)))
+        state["unsettled_issue"] = ref if ok else "FAILED"
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
     _intents = {}
@@ -1919,7 +1938,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     r["action"] = "OWNER ESCALATION FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
-    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0)
+    issue_failures = sum(1 for r in rows if r.get("issue_failed")) + (1 if state.get("iteration_stop_issue") == "FAILED" else 0) + (1 if state.get("unsettled_issue") == "FAILED" else 0)
     # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
     # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
     # owner_issue=None for every at-or-above item, and the release gate then HELD every such
@@ -2030,7 +2049,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
     cli.writej(os.path.join(out, ".auditor", "auditor-state.json"),
-               nochange.dump(today, nc_hash, *nochange.settle(state["nc_verdicts"], state["nc_pull"], state["nc_narr"], state.get("nc_incomplete"))))
+               nochange.dump(today, nc_hash, *nochange.settle(state["nc_verdicts"], state["nc_pull"], state["nc_narr"], state.get("nc_incomplete")), state["unsettled_counts"]))
     if state.get("nc_reused"):
         print("daily CVE auditor: no-change inputs — reused %d model verdict(s) from the last run" % state["nc_reused"])
     # REQ-AUD-17 AC2: drive the single standing "needs a human" issue from the same §0 list the
@@ -2511,6 +2530,12 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     if _stops:
         L.append("**Model stops:** %d: " % len(_stops) + "; ".join("%s (%s)" % (_text(x["finding_id"]), x["why"]) for x in _stops[:60]) + ("; ..." if len(_stops) > 60 else "")
                  + ("; owner-decision issue: %s" % _text(str((state or {}).get("iteration_stop_issue"))) if (state or {}).get("iteration_stop_issue") else ""))
+    # the unsettled-run counts (REQ-AUD-9 AC3): a missing state is said, never silent
+    _uc = (state or {}).get("unsettled_counts") or {}
+    if (state or {}).get("counter_status") == "missing":
+        L.append("**Unsettled-run counts:** counter state missing, counts restart")
+    elif _uc:
+        L.append("**Unsettled-run counts:** %d finding(s) unsettled, longest %d consecutive run(s)" % (len(_uc), max(v["runs"] for v in _uc.values())))
     # Inventory quorum honesty (scanner-panel rule 3): which images counted, which scanners ran everywhere, which did not run.
     qi = quorum_info or {}
     agreed = qi.get("agreed") or []
@@ -2678,6 +2703,9 @@ def main():
         print("daily CVE auditor: no manifest supplied"); return 2
     try:
         complete = run(manifest, dry, out, today, kevpath=kev)
+    except nochange.CounterInvalid as e:
+        print("daily CVE auditor: unsettled-run counts invalid, the run stops — %s" % e)
+        return 3
     except DefectLogInvalid as e:
         print("daily CVE auditor: known-defect log invalid — %s" % e)
         return 3

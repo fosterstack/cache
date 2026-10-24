@@ -57,6 +57,8 @@ def subject(text):
 
 # Run bounds.
 MAX_ITERATIONS = 5
+# REQ-AUD-9 AC3 "a five-iteration stop" (register row 38, advisor reading Oct 24): the owner hears when the same finding is still unsettled after this many CONSECUTIVE runs
+UNSETTLED_RUNS = 5
 TOKEN_BUDGET = 200000
 
 # VEX product scope and statement-id scheme.

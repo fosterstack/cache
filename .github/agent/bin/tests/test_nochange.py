@@ -28,7 +28,7 @@ def groups():
 def good():
     return {"schema": N.SCHEMA, "run_date": "2026-10-23", "finding_set_hash": H,
             "verdicts": {K1: "false_positive"}, "pullability": {K2: {"pullable": False, "lift_trigger": "base >= 3"}},
-            "narrative": {"key": K1, "text": "Nothing changed.", "date": "2026-10-22"}}
+            "narrative": {"key": K1, "text": "Nothing changed.", "date": "2026-10-22"}, "unsettled": {}}
 
 
 class Hashes(unittest.TestCase):
@@ -176,11 +176,94 @@ class Use(unittest.TestCase):
 
     def test_dump_round_trips_through_load(self):
         d = tempfile.mkdtemp(); p = os.path.join(d, "s.json")
-        doc = N.dump("2026-10-24", H, {K1: "real_fixable"}, {K2: {"pullable": True}}, {"key": K1, "text": "t", "date": "2026-10-24"})
+        doc = N.dump("2026-10-24", H, {K1: "real_fixable"}, {K2: {"pullable": True}}, {"key": K1, "text": "t", "date": "2026-10-24"}, {})
         with open(p, "w") as fh:
             json.dump(doc, fh)
         self.assertEqual(N.load(p), doc)
-        self.assertIsNone(N.dump("2026-10-24", H, {}, {}, None)["narrative"])
+        self.assertIsNone(N.dump("2026-10-24", H, {}, {}, None, {})["narrative"])
+
+
+class Unsettled(unittest.TestCase):
+    """REQ-AUD-9 AC3, "a five-iteration stop" (register row 38, the Sep 16 continuous-scanning rule "a five-iteration loop"; advisor reading, Oct 24):
+    five CONSECUTIVE auditor runs in which the same finding is still unsettled. The counts ride in the auditor state (the artifact of the no-change day),
+    a missing state restarts them and says so, a corrupt state stops the run."""
+
+    def write(self, doc):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "auditor-state.json")
+        with open(p, "w") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+        return p
+
+    def state(self, unsettled):
+        d = good(); d["unsettled"] = unsettled; return d
+
+    def test_no_file_is_missing_not_an_error(self):
+        self.assertEqual(N.load_unsettled(None), ("missing", {}))
+        self.assertEqual(N.load_unsettled(os.path.join(tempfile.mkdtemp(), "nope.json")), ("missing", {}))
+
+    def test_a_state_written_before_the_counts_existed_is_missing(self):
+        d = good(); del d["unsettled"]
+        self.assertEqual(N.load_unsettled(self.write(d)), ("missing", {}))
+
+    def test_a_valid_state_returns_its_counts(self):
+        c = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
+        self.assertEqual(N.load_unsettled(self.write(self.state(c))), ("ok", c))
+        self.assertEqual(N.load_unsettled(self.write(self.state({}))), ("ok", {}))
+
+    def test_a_file_that_is_not_an_auditor_state_is_missing_like_the_no_change_day_ignores_it(self):
+        ok = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
+        for doc in ("{", "[]", "null", json.dumps(dict(self.state(ok), schema="other")), "{\"a\": NaN}", " " * (N.MAX_BYTES + 1)):
+            self.assertEqual(N.load_unsettled(self.write(doc)), ("missing", {}), doc[:40])
+        d = tempfile.mkdtemp()
+        self.assertEqual(N.load_unsettled(d), ("missing", {}))
+        real = self.write(self.state({})); link = os.path.join(d, "l.json"); os.symlink(real, link)
+        self.assertEqual(N.load_unsettled(link), ("missing", {}))
+
+    def test_an_auditor_state_with_untrustworthy_counts_raises(self):
+        ok = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
+        bad = [json.dumps(dict(self.state(ok), extra=1)),
+               json.dumps(self.state([])), json.dumps(self.state({"bad id": ok["CVE-2024-0001"]})), json.dumps(self.state({"": ok["CVE-2024-0001"]})),
+               json.dumps(self.state({"CVE-1": {"runs": 0, "last": "2026-10-22"}})), json.dumps(self.state({"CVE-1": {"runs": True, "last": "2026-10-22"}})),
+               json.dumps(self.state({"CVE-1": {"runs": 10 ** 6, "last": "2026-10-22"}})), json.dumps(self.state({"CVE-1": {"runs": 1, "last": "yesterday"}})),
+               json.dumps(self.state({"CVE-1": {"runs": 1}})), json.dumps(self.state({"CVE-1": {"runs": 1, "last": "2026-10-22", "x": 1}})),
+               json.dumps(self.state({"CVE-%d" % i: {"runs": 1, "last": "2026-10-22"} for i in range(N.UNSETTLED_MAX + 1)}))]
+        for doc in bad:
+            with self.assertRaises(N.CounterInvalid, msg=doc[:60]):
+                N.load_unsettled(self.write(doc))
+
+    def test_advance_counts_consecutive_runs_and_resets_a_settled_finding(self):
+        prev = {"CVE-A": {"runs": 4, "last": "2026-10-22"}, "CVE-B": {"runs": 2, "last": "2026-10-22"}}
+        new = N.advance(prev, {"CVE-A", "CVE-C"}, "2026-10-23")
+        self.assertEqual(new, {"CVE-A": {"runs": 5, "last": "2026-10-23"}, "CVE-C": {"runs": 1, "last": "2026-10-23"}})   # CVE-B settled: gone
+
+    def test_a_second_run_on_the_same_day_does_not_count_twice(self):
+        prev = {"CVE-A": {"runs": 4, "last": "2026-10-23"}}
+        self.assertEqual(N.advance(prev, {"CVE-A"}, "2026-10-23"), {"CVE-A": {"runs": 4, "last": "2026-10-23"}})
+
+    def test_a_count_from_the_future_is_corrupt(self):
+        with self.assertRaises(N.CounterInvalid):
+            N.advance({"CVE-A": {"runs": 4, "last": "2026-10-24"}}, {"CVE-A"}, "2026-10-23")
+
+    def test_a_count_from_the_future_for_a_finding_settled_today_is_corrupt_too(self):
+        with self.assertRaises(N.CounterInvalid):
+            N.advance({"CVE-A": {"runs": 4, "last": "2026-10-24"}}, set(), "2026-10-23")
+
+    def test_more_unsettled_findings_than_the_state_can_hold_is_corrupt(self):
+        ids = {"CVE-%d" % i for i in range(N.UNSETTLED_MAX + 1)}
+        with self.assertRaises(N.CounterInvalid):
+            N.advance({}, ids, "2026-10-23")
+
+    def test_at_limit_names_findings_at_or_above_the_limit_sorted(self):
+        c = {"CVE-B": {"runs": 5, "last": "d"}, "CVE-A": {"runs": 7, "last": "d"}, "CVE-C": {"runs": 4, "last": "d"}}
+        self.assertEqual(N.at_limit(c, 5), [("CVE-A", 7), ("CVE-B", 5)])
+        self.assertEqual(N.at_limit({}, 5), [])
+
+    def test_the_counts_are_part_of_the_state_the_run_writes_and_the_loader_reads(self):
+        c = {"CVE-2024-0001": {"runs": 2, "last": "2026-10-22"}}
+        doc = N.dump("2026-10-23", H, {}, {}, None, c)
+        self.assertEqual(doc["unsettled"], c)
+        self.assertIsNotNone(N.load(self.write(doc)))
+        self.assertEqual(N.load_unsettled(self.write(doc)), ("ok", c))
 
 
 if __name__ == "__main__":
