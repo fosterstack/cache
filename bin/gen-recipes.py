@@ -30,7 +30,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TEMPLATE_SHA256 = "ad9368adef5584ed7d992210fca7081d70a56b66d7a8068fb8e317f2f9cbddba"   # sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
+TEMPLATE_SHA256 = "ad9368adef5584ed7d992210fca7081d70a56b66d7a8068fb8e317f2f9cbddba"   # TEST-SUBST sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
 ALLOWED_SUBST = ("${{targets.destdir}}", "${{build.arch}}")
 ALLOWED_IF = re.compile(r"    if: \$\{\{build\.arch\}\} == '(x86_64|aarch64)'")
 NAMED = ("NAME", "DESCRIPTION", "PACKAGES", "FIPS_EXPORT", "FIPS_PROOF")
@@ -77,15 +77,6 @@ def bad(msg, code=1):
     sys.exit(code)
 
 
-def pin_value():
-    env = os.environ.get("FSCACHE_GEN_PIN")
-    if env is None:
-        return TEMPLATE_SHA256
-    if os.environ.get("FSCACHE_TEST_MODE") != "1":
-        bad("FSCACHE_GEN_PIN is allowed only in test mode (FSCACHE_TEST_MODE=1); the pin is the constant in this file", 2)
-    return env
-
-
 def read_template(path):
     try:
         raw = open(path, "rb").read()
@@ -130,8 +121,8 @@ def read_template(path):
         if ("\n@%s@\n" % n) not in text:
             bad("@%s@ must be alone on its line" % n)
     got = hashlib.sha256(raw).hexdigest()
-    if got != pin_value():
-        bad("the template changed: update TEMPLATE_SHA256 in the same reviewed change (the template %s has sha256 %s, the pin is %s)" % (path, got, pin_value()))
+    if got != TEMPLATE_SHA256:
+        bad("the template changed: update TEMPLATE_SHA256 in the same reviewed change (the template %s has sha256 %s, the pin is %s)" % (path, got, TEMPLATE_SHA256))
     return text
 
 

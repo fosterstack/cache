@@ -247,6 +247,8 @@ import os, re, sys, yaml
 wf = sys.argv[1]
 def edit(fname, fn):
     p = os.path.join(wf, fname); s = open(p).read(); s2 = fn(s); assert s2 != s, "mutation did not apply"; open(p, "w").write(s2)
+def in_refresh(s, old, new):   # the first match inside the refresh job (go-freshness.yml has the same installer lines in other jobs)
+    i = s.index("\n  refresh:"); return s[:i] + s[i:].replace(old, new, 1)
 $py
 PY
   check "$name" bad "$dir"; }
@@ -268,7 +270,7 @@ edit("scan.yml", lambda s: s.replace("\njobs:\n", "\ndefaults:\n  run:\n    shel
 mutate "scan.yml scanner job: the refusal step placed after the installer (rc-5a F)" '
 edit("scan.yml", lambda s: s.replace("      - name: refuse a scanner this job cannot run\n", "      - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can\x27t run is a pipeline failure, not a finding)\n        run: ./bin/install-scanner.sh \x27${{ matrix.scanner }}\x27\n\n      - name: refuse a scanner this job cannot run\n", 1))'
 mutate "go install added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n\n      - name: log in", 1))'
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n"))'
 mutate "go build added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: s.replace("  panel-probe:\n", "  panel-probe:\n", 1).replace("    environment: agent\n", "    environment: agent\n    # mutated\n", 1))
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: go build ./...\n", s, count=1, flags=re.S))'
@@ -311,7 +313,7 @@ edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []
 
 # the same hidden build written in the other ordinary shell forms, in a credential-holding job that is not the Check job (go-freshness refresh: App key, packages: write)
 gf() { local name=$1; GFLINE=$2 mutate "$name" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          " + os.environ["GFLINE"] + "\n\n      - name: log in", 1))'; }
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          " + os.environ["GFLINE"] + "\n"))'; }
 gf "install-scanner.sh \"govulncheck\" (double-quoted tool word)" 'bash bin/install-scanner.sh "govulncheck"'
 gf "install-scanner.sh 'govulncheck' (single-quoted tool word)" "bash bin/install-scanner.sh 'govulncheck'"
 gf "install-scanner.sh govu\"\"lncheck (quotes inside the word)" 'bash bin/install-scanner.sh govu""lncheck'
@@ -423,7 +425,7 @@ edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.
 mutate "install-scanner.sh govulncheck added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n\n      - name: log in", 1))'
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n"))'
 
 echo "job-isolation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

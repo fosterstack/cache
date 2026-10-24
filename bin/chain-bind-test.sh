@@ -25,6 +25,27 @@
 #                dotfile in out/ would be a product with no file after the upload: refused here instead of relied on
 #       record   the file is not a DSSE envelope of a Witness collection
 #     Exit 2 (usage, never a pass): an unreadable record, a missing option, --dir or --as absolute or holding `..`, an unknown --step.
+#   chain-verify.py bind --local --step apk|rapk --record STEP-collection.local.json --dir DIR --as PREFIX      (the Witness move, owner Oct 22)
+#     Build and Rebuild's Witness records are made inside the building job with a throwaway key, so they are UNTRUSTED until Sign re-signs them
+#     keyless. The building jobs' assemble steps still bind their files to the record they just made: --local says the record is such a file. It is a
+#     DSSE envelope of a Witness collection whose NAME ends in .local.json (the throwaway-key form: signatures [{keyid, sig}], no certificate), and the
+#     product binding is the same as without --local; no signature or identity is checked (there is nothing to check). WITHOUT --local a record whose name
+#     ends in .local.json is refused (cause record: an unsigned local record is not a trusted record), and WITH --local a record whose name does not end in
+#     .local.json is refused (cause record) too, so a signed record can never pass as a local one nor the reverse. Step names, snapshot steps and the other
+#     causes are as without --local.
+#   chain-verify.py sign-records --stage build|rebuild --template T.json --digests FILE --out DIR --record-dir D... [--artifacts-dir A]      (the Witness move)
+#     Sign's check-and-stage step. Each --record-dir D holds exactly one <step>-collection.local.json (step apk or build for --stage build, rapk or rebuild for
+#     --stage rebuild; a snapshot- step, another step, a record whose name is not <step>-collection.local.json, two records, or a file that is not a record or one of
+#     digests.json / items.json / admission-baseline.json / verdict.json is refused) and those data files. The record is a DSSE envelope of a Witness collection (the
+#     throwaway-key form) whose name is the step, whose attestors are EXACTLY environment, git, material and product, which names no token variable or value
+#     (record-env), whose git commit is the run's commit ($GITHUB_SHA, a 40-hex), and which is not a snapshot record or version. The per-tag policy is made from --template
+#     and $GITHUB_REF / $GITHUB_EVENT_NAME exactly as `sign --check` does (a pushed tag, or a workflow_dispatch on a branch for the dry run). Every artifact file Sign
+#     RECEIVES (the files under A/<D-name>/ and the data files of D) must be a product of the record with the same sha256: no received file the record does not name,
+#     no different byte; a product the record names that Sign does not hold is NOT refused, except the required names (build: digests.json items.json
+#     admission-baseline.json; rebuild: verdict.json), which a record of the assembling step must receive. For --stage rebuild the record's material file:witness-build/digests.json
+#     must equal --digests (Build's attested list). On success it writes, per record, OUT/<D-name>/<step>-collection.payload (the DSSE payload, byte for byte) and the
+#     data files unchanged, and prints one line per record `OUT/<D-name>/<step>-collection.payload<TAB>signed/<D-name>/<step>-collection.json`. Any refusal: exit 1,
+#     `refused at <build|rebuild>: <reason>`, and OUT is not created. Exit 2: --out exists, a usage error.
 #   chain-verify.py items-apk --out-dir out/ARCH --result FILE
 #     reads the apks in out/ARCH by their names (fscache-VERSION-r0.apk for standard, fscache-fips-VERSION-r0.apk for fips; exactly one each) and
 #     writes the fragment {"arch","items"}. The apk item is `python3 bin/apk-tool.py digest APK`, run from the working directory (cache's tool, by
@@ -104,11 +125,11 @@ def good_subjects(files=FILES):
     return [subject("out/" + rel, data) for rel, data in files.items()]
 
 
-def bind(label, d, want_rc, cause=None, names=None, step="apk", **override):
+def bind(label, d, want_rc, cause=None, names=None, step="apk", flags=(), **override):
     """Run bind from the root d with relative paths, and judge the exit code, the first line and the exact set of paths it names."""
     args = {"--step": step, "--record": "rec.json", "--dir": "dir", "--as": "out"}
     args.update({"--" + k: v for k, v in override.items()})
-    rc, out, err = run(["bind"] + [x for kv in args.items() for x in kv], d)
+    rc, out, err = run(["bind"] + list(flags) + [x for kv in args.items() for x in kv], d)
     first = err.split("\n", 1)[0]
     ok = rc == want_rc and "Traceback" not in err
     if want_rc == 1:
@@ -549,8 +570,314 @@ for label, ver in (("v0.3.0-rc", "v0.3.0-rc"), ("v0.3.0-RC1", "v0.3.0-RC1"), ("v
     adm("admission-baseline: the malformed candidate spelling %s is refused (baseline)" % label, adm_tree("adm24", dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver), dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver)), 1, "baseline", tag=ver)
 rc, out, err = run(["admission-baseline", "--admission", "a.json", "--admission", "b.json", "--tag", "v0.3.1", "--out", "out.json"], adm_tree("adm15"))
 check("admission-baseline: a missing --sha is a usage error (exit 2)", rc == 2 and "Traceback" not in err, "exit %s" % rc)
+# ---- bind --local (the Witness move: a Build/Rebuild record made with a throwaway key, untrusted until Sign) ---------------------------------------------
+def local_record(path, subjects, name="apk"):
+    """The throwaway-key form Witness 0.12.0 writes with a file key: signatures [{keyid, sig}], no certificate (pipeline-cc's probe)."""
+    record(path, subjects, name)
+    env = json.load(open(path))
+    env["signatures"] = [{"keyid": "ab" * 32, "sig": base64.b64encode(b"x" * 64).decode()}]
+    json.dump(env, open(path, "w"))
+
+
+d = tree("loc1")
+local_record(d + "/apk-collection.local.json", good_subjects())
+bind("bind --local: a throwaway-key record named *.local.json binds the files as without --local", d, 0, flags=["--local"], record="apk-collection.local.json")
+d = tree("loc2")
+local_record(d + "/rapk-collection.local.json", good_subjects(), "rapk")
+bind("bind --local: the Rebuild step (rapk) accepts its own local record", d, 0, flags=["--local"], step="rapk", record="rapk-collection.local.json")
+d = tree("loc3")
+local_record(d + "/apk-collection.local.json", good_subjects(), "rapk")
+bind("bind --local: a rapk local record given to the apk step is refused as another step", d, 1, "step", ["rapk"], flags=["--local"], record="apk-collection.local.json")
+d = tree("loc4")
+local_record(d + "/apk-collection.local.json", good_subjects())
+open(d + "/dir/" + "x86_64/fscache-0.3.0-r0.apk", "ab").write(b"!")
+bind("bind --local: a changed file is refused by digest exactly as without --local", d, 1, "digest", [APK], flags=["--local"], record="apk-collection.local.json")
+d = tree("loc5")
+local_record(d + "/apk-collection.local.json", good_subjects())
+bind("bind WITHOUT --local: a record named *.local.json is refused (an unsigned local record is not a trusted record)", d, 1, "record", None, record="apk-collection.local.json")
+d = tree("loc6")
+local_record(d + "/rec.json", good_subjects())
+bind("bind --local: a record whose name does not end in .local.json is refused (a signed record cannot pass as a local one)", d, 1, "record", None, flags=["--local"])
+d = tree("loc7")
+local_record(d + "/apk-collection.local.json", good_subjects())
+j = json.load(open(d + "/apk-collection.local.json")); j["payload"] = base64.b64encode(json.dumps({"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://slsa.dev/provenance/v1", "subject": [], "predicate": {}}).encode()).decode(); json.dump(j, open(d + "/apk-collection.local.json", "w"))
+bind("bind --local: a *.local.json whose payload is not a Witness collection (a provenance statement) is refused", d, 1, "record", None, flags=["--local"], record="apk-collection.local.json")
+d = tree("loc8")
+open(d + "/apk-collection.local.json", "w").write("not json at all")
+rc, out, err = run(["bind", "--local", "--step", "apk", "--record", "apk-collection.local.json", "--dir", "dir", "--as", "out"], d)
+check("bind --local: a *.local.json that is not JSON is a usage error, never a pass", rc == 2 and "Traceback" not in err, "exit %s" % rc)
+# ---- sign-records (the Witness move: Sign checks the building jobs' local records, then re-signs the payloads keyless) ------------------------------------------
+import re as _re
+TAGSHA = "f" * 40
+ATT = ["environment", "git", "material", "product"]
+GOODENV = {"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": TAGSHA}
+
+
+def run_env(args, cwd, env):
+    if not os.path.exists(CV):
+        return 127, "", "bin/chain-verify.py does not exist (RED)"
+    e = {"PATH": os.environ["PATH"], "HOME": work}
+    e.update(env)
+    p = subprocess.run([sys.executable, CV] + args, capture_output=True, text=True, cwd=cwd, timeout=120, env=e)
+    return p.returncode, p.stdout, p.stderr
+
+
+def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False):
+    """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
+    subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
+    if commit:
+        subs.append({"name": "https://witness.dev/attestations/git/v0.1/commithash:" + commit, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + commit}})
+    atts = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": ({"variables": env_vars} if k == "environment" and env_vars else {})} for k in attestors]
+    statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
+                 "subject": subs, "predicate": {"name": name, "attestations": atts}}
+    payload = json.dumps(statement).encode()
+    json.dump({"payloadType": ptype, "payload": base64.b64encode(payload).decode(), "signatures": [{"keyid": "ab" * 32, "sig": base64.b64encode(b"x" * 64).decode()}]}, open(path, "w"))
+    return payload
+
+
+BUILD_DATA = {"digests.json": b'{"apk":"sha256:' + b"c" * 64 + b'"}', "items.json": b'{"items":1}', "admission-baseline.json": b'{"baseline":"v0.3.0"}'}
+BUILD_ART = {"dist/fscache_0.3.0_linux_amd64.tar.gz": b"archive-bytes", "out/production/index.json": b"{}"}   # Sign downloads Build's images to artifacts/witness-build/out and dist to artifacts/witness-build/dist (stage-sign.yml)
+
+
+def put(root, rel, data):
+    os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+    open(os.path.join(root, rel), "wb").write(data)
+
+
+def sr_tree(name, stage="build"):
+    """A Sign job's working tree: record dirs, received artifacts, Build's digests.json. Returns (root, payloads by dir)."""
+    root = "%s/%s" % (work, name)
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(root)
+    put(root, "digests.json", BUILD_DATA["digests.json"])
+    pays = {}
+    if stage == "build":
+        prods = dict(BUILD_DATA); prods.update(BUILD_ART); prods["admission.json"] = b"not an artifact: a product Sign never receives"
+        pays["witness-build"] = coll_record(root + "/witness-build.rec", "build", prods)
+        os.makedirs(root + "/witness-build"); os.rename(root + "/witness-build.rec", root + "/witness-build/build-collection.local.json")
+        for n, d in BUILD_DATA.items():
+            put(root, "witness-build/" + n, d)
+        for n, d in BUILD_ART.items():
+            put(root, "artifacts/witness-build/" + n, d)
+        os.makedirs(root + "/witness-apk-ubuntu-24.04")
+        pays["witness-apk-ubuntu-24.04"] = coll_record(root + "/witness-apk-ubuntu-24.04/apk-collection.local.json", "apk", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "out/x86_64/APKINDEX.tar.gz": b"idx", "admission.json": b"{}"})
+        put(root, "artifacts/witness-apk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x"); put(root, "artifacts/witness-apk-ubuntu-24.04/out/x86_64/APKINDEX.tar.gz", b"idx")
+    else:
+        mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])]
+        os.makedirs(root + "/witness-rebuild"); os.makedirs(root + "/witness-rapk-ubuntu-24.04")
+        pays["witness-rebuild"] = coll_record(root + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"witness-rebuild/verdict.json": b'{"verdict":"pass"}'}, mat)
+        put(root, "witness-rebuild/verdict.json", b'{"verdict":"pass"}')
+        pays["witness-rapk-ubuntu-24.04"] = coll_record(root + "/witness-rapk-ubuntu-24.04/rapk-collection.local.json", "rapk", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "admission.json": b"{}"}, mat)
+    return root, pays
+
+
+def sr_expect(tree, name="expected-records.json"):
+    """The Rebuild assemble job's list of its records, made by the REAL bin/rebuild-records-digests.sh from the tree as it is now (its rec-rapk/<runner> folders are the
+    witness-rapk-<runner> folders Sign receives). Returns the file's name."""
+    rr = tree + "/rec-rapk-listing"
+    shutil.rmtree(rr, ignore_errors=True)
+    legs = sorted(x[len("witness-rapk-"):] for x in os.listdir(tree) if x.startswith("witness-rapk-"))
+    for leg in legs:
+        shutil.copytree(tree + "/witness-rapk-" + leg, rr + "/" + leg)
+    out = subprocess.run(["bash", REPO_ROOT + "/bin/rebuild-records-digests.sh", tree + "/witness-rebuild"] + [rr + "/" + leg for leg in legs], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    open(tree + "/" + name, "w").write(out.stdout)
+    return name
+
+
+def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
+    dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
+    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
+    if stage == "rebuild" and expect:
+        a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
+    if artifacts and stage == "build":
+        a += ["--artifacts-dir", "artifacts"]
+    elif artifacts and os.path.isdir(root + "/artifacts"):
+        a += ["--artifacts-dir", "artifacts"]
+    for x in dirs:
+        a += ["--record-dir", x]
+    return a
+
+
+REPO_ROOT = root
+REPO_TEMPLATE = root + "/.github/policy/release-policy.template.json"
+
+
+def sr(label, root, stage, want_rc, words=(), env=None, args=None, at=None):
+    rc, out, err = run_env(args or sr_args(stage, root), root, dict(GOODENV, **(env or {})))
+    first = err.split("\n", 1)[0].lower()
+    ok = rc == want_rc and "Traceback" not in err
+    if want_rc == 1:
+        ok = ok and first.startswith("refused at %s: " % (at or stage)) and all(w.lower() in first for w in words) and not os.path.exists(root + "/staged")
+    check(label, ok, "exit %s, first line %r, stdout %r" % (rc, first[:200], out[:80]))
+    return rc, out, err
+
+
+d, pays = sr_tree("sr1")
+rc, out, err = sr("sign-records build: a valid set (Build's record and one apk leg) is accepted", d, "build", 0)
+lines = [l.split("\t") for l in out.strip().split("\n") if l]
+check("sign-records build: one `payload<TAB>final` line per record, the final name is signed/<dir>/<step>-collection.json",
+      sorted(lines) == sorted([["staged/witness-build/build-collection.payload", "signed/witness-build/build-collection.json"],
+                               ["staged/witness-apk-ubuntu-24.04/apk-collection.payload", "signed/witness-apk-ubuntu-24.04/apk-collection.json"]]), repr(lines))
+check("sign-records build: OUT/plan.txt is the printed list, line for line (the signing step signs exactly it)", rc == 0 and open(d + "/staged/plan.txt").read() == out.strip("\n") + "\n")
+check("sign-records build: the staged payload is the record's payload byte for byte", rc == 0 and open(d + "/staged/witness-build/build-collection.payload", "rb").read() == pays["witness-build"])
+check("sign-records build: the data files are copied unchanged and no *.local.json is staged",
+      rc == 0 and all(open(d + "/staged/witness-build/" + n, "rb").read() == v for n, v in BUILD_DATA.items())
+      and not [f for r, _, fs in os.walk(d + "/staged") for f in fs if f.endswith(".local.json")])
+d, _ = sr_tree("sr2"); put(d, "artifacts/witness-build/dist/fscache_0.3.0_linux_amd64.tar.gz", b"changed-after-the-record")
+sr("sign-records build: a received file whose bytes differ from the record's product is refused", d, "build", 1, ["dist/fscache_0.3.0_linux_amd64.tar.gz"])
+d, _ = sr_tree("sr3"); put(d, "artifacts/witness-build/dist/extra.txt", b"x")
+sr("sign-records build: a received file the record does not name is refused", d, "build", 1, ["dist/extra.txt"])
+d, _ = sr_tree("sr4"); os.remove(d + "/witness-build/items.json")
+sr("sign-records build: a required name the record holds but Sign did not receive (items.json) is refused", d, "build", 1, ["items.json"])
+d, _ = sr_tree("sr5"); put(d, "witness-build/digests.json", b'{"apk":"sha256:' + b"d" * 64 + b'"}')
+sr("sign-records build: a data file whose bytes differ from the record's product is refused", d, "build", 1, ["digests.json"])
+d, _ = sr_tree("sr6"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=ATT + ["command-run"])
+sr("sign-records build: an attestor beyond environment, git, material and product is refused", d, "build", 1, ["command-run"])
+d, _ = sr_tree("sr6b"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=["environment", "git", "product"])
+sr("sign-records build: a record without the material attestor is refused (the attestors are exactly the four)", d, "build", 1, ["material"])
+d, _ = sr_tree("sr7"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_vars={"GITHUB_TOKEN": "x"})
+sr("sign-records build: a record that names a token variable is refused (record-env)", d, "build", 1, ["env", "GITHUB_TOKEN"])
+d, _ = sr_tree("sr8"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/snapshot-apk-collection.local.json")
+sr("sign-records build: a snapshot step file name is refused", d, "build", 1, ["snapshot"])
+d, _ = sr_tree("sr9"); coll_record(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", "build", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "out/x86_64/APKINDEX.tar.gz": b"idx"})
+sr("sign-records build: a record whose collection name is not the file's step is refused", d, "build", 1, ["step"])
+d, _ = sr_tree("sr10"); coll_record(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", "snapshot-apk", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "out/x86_64/APKINDEX.tar.gz": b"idx"})
+sr("sign-records build: a snapshot collection name is refused", d, "build", 1, ["snapshot"])
+d, _ = sr_tree("sr11")
+sr("sign-records build: a git commit that is not the run's commit is refused", d, "build", 1, ["commit"], env={"GITHUB_SHA": "e" * 40})
+d, _ = sr_tree("sr12"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), commit=None)
+sr("sign-records build: a record with no git commit subject is refused", d, "build", 1, ["commit"])
+d, _ = sr_tree("sr13"); put(d, "witness-build/build-collection.json", b"{}")
+sr("sign-records build: a signed-looking record file beside the local one is refused (only <step>-collection.local.json)", d, "build", 1, ["build-collection.json"])
+d, _ = sr_tree("sr14"); put(d, "witness-build/notes.txt", b"x")
+sr("sign-records build: a file in a record directory that is neither the record nor a known data file is refused", d, "build", 1, ["notes.txt"])
+d, _ = sr_tree("sr15"); shutil.copy(d + "/witness-build/build-collection.local.json", d + "/witness-build/apk-collection.local.json")
+sr("sign-records build: two records in one directory are refused", d, "build", 1, ["one"])
+d, _ = sr_tree("sr16"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), ptype="text/plain")
+sr("sign-records build: a payloadType other than application/vnd.in-toto+json is refused", d, "build", 1, ["payloadtype"])
+d, _ = sr_tree("sr17"); os.symlink("/etc/passwd", d + "/artifacts/witness-build/link")
+sr("sign-records build: a symlink among the received files is refused", d, "build", 1, ["symlink"])
+d, _ = sr_tree("sr18"); os.makedirs(d + "/staged")
+rc, out, err = run_env(sr_args("build", d), d, GOODENV)
+check("sign-records: an existing --out is a usage error (exit 2), nothing overwritten", rc == 2 and "Traceback" not in err and os.listdir(d + "/staged") == [], "exit %s" % rc)
+d, _ = sr_tree("sr19")
+sr("sign-records: GITHUB_REF that is neither a pushed tag nor a dispatch on a branch is refused", d, "build", 1, ["github_ref"], env={"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "push"}, at="sign")
+d, _ = sr_tree("sr20")
+sr("sign-records: a dry run (workflow_dispatch on a branch) is accepted", d, "build", 0, env={"GITHUB_REF": "refs/heads/dry", "GITHUB_EVENT_NAME": "workflow_dispatch"})
+d, _ = sr_tree("sr21", "rebuild")
+rc, out, err = sr("sign-records rebuild: a valid set (Rebuild's record and one rapk leg) is accepted without Rebuild's apks or images", d, "rebuild", 0)
+check("sign-records rebuild: the final names are rebuild-collection.json and rapk-collection.json", rc == 0 and sorted(l.split("\t")[1] for l in out.strip().split("\n")) == ["signed/witness-rapk-ubuntu-24.04/rapk-collection.json", "signed/witness-rebuild/rebuild-collection.json"], out)
+d, _ = sr_tree("sr21b", "rebuild"); shutil.rmtree(d + "/artifacts", ignore_errors=True)
+sr("sign-records rebuild: without --artifacts-dir the data files of the record directories are the received files (sign-rebuild passes none)", d, "rebuild", 0, args=sr_args("rebuild", d, artifacts=False))
+d, _ = sr_tree("sr22", "rebuild"); put(d, "witness-rebuild/verdict.json", b'{"verdict":"fail"}')
+sr("sign-records rebuild: a verdict.json whose bytes differ from the record's product is refused", d, "rebuild", 1, ["verdict.json"])
+d, _ = sr_tree("sr23", "rebuild"); put(d, "digests.json", b'{"apk":"sha256:' + b"9" * 64 + b'"}')
+sr("sign-records rebuild: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "rebuild", 1, ["material", "digests"])
+d, _ = sr_tree("sr24", "rebuild"); os.remove(d + "/witness-rebuild/verdict.json")
+sr("sign-records rebuild: Rebuild's record without the verdict.json it names is refused", d, "rebuild", 1, ["verdict.json"])
+# the Rebuild job's list of the records it made (--expect-digests): Sign's second call refuses any record folder that differs from it (row-78 pass, R2)
+d, _ = sr_tree("sr32", "rebuild"); ex = sr_expect(d)
+rc, out, err = sr("sign-records rebuild: the folders match the Rebuild job's list (made by the real bin/rebuild-records-digests.sh) -> accepted", d, "rebuild", 0, args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr33", "rebuild"); ex = sr_expect(d); put(d, "witness-rebuild/verdict.json", b'{"verdict":"swapped after the job listed it"}')
+sr("sign-records rebuild: a verdict.json swapped after the Rebuild job listed its records is refused", d, "rebuild", 1, ["expect-digests", "verdict.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr34", "rebuild"); ex = sr_expect(d); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"witness-rebuild/verdict.json": b'{"verdict":"pass"}', "other": b"x"}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records rebuild: a rebuild record other than the one the Rebuild job listed (a forged record under the artifact name) is refused", d, "rebuild", 1, ["expect-digests", "rebuild-collection.local.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr35", "rebuild"); ex = sr_expect(d); coll_record(d + "/witness-rapk-ubuntu-24.04/rapk-collection.local.json", "rapk", {"out/x86_64/evil.apk": b"evil"}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records rebuild: a rapk record other than the one the Rebuild job listed is refused", d, "rebuild", 1, ["expect-digests", "rapk-collection.local.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr36", "rebuild"); ex = sr_expect(d); put(d, "witness-rebuild/items.json", b"{}")
+sr("sign-records rebuild: an extra file in a record folder is refused", d, "rebuild", 1, ["expect-digests", "items.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr37", "rebuild"); ex = sr_expect(d); os.remove(d + "/witness-rebuild/verdict.json")
+sr("sign-records rebuild: a file the Rebuild job listed but the folder lacks is refused", d, "rebuild", 1, ["expect-digests", "verdict.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr38", "rebuild"); ex = sr_expect(d); shutil.copytree(d + "/witness-rapk-ubuntu-24.04", d + "/witness-rapk-ubuntu-24.04-arm")
+sr("sign-records rebuild: an extra record folder the Rebuild job did not list is refused", d, "rebuild", 1, ["expect-digests", "folders"], args=sr_args("rebuild", d, dirs=["witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04-arm", "witness-rebuild"], expect=ex))
+d, _ = sr_tree("sr39", "rebuild"); ex = sr_expect(d)
+sr("sign-records rebuild: a folder the Rebuild job listed but Sign was not given is refused", d, "rebuild", 1, ["expect-digests", "folders"], args=sr_args("rebuild", d, dirs=["witness-rebuild"], expect=ex))
+d, _ = sr_tree("sr40", "rebuild")
+sr("sign-records rebuild: without --expect-digests the rebuild stage is refused", d, "rebuild", 1, ["expect-digests", "required"], args=sr_args("rebuild", d, expect=False))
+d, _ = sr_tree("sr41", "rebuild"); open(d + "/bad.json", "w").write("{not json")
+sr("sign-records rebuild: a list that is not JSON is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
+d, _ = sr_tree("sr42", "rebuild"); open(d + "/bad.json", "w").write('{"witness-rebuild":{"verdict.json":"abc"}}')
+sr("sign-records rebuild: a list whose digest is not sha256:<64 hex> is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
+# the apk legs' own lists and the assemble job's --check (row-78 round 6, A1): each rapk job prints its folder's list after its Witness step, and the assemble job refuses any record
+# folder that changed between that upload and its own start
+RRD = REPO_ROOT + "/bin/rebuild-records-digests.sh"
+def rrd(args, cwd, env=None):
+    e = {"PATH": os.environ["PATH"], "HOME": work}
+    e.update(env or {})
+    p = subprocess.run(["bash", RRD] + args, capture_output=True, text=True, cwd=cwd, env=e, timeout=60)
+    return p.returncode, p.stdout.strip(), p.stderr
+def rrd_tree(name):
+    t = "%s/%s" % (work, name)
+    shutil.rmtree(t, ignore_errors=True)
+    for leg, body in (("ubuntu-24.04", b"x86 record"), ("ubuntu-24.04-arm", b"arm record")):
+        put(t, "rec-rapk/%s/rapk-collection.local.json" % leg, body)
+    put(t, "witness-rebuild/verdict.json", b"{}"); put(t, "witness-rebuild/rebuild-collection.local.json", b"rec")
+    outs = {leg: rrd(["--rapk", leg, "rec-rapk/" + leg], t)[1] for leg in ("ubuntu-24.04", "ubuntu-24.04-arm")}
+    return t, outs
+def rrd_check(t, outs, **kw):
+    x = kw["x86"] if "x86" in kw else outs["ubuntu-24.04"]
+    a = kw["arm"] if "arm" in kw else outs["ubuntu-24.04-arm"]
+    return rrd(["--check", x, a], t)
+def rrd_case(label, rc_want, words, res):
+    rc, out, err = res
+    ok = (rc == 0) if rc_want == 0 else (rc == rc_want and "Traceback" not in err and all(w in err for w in words))
+    check(label, ok, "exit %s, stderr %r" % (rc, err[:240]))
+t, outs = rrd_tree("rrd1")
+whole = json.loads(rrd(["witness-rebuild", "rec-rapk/ubuntu-24.04", "rec-rapk/ubuntu-24.04-arm"], t)[1])
+check("rebuild-records-digests --rapk: each leg's list is that folder's entry of the assemble job's whole list (same format)",
+      all(json.loads(outs[leg]) == {"witness-rapk-" + leg: whole["witness-rapk-" + leg]} for leg in outs) and list(json.loads(outs["ubuntu-24.04"])) == ["witness-rapk-ubuntu-24.04"], repr(outs))
+rrd_case("rebuild-records-digests --check: both legs match the folders -> accepted", 0, (), rrd_check(t, outs))
+t, outs = rrd_tree("rrd2"); put(t, "rec-rapk/ubuntu-24.04/rapk-collection.local.json", b"swapped after the upload")
+rrd_case("rebuild-records-digests --check: the ubuntu-24.04 record swapped after its upload is refused, naming the leg and the file", 1, ("ubuntu-24.04:", "rapk-collection.local.json"), rrd_check(t, outs))
+t, outs = rrd_tree("rrd3"); put(t, "rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json", b"swapped after the upload")
+rrd_case("rebuild-records-digests --check: the ubuntu-24.04-arm record swapped after its upload is refused, naming the leg and the file", 1, ("ubuntu-24.04-arm:", "rapk-collection.local.json"), rrd_check(t, outs))
+t, outs = rrd_tree("rrd4"); put(t, "rec-rapk/ubuntu-24.04/extra.json", b"x")
+rrd_case("rebuild-records-digests --check: an extra file in a leg's folder is refused, naming it", 1, ("ubuntu-24.04:", "extra.json"), rrd_check(t, outs))
+t, outs = rrd_tree("rrd5"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
+rrd_case("rebuild-records-digests --check: a leg's folder with no file is refused", 1, ("no file in",), rrd_check(t, outs))
+t, outs = rrd_tree("rrd6"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
+t, outs = rrd_tree("rrd4b"); put(t, "rec-rapk/ubuntu-24.04/.hidden", b"x")
+rrd_case("rebuild-records-digests --check: a hidden extra file in a leg's folder is refused (it is a file of the folder)", 1, ("ubuntu-24.04:", ".hidden"), rrd_check(t, outs))
+rrd_case("rebuild-records-digests --rapk lists a hidden file too", 0, (), (lambda r: (0 if ".hidden" in r[1] else 1, r[1], r[2]))(rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04"], t)))
+t, outs = rrd_tree("rrd5b"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
+rrd_case("rebuild-records-digests --check: an EMPTY leg folder is refused with 'no file in'", 1, ("no file in",), rrd_check(t, outs))
+t, outs = rrd_tree("rrd6b"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
+rrd_case("rebuild-records-digests --check: a missing leg folder is refused", 1, ("not a plain folder",), rrd_check(t, outs))
+t, outs = rrd_tree("rrd7")
+rrd_case("rebuild-records-digests --check: an empty job output is refused, naming the leg", 1, ("ubuntu-24.04:", "empty"), rrd_check(t, outs, x86=""))
+rrd_case("rebuild-records-digests --check: an empty arm output is refused, naming the leg", 1, ("ubuntu-24.04-arm:", "empty"), rrd_check(t, outs, arm=""))
+rrd_case("rebuild-records-digests --check: an output that is not JSON is refused", 1, ("ubuntu-24.04:", "not a JSON object"), rrd_check(t, outs, x86="{not json"))
+rrd_case("rebuild-records-digests --check: an output that is JSON but not an object is refused", 1, ("ubuntu-24.04:", "not a JSON object"), rrd_check(t, outs, x86="[]"))
+rrd_case("rebuild-records-digests --check: the other runner's output given for this leg (it names the other runner) is refused", 1, ("ubuntu-24.04:", "changed"), rrd_check(t, outs, x86=outs["ubuntu-24.04-arm"]))
+rrd_case("rebuild-records-digests --check: the legs' outputs swapped between the two variables are refused", 1, ("changed",), rrd_check(t, outs, x86=outs["ubuntu-24.04-arm"], arm=outs["ubuntu-24.04"]))
+rrd_case("rebuild-records-digests --check: an output that names a folder besides the leg's own is refused", 1, ("changed",), rrd_check(t, outs, x86=json.dumps(dict(json.loads(outs["ubuntu-24.04"]), **{"witness-rebuild": {"verdict.json": "sha256:" + "0" * 64}}))))
+rrd_case("rebuild-records-digests --check takes exactly the two outputs (one, none or three arguments: exit 2)", 2, ("usage",), rrd(["--check", "x"], t, {}))
+rrd_case("rebuild-records-digests --check with no argument at all (exit 2)", 2, ("usage",), rrd(["--check"], t, {}))
+rrd_case("rebuild-records-digests --check with a third argument (exit 2)", 2, ("usage",), rrd(["--check", "a", "b", "c"], t, {}))
+rrd_case("rebuild-records-digests --check does not read the environment (the old variables alone do not pass)", 2, ("usage",), rrd(["--check"], t, {"RAPK_RECORDS": outs["ubuntu-24.04"], "RAPK_ARM_RECORDS": outs["ubuntu-24.04-arm"]}))
+rrd_case("rebuild-records-digests --rapk takes a plain runner name (exit 2)", 2, ("usage",), rrd(["--rapk", "../x", "rec-rapk/ubuntu-24.04"], t, {}))
+d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
+d, _ = sr_tree("sr26"); os.makedirs(d + "/artifacts/witness-build/dist/locked"); put(d, "artifacts/witness-build/dist/locked/f", b"x"); os.chmod(d + "/artifacts/witness-build/dist/locked", 0)
+sr("sign-records build: an unreadable folder among the received files is refused, not counted as empty", d, "build", 1, ["unreadable"]); os.chmod(d + "/artifacts/witness-build/dist/locked", 0o755)
+d, _ = sr_tree("sr27"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_vars={"X": "github_pat_" + "A" * 30})
+sr("sign-records build: a record that holds a fine-grained github_pat_ token value is refused (record-env)", d, "build", 1, ["env", "token"])
+d, _ = sr_tree("sr28"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART, **{"out/never-received.tar": b"z"}))
+sr("sign-records build: a Build product under out/ that Sign did not receive is refused", d, "build", 1, ["out/never-received.tar"])
+d, _ = sr_tree("sr29", "rebuild"); os.rename(d + "/witness-rebuild/rebuild-collection.local.json", d + "/witness-rebuild/build-collection.local.json")
+sr("sign-records rebuild: a Build record (build-collection.local.json) passed off as Rebuild's is refused", d, "rebuild", 1, ["step"])
+d, _ = sr_tree("sr30"); os.rename(d + "/witness-build/build-collection.local.json", d + "/witness-build/rebuild-collection.local.json")
+sr("sign-records build: a Rebuild record (rebuild-collection.local.json) passed off as Build's is refused", d, "build", 1, ["step"])
+d, _ = sr_tree("sr31"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/rapk-collection.local.json")
+sr("sign-records build: a rapk record (Rebuild's apk leg) passed off as Build's apk leg is refused", d, "build", 1, ["step"])
+d, _ = sr_tree("sr25");
+open(d + "/own-list.json", "w").write(json.dumps({x: {f: "sha256:" + hashlib.sha256(open(d + "/" + x + "/" + f, "rb").read()).hexdigest() for f in os.listdir(d + "/" + x)} for x in ("witness-build", "witness-apk-ubuntu-24.04")}))
+sr("sign-records: --stage rebuild given Build's apk/build records (listed as they are) is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"], expect="own-list.json"))
+d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
+sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 97
+EXPECT = 178
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
