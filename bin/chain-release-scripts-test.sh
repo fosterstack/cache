@@ -840,6 +840,28 @@ t, rc, so, se = pva([PBF, "jq -e --arg ref 'ghcr.io/x/y@sha256:" + "a" * 64 + "'
 t, rc, so, se = pva([PBF, "jq -e 'any(.[]; endswith(\"@sha256:abc\"))' provenance.bundle.json"], assets={"provenance.bundle.json": '[{"a":1}]'}.copy() | {"provenance.bundle.json": '["x@sha256:abc"]'}); check(rc == 0, "AC20 round 2: @sha256: inside a jq filter string is not a repository operand", "rc=%s %s" % (rc, first(se)))
 # an EMPTY list still requires the assets directory (nothing is skipped by listing nothing)
 t, rc, so, se = pva([], nodir=True); check(rc != 0 and "release-published" in se, "AC20 round 1: an empty list with no release-published/ fails (the directory is required whatever the list holds)", "rc=%s %s" % (rc, first(se)))
+# ---- the command judge answers as it did before the plain rewrite (owner rule 6, Oct 24) ---------------------------------------------------
+# The judge's five seams run over a fixed corpus (the guide's commands, each with one odd snippet put at every word edge and quote): the
+# sha256 of all their answers, messages included, must not change. The hash was taken from the code before the rewrite.
+src = open(os.path.join(BIN, "release-postverify.py")).read().rstrip()
+src = src[:-len("main()")] if src.endswith("\nmain()") else src
+judge = {"__name__": "judge"}
+exec(compile(src, "release-postverify.py", "exec"), judge)
+BASES = [PV1, PV2, PV3, PV4, PBF, PJ, J1, J2, VID, VT, VP, VB, VU, "jq -r --arg ref 'a b' '.a | .b' f.json",
+         "jq -c '.ok' f.json | jq -e '. == true'", PBF + " | jq -e '.ok' x.json", "cosign verify-attestation --key k.pub <IMAGE_REF_FIPS>"]
+SNIPS = ["`", "$", "$(id)", "${X}", "#", "\n", "\r", "\\", "\\$", "'", '"', ";", "&", "&&", ">", "<", "(", ")", "|", " | ", " || ",
+         "ghcr.io/x/y", "docker.io/o/r@sha256:aa", "oci://ghcr.io/o/r", "<IMAGE_REF>", "<X>", "<tag>", "jq", "-e", "--arg a b",
+         "--from-file", "-L.", "-f f", "/etc/passwd", "../x", "*", "{a,b}", "~", "@sh", "@base64d", "input", "env", "$ENV",
+         "limit(1;.)", "\\(1)", "import", "$__loc__", "getpath", "''", '""', "-", "--", "x://y", "a.b/c", "PH_X", "\u2039X\u203a", ""]
+def edges(c): return sorted({0, len(c)} | {i + 1 for i, ch in enumerate(c) if ch == " "} | {i for i, ch in enumerate(c) if ch in "'\"|"})
+CORPUS = BASES + [b[:i] + sn + b[i:] for b in BASES for sn in SNIPS for i in edges(b)]
+def verdict(c):
+    j = judge
+    return repr((j["form_error"](c), j["form_error"](c, jq_only=True), j["all_jq"](c), j["jq_files"](c), sorted(j["verify_files"](c))))
+digest = hashlib.sha256("\n".join(verdict(c) for c in CORPUS).encode()).hexdigest()
+check(digest == "d8c38764f45d912a00a98e1072c42f75685d0f4ce8e4ca15b97709ad1010ae0d", "owner rule 6: the judge answers the same on %d commands (form_error, all_jq, jq_files, verify_files)" % len(CORPUS), digest)
+t, rc, so, se = pva([PBF, "jq -e '.ok \u00e9' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
+check(rc != 0 and not calls(t) and "Traceback" not in se and "closed grammar" in se, "owner rule 6: a letter outside ASCII in a jq filter is a refusal, not a crash", first(se))
 # ---- AC10: no script prints a credential, anywhere ---------------------------------------------------------------------------------------------
 for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publish", REG), ("release-sign", REG), ("release-assets", ["GH_TOKEN"]), ("release-postverify", ["GH_TOKEN"])):
     t = full_assets() if s == "release-assets" else tree(); rc, so, se = run(t, s, creds=creds)
@@ -847,7 +869,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "394"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "396"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
