@@ -820,6 +820,14 @@ class FixPR(Base):
         self.assertEqual(fr.ref_writes(), [])                      # ... before anything is written
         res, fr = self.real({**rules, self.IS_DRAFT: (1, "", "HTTP 500")})            # the state could not be read
         self.assertEqual(res[2], "error")
+        # the draft state is read once per delivery, not once per step
+        res, fr = self.real({**rules, self.IS_DRAFT: (0, "false\n", "")})
+        self.assertEqual(sum(1 for a in fr.argvs() if a[:3] == ["gh", "pr", "view"] and "isDraft" in a), 1)
+        # a new target has no PR to look at: nothing is asked of an empty selector, the draft is created
+        new_pr = {**self.CHG, ("gh", "pr", "list"): (0, "", ""), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}
+        res, fr = self.real(new_pr)
+        self.assertEqual(res, ("https://x/pull/9", None, "delivered"))
+        self.assertFalse(any(a[:3] == ["gh", "pr", "view"] and a[3:4] in ([""], []) for a in fr.argvs()))
 
     REUSE = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
 
