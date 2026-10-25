@@ -31,7 +31,7 @@ for j in ("panel-grype", "panel-scout", "panel-inspector"):
         bad.append(f"{j} does not scan the four images (production and fips, each on both architectures), fixed in the workflow")
 tg = text("panel-google")
 if "for v in production fips" not in tg or "arm64" in tg or "for arch" in tg \
-        or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
+        or "layout-archive.sh \"/tmp/oci/${v}\" amd64" not in tg or 'cand-${v}-amd64"' not in tg:
     bad.append("panel-google does not scan exactly the two variants on linux/amd64 (and never arm64)")
 for j in jobs:
     # manifests/rescan are the PUBLISHED-release rescan (merged from daily-rescan.yml, consolidation 3 of 4;
@@ -205,6 +205,74 @@ exit 0
     # no other push tool in the job: the scratch package is written by skopeo copy to docker://<scratch>:<tag> and nothing else
     if re.search(r"\b(crane|oras|regctl|cosign|buildx)\b|\bdocker\s+(push|buildx|image\s+push)\b|\bgh\s+api\b[^\n]*(-X|--method)\s+(PUT|POST|PATCH)|\bcurl\b[^\n]*(-X\s*(PUT|POST|PATCH)|--upload)", vt):
         bad.append("vex-attach carries a push tool other than skopeo copy to the scratch package")
+    # the fixture step, RUN: skopeo lays the pinned digest out as a single IMAGE manifest (it is debian 12.0's linux/amd64 manifest, not its index);
+    # the step must wrap it into a one-child index so that the attestation tool's layout check (unchanged, strict) accepts it, and then push it by digest
+    if len(fxs) == 1:
+        SKOPEO = r"""#!/usr/bin/env python3
+import hashlib, json, os, sys
+a = sys.argv[1:]
+if a[0] != "copy": sys.exit(0)
+a = a[1:]; df = None
+while a and a[0].startswith("--"):
+    if a[0] == "--digestfile": df = a[1]; a = a[2:]
+    else: a = a[1:]
+src, dst = a[0], a[1]
+def blob(root, data):
+    h = hashlib.sha256(data).hexdigest(); d = os.path.join(root, "blobs", "sha256"); os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, h), "wb").write(data); return "sha256:" + h, len(data)
+if src.startswith("docker://") and dst.startswith("oci:"):
+    root = dst[4:]; os.makedirs(root, exist_ok=True)
+    open(os.path.join(root, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}')
+    layer, ls = blob(root, b"layer"); cfg, cs = blob(root, json.dumps({"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": [layer]}}).encode())
+    man, ms = blob(root, json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfg, "size": cs},
+        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": layer, "size": ls}]}).encode())
+    json.dump({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+               "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms}]}, open(os.path.join(root, "index.json"), "w"))
+elif dst.startswith("docker://") and df:
+    open(df, "w").write(json.load(open(os.path.join(src[4:], "index.json")))["manifests"][0]["digest"])
+"""
+        def fixture_problems(run_text):
+            out = []
+            with tempfile.TemporaryDirectory() as t0:
+                t = os.path.realpath(t0)      # the attestation tool refuses any path through a symlink (macOS /var)
+                os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
+                with open(os.path.join(t, "stub", "skopeo"), "w") as fh:
+                    fh.write(SKOPEO)
+                os.chmod(os.path.join(t, "stub", "skopeo"), 0o755)
+                json.dump({k: v for k, v in DIG.items() if not k.startswith("fixture-")}, open(os.path.join(t, "attach", "digests.json"), "w"))   # the step must RECORD the two fixture digests itself
+                env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], RUNNER_TEMP=t, GITHUB_RUN_ID="42")
+                r = subprocess.run(["bash", "-e", "-c", run_text.replace("/tmp/", t + "/")], cwd=ROOT, env=env, capture_output=True, text=True)
+                if r.returncode != 0:
+                    return ["the fixture step does not run to the end on a single-image layout (rc %d): %s" % (r.returncode, (r.stdout + r.stderr)[-400:])]
+                dig = json.load(open(os.path.join(t, "attach", "digests.json")))
+                for name, key in (("fixture", "fixture-before"), ("fixture-ours", "fixture-ours")):
+                    top = json.load(open(os.path.join(t, "layout", name, "index.json")))["manifests"]
+                    if len(top) != 1 or top[0]["mediaType"] != "application/vnd.oci.image.index.v1+json":
+                        out.append("the %s layout's one descriptor is not an OCI index after the step: %s" % (name, top))
+                    elif dig.get(key) != top[0]["digest"]:
+                        out.append("the recorded %s (%s) is not the digest of the %s layout's index (%s)" % (key, dig.get(key), name, top[0]["digest"]))
+                if dig.get("fixture-before") == dig.get("fixture-ours"):
+                    out.append("the two fixture digests are the same")
+                # every statement Scout applied in the root-cause round (Oct 23 run 39945154746) named the package as a subcomponent of the product; the self-check statement named none and the
+                # self-check failed (Scout kept the finding)
+                GLIBC = "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"
+                try:
+                    stm = json.load(open(os.path.join(t, "attach", "selfcheck-ours.json")))["statements"]
+                except (OSError, ValueError, KeyError) as e:
+                    return out + ["the step does not write attach/selfcheck-ours.json (%s)" % e]
+                want = [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": GLIBC}]}]
+                if len(stm) != 1 or (stm[0].get("vulnerability") or {}).get("name") != "CVE-2023-4911" or stm[0].get("products") != want:
+                    out.append("the self-check statement is not CVE-2023-4911 on our published product with the fixture's glibc package as its subcomponent (Scout keeps a finding whose package the statement does not name): %s" % (stm,))
+            return out
+        bad.extend(fixture_problems(fxs[0]["run"]))
+        lines_ = fxs[0]["run"].rstrip("\n").split("\n")
+        if not lines_[-1].lstrip().startswith("jq --arg b"):
+            bad.append("the fixture step no longer ends with the jq line that records fixture-before and fixture-ours")
+        elif not fixture_problems("\n".join(lines_[:-1])):
+            bad.append("the fixture test does not notice when the step never records the fixture digests (a vacuous check)")
+        elif "subcomponents" not in fxs[0]["run"] or not fixture_problems(fxs[0]["run"].replace("subcomponents", "subcomps")):
+            bad.append("the fixture test does not notice when the self-check statement drops the subcomponent (a vacuous check)")
     for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
@@ -270,8 +338,13 @@ else:
 if not diag:
     bad.append("no Scout attestation diagnostics (read-back 5a/5b)")
 else:
-    if diag.get("if") or diag.get("continue-on-error"):
-        bad.append("the Scout diagnostics must be unconditional and contained inside the step, not continue-on-error")
+    # unconditional means it runs after a failed self-check too: a step without an `if` is skipped once an earlier step failed, which hid the 5a/5b data on the Oct 23 runs
+    if str(diag.get("if", "")).strip() != "${{ !cancelled() }}" or diag.get("continue-on-error"):
+        bad.append("the Scout diagnostics must carry exactly `if: ${{ !cancelled() }}` (they run after a failed self-check, where a step with no if is skipped, but not when the run is cancelled) and be contained inside the step, not continue-on-error")
+    if str(diag.get("timeout-minutes", "")) != "10":
+        bad.append("the Scout diagnostics must carry timeout-minutes: 10 (five Scout scans of a scratch image; a hung one must not hold the run)")
+    if sc and scout_steps.index(diag) < scout_steps.index(sc):
+        bad.append("the Scout diagnostics come before the self-check")
     for failing in ("docker", "skopeo", "sudo"):   # a diagnostic failure never fails the step
         if run_block(diag.get("run", ""), "applies", failing)[0] != 0:
             bad.append("the diagnostics step fails the job when %s fails" % failing)
@@ -281,6 +354,63 @@ else:
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
+# rc-5a D1 (Fable R4, astra B4): Grype runs with an empty config file and refuses GRYPE_* variables (as bin/grype-scan.sh does), and a failed Grype or Scout
+# command removes that image's output directory, so a readable partial report can never count as "ran" (the contract: fewer outputs = did not run)
+tg_ = text("panel-grype")
+if not re.search(r'grype "docker-archive:/tmp/arc/\$\{v\}-\$\{arch\}\.tar" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
+    bad.append("panel-grype does not run grype with -c on an empty file made in the step")
+if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker(?:-archive)?:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker-archive:[^\"]*\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
+    bad.append("panel-grype runs a grype command (the database update or a scan) without -c on the empty config")
+if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in tg_:
+    bad.append("panel-grype's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
+if not re.search(r"compgen -e \| grep '\^GRYPE_'", tg_) or "exit 2" not in tg_.split("compgen -e", 1)[-1].split("done", 1)[0]:
+    bad.append("panel-grype does not refuse a GRYPE_* variable in the environment before it runs")
+if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', tg_):
+    bad.append("panel-grype does not remove the image's output directory when grype fails")
+ts_ = text("panel-scout")
+if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', ts_.split("docker scout sbom", 1)[-1]):
+    bad.append("panel-scout does not remove the image's output directory when docker scout fails")
+# rc-5a D2 (astra B6, Fable R3 and R4): the published-release rescan holds to the same rules as the gates. Grype reads an empty config, refuses GRYPE_*, and also writes
+# a CycloneDX inventory; osv-scanner reads an empty config, refuses OSV_SCANNER_*, and lists every package and every vulnerability; each child's package count
+# (components with a purl; osv's results[].packages[]) goes into children-scanned.jsonl, and bin/rescan-statement.py refuses a completed child without one.
+rs_ = (jobs.get("rescan") or {}).get("steps", [])
+gs_ = [x.get("run") or "" for x in rs_ if x.get("id") == "grype"]
+os_ = [x.get("run") or "" for x in rs_ if x.get("id") == "osv"]
+if len(gs_) != 1 or len(os_) != 1:
+    bad.append("the rescan job lacks its one grype step or its one osv-scanner step")
+else:
+    g_, o_ = gs_[0], os_[0]
+    if not re.search(r'grype "registry:\$\{ref\}" \$plat_arg\s+-c /tmp/empty-grype\.yaml', g_) or not re.search(r': > /tmp/empty-grype\.yaml', g_):
+        bad.append("the published grype step does not run with -c on an empty file made in the step")
+    if not re.search(r"compgen -e \| grep '\^GRYPE_'", g_) or "exit 2" not in g_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:
+        bad.append("the published grype step does not refuse a GRYPE_* variable before it runs")
+    if '-o "json=${out}"' not in g_ or '-o "cyclonedx-json=${sbom}"' not in g_:
+        bad.append("the published grype step does not write both its JSON report and a CycloneDX inventory")
+    if "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in g_ or "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in o_:
+        bad.append("a published step records a package count that is not a plain integer (an empty or odd jq result would stop the loop before the child's record is written)")
+    st_ = [x.get("run") or "" for x in rs_ if x.get("id") == "statement"]
+    if len(st_) != 1 or '--expect-children "$(grep -c . /tmp/children.txt)"' not in st_[0]:
+        bad.append("the statement step does not pass the number of enumerated children (--expect-children): a shorter manifest must be an error")
+    if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in g_:
+        bad.append("the published grype step's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
+    pk_lines = [ln for ln in g_.splitlines() if ln.strip().startswith("pk=$(jq ")]   # a comment that quotes the line is not the line
+    pk_ = re.fullmatch(r"pk=\$\(jq '([^']+)' \"\$\{sbom\}\" 2>/dev/null\) \|\| pk=0", pk_lines[0].strip()) if len(pk_lines) == 1 else None
+    if not pk_ or "packages:$k" not in g_.replace(" ", ""):
+        bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
+    else:   # the count runs on inventories: only a package URL (pkg:<type>/<name>) is a package, never a file, a number or not-a-purl
+        real, junk = "pkg:deb/debian/glibc@2.36", ["not-a-purl", "pkg:", "pkg:/", "pkg:deb/", 7, None, "pkg:golang/"]
+        for want, purls in ((0, []), (1, [real]), (0, junk), (2, [real, "pkg:golang/github.com/a/b@v1"] + junk)):
+            inv = {"components": [{"purl": x} for x in purls] + [{"type": "file", "name": "/x"}]}
+            run = subprocess.run(["jq", pk_.group(1)], input=json.dumps(inv), capture_output=True, text=True)
+            if run.returncode != 0 or run.stdout.strip() != str(want):
+                bad.append("the grype step's count is %r (exit %d), not %d, on %d package URLs among %d components"
+                           % (run.stdout.strip(), run.returncode, want, want, len(inv["components"])))
+    if not re.search(r"osv-scanner scan image --config /tmp/empty-osv\.toml --all-packages --all-vulns --format json", o_) or not re.search(r': > /tmp/empty-osv\.toml', o_):
+        bad.append("the published osv-scanner step does not run with an empty config, --all-packages and --all-vulns")
+    if not re.search(r"compgen -e \| grep '\^OSV_SCANNER_'", o_) or "exit 2" not in o_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:
+        bad.append("the published osv-scanner step does not refuse an OSV_SCANNER_* variable before it runs")
+    if "results[]?.packages[]?" not in o_ or "packages:$k" not in o_.replace(" ", ""):
+        bad.append("the published osv-scanner step does not record the child's package count in children-scanned.jsonl")
 # rule 9 (owner, Oct 3): the AI judging lives in the auditor; the rescan's panel job tallies and cannot audit
 pj = jobs["panel"]
 if "id-token" in (pj.get("permissions") or {}) or pj.get("environment") or re.search(r"profiles|audit|--prior", text("panel")):
@@ -302,8 +432,10 @@ if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) fo
 # the exact scan commands: each architecture once, Google's package count from its request log
 for j in ("panel-grype", "panel-inspector"):
     t = text(j)
-    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != 1 \
-            or '--override-arch "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
+    # panel-inspector makes its tars in a step of their own, before the cache restore, then scans each: two loops
+    loops = 2 if j == "panel-inspector" else 1
+    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != loops \
+            or 'layout-archive.sh "/tmp/oci/${v}" "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
         bad.append(f"{j} does not load each architecture once by the loop variable")
 t = text("panel-scout")      # Scout names the platform of an attested index, each architecture once
 if not re.search(r"for arch in amd64 arm64; do", t) or '--platform "linux/${arch}"' not in t or "for v in production fips" not in t:
@@ -325,7 +457,7 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         saveday = j == "panel-inspector" and st.get("id") == "insp-save-day" and cond == "always()"
         # the panel job's four downloads by artifact id carry exactly the non-empty-id guard (checked in full by the artifact section below)
         dlguard = j == "panel" and str(st.get("uses", "")).startswith("actions/download-artifact@") and re.fullmatch(r"\$\{\{needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id!=''\}\}", cond)
-        if cond and not cache and not saveday and not dlguard and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        if cond and not cache and not saveday and not dlguard and not cond.startswith("${{always()") and cond != "${{!cancelled()}}" and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -462,6 +594,24 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
 else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
+case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
+case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
+case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
+case_ grype-update-repo-config bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype db update -c \"\$RUNNER_TEMP/empty-grype.yaml\"', 'grype db update')"
+case_ grype-extra-archive-scan bad "s=$(step_of panel-grype 'for v in'); \
+  s['run'] = s['run'] + chr(10) + 'grype \"docker-archive:/tmp/arc/x.tar\" -o json'"
+case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
+case_ pub-grype-repo-config   bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -c /tmp/empty-grype.yaml', '')"
+case_ pub-grype-no-env-refusal bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
+case_ pub-grype-no-inventory  bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -o \"cyclonedx-json=\${sbom}\"', '')"
+case_ pub-grype-no-count      bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' --argjson k \"\${pk}\"', '').replace(', packages:\$k', '')"
+case_ pub-osv-all-packages-off bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-packages', '')"
+case_ pub-osv-all-vulns-off   bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-vulns', '')"
+case_ pub-osv-repo-config     bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --config /tmp/empty-osv.toml', '')"
+case_ pub-osv-no-env-refusal  bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(\"compgen -e | grep '^OSV_SCANNER_'\", 'echo')"
+case_ pub-pk-not-checked      bad "s=$(step_of rescan 'grype \"registry:'); s['run'] = s['run'].replace('[[ \"\${pk}\" =~ ^[0-9]+\$ ]] || pk=0', 'true')"
+case_ pub-no-expect-children  bad "s=$(step_of rescan 'rescan-statement.py statement'); s['run'] = s['run'].replace(' --expect-children \"\$(grep -c . /tmp/children.txt)\"', '')"
+case_ pub-osv-no-count        bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(', packages:\$k', '')"
 case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
 case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
 case_ panel-dl-pattern        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'pattern': 'panel-*', 'path': '/tmp/panel/'}"
@@ -471,7 +621,7 @@ case_ panel-dl-wrong-folder   bad "s=[x for x in $J['panel']['steps'] if 'panel-
 case_ panel-job-no-output     bad "$J['panel-scout'].pop('outputs')"
 case_ panel-upload-wrong-name bad "[x for x in $J['panel-grype']['steps'] if x.get('id') == 'upload'][0]['with']['name'] = 'panel-scout'"
 case_ panel-writes-other      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + chr(10) + 'mkdir -p /tmp/panel/scout/x'"
-case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
+case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('\"/tmp/oci/\${v}\" amd64', '\"/tmp/oci/\${v}\" arm64')"
 case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production fips', 'for v in production')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
 case_ scanner-reports-back    bad "$J['scanner-reports'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'osv-scanner scan image x'}]}"
@@ -495,6 +645,13 @@ case_ scout-scan-wrong-digest bad "s = $(step_of panel-scout 'for v in'); s['run
 case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build']"
 case_ scout-perms-write       bad "$J['panel-scout']['permissions']['packages'] = 'write'"
 case_ scout-diag-fails        bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 0', 'exit \$rc')"
+case_ scout-diag-always       bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() }}'"
+case_ scout-diag-always-and   bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() && success() }}'"
+case_ scout-diag-no-timeout   bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('timeout-minutes', None)"
+case_ scout-diag-no-always    bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('if', None)"
+case_ scout-diag-success-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ success() }}'"
+case_ scout-diag-failure-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ failure() }}'"
+case_ scout-diag-coe          bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['continue-on-error'] = True"
 case_ scout-diag-gone         bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'diagnostics' not in (s.get('name') or '')]"
 case_ attach-gone             bad "$J.pop('vex-attach')"
 case_ attach-perms-id-token   bad "$J['vex-attach']['permissions']['id-token'] = 'write'"

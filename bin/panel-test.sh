@@ -7,7 +7,7 @@
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd)
-python3 - "$here/panel.py" "$here/../.vex/fosterstack-cache.openvex.json" <<'PY'
+python3 - "$here/panel.py" "$here/../test-evidence/vex-scope/busybox.openvex.json" <<'PY'
 import importlib.util, json, os, shutil, sys, tempfile
 spec = importlib.util.spec_from_file_location("panel", sys.argv[1]); P = importlib.util.module_from_spec(spec); spec.loader.exec_module(P)
 VEX = sys.argv[2]
@@ -87,6 +87,12 @@ W(os.path.join(r, "google", "fips-amd64"), "packages.json", [{}, {"package": ""}
 v = judge(r)
 check("structurally incomplete answers (no bomFormat, empty package records) are did not run",
       v["images"]["fips-amd64"]["did_not_run"] == ["google", "grype", "inspector", "scout"], v["images"]["fips-amd64"])
+r = tree(); W(os.path.join(r, "scout", "fips-amd64"), "cves.json", {})
+W(os.path.join(r, "grype", "fips-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"type": "file", "name": "/x", "purl": "not-a-purl"}, {"type": "library", "name": "b", "purl": "pkg:"}], "vulnerabilities": []})
+W(os.path.join(r, "inspector", "fips-amd64"), "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"type": "file", "name": "/x", "purl": "not-a-purl"}], "vulnerabilities": []})
+v = judge(r)
+check("a CycloneDX inventory whose only purl strings are not package URLs (not-a-purl, pkg:) holds no package: grype and inspector did not run",
+      "grype" in v["images"]["fips-amd64"]["did_not_run"] and "inspector" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 check("an incomplete Scout answer (no vulnerabilities list) is did not run", "scout" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 r = tree(skip={("scout", "production-arm64")}); v = judge(r)
 check("an arm64 image with 2 of its 3 does not count (all three must run)", v["images"]["production-arm64"]["counts_for_day"] is False, v["images"]["production-arm64"])
@@ -142,6 +148,33 @@ for i, q in enumerate(["&VARIANT=production&ARCH=amd64", "&variant=production&AR
 for i, pid in enumerate([R + "@sha256:abc", "pkg:oci/cache?repository_url=ghcr.io/other/cache", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache-candidates&arch=amd64"]):
     got = covered_images(pid, "pin%d.json" % i)
     check("a pinned or foreign product (%s) covers no image" % pid, got == [], got)
+
+def id_images(at, purl, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
+        "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}]}, open(f, "w"))
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    return len({c["image"] for c in P.tally(r, P.load_vex(f))["vex_covered"]})
+check("an empty @id beside an identifiers.purl of our image covers nothing (the @id that is present is the id, as the rescan reads it)", id_images("", R, "e1.json") == 0)
+check("a null @id beside an identifiers.purl is that purl", id_images(None, R, "e2.json") == 4)
+
+# --- the latest statement per vulnerability, product and subcomponent set wins (rc-5a, ruling cache-667 item 4): a later `affected` retracts an earlier `not_affected`
+def lw_images(statuses, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    sts = []
+    for status, ts in statuses:
+        st_ = {"vulnerability": {"name": "CVE-2099-0009"}, "status": status, "products": [{"@id": R, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}
+        if ts: st_["timestamp"] = ts
+        sts.append(st_)
+    json.dump({"@context": "x", "statements": sts}, open(f, "w"))
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    return len({c["image"] for c in P.tally(r, P.load_vex(f))["vex_covered"]})
+check("latest wins: not_affected alone covers every image", lw_images([("not_affected", None)], "lw0.json") == 4)
+check("latest wins: a later affected retracts the earlier not_affected on every image", lw_images([("not_affected", None), ("affected", None)], "lw1.json") == 0)
+check("latest wins: affected then not_affected covers", lw_images([("affected", None), ("not_affected", None)], "lw2.json") == 4)
+check("latest wins: the timestamps decide when both parse", lw_images([("not_affected", "2026-02-01T00:00:00Z"), ("affected", "2026-01-01T00:00:00Z")], "lw3.json") == 4)
 
 # --- post-merge rulings on cache#563 (P-1, P-2): a product known only by identifiers.purl is read like the gate's vex_index reads it, and the
 # product's REPOSITORY must be this image's (cache), as rescan-statement.py::_vex_match requires
@@ -306,9 +339,97 @@ put(sd, "cves.json", {"vulnerabilities": [
      "location": {"dependency": {"package": {"name": "tzdata"}, "version": "2026c"}}},
     {"severity": "Unknown", "identifiers": [{"type": "cve", "value": "CVE-2099-0103"}],
      "location": {"dependency": {"package": {"name": "tzdata"}, "version": "2026c"}}}]})
+sb = os.path.join(tempfile.mkdtemp(), "s")
+put(sb, "sbom.json", {"artifacts": [{"name": "x", "version": "1", "purl": "not-a-purl"}, {"name": "y", "version": "2"}, {"name": "z", "purl": "pkg:"}, {"name": "ok", "version": "3", "purl": "pkg:generic/ok@3"}]})
+put(sb, "cves.json", {"vulnerabilities": []})
+check("Scout: only an artifact with a package-URL purl is a package (name + version + not-a-purl, a bare version and 'pkg:' are not)", P.read_scout(sb)[0] == 1, P.read_scout(sb)[0])
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component whose purl is a package URL (pkg:<type>/<name>)
+pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"purl": "not-a-purl"}, {"purl": "pkg:/"}, {"purl": "pkg:deb/"}, {"purl": "pkg:?q=/"}, {"name": "f"}, "x"]}
+check("panel: only a component with a package-URL purl is a package (7, an object, a list, true, an empty string and not-a-purl are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
+# rc-5a B (Fable ruling on astra B2): Scout puts the package URL in dependency.package.name (scout-selfcheck.py:124); the reader names it as the other scanners do
+sp = os.path.join(tempfile.mkdtemp(), "sp")
+put(sp, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:deb/debian/tzdata@2026c"}]})
+put(sp, "cves.json", {"vulnerabilities": [{"severity": "High", "identifiers": [{"type": "cve", "value": "CVE-2099-0110"}],
+     "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}, "version": "2026c"}}},
+    {"severity": "High", "identifiers": [{"type": "cve", "value": "CVE-2099-0111"}],
+     "location": {"dependency": {"package": {"name": "pkg:golang/golang.org/x/sys@v0.47.0"}, "version": "v0.47.0"}}}]})
+sf = {t[0]: t for t in P.read_scout(sp)[1]}
+check("Scout's package URL in the name field is read as name and version (tzdata 2026c), and the purl is kept", sf["CVE-2099-0110"][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), sf["CVE-2099-0110"])
+check("Scout's Go purl name keeps the module path", sf["CVE-2099-0111"][1] == "golang.org/x/sys", sf["CVE-2099-0111"])
+r = tree({("grype", "production-amd64"): [("CVE-2099-0112", "tzdata", "2026c")]}); sc = os.path.join(r, "scout", "production-amd64")
+put(sc, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0112"}],
+     "location": {"dependency": {"package": {"name": "pkg:generic/tzdata@2026c"}, "version": "2026c"}}}]}); v = judge(r)
+f0 = [f for f in v["findings"] if f["id"] == "CVE-2099-0112" and f["image"] == "production-amd64"]
+check("a Scout finding named by purl corroborates Grype's finding for the same CVE and package (one finding, both scanners)", len(f0) == 1 and sorted(f0[0]["seen_by"]) == ["grype", "scout"], f0)
+# rc-5a B (astra B5): a vulnerability with no affects, or an empty one, is a report nobody can attribute: did not run, never silence
+for label, aff in (("missing", None), ("empty", [])):
+    gdn = os.path.join(tempfile.mkdtemp(), "gn")
+    vv = {"id": "CVE-2099-0113"}
+    if aff is not None:
+        vv["affects"] = aff
+    put(gdn, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}], "vulnerabilities": [vv]})
+    try:
+        P.read_grype(gdn); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Grype's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
+    idn = os.path.join(tempfile.mkdtemp(), "in")
+    put(idn, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+    put(idn, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [vv]}})
+    try:
+        P.read_inspector(idn); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Inspector's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
+# rc-5a B round 2 (advisor: tighten): an affects entry that names no component of the report cannot be attributed either: did not run
+for label, aff in (("a ref that matches no component", [{"ref": "nope"}]), ("an entry with no ref", [{}]), ("only entries that are not objects", ["r0", 7])):
+    gdr = os.path.join(tempfile.mkdtemp(), "gr")
+    put(gdr, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                                 "vulnerabilities": [{"id": "CVE-2099-0114", "affects": aff}]})
+    try:
+        P.read_grype(gdr); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Grype's vulnerability with affects holding %s is a ValueError (did not run)" % label, got is not None and "CVE-2099-0114" in got, got)
+# a version that only the purl carries is read from the purl
+spv = os.path.join(tempfile.mkdtemp(), "spv")
+put(spv, "sbom.json", {"artifacts": []})
+put(spv, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0115"}],
+     "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}}}}]})
+check("Scout: a version given only in the package URL is taken from it", P.read_scout(spv)[1][0][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), P.read_scout(spv)[1])
+# rc-5a B round 3 (fix-round seat): any affects entry that is not an object is an incomplete report (not only when none are left); a component that has neither a
+# purl nor a name cannot be attributed either; and Inspector's refs may live only in the request SBOM (sbom.cdx.json)
+gdm = os.path.join(tempfile.mkdtemp(), "gm")
+put(gdm, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                             "vulnerabilities": [{"id": "CVE-2099-0116", "affects": [{"ref": "r0"}, "junk"]}]})
+try:
+    P.read_grype(gdm); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Grype's affects list holding a good entry and a non-object entry is a ValueError (did not run), not silently trimmed", got is not None and "CVE-2099-0116" in got, got)
+gdn2 = os.path.join(tempfile.mkdtemp(), "gn2")
+put(gdn2, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "type": "library"}], "vulnerabilities": [{"id": "CVE-2099-0117", "affects": [{"ref": "r0"}]}]})
+try:
+    P.read_grype(gdn2); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Grype's affects naming a component with neither a package URL nor a name is a ValueError (did not run), not a '?' finding", got is not None and "CVE-2099-0117" in got, got)
+idr = os.path.join(tempfile.mkdtemp(), "ir")
+put(idr, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "c0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idr, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [{"id": "CVE-2099-0118", "affects": [{"ref": "c0"}]}]}})
+rr_ = P.read_inspector(idr)
+check("Inspector: a ref that exists only in the request SBOM (the scan answer repeats no components) still resolves to the package", rr_[0] == 1 and [t[1:3] for t in rr_[1]] == [("tzdata", "2026c")], rr_)
+idu = os.path.join(tempfile.mkdtemp(), "iu")
+put(idu, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "c0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idu, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [{"id": "CVE-2099-0119", "affects": [{"ref": "nope"}]}]}})
+try:
+    P.read_inspector(idu); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Inspector: a ref that is in neither document is a ValueError (did not run)", got is not None and "CVE-2099-0119" in got, got)
 gd2 = os.path.join(tempfile.mkdtemp(), "g2")
 put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
 put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",
@@ -390,6 +511,23 @@ def tally_cli(d):
     return p.returncode, p.stdout + p.stderr
 good = as_artifacts(tree())
 check("artifact layout: the normal download (one panel-<scanner> folder each) is accepted", layout_error(good) == "", layout_error(good))
+# rc-5a D1 round 2 (first look): a Scout step that fails on every image removes every image directory (so no partial report counts as ran); the artifact then holds
+# only scout-diag. That is a scanner with no results, which the tally calls did-not-run; it is not a layout refusal (a refusal would discard the other scanners' results too)
+nores = as_artifacts(tree(skip={("scout", "production-amd64"), ("scout", "production-arm64"), ("scout", "fips-amd64"), ("scout", "fips-arm64")}))
+os.makedirs(os.path.join(nores, "panel-scout"), exist_ok=True)
+check("artifact layout: a Scout artifact that holds only scout-diag (every image failed) is accepted as a scanner with no results", layout_error(nores) == "", layout_error(nores))
+check("artifact layout: and Scout is then absent from the scanner folders", "scout" not in P.scanner_dirs(nores), sorted(P.scanner_dirs(nores)))
+# a diagnostics entry that is a link or a plain file is still a layout refusal (the diag-only exemption checks every entry)
+for kind in ("symlink", "file"):
+    bad_ = as_artifacts(tree(skip={("scout", "production-amd64"), ("scout", "production-arm64"), ("scout", "fips-amd64"), ("scout", "fips-arm64")}))
+    shutil.rmtree(os.path.join(bad_, "panel-scout", "scout-diag"))
+    if kind == "symlink":
+        os.symlink(os.path.join(bad_, "panel-grype"), os.path.join(bad_, "panel-scout", "scout-diag"))
+    else:
+        open(os.path.join(bad_, "panel-scout", "scout-diag"), "w").write("x")
+    check("artifact layout: a diag-only Scout artifact whose scout-diag is a %s is refused" % kind, "scout-diag" in layout_error(bad_), layout_error(bad_))
+rc_, o_ = tally_cli(nores)
+check("artifact layout: the tally still runs and records Scout as did not run on all four images (the other scanners' results are kept)", rc_ == 2 and "scout" in o_ and "Traceback" not in o_, (rc_, o_[:200]))
 dirs = P.scanner_dirs(good)
 check("artifact layout: the tally of the downloaded layout equals the tally of the direct tree",
       json.dumps(P.tally(good, P.load_vex(VEX), dirs), sort_keys=True) == json.dumps(judge(tree()), sort_keys=True))

@@ -14,6 +14,7 @@ import verdict_fixture  # noqa: E402  (fixture verdicts adapted to the panel's c
 _spec = importlib.util.spec_from_file_location("auditor_run_cov", os.path.join(BIN, "auditor-run.py"))
 R = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(R)
 policy = R.policy
+from auditorlib import nochange  # noqa: E402
 PROD = policy.VEX_PRODUCT
 
 # env vars that change which delivery path runs — cleared for every test, set explicitly per case
@@ -28,6 +29,10 @@ class FakeRun:
     (rc, stdout, stderr), a list of responses consumed in order, or an Exception to raise.
     The longest matching prefix wins; unmatched argv -> rc 0, empty output."""
     def __init__(self, rules=None):
+        # the delivery base holds no reviewed file yet unless a test says so (git show of origin/main:<path> is read
+        # before the checkout)
+        self.defaults = {("git", "show"): (128, "", "fatal: path 'x' does not exist in 'origin/main'"),
+                         ("git", "rev-parse", "origin/main"): (0, "a" * 40 + "\n", "")}
         self.rules = dict(rules or {}); self.calls = []
 
     def __call__(self, argv, **kw):
@@ -37,6 +42,11 @@ class FakeRun:
             if tuple(argv[:len(pre)]) == pre and (best is None or len(pre) > len(best)):
                 best = pre
         resp = (0, "", "") if best is None else self.rules[best]
+        # no rule of the test: the delivery base holds no reviewed file yet, origin/main resolves to SHA
+        if best is None:
+            for pre in self.defaults:
+                if tuple(argv[:len(pre)]) == pre:
+                    resp = self.defaults[pre]
         if isinstance(resp, list):
             resp = resp.pop(0) if len(resp) > 1 else resp[0]
         if isinstance(resp, BaseException):
@@ -136,7 +146,12 @@ class Base(unittest.TestCase):
         co = [x for x in a if x[:3] == ["git", "checkout", "-B"]]
         self.assertTrue(co, "no branch checkout issued")
         for x in co:
-            self.assertEqual(len(x), 5); self.assertEqual(x[4], "origin/main")
+            self.assertEqual(len(x), 5)
+            # the suppression delivery cuts its branch from the sha origin/main resolved to right after the fetch
+            # (cache#708 ruling 1)
+            if x[4] != "origin/main":
+                self.assertEqual(x[4], SHA)
+                self.assertLess(a.index(["git", "rev-parse", "origin/main"]), a.index(co[0]))
         self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(co[0]))
 
     def setUp(self):
@@ -145,6 +160,7 @@ class Base(unittest.TestCase):
         p = mock.patch.dict(os.environ); p.start(); self.addCleanup(p.stop)
         for k in _PATH_ENVS:
             os.environ.pop(k, None)
+        os.environ["GITHUB_WORKSPACE"] = self.d("default-workspace")     # run() falls back to the cwd otherwise and would read the real repo's .vex/.auditor (rc-5b fix 13)
 
     def d(self, *parts):
         path = os.path.join(self.tmp, *parts); os.makedirs(path, exist_ok=True); return path
@@ -163,7 +179,7 @@ class Base(unittest.TestCase):
 
     def env(self, **kw):
         e = {"gvc": None, "module": None, "gvc_usable": False, "idx": {}, "logpath": None,
-             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "iters": 0, "roles_used": set()},
+             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "roles_used": set()},
              "kev_ids": set(), "kev_ok": True, "exp": "2026-10-22", "out": self.d("out"),
              "ts": "2026-09-22T00:00:00Z", "dry": True, "digest": "sha256:cand", "carried_expiry": {},
              "carried_scopes": set(), "carried_status": {}, "today": "2026-09-22", "knowledge": "",
@@ -246,7 +262,242 @@ class PureHelpers(Base):
         self.assertEqual(st["tokens"], 14)
         self.assertIn("primary", st["roles_used"])
         self.assertEqual(ask.call_args.kwargs["attempt"], "narrative")
-        self.assertEqual(ask.call_args.kwargs["context"]["structured"]["commit"], "c1")
+        self.assertNotIn("commit", ask.call_args.kwargs["context"]["structured"])   # the model is told nothing the key leaves out
+
+
+# ---------------------------------------------------------------- no-change day (REQ-AUD-3 AC3)
+
+class NoChange(Base):
+    CTX = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
+
+    def state(self, **kw):
+        st = {"tokens": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
+              "nc_prev": None, "nc_today": "2026-10-24"}
+        st.update(kw); return st
+
+    def prev(self, **kw):
+        doc = nochange.dump("2026-10-23", "a" * 64, {}, {}, None); doc.update(kw); return doc
+
+    def test_a_reused_verdict_makes_no_model_call_and_is_carried_forward(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        st = self.state(nc_prev=self.prev(verdicts={key: "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "false_positive")
+        ask.assert_not_called()
+        self.assertNotIn("calls", st); self.assertEqual(st["tokens"], 0)
+        self.assertEqual(st["nc_verdicts"], {key: "false_positive"})
+        self.assertEqual(st.get("nc_reused"), 1)
+
+    def test_a_fresh_verdict_is_recorded_only_when_it_is_a_real_category(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        for cat, kept in (("real_fixable", True), ("under_investigation", True), ("unknown", False), ("burn_it_down", False)):
+            st = self.state()
+            with mock.patch.object(R.cli, "ask_model", return_value={"category": cat, "token_usage": 1}) as ask:
+                self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), cat)
+            self.assertEqual(ask.call_count, 1)
+            self.assertEqual(st["nc_verdicts"], {key: cat} if kept else {}, cat)
+
+    def test_a_different_context_is_a_miss_even_with_a_matching_state(self):
+        st = self.state(nc_prev=self.prev(verdicts={nochange.call_key("adjudicate", dict(self.CTX, installed_version="0")): "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "real_fixable", "token_usage": 1}) as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "real_fixable")
+        self.assertEqual(ask.call_count, 1)
+
+    def test_a_refusal_or_an_error_is_never_recorded_as_a_verdict(self):
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=R.cli.Refused("no")):
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "refused")
+        self.assertEqual(st["nc_verdicts"], {})
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
+        self.assertEqual(st["nc_verdicts"], {})
+
+    # REQ-AUD-3 AC3, Fable ruling on cache#684: a run where ANY attempted model call ended without a cacheable result is an incomplete run; it leaves no usable state.
+    def test_a_complete_adjudication_leaves_the_run_complete(self):
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "real_fixable", "token_usage": 1}):
+            R.adjudicate("/x/real.py", self.CTX, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_adjudication_outcome_marks_the_run_incomplete(self):
+        cases = (("an unknown answer", dict(return_value={"category": "unknown", "token_usage": 1}), {}),
+                 ("a category outside the five", dict(return_value={"category": "burn_it_down", "token_usage": 1}), {}),
+                 ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("the token budget stop", dict(return_value={"category": "real_fixable"}), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, st_kw in cases:
+            st = self.state(**st_kw)
+            with mock.patch.object(R.cli, "ask_model", **ask_kw):
+                R.adjudicate("/x/real.py", self.CTX, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+
+    def test_a_reused_adjudication_makes_no_call_and_does_not_mark_the_run_incomplete(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        st = self.state(nc_prev=self.prev(verdicts={key: "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            R.adjudicate("/x/real.py", self.CTX, st)
+        ask.assert_not_called(); self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_pullability_outcome_marks_the_run_incomplete(self):
+        good = {"pullable": False, "token_usage": 1}
+        cases = (("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("an answer the router cannot read", dict(return_value={"pullable": "maybe", "token_usage": 1}), {}),
+                 ("the token budget stop", dict(return_value=good), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, st_kw in cases:
+            st = self.state(**st_kw)
+            with mock.patch.object(R.cli, "ask_model", **ask_kw):
+                R._pullability("/x/real.py", self.CTX, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value=good):
+            R._pullability("/x/real.py", self.CTX, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_narrative_outcome_marks_the_run_incomplete(self):
+        sections, m = {"s": 1}, {}
+        cases = (("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an empty narrative", dict(return_value={"narrative": "  ", "token_usage": 1}), {}),
+                 ("a narrative that disagrees with the record", dict(return_value={"narrative": "text", "token_usage": 1}), {"bad": True}),
+                 ("the token budget stop", dict(return_value={"narrative": "text"}), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, flags in cases:
+            st = self.state(**({"tokens": R.policy.TOKEN_BUDGET} if "budget" in label else {}))
+            with mock.patch.object(R.cli, "ask_model", **ask_kw), mock.patch.object(R, "_narrative_structured", return_value={}), \
+                 mock.patch.object(R, "_narrative_ok", return_value=not flags.get("bad")):
+                R._conclusion("/x/real.py", sections, m, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "fine", "token_usage": 1}), mock.patch.object(R, "_narrative_structured", return_value={}), \
+             mock.patch.object(R, "_narrative_ok", return_value=True):
+            R._conclusion("/x/real.py", sections, m, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_a_stub_adjudicator_makes_no_call_and_is_not_incomplete(self):
+        st = self.state()
+        R._conclusion("/x/stub.py", {}, {}, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_the_stable_base_drops_the_day_counter_but_keeps_the_threshold_decision(self):
+        a = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 52})
+        b = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 53})
+        self.assertEqual(a, b); self.assertNotIn("days_behind", a); self.assertIs(a["behind_beyond_threshold"], True)
+        self.assertIs(R._stable_base({"days_behind": 3})["behind_beyond_threshold"], False)
+        self.assertEqual(R._stable_base({"release": "x"}), {"release": "x"})
+        at, over = (R._stable_base({"behind_threshold_days": 30, "days_behind": d}) for d in (30, 31))
+        self.assertNotEqual(at, over)                                              # crossing the threshold is a change
+        self.assertEqual(R._stable_base(None), {})
+
+    def test_the_adjudication_fingerprint_follows_prompt_adjudicator_and_model(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one", "AUDITOR_MODEL_FALLBACK": "m-two"}):
+            base = R._adjudication_fingerprint(adj)
+            os.environ["AUDITOR_MODEL_PRIMARY"], os.environ["AUDITOR_MODEL_FALLBACK"] = "m-two", "m-one"      # the roles swapped
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"], os.environ["AUDITOR_MODEL_FALLBACK"] = "m-one", "m-two"
+            self.assertEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-three"
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-one"
+            open(adj, "w").write("print(2)")
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            self.assertNotEqual(R._adjudication_fingerprint(os.path.join(self.tmp, "missing.py")), base)
+        self.assertNotIn("m-one", R._adjudication_fingerprint(adj))          # a digest, never the identifier itself
+
+    def test_the_adjudication_fingerprint_follows_the_standing_prompt(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        bindir = self.d("fake", "bin"); self.d("fake", "prompts")
+        prompt = os.path.join(self.tmp, "fake", "prompts", "adjudicator.md")
+        with mock.patch.object(R, "HERE", bindir):
+            open(prompt, "w").write("answer in one word")
+            a = R._adjudication_fingerprint(adj)
+            open(prompt, "w").write("answer in two words")
+            self.assertNotEqual(a, R._adjudication_fingerprint(adj))
+
+    def test_a_reused_pullability_verdict_makes_no_call(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        key = nochange.call_key("pullability", ctx)
+        verdict = {"pullable": False, "lift_trigger": "base >= 3"}
+        st = self.state(nc_prev=self.prev(pullability={key: verdict}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            self.assertEqual(R._pullability("/x/real.py", ctx, st), verdict)
+        ask.assert_not_called()
+        self.assertEqual(st["nc_pull"], {key: verdict}); self.assertNotIn("calls", st)
+
+    def test_a_fresh_pullability_verdict_is_recorded_by_its_known_keys_only(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        key = nochange.call_key("pullability", ctx)
+        st = self.state()
+        ans = {"pullable": False, "lift_trigger": "x", "token_usage": 5, "surprise": {"nested": 1}, "evidence": {"how": "e"}}
+        with mock.patch.object(R.cli, "ask_model", return_value=ans):
+            got = R._pullability("/x/real.py", ctx, st)
+        self.assertEqual(got, ans)
+        self.assertEqual(st["nc_pull"], {key: {"pullable": False, "lift_trigger": "x", "evidence": {"how": "e"}}})
+
+    def test_a_pullability_answer_the_router_cannot_read_is_unusable_and_not_cached(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        for bad in ({"pullable": False, "lift_trigger": 12}, {"pullable": False, "lift_trigger": "x", "hold": "arbitrary"},
+                    {"pullable": "no"}, {"pullable": False, "lift_trigger": "x" * 5000}, {"evidence": ["x"]}):
+            st = self.state()
+            with mock.patch.object(R.cli, "ask_model", return_value=dict(bad, token_usage=5)):
+                self.assertIsNone(R._pullability("/x/real.py", ctx, st), bad)       # as if the model had been unavailable: the finding stays actionable
+            self.assertEqual(st["nc_pull"], {}, bad)
+            self.assertEqual(st["tokens"], 5)                                     # the call was made and billed
+
+    def test_a_reused_narrative_is_marked_unchanged_and_makes_no_call(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        m = {"commit": "c1", "candidate_digests": {"production": "sha256:p"}}
+        key = R._narrative_key(secs, m)
+        st = self.state(nc_prev=self.prev(narrative={"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            text = R._conclusion("/x/real.py", secs, m, st)
+        ask.assert_not_called()
+        self.assertEqual(text, "CVE-2099-3 needs a bump.\n\n(unchanged since 2026-10-22)")
+        self.assertEqual(st["nc_narr"], {"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"})
+
+    def test_the_narrative_request_is_exactly_what_its_key_covers(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        reqs = []
+        for commit in ("c1", "c2"):
+            with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump."}) as ask:
+                R._conclusion("/x/real.py", secs, {"commit": commit}, self.state())
+            reqs.append(ask.call_args.kwargs["context"])
+        self.assertEqual(reqs[0], reqs[1])
+
+    def test_a_new_commit_alone_does_not_change_the_narrative_key(self):
+        secs = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._narrative_key(secs, {"commit": "c1"}), R._narrative_key(secs, {"commit": "c2"}))
+        secs2 = {n: [] for n in range(1, 8)}; secs2[3] = [{"id": "CVE-2099-3"}]
+        self.assertNotEqual(R._narrative_key(secs, {"commit": "c1"}), R._narrative_key(secs2, {"commit": "c1"}))
+
+    def test_a_reused_narrative_that_no_longer_fits_the_record_is_asked_again(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]; secs[5] = [{"id": "CVE-2099-5"}]
+        m = {"commit": "c1"}; key = R._narrative_key(secs, m)
+        st = self.state(nc_prev=self.prev(narrative={"key": key, "text": "CVE-2099-9 appeared.", "date": "2026-10-22"}))
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump.", "token_usage": 2}) as ask:
+            text = R._conclusion("/x/real.py", secs, m, st)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(text, "CVE-2099-3 needs a bump.")
+        self.assertEqual(st["nc_narr"]["date"], "2026-10-24")
+
+    def test_a_fresh_narrative_is_recorded_with_todays_date(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump.", "token_usage": 2}):
+            R._conclusion("/x/real.py", secs, {"commit": "c1"}, st)
+        self.assertEqual(st["nc_narr"], {"key": R._narrative_key(secs, {"commit": "c1"}), "text": "CVE-2099-3 needs a bump.", "date": "2026-10-24"})
+
+    def test_a_withheld_narrative_is_not_recorded(self):
+        secs = {n: [] for n in range(1, 8)}
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            R._conclusion("/x/real.py", secs, {}, st)
+        self.assertIsNone(st["nc_narr"])
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-9 appeared.", "token_usage": 1}):
+            R._conclusion("/x/real.py", secs, {}, st)
+        self.assertIsNone(st["nc_narr"])
 
 
 # ---------------------------------------------------------------- pullability model call
@@ -256,10 +507,8 @@ class Pullability(Base):
         with mock.patch.object(R.cli, "ask_model") as ask:
             st = {"tokens": policy.TOKEN_BUDGET}
             self.assertIsNone(R._pullability("/a", {"finding_id": "C"}, st))
-            st2 = {"tokens": 0, "iters": policy.MAX_ITERATIONS}
-            self.assertIsNone(R._pullability("/a", {"finding_id": "C"}, st2))
         ask.assert_not_called()
-        self.assertNotIn("calls", st); self.assertNotIn("calls", st2)
+        self.assertNotIn("calls", st)
 
     def test_refusal_is_billed_and_returns_none(self):
         ex = R.cli.Refused("C"); ex.token_usage = 11
@@ -399,6 +648,48 @@ class PurlVersion(unittest.TestCase):
         self.assertIsNone(R._ver_from_purl(None))
 
 
+class NeedsHuman(unittest.TestCase):
+    def test_the_unsettled_run_issue_is_a_section_zero_item_and_a_failed_one_is_said(self):
+        none = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._needs_human([], none, True, None, "ok"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "dry"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "skipped"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "#12"), ["owner-decision needed: findings unsettled for 5 consecutive runs — #12"])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "FAILED"), ["owner-decision issue FAILED to open: findings unsettled for 5 consecutive runs"])
+
+
+class ResolveCarried(unittest.TestCase):
+    def test_a_statement_without_a_vulnerability_name_is_skipped(self):
+        """a carried statement that names no vulnerability cannot match a flagged entry, and is never reported as not re-checkable"""
+        stmts = [{"products": []}, {"vulnerability": {"name": "CVE-2099-1"}, "products": []}]
+        self.assertEqual(R._resolve_carried({}, stmts), ["CVE-2099-1"])
+
+    def _groups(self):
+        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        return {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
+
+    @staticmethod
+    def _stmt(arch):
+        return {"vulnerability": {"name": "CVE-2099-7"},
+                "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/libfoo@1.0?arch=%s&distro=debian-12.0" % arch}]}]}
+
+    def test_a_change_only_in_the_carried_resolution_never_reuses_a_verdict_for_a_different_question(self):
+        """the no-change hash is taken over the groups BEFORE the carried statements are resolved, so two runs can share it while the statements resolve differently. That
+        cannot produce a wrong reuse: a reused verdict, pullability record or narrative is looked up by the key of the exact context the model is given (nochange.call_key),
+        and that context carries the resolved purl, so a different resolution is a different key and the model is asked again; the same resolution is the same question."""
+        ctx = lambda groups: {"finding_id": "CVE-2099-7", "package": "libfoo", "purl": groups["CVE-2099-7"]["findings"][0]["purl"]}
+        before_a, before_b = self._groups(), self._groups()
+        self.assertEqual(nochange.finding_set_hash(before_a, {}), nochange.finding_set_hash(before_b, {}))             # same hash, resolved differently below
+        R._resolve_carried(before_a, [self._stmt("amd64")]); R._resolve_carried(before_b, [self._stmt("arm64")])
+        same = self._groups(); R._resolve_carried(same, [self._stmt("amd64")])
+        key = lambda g: nochange.call_key("adjudicate", ctx(g))
+        self.assertNotEqual(key(before_a), key(before_b))
+        self.assertEqual(key(before_a), key(same))
+        yesterday = {"verdicts": {key(before_a): "false_positive"}}
+        self.assertEqual(nochange.verdict(yesterday, key(same)), "false_positive")
+        self.assertIsNone(nochange.verdict(yesterday, key(before_b)))
+
+
 class MergeConsolidate(Base):
     def _stmt(self, cve, purls, status="affected"):
         return R.vex.doc(cve, status, "2026-09-22T00:00:00Z", action="x", subcomponents=purls)["statements"][0]
@@ -410,13 +701,77 @@ class MergeConsolidate(Base):
                  "timestamp": "t", "version": version, "statements": statements})
         return out, supp
 
-    def test_corrupt_existing_vex_treated_as_empty(self):
+    def test_two_retained_statements_without_an_id_are_made_separately_addressable(self):
+        # AC2 safety net: statements of DIFFERENT scopes that arrive with no @id (or the same one) never leave the merge sharing an @id
+        ws = self.d("ws"); a = self._stmt("CVE-2099-30", ["pkg:deb/a@1"]); b = self._stmt("CVE-2099-30", ["pkg:deb/b@1"])
+        a.pop("@id"); b.pop("@id")
+        self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"),
+                {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor", "timestamp": "t", "version": 2, "statements": [a, b]})
+        _out, supp = self._supp([self._stmt("CVE-2099-31", ["pkg:deb/c@1"])], version=3)
+        R._merge_suppressions(ws, supp)
+        got = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]
+        ids = [s["@id"] for s in got]
+        self.assertEqual(len(got), 3)
+        self.assertEqual(len(set(ids)), 3, ids)
+
+    def test_corrupt_existing_vex_stops_the_run(self):
+        # rc-5b fix 13: a reviewed file that is present but unreadable is a stop, never "no statements"
         ws = self.d("ws"); self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"), "{not json")
         _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
-        R._merge_suppressions(ws, supp)
-        merged = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))
-        self.assertEqual(merged["version"], 4)                            # new doc's version, not existing+1
-        self.assertEqual([s["vulnerability"]["name"] for s in merged["statements"]], ["CVE-2099-20"])
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+        self.assertEqual(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")).read(), "{not json")      # nothing was rewritten
+
+    def test_corrupt_checkout_inventory_stops_before_the_vex_is_written(self):
+        ws = self.d("ws"); self.wj(os.path.join(ws, ".auditor", "accepted-items.json"), "{bad")
+        vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
+        _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+        self.assertFalse(os.path.exists(vp))                                # the VEX was not written ahead of the stop
+
+    def test_corrupt_run_inventory_stops_the_delivery_merge(self):
+        # the run's OWN accepted-items.json (beside its suppressions) that does not parse must not let the VEX ride without its inventory
+        ws = self.d("ws")
+        _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
+        self.wj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"), "{bad")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+        self.assertFalse(os.path.exists(os.path.join(ws, ".vex")))      # and neither the VEX nor its folder was created ahead of the stop
+
+    def test_read_reopened_is_strict(self):
+        for bad in ({"reopened": [0, None, ""]}, {"reopened": [["CVE", 5, 6]]}, {"reopened": [["CVE", "prod", "purl"]]}, {"reopened": [[["x"], [], []]]}, {"reopened": "x"}, [1]):
+            p = os.path.join(self.d("ro"), "reopened-expired.json"); self.wj(p, bad)
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._read_reopened(p)
+        p = os.path.join(self.d("ro2"), "reopened-expired.json"); self.wj(p, {"reopened": [["CVE-1", ["prod"], ["pkg:deb/a@1"]]]})
+        self.assertEqual(R._read_reopened(p), [["CVE-1", ["prod"], ["pkg:deb/a@1"]]])
+        self.assertEqual(R._read_reopened(os.path.join(self.d("ro3"), "absent.json")), [])      # absent = none
+
+    def test_a_published_vex_and_the_accepted_items_file_must_carry_their_list(self):
+        # a present file of the right name must hold its key as a list of objects: {} and a null list are a stop, [] is a valid empty list (rc-5b fix 13)
+        for name, key in (("fosterstack-cache.openvex.json", "statements"), ("accepted-items.json", "accepted_items"), ("f-CVE-2099-1.openvex.json", "statements")):
+            for bad in ({}, {key: None}, {"other": []}, {key: {}}, {key: "x"}, {key: [None]}, {key: [3]}, {key: [{}, "x"]}):
+                p = os.path.join(self.d("rq"), name); self.wj(p, bad)
+                with self.assertRaises(R.ReviewedInputInvalid, msg=repr((name, bad))):
+                    R._read_reviewed_json(p)
+            for good in ({key: []}, {key: [{}]}, {key: [{"a": 1}], "other": 1}):
+                p = os.path.join(self.d("rq2"), name); self.wj(p, good)
+                self.assertEqual(R._read_reviewed_json(p), good)
+        p = os.path.join(self.d("rq3"), "run-state.json"); self.wj(p, {})      # a file the reader has no rule for is read as before
+        self.assertEqual(R._read_reviewed_json(p), {})
+
+    def test_lstat_failure_other_than_absent_is_a_stop(self):
+        import errno
+        from unittest.mock import patch
+        p = os.path.join(self.d("lst"), "x.json")
+        with patch.object(R.os, "lstat", side_effect=PermissionError(errno.EACCES, "parent inaccessible")):
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._read_reviewed_json(p)
+        with patch.object(R.os, "lstat", side_effect=OSError(errno.EIO, "I/O failure")):
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._read_reviewed_json(p)
+        self.assertIsNone(R._read_reviewed_json(p))                         # really absent: the first run
 
     def test_legacy_item_resolved_by_unique_package(self):
         ws = self.d("ws"); st = self._stmt("CVE-2099-21", ["pkg:deb/debian/libfoo@1.0"])
@@ -448,11 +803,19 @@ class MergeConsolidate(Base):
         self.assertFalse(os.path.exists(os.path.join(ws, ".snyk")))
         self.assertFalse(os.path.exists(os.path.join(ws, "osv-scanner.toml")))
 
-    def test_consolidate_skips_unreadable_files(self):
+    def test_consolidate_stops_on_an_unreadable_file(self):
+        # rc-5b fix 13: a per-finding VEX this run wrote that does not parse means the run is broken: stop, do not produce "statements: []"
         out = self.d("out")
         good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
         self.wj(os.path.join(out, "vex", "a-good.openvex.json"), good)
         self.wj(os.path.join(out, "vex", "b-bad.openvex.json"), "{")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._consolidate(out, "2026-09-22T00:00:00Z")
+
+    def test_consolidate_merges_readable_files(self):
+        out = self.d("out")
+        good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
+        self.wj(os.path.join(out, "vex", "a-good.openvex.json"), good)
         supp, n = R._consolidate(out, "2026-09-22T00:00:00Z")
         self.assertEqual(n, 1)
         doc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
@@ -487,14 +850,14 @@ class SuppressionPR(Base):
         self.wj(os.path.join(self.supp, "fosterstack-cache.openvex.json"), st)
         self.wj(os.path.join(self.out, ".auditor", "knowledge.md"), "# k\n")
 
-    def real(self, fr, automerge=False, supp=None):
+    def real(self, fr, automerge=False, supp=None, **kw):
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.ws, GITHUB_REPOSITORY="o/r")
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "on"
         with mock.patch.object(R.subprocess, "run", fr):
             return self.quiet(R._deliver_suppression_pr, self.out, supp or self.supp, 1, "2026-09-22",
-                              "abcdef1234567890", False, [])[0]
+                              "abcdef1234567890", False, [], **kw)[0]
 
     def test_a_panel_delivery_stages_the_vex_only(self):
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -525,6 +888,29 @@ class SuppressionPR(Base):
         fr = ApiRun({("git", "status"): (0, "", "")})                      # the run changed none of the files: never an empty commit
         self.assertEqual(self.real(fr), (None, "signed commit: nothing to commit (the run changed none of the suppression files)"))
         self.assertFalse(fr.stdins)
+
+    def test_the_signed_commit_is_built_on_the_pinned_base_even_when_the_ref_moves(self):
+        # a later `git rev-parse origin/main` would answer SHA: the tracking ref moved
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(self.real(fr, base_sha="b" * 40), ("https://x/pull/9", None))
+        # the API commit's parent is the validated sha
+        self.assertEqual(fr.stdins[0]["variables"]["input"]["expectedHeadOid"], "b" * 40)
+        self.assertIn(["git", "checkout", "-B", self.BR, "b" * 40], fr.argvs())
+        # no later lookup of the moving ref
+        self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))
+
+    def test_a_reviewed_input_that_stops_the_merge_after_the_checkout_still_ends_the_run(self):
+        fr = ApiRun()
+        with mock.patch.object(R, "_merge_suppressions", side_effect=R.ReviewedInputInvalid("damaged after the preflight")):
+            # exit 3, not a "stage files" error to carry on from
+            with self.assertRaises(R.ReviewedInputInvalid):
+                self.real(fr, base_sha="b" * 40)
+
+    def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
+        fr = ApiRun()
+        self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
+        # not a second fetch, not a read, not a checkout
+        self.assertEqual(fr.argvs(), [])
 
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -623,7 +1009,8 @@ class SuppressionPR(Base):
         fr = ApiRun()
         url, err = self.real(fr, supp=self.d("empty-supp"))               # no openvex file to merge
         self.assertIsNone(url); self.assertTrue(err.startswith("stage files: "), err)
-        self.assertEqual(fr.argvs(), [["git", "fetch", "origin", "main"], ["git", "checkout", "-B", self.BR, "origin/main"]])
+        self.assertEqual(fr.argvs(), [["git", "fetch", "origin", "main"], ["git", "rev-parse", "origin/main"], ["git", "show", SHA + ":.vex/fosterstack-cache.openvex.json"],
+                                      ["git", "show", SHA + ":.auditor/accepted-items.json"], ["git", "checkout", "-B", self.BR, SHA]])
 
     def test_existing_pr_reused_and_armed(self):
         fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
@@ -1078,7 +1465,7 @@ class ConsistencyTablesMain(Base):
 # ---------------------------------------------------------------- run() end to end (in-process)
 
 def _expected_images(scanner):
-    from auditorlib import parsers as PL
+    from auditorlib import nochange,  parsers as PL
     return sum(1 for im in PL.panel_images() if PL.panel_expected(scanner, im))      # follows bin/panel.py VARIANTS (Google: amd64 only)
 
 
@@ -1114,6 +1501,8 @@ class Run(Base):
         m = dict({"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"}}, **panel_manifest_fields(self.tmp))
         m.update(m_extra or {})
         out = self.d("out")
+        adj = os.path.join(self.d("adj"), os.path.basename(adjudicator))   # the run fingerprints its adjudicator file: a real file of the same name (no test touches /x)
+        open(adj, "w").write("# a stand-in adjudicator\n"); adjudicator = adj
         ask = ask or mock.Mock(side_effect=AssertionError("no model call expected"))
         with mock.patch.object(R.C, "manifest_findings", return_value=(m, groups)), \
                 mock.patch.object(R, "_consistency", return_value=consistency or {"problems": []}), \
@@ -1217,6 +1606,149 @@ class Run(Base):
         self.assertEqual(cls[c]["section"], 3)
         self.assertEqual(cls[c]["action"], "fix not resolvable: example.com/m@v9.9.9 did not resolve from the module proxy — stays in section 3")
         self.assertIn(["go", "get", "example.com/m@v9.9.9"], fr.argvs())
+
+
+class ExitThreeBeforeMutation(unittest.TestCase):
+    """cache#701 ruling F3/B3 and the cache#708 ruling: every validation that can end the run with exit 3 runs before
+    the first mutating call: the per-finding VEX and the delivery base
+    (one fetch, one sha, its two reviewed files read as git objects) before the first owner-decision issue, the run's
+    own outputs before `git checkout -B <sha>`."""
+    SHA40 = "a" * 40
+    VP, AP = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d, True)
+
+    def _show(self, rc, out="", err=""):
+        return FakeRun({("git", "show"): (rc, out.encode() if isinstance(out, str) else out, err.encode() if isinstance(err, str) else err)})
+
+    def test_base_file_absent_is_the_first_run_good_files_are_returned(self):
+        with mock.patch.object(R.subprocess, "run", self._show(128, "", "fatal: path 'x' does not exist in 'abc'")):
+            self.assertIsNone(R._base_file(self.d, self.SHA40, self.VP))
+        with mock.patch.object(R.subprocess, "run", self._show(0, json.dumps({"statements": []}))):
+            self.assertEqual(R._base_file(self.d, self.SHA40, self.VP), {"statements": []})
+
+    def test_both_not_in_the_base_answers_mean_absent_and_the_workspace_copy_is_never_the_base(self):
+        # a workspace file (untracked, or deleted on main): not the base
+        os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")
+        for gone in ("fatal: path 'x' does not exist in 'abc'", "fatal: path 'x' exists on disk, but not in 'abc'"):
+            with mock.patch.object(R.subprocess, "run", self._show(128, "", gone)):
+                self.assertIsNone(R._base_file(self.d, self.SHA40, self.VP))
+
+    def test_git_show_runs_in_the_c_locale(self):
+        fr = self._show(128, "", "fatal: path 'x' does not exist in 'abc'")
+        with mock.patch.object(R.subprocess, "run", fr):
+            R._base_file(self.d, self.SHA40, self.VP)
+        # git's messages are matched, so they are read in English
+        self.assertEqual(fr.calls[0][1]["env"]["LC_ALL"], "C")
+
+    def test_a_base_file_that_cannot_be_read_or_is_not_the_required_object_is_a_stop(self):
+        bad = (self._show(128, "", "fatal: bad object"), self._show(0, "{not json"), self._show(0, "[]"), self._show(0, "{}"), self._show(0, b"\xff\xfe{}"))
+        for fake in bad:
+            with mock.patch.object(R.subprocess, "run", fake):
+                with self.assertRaises(R.ReviewedInputInvalid):
+                    R._base_file(self.d, self.SHA40, self.VP)
+
+    def test_fetch_base_gives_one_sha_or_the_failure_to_report(self):
+        with mock.patch.object(R.subprocess, "run", FakeRun()):
+            self.assertEqual(R._fetch_base(self.d), (self.SHA40, None))
+        with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): (1, "", " offline \n")})):
+            # handed down: the delivery reports it and never fetches again
+            self.assertEqual(R._fetch_base(self.d), (None, "git fetch: offline"))
+        with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (0, "not-a-sha\n", "")})):
+            self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: not-a-sha"))
+        with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (1, "", "bad")})):
+            self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: bad"))
+
+    def test_base_docs_reads_both_reviewed_files_from_the_sha(self):
+        fr = FakeRun({("git", "show", self.SHA40 + ":" + self.VP): (0, json.dumps({"statements": []}).encode(), b"")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            docs = R._base_docs(self.d, self.SHA40)
+        self.assertEqual(docs, {self.VP: {"statements": []}, self.AP: None})
+        self.assertEqual([a for a in fr.argvs() if a[:2] == ["git", "show"]], [["git", "show", self.SHA40 + ":" + self.VP], ["git", "show", self.SHA40 + ":" + self.AP]])
+
+    def test_preflight_validates_what_the_merge_will_read(self):
+        out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
+        with mock.patch.object(R.subprocess, "run", FakeRun()):
+            # nothing of the run is written yet: first-run shaped, passes
+            R._preflight_delivery(out, supp)
+            vp = os.path.join(supp, "fosterstack-cache.openvex.json")
+            open(vp, "w").write("{}")
+            with self.assertRaises(R.ReviewedInputInvalid):
+                # a consolidated VEX without its statements stops it
+                R._preflight_delivery(out, supp)
+            json.dump({"statements": []}, open(vp, "w"))
+            R._preflight_delivery(out, supp)
+            os.makedirs(os.path.join(out, ".auditor"))
+            open(os.path.join(out, ".auditor", "reopened-expired.json"), "w").write("{}")
+            with self.assertRaises(R.ReviewedInputInvalid):
+                # a damaged ledger of the run stops it before the checkout
+                R._preflight_delivery(out, supp)
+
+    def test_collect_vex_reads_and_validates_without_writing(self):
+        os.makedirs(os.path.join(self.d, "vex"))
+        doc, st = R._collect_vex(self.d, "2026-09-24T00:00:00Z")
+        self.assertEqual((st, doc["statements"]), ([], []))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "suppressions")))
+        open(os.path.join(self.d, "vex", "a.openvex.json"), "w").write("{}")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._collect_vex(self.d, "2026-09-24T00:00:00Z")
+        open(os.path.join(self.d, "vex", "a.openvex.json"), "w").write(json.dumps({"statements": [{}]}))
+        # a statement set that does not validate is a stop with its own reason, not "manifest invalid"
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._collect_vex(self.d, "2026-09-24T00:00:00Z")
+
+    def test_collect_vex_absent_directory_is_none_unreadable_or_not_a_directory_is_a_stop(self):
+        # the first run wrote no per-finding VEX at all
+        doc, st = R._collect_vex(os.path.join(self.d, "never"), "2026-09-24T00:00:00Z")
+        self.assertEqual(st, [])
+        open(os.path.join(self.d, "vex"), "w").write("x")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._collect_vex(self.d, "2026-09-24T00:00:00Z")
+        os.remove(os.path.join(self.d, "vex")); os.makedirs(os.path.join(self.d, "vex"))
+        json.dump({"statements": []}, open(os.path.join(self.d, "vex", "a.openvex.json"), "w"))
+        if os.geteuid() != 0:
+            os.chmod(os.path.join(self.d, "vex"), 0)
+            self.addCleanup(os.chmod, os.path.join(self.d, "vex"), 0o755)
+            # glob used to turn this into zero statements
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._collect_vex(self.d, "2026-09-24T00:00:00Z")
+
+    def test_parse_decodes_bytes_and_wraps_every_failure(self):
+        from auditorlib import reviewed
+        self.assertEqual(reviewed.parse(b'{"statements": []}', "x", as_name="a.openvex.json"), {"statements": []})
+        for bad in (b"\xff\xfe\x00", b"{no", b"[]", b"{}"):
+            with self.assertRaises(reviewed.ReviewedInputInvalid):
+                reviewed.parse(bad, "x", as_name="a.openvex.json")
+
+    def test_merge_reads_the_base_documents_it_is_given_not_the_working_tree(self):
+        ws = os.path.join(self.d, "ws"); os.makedirs(os.path.join(ws, ".vex")); os.makedirs(os.path.join(ws, ".auditor"))
+        tree_stmt = R.vex.doc("CVE-2099-1", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/a@1"])["statements"][0]
+        base_stmt = R.vex.doc("CVE-2099-2", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/b@1"])["statements"][0]
+        run_stmt = R.vex.doc("CVE-2099-3", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/c@1"])["statements"][0]
+        mk = lambda s: {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "x", "author": "a", "role": "vendor", "timestamp": "2026-08-24T00:00:00Z", "version": 3, "statements": [s]}
+        # an untracked / modified file in the workspace
+        json.dump(mk(tree_stmt), open(os.path.join(ws, self.VP), "w"))
+        out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
+        json.dump(mk(run_stmt), open(os.path.join(supp, "fosterstack-cache.openvex.json"), "w"))
+        R._merge_suppressions(ws, supp, base={self.VP: mk(base_stmt), self.AP: None})
+        merged = json.load(open(os.path.join(ws, self.VP)))
+        names = sorted(s["vulnerability"]["name"] for s in merged["statements"])
+        # the base document, not the tree's: CVE-2099-1 is not carried
+        self.assertEqual((names, merged["version"]), (["CVE-2099-2", "CVE-2099-3"], 4))
+
+    def test_delivery_given_the_sha_does_not_fetch_again_and_checks_out_the_sha(self):
+        ws = self.d; out = os.path.join(ws, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
+        json.dump({"statements": []}, open(os.path.join(supp, "fosterstack-cache.openvex.json"), "w"))
+        fr = FakeRun()
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_WORKSPACE": ws}
+        with mock.patch.dict(os.environ, env), mock.patch.object(R.subprocess, "run", fr), contextlib.redirect_stdout(io.StringIO()):
+            R._deliver_suppression_pr(out, supp, 1, "2026-09-22", "abcdef1234567890", False, [], base_sha="b" * 40)
+        argvs = fr.argvs()
+        self.assertNotIn(["git", "fetch", "origin", "main"], argvs)
+        self.assertIn(["git", "show", "b" * 40 + ":" + self.VP], argvs)
+        co = [a for a in argvs if a[:3] == ["git", "checkout", "-B"]]
+        self.assertEqual([a[4] for a in co], ["b" * 40])
 
 
 class SupplyCves(unittest.TestCase):

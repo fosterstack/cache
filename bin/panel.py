@@ -4,7 +4,9 @@ Each scanner job leaves its raw output per image under <scanner>/<image>/ in its
 
   grype      result.cdx.json   CycloneDX from `grype --vex <our VEX> -o cyclonedx-json` (VEX applied by Grype)
   scout      sbom.json         `docker scout sbom --format json`
-             cves.json         `docker scout cves --format gitlab --vex-location <our VEX>` (VEX applied by Scout)
+             cves.json         `docker scout cves --format gitlab --vex-author '^FosterStack LLC$' registry://<image>`
+                               (Scout applies our VEX through the attestation in the image index, REQ-REL-010;
+                               there is no --vex-location)
   inspector  sbom.cdx.json     inspector-sbomgen's CycloneDX
              scan.json         inspector-scan:ScanSbom's answer ({"sbom": CycloneDX with vulnerabilities})
   google     packages.json     the package list gcloud sent to on-demand scanning
@@ -53,9 +55,9 @@ def _load(path):
 
 
 def _product_id(p):
-    """A product's identifier as the PR gate's vex_index reads it: @id, else identifiers.purl."""
+    """A product's identifier as the PR gate's vex_index reads it: @id when the key is present, else identifiers.purl."""
     ids = p.get("identifiers")
-    return p.get("@id") or (ids.get("purl") if isinstance(ids, dict) else None) or ""
+    return p.get("@id") if p.get("@id") is not None else ((ids.get("purl") if isinstance(ids, dict) else None) or "")   # an @id that is present (even "") is the id, as the rescan reads it
 
 
 def _covers(product, image):
@@ -95,10 +97,17 @@ def load_vex(path):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
+def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
+    if not isinstance(purl, str) or not purl.startswith("pkg:"):
+        return False
+    slash = purl.find("/", 4)
+    return 4 < slash < len(purl) - 1
+
+
 def _cdx_packages(doc):
-    """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
+    """Rule 3's package count: components that are packages (carry a package URL, pkg:<type>/<name>). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("purl")]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and _is_package_url(c.get("purl"))]
 
 
 def _purl_name_version(purl):
@@ -173,11 +182,18 @@ def _cdx_findings(doc, comps, inspector=False):
               if c.get("bom-ref")}
     out = []
     for v in doc.get("vulnerabilities") or []:
-        for a in v.get("affects") or []:
-            c = by_ref.get(a.get("ref"), {})
+        affects = v.get("affects") or []
+        if not affects or not all(isinstance(a, dict) for a in affects):   # a vulnerability nobody can attribute (none, or an entry that is not an object) is an incomplete report: did not run, never silence
+            raise ValueError("vulnerability %s has no usable affects list: the report is incomplete" % (v.get("id") or "?"))
+        for a in affects:
+            c = by_ref.get(a.get("ref"))
+            if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
+                raise ValueError("vulnerability %s affects %r, which is not a component of the report: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
+            if name == "?":   # the component has neither a package URL nor a name: still a finding nobody can attribute
+                raise ValueError("vulnerability %s affects the component %r, which has neither a package URL nor a name: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             # Grype writes its CISA KEV listing as a rating (source 'CISA KEV Catalog', method other, justification 'Listed in CISA KEV'): that is the known-exploited
             # marker, not a severity; its 'Negligible' is CycloneDX 'none'
             rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
@@ -209,7 +225,8 @@ def read_grype(d):
 def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
-    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and (a.get("purl") or a.get("version"))]
+    arts = [a for a in sbom.get("artifacts") or []
+            if isinstance(a, dict) and a.get("name") and _is_package_url(a.get("purl"))]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
@@ -217,7 +234,12 @@ def read_scout(d):
         ids = [i.get("value") for i in v.get("identifiers") or [] if i.get("value")]
         dep = (v.get("location") or {}).get("dependency") or {}
         name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
-        purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
+        purl = None
+        if name.startswith("pkg:"):   # Scout's GitLab report puts the package URL in name (scout-selfcheck.py:124): name it as the other scanners do
+            purl = name
+            name, pver = _purl_name_version(purl)
+            ver = ver or pver
+        purl = purl or next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
         out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
     return len(arts), out
 
@@ -305,6 +327,8 @@ def scanner_dirs(inp):
         if scanner not in EXPECTED or os.path.islink(path) or not os.path.isdir(path):
             raise LayoutError("%s is not the artifact of a panel scanner (expected a plain folder panel-%s)" % (n, "|".join(sorted(EXPECTED))))
         inner = sorted(os.listdir(path))
+        if inner and scanner not in inner and all(x in DIAG.get(scanner, set()) and not os.path.islink(os.path.join(path, x)) and os.path.isdir(os.path.join(path, x)) for x in inner):
+            continue    # only its diagnostics (every image failed and its step removed the partial output): a scanner with no results, which the tally calls did-not-run
         if [x for x in inner if x not in ({scanner} | DIAG.get(scanner, set()))] or scanner not in inner:
             raise LayoutError("%s holds %s, not only %s%s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner, (" and " + " ".join(sorted(DIAG[scanner]))) if scanner in DIAG else ""))
         for x in inner:

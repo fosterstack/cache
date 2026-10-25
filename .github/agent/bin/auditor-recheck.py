@@ -24,7 +24,10 @@ def main():
     suppdir = cli.opt("--suppression-dir"); cve = disp.get("cve")
     aliases = {cve} | set(disp.get("aliases", []))
     if cli.flag("--now-pullable"):
-        removed = POAM._remove_ignores(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
+        try:
+            removed = POAM._remove_ignores(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
+        except POAM.reviewed.ReviewedInputInvalid as e:
+            sys.exit("recheck: %s" % e)
         _shim("git checkout -b auditor/bump-%s" % cve)
         _shim("gh pr create --head auditor/bump-%s --base main --label auto-merge-lane" % cve)
         cli.writej(os.path.join(out, "recheck.json"),
