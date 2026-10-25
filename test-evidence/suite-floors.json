@@ -26,7 +26,7 @@
  "dependabot-reviewer-gather-test.sh": 20,
  "dependabot-reviewer-test.sh": 79,
  "dependency-lanes-test.sh": 56,
- "docs-snippets-test.sh": 41,
+ "docs-snippets-test.sh": 50,
  "go-bump-open-pr-test.sh": 22,
  "go-freshness-wiring-test.sh": 29,
  "govulncheck-fixtures-test.sh": 4,

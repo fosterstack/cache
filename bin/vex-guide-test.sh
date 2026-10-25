@@ -30,7 +30,8 @@ for f in (openvex, insp, csaf):
 # how to check it is ours: the signed release manifest (pinned like docs/verify-images.md), then its sha256 of each file
 check("verifies the release manifest attestation, pinned to the promotion workflow and the tag",
       "cosign verify-attestation" in code and "--type https://fosterstack.com/attestations/release-manifest/v1" in code
-      and "stage-promote.yml@refs/tags/v${VER}$" in code and "token.actions.githubusercontent.com" in code)
+      and 'stage-promote.yml@refs/tags/v${VER}"' in code and "--certificate-identity-regexp" not in code
+      and "token.actions.githubusercontent.com" in code)
 check("checks each file against the manifest's sha256", ".vex[]" in code and "sha256sum -c" in code)
 # a failed cosign must stop the reader in any shell (Codex #169 r1, SEC-169-03): its output is saved to a file by the
 # command itself, never piped onward, so the command's own exit status is what the reader sees
