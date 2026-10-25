@@ -30,7 +30,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TEMPLATE_SHA256 = "ad9368adef5584ed7d992210fca7081d70a56b66d7a8068fb8e317f2f9cbddba"   # TEST-SUBST sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
+TEMPLATE_SHA256 = "d081d8899e5968254c849e5bf5050e1e74f8b8b24cb9b98da823d0356e3295e2"   # TEST-SUBST sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
 ALLOWED_SUBST = ("${{targets.destdir}}", "${{build.arch}}")
 ALLOWED_IF = re.compile(r"    if: \$\{\{build\.arch\}\} == '(x86_64|aarch64)'")
 NAMED = ("NAME", "DESCRIPTION", "PACKAGES", "FIPS_EXPORT", "FIPS_PROOF")
