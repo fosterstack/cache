@@ -2204,10 +2204,12 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-# the tars a job may name: the three scan tars bin/layout-archive.sh builds under /tmp/arc/ in the job (exact words)
-# a whole double-quoted word, optionally docker-archive:, followed by a space, ), ] or the end
-own_tar = r'"(?:docker-archive:)?/tmp/arc/(?:\$\{tag\}|\$\{v\}-\$\{arch\}|\$\{v\}-amd64)\.tar"(?=[\s)\]]|$)'
-own_tars = re.sub(r"(?<![^\s(])" + own_tar, "", text)
+# the tars a job may name: the three scan tars bin/layout-archive.sh builds under /tmp/arc/ in the job,
+# each a whole double-quoted word with a space on both sides; any other spelling keeps its .tar and is caught
+own_tars = text
+for name in ("${tag}", "${v}-${arch}", "${v}-amd64"):
+    for scheme in ("", "docker-archive:"):
+        own_tars = own_tars.replace(' "' + scheme + "/tmp/arc/" + name + '.tar" ', " ")
 if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.(?:image\.(?:index|manifest|config)\.v1|empty\.v1)\+json(?![A-Za-z0-9._+-])", "", own_tars)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
 layout_read = r"\boci:/tmp/oci/\$\{v\}|\boci:%s|layout-archive\.sh \"/tmp/oci/\$\{v\}\""
 if "/tmp/oci/" in text and not re.search(layout_read, text):
