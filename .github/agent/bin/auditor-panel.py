@@ -218,15 +218,17 @@ def installed_versions(bundle, f):
 
 def _dbs_read(ev):
     """The package-database kinds the evidence section says were read from the image ("package databases read: ...")."""
-    m = re.search(r"(?m)^package databases read: (.*)$", ev)
-    return set() if not m else {k.strip() for k in m.group(1).split(",") if k.strip() and k.strip() != "none"}
+    mark = "package databases read: "
+    line = next((ln[len(mark):] for ln in ev.splitlines() if ln.startswith(mark)), "")
+    return {k.strip() for k in line.split(",") if k.strip() and k.strip() != "none"}
 
 
 def absence_is_complete(bundle, f):
     """Absence is proof only where the evidence covers that kind of package: a distribution package (deb/apk)
-    with no record in a package database of its kind that was actually read AND no file path mentioning it, or a Go module (not the standard library) in an image whose Go
-    binaries carry build information. Anything else (a static non-Go binary such as busybox, an unknown type) can
-    never be shown absent by this evidence (Codex r3 B1)."""
+    with no record in a package database of its kind that was actually read AND no file path mentioning it, or a
+    Go module (not the standard library) in an image whose Go binaries carry build information. Anything else
+    (a static non-Go binary such as busybox, an unknown type) can never be shown absent by this evidence
+    (Codex r3 B1)."""
     ev = str(bundle).split(EVIDENCE_MARK, 1)[1] if EVIDENCE_MARK in str(bundle) else ""
     pkg = str(f.get("package") or "").lower()
     short = pkg.rsplit("/", 1)[-1]
@@ -234,7 +236,7 @@ def absence_is_complete(bundle, f):
     if kinds & {"deb", "rpm", "apk"} and len(kinds) == 1:
         # absence is proof only against a package database of that kind the evidence says was read (rpm is never read)
         read = _dbs_read(ev)
-        if not ({"deb": "dpkg", "apk": "apk"}.get(next(iter(kinds))) in read):
+        if {"deb": "dpkg", "apk": "apk"}.get(next(iter(kinds))) not in read:
             return False
         return not any(ln.startswith("file: ") and short in ln.lower() for ln in ev.splitlines())
     if kinds == {"golang"} and pkg not in ("stdlib", "go"):
@@ -716,8 +718,9 @@ class _Layout:
 
 
 def read_image(archive, arch):
-    """The image's final filesystem facts from an OCI archive: every path, the dpkg status records, and the bytes
-    of executables carrying Go build information. Layers apply in order; whiteouts remove paths."""
+    """The image's final filesystem facts from an OCI archive: every path, the dpkg status records, the apk installed
+    database, and the bytes of executables carrying Go build information. Layers apply in order; whiteouts remove
+    paths."""
     paths, status, gobins, apk = set(), {}, {}, {}
     with _Layout(archive) as t:
         def blob(d):
@@ -748,7 +751,8 @@ def read_image(archive, arch):
                     if base.startswith(".wh."):
                         continue
                     paths.add(name)
-                    status.pop(name, None); gobins.pop(name, None); apk.pop(name, None)      # a later layer replaces the file
+                    # a later layer replaces the file
+                    status.pop(name, None); gobins.pop(name, None); apk.pop(name, None)
                     if not m.isfile():
                         continue
                     if name == "/var/lib/dpkg/status" or name.startswith("/var/lib/dpkg/status.d/"):

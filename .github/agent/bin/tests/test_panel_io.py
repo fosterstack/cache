@@ -203,6 +203,8 @@ class ApkDatabase(Tmp):
         self.assertEqual(P.installed_versions(b, f), {"20240315-r2"})
         verdict = {"verdict": "false", "evidence": ["package database: no record names baselayout"]}
         self.assertIsNone(P.validated(verdict, b, f)[0])        # no manufactured absence, so no not_affected VEX
+        real = {"verdict": "real", "evidence": ["Package: baselayout\nVersion: 20240315-r2"]}
+        self.assertEqual(P.validated(real, b, f)[0], "real")    # a verdict quoting the apk record is accepted
 
     def test_a_package_the_read_apk_database_lacks_is_absent(self):
         facts = self.image([("lib/apk/db/installed", APK_DB, 0o644)])
@@ -230,7 +232,8 @@ class ApkDatabase(Tmp):
         self.assertFalse(P.absence_is_complete(b, self.finding("netbase", "deb", "6.4")))
 
     def test_an_rpm_finding_is_never_shown_absent(self):
-        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644), ("var/lib/dpkg/status", b"Package: x\n", 0o644)], "both")
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644),
+                            ("var/lib/dpkg/status", b"Package: x\n", 0o644)], "both")
         b = P.bundle_text(facts, {}, self.finding("zlib", "rpm", "1.3"))
         self.assertIn("package databases read: apk, dpkg", b)
         self.assertFalse(P.absence_is_complete(b, self.finding("zlib", "rpm", "1.3")))
