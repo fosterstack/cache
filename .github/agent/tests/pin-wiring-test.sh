@@ -1027,7 +1027,7 @@ done
 # The cases read chain-v030 as git objects at ONE pinned commit, the one the copy was taken from, so a later
 # push to chain-v030 cannot turn main red; the re-copy before the landing moves the pin. The follow-up after
 # the landing deletes this section.
-LANDING_COMMIT=71e08abe98a2de016e79646bb626efb99c6ecfc4
+LANDING_COMMIT=6a36b066b38cc9820be4db2f516057026df30b99
 landing_ref=""
 if git cat-file -e "$LANDING_COMMIT^{commit}" 2> /dev/null; then landing_ref=$LANDING_COMMIT; fi
 git_commit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c; }
