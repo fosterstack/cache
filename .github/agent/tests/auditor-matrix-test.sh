@@ -4004,7 +4004,7 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
 echo "=== rc-5b item 8 (A5): a bump PR carries vendor/, is a draft, never auto-merges, and says provenance is not regenerated ==="
-PROV_LINE='dependency provenance not regenerated; a lane regenerates it on its own branch cut from this one and opens a replacement PR'
+PROV_LINE='dependency provenance not regenerated; a lane regenerates it on its own branch cut from this one and replaces this PR'
 
 rc5b8_verdict() {   # <bin dir> <tag>: runs the shim delivery with auto-merge on and prints "yes" when every claim of the case below holds, else what failed
   local bin="$1" tag="$2" o="$WORK/rc5b8-$2" shim="$WORK/rc5b8-$2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
