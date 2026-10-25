@@ -2205,8 +2205,8 @@ for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
 # the tars a job may name: the three scan tars bin/layout-archive.sh builds under /tmp/arc/ in the job (exact names)
-own = r"/tmp/arc/(?:\$\{tag\}|\$\{v\}-\$\{arch\}|\$\{v\}-amd64)\.tar\b"
-own_tars = re.sub(r"(?<![^\s\"':=])" + own, "", text)
+own_tar = r"/tmp/arc/(?:\$\{tag\}|\$\{v\}-\$\{arch\}|\$\{v\}-amd64)\.tar(?=[\s\"':;)]|$)"
+own_tars = re.sub(r"(?<![^\s\"':=])" + own_tar, "", text)
 if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.(?:image\.(?:index|manifest|config)\.v1|empty\.v1)\+json(?![A-Za-z0-9._+-])", "", own_tars)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
 layout_read = r"\boci:/tmp/oci/\$\{v\}|\boci:%s|layout-archive\.sh \"/tmp/oci/\$\{v\}\""
 if "/tmp/oci/" in text and not re.search(layout_read, text):
@@ -2241,6 +2241,12 @@ f1 caught "a variable prefix before /tmp/arc/ (\${ROOT}/tmp/arc/production.tar) 
 f1 caught "a glob under /tmp/arc/ (/tmp/arc/*.tar) is not one of the job's own tar names" \
   "$root/.github/workflows/main-candidate-rescan.yml" \
   's/name: images/name: images # tar -xf \/tmp\/arc\/*.tar/'
+f1 caught "a suffix after an own tar name (/tmp/arc/\${v}-amd64.tar.evil) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/arc\/${v}-amd64.tar.evil/'
+f1 caught "a variable prefix before an own tar name (\${ROOT}/tmp/arc/\${v}-amd64.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf ${ROOT}\/tmp\/arc\/${v}-amd64.tar/'
 f1 caught "an archive file production.oci is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf production.oci/'
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
 f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
@@ -3057,7 +3063,7 @@ m = [i for i, l in enumerate(t) if l.startswith('melange_bin=')]
 assert len(b) == 1 and len(e) == 1 and b[0] < e[0] < m[0]
 PY
 grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange.yaml && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
-EXPECT=1057
+EXPECT=1059
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
