@@ -916,6 +916,9 @@ class FixPR(Base):
         res, fr = self.real({**self.CHG, **dep})
         self.assertEqual(res, ("https://x/pull/5", None, "deferred"))
         self.assertFalse(any(a[:2] in (["git", "checkout"], ["go", "get"]) for a in fr.argvs()))                   # nothing was built or opened
+        # a deferral touches no pull request: the auditor's own draft is never closed, edited, readied or armed
+        changes = ("close", "edit", "ready", "merge", "create")
+        self.assertFalse(any(a[:2] == ["gh", "pr"] and a[2] in changes for a in fr.argvs()))
         res, fr = self.real({**self.CHG, ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (1, "", "HTTP 500"), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(res, ("https://x/pull/9", None, "delivered-unchecked"))
 
