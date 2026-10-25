@@ -70,9 +70,9 @@ class ApiRun(FakeRun):
                  lookup=None, pr_head=OID, contents=None):
         defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
                     ("git", "rev-parse"): (0, SHA + "\n", ""),
+                    # the staged bump (rc-5b A5): go.mod alone unless a test says more
                     ("git", "diff", "--cached", "--name-only"): (0, "go.mod\0", ""),
-                    # no open Dependabot PR (rc-5b A7) unless a test says so # the staged bump (rc-5b A5): go.mod alone
-                    # unless a test says more
+                    # no open Dependabot PR (rc-5b A7) unless a test says so
                     ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, "[]", "")}
         super().__init__({**defaults, **(rules or {})})
         self.live, self.post, self.patch, self.delete, self.mutation = live, post, patch, delete, mutation
@@ -744,7 +744,8 @@ class FixPR(Base):
         res = R._deliver_fix_pr(self.ROW, "2026-09-22", "abcdef1234567890", False, [])
         self.assertEqual(res, ("https://github.com/OWNER/REPO/pull/SHIM-bump-example.com-m-1.1.0", None, "delivered"))
         lines = open(log).read().splitlines()
-        self.assertNotIn("gh pr merge --auto --squash %s" % self.BR, lines)             # never armed, even with the owner's toggle on
+        # never armed, even with the owner's toggle on
+        self.assertNotIn("gh pr merge --auto --squash %s" % self.BR, lines)
         self.assertIn("go get example.com/m@v1.1.0", lines)
         self.assertIn("go mod vendor", lines)
 
@@ -791,7 +792,8 @@ class FixPR(Base):
         res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True)
         self.assertEqual(res, ("https://x/pull/7", None, "delivered"))
         self.assert_disarmed_before_any_write(fr, "bump")
-        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))       # a bump is never armed again (rc-5b A5: its provenance is not regenerated)
+        # a bump is never armed again (rc-5b A5: its provenance is not regenerated)
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
         res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True, api={"mutation": (1, "", "HTTP 403")})
         self.assertEqual(res[2], "error"); self.assert_disarmed_before_any_write(fr, "failed")
         self.assertFalse(any(a[:4] == ["gh", "pr", "merge", "--auto"][:4] or a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
@@ -804,6 +806,38 @@ class FixPR(Base):
         # an unarmed PR is not disarmed; a head that is not the one written is not armed
         res, fr = self.real({**self.CHG, ("gh", "pr", "view"): (0, "false\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}, automerge=True)
         self.assertEqual(res[0], "https://x/pull/7"); self.assertFalse(any(a[:4] == ["gh", "pr", "merge", "--disable-auto"][:4] and "--disable-auto" in a for a in fr.argvs()))
+
+    IS_DRAFT = ("gh", "pr", "view", "https://x/pull/7", "--json", "isDraft")
+    UNDO = ["gh", "pr", "ready", "--undo", "https://x/pull/7"]
+
+    def test_a_reused_bump_pr_someone_marked_ready_goes_back_to_draft(self):
+        rules = {**self.CHG, ("gh", "pr", "view"): (0, "false\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n",
+            "")}
+        res, fr = self.real({**rules, self.IS_DRAFT: (0, "false\n", "")})            # marked ready: back to draft
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertIn(self.UNDO, fr.argvs())
+        res, fr = self.real({**rules, self.IS_DRAFT: (0, "true\n", "")})             # already a draft: left alone
+        self.assertEqual(res[2], "delivered"); self.assertNotIn(self.UNDO, fr.argvs())
+        res, fr = self.real({**rules, self.IS_DRAFT: (0, "false\n", ""), ("gh", "pr", "ready"): (1, "", "HTTP 500")})
+        # a failed demotion is a failed delivery
+        self.assertEqual(res[2], "error"); self.assertIn("ready --undo", res[1])
+        self.assertEqual(fr.ref_writes(), [])                      # ... before anything is written
+        res, fr = self.real({**rules, self.IS_DRAFT: (1, "", "HTTP 500")})            # the state could not be read
+        self.assertEqual(res[2], "error")
+        # the draft state is read once per delivery, not once per step
+        res, fr = self.real({**rules, self.IS_DRAFT: (0, "false\n", "")})
+        self.assertEqual(sum(1 for a in fr.argvs() if a[:3] == ["gh", "pr", "view"] and "isDraft" in a), 1)
+        # a new target has no PR to look at: nothing is asked of an empty selector, the draft is created
+        new_pr = {**self.CHG, ("gh", "pr", "list"): (0, "", ""), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}
+        # the PR a create race finds is demoted too (it was not the one looked at before the replace)
+        race = {**self.CHG, ("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")],
+                ("gh", "pr", "create"): (1, "", "already exists"),
+                ("gh", "pr", "view", "https://x/pull/8", "--json", "isDraft"): (0, "false\n", "")}
+        res, fr = self.real(race)
+        self.assertEqual(res[2], "delivered")
+        self.assertIn(["gh", "pr", "ready", "--undo", "https://x/pull/8"], fr.argvs())
+        res, fr = self.real(new_pr)
+        self.assertEqual(res, ("https://x/pull/9", None, "delivered"))
+        self.assertFalse(any(a[:3] == ["gh", "pr", "view"] and a[3:4] in ([""], []) for a in fr.argvs()))
 
     REUSE = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
 
@@ -851,10 +885,14 @@ class FixPR(Base):
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertEqual(create[:4], ["gh", "pr", "create", "--draft"])
         self.assertIn(R.BUMP_PROVENANCE_LINE, create[-1])
-        res, fr = self.real(self.REUSE, automerge=True, api={"pr_head": OLDHEAD})      # a REUSED branch: updated, not armed
-        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), []); self.assertFalse(armed(fr))
+        # a REUSED branch: updated, not armed
+        res, fr = self.real(self.REUSE, automerge=True, api={"pr_head": OLDHEAD})
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered"))
+        self.assertEqual(fr.ref_writes(), [])
+        self.assertFalse(armed(fr))
         res, fr = self.real({**self.CHG, ("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")], ("gh", "pr", "create"): (1, "", "already exists")},
-                            automerge=True)                                            # the race-found PR is not armed either
+                            # the race-found PR is not armed either
+                            automerge=True)
         self.assertEqual(res, ("https://x/pull/8", None, "delivered")); self.assertFalse(armed(fr))
 
     def test_a_staging_failure_is_an_error_and_a_missing_go_sum_is_not_staged(self):
@@ -862,7 +900,8 @@ class FixPR(Base):
         self.assertEqual(res, (None, "git add: fatal: pathspec 'go.mod' did not match", "error"))
         self.assertEqual(fr.ref_writes(), [])
         res, fr = self.real({**self.CHG, ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
-        self.assertIn(["git", "add", "-A", "--", "go.mod"], fr.argvs())                           # no go.sum in the checkout: only what exists is staged
+        # no go.sum in the checkout: only what exists is staged
+        self.assertIn(["git", "add", "-A", "--", "go.mod"], fr.argvs())
         os.remove(os.path.join(self.d("ws"), "go.mod"))
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY="o/r")
         fr = ApiRun()
@@ -874,25 +913,32 @@ class FixPR(Base):
         os.makedirs(os.path.join(self.d("ws"), "vendor", "m"), exist_ok=True)
         open(os.path.join(self.d("ws"), "vendor", "m", "a.go"), "w").write("package m\n")
         names = {("git", "diff", "--cached", "--name-only"): (0, "go.mod\0vendor/m/a.go\0vendor/m/gone.go\0", "")}
-        res, fr = self.real({**self.CHG, **names, ("gh", "pr", "create"): (0, "https://x/pull/5\n", "")}, automerge=True)
+        res, fr = self.real({**self.CHG, **names, ("gh", "pr", "create"): (0, "https://x/pull/5\n", "")},
+            automerge=True)
         self.assertEqual(res, ("https://x/pull/5", None, "delivered"))
         self.assertIn(["go", "mod", "vendor"], fr.argvs())
         self.assertLess(fr.argvs().index(["go", "mod", "tidy"]), fr.argvs().index(["go", "mod", "vendor"]))
         self.assertIn(["git", "add", "-A", "--", "go.mod", "vendor"], fr.argvs())
         ch = fr.stdins[0]["variables"]["input"]["fileChanges"]
         self.assertEqual(sorted(a["path"] for a in ch["additions"]), ["go.mod", "vendor/m/a.go"])
-        self.assertIn("vendor/m/gone.go", [d["path"] for d in ch["deletions"]])            # a vendored file the bump removes is a deletion
+        # a vendored file the bump removes is a deletion
+        self.assertIn("vendor/m/gone.go", [d["path"] for d in ch["deletions"]])
         res, fr = self.real({**self.CHG, **names, ("go", "mod", "vendor"): (1, "", "vendor failed")})
         self.assertEqual(res, (None, "go mod vendor: vendor failed", "error"))
         self.assertEqual(fr.argvs()[-1], ["git", "reset", "--hard", "origin/main"])
         res, fr = self.real({**self.CHG, ("git", "diff", "--cached", "--name-only"): (0, "go.mod\0README.md\0", "")})
-        self.assertEqual(res[2], "error"); self.assertIn("README.md", res[1]); self.assertEqual(fr.argvs()[-1], ["git", "reset", "--hard", "origin/main"])
+        self.assertEqual(res[2], "error")
+        self.assertIn("README.md", res[1])
+        self.assertEqual(fr.argvs()[-1], ["git", "reset", "--hard", "origin/main"])
 
     def test_a_reused_bump_pr_that_someone_armed_is_disarmed(self):
-        res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", "")}, api={"lookup": head_lookup(True, SHA)})
-        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])          # the branch itself was reused
+        res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", "")}, api={"lookup": head_lookup(True,
+            SHA)})
+        # the branch itself was reused
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])
         self.assertIn(["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"], fr.argvs())
-        res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, api={"lookup": head_lookup(True, SHA)})
+        res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "merge",
+            "--disable-auto"): (1, "", "HTTP 500")}, api={"lookup": head_lookup(True, SHA)})
         self.assertEqual(res[2], "error"); self.assertIn("disable auto-merge", res[1])
 
     def test_open_dependabot_prs_and_the_title_match(self):
@@ -1017,15 +1063,25 @@ class FixPR(Base):
         self.assertIn("FAILED to open", row["action"])
 
     def test_the_staged_path_guard(self):
-        ws = self.d("guard"); os.makedirs(os.path.join(ws, "vendor", "m")); open(os.path.join(ws, "vendor", "m", "a.go"), "w").write("12345678")
+        ws = self.d("guard")
+        os.makedirs(os.path.join(ws, "vendor", "m"))
+        open(os.path.join(ws, "vendor", "m", "a.go"), "w").write("12345678")
         git = lambda out, rc=0: (lambda *a: subprocess.CompletedProcess(a, rc, out, "boom" if rc else ""))
         self.assertEqual(R._bump_files(ws, git("go.mod\0vendor/m/a.go\0")), (["go.mod", "vendor/m/a.go"], None))
-        paths, err = R._bump_files(ws, git("", 1)); self.assertIsNone(paths); self.assertIn("git diff --cached: boom", err)
-        paths, err = R._bump_files(ws, git("go.mod\0README.md\0")); self.assertIsNone(paths); self.assertIn("README.md", err)
+        paths, err = R._bump_files(ws, git("", 1))
+        self.assertIsNone(paths)
+        self.assertIn("git diff --cached: boom", err)
+        paths, err = R._bump_files(ws, git("go.mod\0README.md\0"))
+        self.assertIsNone(paths)
+        self.assertIn("README.md", err)
         with mock.patch.object(R, "BUMP_MAX_BYTES", 5):
-            paths, err = R._bump_files(ws, git("vendor/m/a.go\0")); self.assertIsNone(paths); self.assertIn("limit", err)
+            paths, err = R._bump_files(ws, git("vendor/m/a.go\0"))
+            self.assertIsNone(paths)
+            self.assertIn("limit", err)
         with mock.patch.object(R, "BUMP_MAX_FILES", 1):
-            paths, err = R._bump_files(ws, git("go.mod\0vendor/m/a.go\0")); self.assertIsNone(paths); self.assertIn("limit", err)
+            paths, err = R._bump_files(ws, git("go.mod\0vendor/m/a.go\0"))
+            self.assertIsNone(paths)
+            self.assertIn("limit", err)
 
     def test_go_get_unresolvable_and_tidy_error(self):
         res, fr = self.real({("go", "get"): (1, "", "unknown revision")})
@@ -1039,14 +1095,16 @@ class FixPR(Base):
     def test_noop_bump_is_unresolvable(self):
         res, fr = self.real({("git", "diff"): (0, "", "")})                # nothing staged
         self.assertEqual(res, (None, None, "unresolvable"))
-        self.assertIn(["git", "add", "-A", "--", "go.mod"], fr.argvs())   # (only the files that exist are staged; the checkout has no go.sum)
+        # (only the files that exist are staged; the checkout has no go.sum)
+        self.assertIn(["git", "add", "-A", "--", "go.mod"], fr.argvs())
         self.assertFalse(any(a[:2] == ["git", "commit"] for a in fr.argvs()))
 
     def test_existing_and_race_and_create(self):
         chg = {("git", "diff"): (1, "", "")}
         res, fr = self.real({**chg, ("gh", "pr", "list"): (0, "https://x/pull/1", "")}, automerge=True)
         self.assertEqual(res, ("https://x/pull/1", None, "delivered"))
-        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))     # never armed (rc-5b A5)
+        # never armed (rc-5b A5)
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
         res, fr = self.real({**chg, ("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/2", "")],
                                          ("gh", "pr", "create"): (1, "", "already exists")})
         self.assertEqual(res, ("https://x/pull/2", None, "delivered"))
