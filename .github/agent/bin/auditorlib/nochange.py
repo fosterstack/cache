@@ -77,7 +77,7 @@ def _evidence(v):
 
 
 PULL_CHECKS = {"pullable": _flag, "bump_attempted": _flag, "hold": lambda v: v in (None,) + HOLDS, "evidence": _evidence,
-               "lift_trigger": _text, "component_fixed": _text, "candidate_release": _text, "bump_result": _text,
+               "lift_trigger": _evidence, "component_fixed": _text, "candidate_release": _text, "bump_result": _text,
                "repo_version": _text, "base_release": _text}
 
 
