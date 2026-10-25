@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/layout-archive.sh LAYOUT ARCH ARCHIVE TAG
-# Makes a docker-save tar of the linux/ARCH image of an OCI layout, so a scanner reads it without a Docker daemon.
+# Builds a docker-save tar of the linux/ARCH image of an OCI layout, so a scanner reads it without a Docker daemon.
 # The tar holds manifest.json (naming TAG as the image name: grype takes the image identity from it, which is how the
 # published VEX applies), then the child's config blob and its layer blobs, and nothing else of the layout.
 # Prints "child sha256:<child manifest> config sha256:<config>", for the caller to check against the scanner.
@@ -26,25 +26,27 @@ member() {
   echo "$path"
 }
 
-[ "$(jq -e '.manifests | length' "$layout/index.json" 2> /dev/null)" = 1 ] \
-  || die "$layout/index.json is missing or does not hold exactly one image index"
+count=$(jq -e '.manifests | length' "$layout/index.json" 2> /dev/null) || count=""
+[ "$count" = 1 ] || die "$layout/index.json is missing or does not hold exactly one image index"
 index=$(member "$(jq -er '.manifests[0].digest' "$layout/index.json")")
 select='.manifests | map(select(.platform.os == "linux" and .platform.architecture == $a))'
 child=$(jq -er --arg a "$arch" "$select | if length == 1 then .[0].digest else empty end" "$stage/$index") \
   || die "the index of $layout holds no single linux/$arch image"
 manifest=$(member "$child")
 
-# one line per digest; each must be a whole string, so a newline inside one cannot make two
+# one line per digest; each must be a whole string, so a newline inside one cannot split it in two
 is_digest='type == "string" and test("\\Asha256:[0-9a-f]{64}\\z")'
-digests=$(jq -er "select((.layers | type) == \"array\" and (.layers | length) > 0
-  and all([.config.digest, .layers[].digest][]; $is_digest)) | [.config.digest, .layers[].digest][]" \
-  "$stage/$manifest") \
+has_layers='(.layers | type) == "array" and (.layers | length) > 0'
+all_digests='all([.config.digest, .layers[].digest][]; is_digest)'
+program="def is_digest: $is_digest; select($has_layers and $all_digests) | [.config.digest, .layers[].digest][]"
+digests=$(jq -er "$program" "$stage/$manifest") \
   || die "the image $child needs a non-empty layers list; every digest must be sha256:<64 hex>"
 members=()
-while IFS= read -r digest; do
+mapfile -t digest_list <<< "$digests"
+for digest in "${digest_list[@]}"; do
   path=$(member "$digest")
   members+=("$path")
-done <<< "$digests"
+done
 
 # a layer listed twice stays listed twice in manifest.json but is one member of the tar
 printf '%s\n' "${members[@]}" | jq -R . \
