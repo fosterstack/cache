@@ -2163,7 +2163,7 @@
       ],
       "signs": "other",
       "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "42201bbb58cffc49f69e06c385534e931ae25a85ad5c3b0178ead644e2b9022b",
+      "sha256": "c54bf2cf1fe75277941fd19ef3ec177db8a610b025c77e012e0ce381d028c54b",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2182,43 +2182,29 @@
         },
         {
           "rule": "deny",
-          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] || die \"--key must be a file named release.rsa: melange names the signature after the key file, and the committed public key is build/keys/release.rsa.pub\"",
-          "line_sha256": "778607070774d4ea884498a62ba3d2b4a3e2d4a7298f6e90cf309f3a7409557a",
+          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] ||",
+          "line_sha256": "8edde846c25cb6d9bdc4d9a3363070a5509b1e5b2a8a9689dfc27e7017734d39",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $orig_a\"",
-          "line_sha256": "0c465c41778098158f8fc325dcca5187f8b3bc1bc494e1d9580370a5f2a40eb1",
+          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $build_dir\"",
+          "line_sha256": "c1d6baed7abf8eabb6177604f72b5eac4945f97ecf55d071db51797af175c7fd",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$orig_a/$rel\")\" = release.rsa.pub ] || die \"after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory\" 1",
-          "line_sha256": "d17bc0110e83028ab9a33ed16e1a69e6952ccefe1bed960dfc50d36ff778fb5e",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ -z \"$ctl\" ] || die \"a file name under $d holds a control character (newline or other): ${ctl#\"$d\"/}; refusing (a name is never split into two)\"",
-          "line_sha256": "c5cb77bf9ce3302712e5cbd2e35204d6da817856f598354be4a49a90e534284d",
+          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; $kept\" 1",
+          "line_sha256": "04f704f7e54ef983d81b05f55c4d3d78825fe1a0bac1cd59c045126abaff9eb9",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed\" 1",
-          "line_sha256": "cdafaca2bb8feae6f3ade2acaf46d44da378429425627d9e632f9dea6f5ffa44",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$sg\" = assembly.rsa.pub ] || die \"${rel#./} is signed by '$sg', not assembly.rsa.pub: Build must carry the assembly key's signature\"",
-          "line_sha256": "9cacb3ed41ec99346374fd13c3795d92b178c5879a712400904164141a2a8e70",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$build_dir/$rel\")\" = release.rsa.pub ] ||",
+          "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -2226,7 +2212,7 @@
       "env_mentions": [
         {
           "name": "PATH",
-          "text": "r = subprocess.run([sys.argv[2], \"rsa\", \"-pubout\", \"-passin\", \"pass:\"], input=block.encode(), capture_output=True, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "text": "child_env = {\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"}",
           "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
