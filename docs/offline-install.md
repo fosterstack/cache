@@ -39,7 +39,7 @@ Verify before the transfer, while you still have a network. Both steps matter:
 # 1. Prove the checksums file is ours
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
@@ -108,7 +108,7 @@ for on the disconnected side too:
 ```sh
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
