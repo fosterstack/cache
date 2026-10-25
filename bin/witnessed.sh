@@ -12,9 +12,10 @@
 #  - Attestors: environment, git, material, product. Never github (its record embeds the raw token), never slsa
 #    (Sign's alone).
 #  - release-sign alone gets a second token, audience sigstore, as SIGSTORE_ID_TOKEN for cosign (REQ-CHAIN-007-AC15);
-#    an empty fetch stops the helper before anything runs.
+#    a failed, empty or null fetch stops the helper before anything runs.
 #  - The sensitive-key list keeps the identity-token variables, job token and Release's credentials out of the record
 #    (REQ-CHAIN-007-AC12).
+#  - Witness runs from the repository root (no working-directory flag), so product subjects are named relative to it.
 # bin/chain-test-shape.py (helper) judges the exact text of this file; its Check copy follows. Change them together.
 set -euo pipefail
 step="$1"
