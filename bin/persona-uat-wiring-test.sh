@@ -73,28 +73,9 @@ def is_kind_run(run):
     return run.strip() == KIND_RUN
 
 def crane_re(pre):
-    """the ONLY accepted way to get `crane` onto the weekly job: the repo's own installer (version and sha256 pinned inside it), the tool the chain already pins for every digest read"""
+    """the ONLY accepted way to get `crane` onto the release-candidate job (it pushes to its loopback registry): the repo's
+    own installer (version and sha256 pinned inside it); the weekly job has none (its digest read is skopeo's)"""
     return re.compile(r"^(?:\./)?" + re.escape(pre) + r"bin/install-scanner\.sh crane$")
-
-def judge_crane(name, steps, d, pre, bad):
-    """the weekly job installs crane in ONE unconditional run step, after the root checkout (it provides bin/install-scanner.sh) and BEFORE the resolver that calls it"""
-    cands = [(i, s) for i, s in enumerate(steps) if "run" in s and re.search(r"\bcrane\b", str(s["run"])) and "gh release view" not in str(s["run"])]
-    good = [(i, s) for i, s in cands if crane_re(pre).match(str(s["run"]).strip())]
-    if len(good) != 1 or len(cands) != 1:
-        bad.append(f"{name}: the job must install crane with exactly one step `./{pre}bin/install-scanner.sh crane` (the chain's pinned tool for digest reads; no other crane download or install step); found {[str(s['run'])[:60] for _, s in cands]}")
-        return
-    i, s = good[0]
-    res = next((k for k, x in enumerate(steps) if "gh release view" in str(x.get("run", ""))), None)
-    cos = [(k, x) for k, x in enumerate(steps) if "actions/checkout" in str(x.get("uses", ""))]
-    prov = next((k for k, x in cos if not str((x.get("with") or {}).get("path", ""))), None)
-    if prov is None or i < prov:
-        bad.append(f"{name}: the crane install step runs BEFORE the checkout that provides bin/install-scanner.sh (or there is none)")
-    if res is None or i > res:
-        bad.append(f"{name}: the crane install step runs AFTER the resolver that calls crane digest (or there is no resolver)")
-    if s.get("if") is not None or not literal_false(s.get("continue-on-error")):
-        bad.append(f"{name}: the crane install step is conditional or non-fatal: a job without crane must fail, never skip it")
-    if str(s.get("shell", "bash")) != "bash" or s.get("working-directory") or s.get("env"):
-        bad.append(f"{name}: the crane install step has a custom shell, working-directory or env")
 
 def judge_install(name, steps, d, pre, bad):
     """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver
@@ -356,8 +337,8 @@ def common(name, job, bad):
             bad.append(f"{name}: action {u} is not pinned to a commit digest")
         if u and u.split("@")[0] not in ALLOWED:
             bad.append(f"{name}: action {u.split('@')[0]} is not on the persona job's allowlist {ALLOWED}")
-        if re.search(r"\bdocker\b|\bbuildx\b", str(s.get("run", ""))):
-            bad.append(f"{name}: a run step uses docker or buildx: containers are started only by the driver, by pinned digest; every digest read uses the chain's pinned `crane digest` (rule 61: no buildx anywhere)")
+        if re.search(r"\bdocker\b(?!://)|\bbuildx\b", str(s.get("run", ""))):   # docker:// is skopeo's transport
+            bad.append(f"{name}: a run step uses docker or buildx: containers are started only by the driver, by pinned digest; every weekly digest read is skopeo's, from the runner image (rule 61: no buildx anywhere)")
     for s in steps:
         if "actions/checkout" in str(s.get("uses", "")) and str(s.get("with", {}).get("persist-credentials", "")).lower() != "false":
             bad.append(f"{name}: checkout keeps the job's credentials (persist-credentials must be false)")
@@ -367,7 +348,8 @@ def common(name, job, bad):
         isrun = "run" in s
         is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
         kind_run_text = str(s.get("run", ""))
-        is_install = isrun and (is_kind_run(kind_run_text) or crane_re(pre).match(kind_run_text.strip()) is not None)
+        crane_ok = not name.startswith("weekly") and crane_re(pre).match(kind_run_text.strip()) is not None
+        is_install = isrun and (is_kind_run(kind_run_text) or crane_ok)
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
         is_pin = isrun and is_pin_pip(s)
@@ -380,8 +362,6 @@ def common(name, job, bad):
             bad.append(f"{name}: a run step before the driver other than the latest-release resolver, "
                        f"the one hash-pinned SDK install and the one kind check (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
-    if weekly:
-        judge_crane(name, steps, d, pre, bad)
     judge_prereqs(name, job, steps, bad)
     judge_refresher(name, steps, d, bad)
     cos = [s for s in steps if "actions/checkout" in str(s.get("uses", ""))]
@@ -439,8 +419,8 @@ def common(name, job, bad):
     return d
 
 def run_resolver(script):
-    """EXECUTE the weekly resolver against recording gh/crane stubs (docker fails): it must ask gh for the latest release's tag in THIS repository (GH_REPO),
-    read the digest of <registry>/<owner>/cache:<tag without the leading v> (the published image tags are unprefixed) with `crane digest`, and
+    """EXECUTE the weekly resolver against recording gh/skopeo stubs (docker fails): it must ask gh for the latest release's tag in THIS repository (GH_REPO),
+    read the digest of <registry>/<owner>/cache:<tag without the leading v> (the published image tags are unprefixed) with `skopeo inspect --format={{.Digest}}`, and
     write tag=<the release tag, with its v> and image=<registry>/<owner>/cache@<that digest> to GITHUB_OUTPUT."""
     import subprocess
     out = []
@@ -449,12 +429,12 @@ def run_resolver(script):
         open(d + "/bin/gh", "w").write("#!/bin/sh\n[ -n \"$GH_REPO\" ] || { echo 'no repo' >&2; exit 1; }\n"
                                        "echo \"gh $*\" >> \"$REC\"\n"
                                        "case \"$*\" in 'release view --json tagName -q .tagName'|'release view --json tagName --jq .tagName') echo v0.2.1;; *) echo \"unexpected gh call: $*\" >&2; exit 1;; esac\n")
-        open(d + "/bin/crane", "w").write("#!/bin/sh\necho \"crane $*\" >> \"$REC\"\n"
-                                          "[ \"$1\" = 'digest' ] && [ $# -eq 2 ] || { echo 'unexpected crane call' >&2; exit 1; }\n"
-                                          "[ \"$2\" = 'ghcr.io/own/cache:0.2.1' ] || { echo \"wrong image reference: $2\" >&2; exit 1; }\n"
-                                          "echo sha256:" + "d" * 64 + "\n")
+        open(d + "/bin/skopeo", "w").write("#!/bin/sh\necho \"skopeo $*\" >> \"$REC\"\n"
+                                           "[ \"$1\" = 'inspect' ] && [ \"$2\" = '--format={{.Digest}}' ] && [ $# -eq 3 ] || { echo 'unexpected skopeo call' >&2; exit 1; }\n"
+                                           "[ \"$3\" = 'docker://ghcr.io/own/cache:0.2.1' ] || { echo \"wrong image reference: $3\" >&2; exit 1; }\n"
+                                           "echo sha256:" + "d" * 64 + "\n")
         open(d + "/bin/docker", "w").write("#!/bin/sh\necho 'docker is not used by the resolver' >&2\nexit 1\n")
-        for f in ("gh", "crane", "docker"):
+        for f in ("gh", "skopeo", "docker"):
             os.chmod(d + "/bin/" + f, 0o755)
         open(d + "/script.sh", "w").write(script)
         env = {"PATH": d + "/bin:" + os.environ["PATH"], "GH_REPO": "own/cache", "REGISTRY_OWNER": "own", "GITHUB_OUTPUT": d + "/out", "REC": d + "/rec", "HOME": d}
@@ -462,7 +442,7 @@ def run_resolver(script):
         r = subprocess.run(["bash", "-e", d + "/script.sh"], env=env, capture_output=True, text=True)
         outs = open(d + "/out").read()
         if r.returncode != 0:
-            out.append("weekly persona-uat's resolver failed against recording gh/crane (wrong repository, wrong image reference, or a bad call): " + r.stderr.strip()[:200])
+            out.append("weekly persona-uat's resolver failed against recording gh/skopeo (wrong repository, wrong image reference, or a bad call): " + r.stderr.strip()[:200])
         elif "tag=v0.2.1" not in outs.splitlines() or ("image=ghcr.io/own/cache@sha256:" + "d" * 64) not in outs.splitlines():
             out.append("weekly persona-uat's resolver does not write tag=<release tag> and image=<registry>/<owner>/cache@<inspected digest> to GITHUB_OUTPUT: " + repr(outs))
     return out
@@ -892,7 +872,7 @@ def judge_weekly(f, bad):
     else:
         r = res[0]; rrun = "\n".join(l for l in str(r.get("run", "")).splitlines() if not l.strip().startswith("#"))
         if not expr_is((r.get("env", {}) or {}).get("GH_REPO", ""), "github.repository") or not expr_is((r.get("env", {}) or {}).get("REGISTRY_OWNER", ""), "github.repository_owner"):
-            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout and the crane install, before the docs checkout)")
+            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout, before the docs checkout)")
         if not isinstance(r.get("env"), dict) or set(r["env"]) != {"GH_REPO", "REGISTRY_OWNER", "GH_TOKEN"}:
             bad.append(f"weekly persona-uat's resolver step's env must be exactly GH_REPO, REGISTRY_OWNER and GH_TOKEN (found {sorted(r['env']) if isinstance(r.get('env'), dict) else repr(r.get('env'))})")
         bad.extend(run_resolver(rrun))
@@ -903,22 +883,22 @@ def judge_weekly(f, bad):
             var = m.group(1)
             if "if" in r or not literal_false(r.get("continue-on-error")):
                 bad.append("weekly persona-uat's resolver step is conditional or non-fatal: the weekly run could go on without an image")
-            insp = [l for l in rrun.splitlines() if re.search(r"\bcrane digest\b", l)]
+            insp = [l for l in rrun.splitlines() if re.search(r"\bskopeo inspect\b", l)]
             if not insp or not re.search(r"\$\{?" + re.escape(var) + r"\}?(?![\w])", insp[0]):
-                bad.append("weekly persona-uat does not read the digest of the release it just resolved (`crane digest` must use the resolved tag)")
-            dm = re.search(r"(\w+)=\$\(\s*crane digest [^\n]*\)", rrun)
+                bad.append("weekly persona-uat does not read the digest of the release it just resolved (`skopeo inspect --format={{.Digest}}` must use the resolved tag)")
+            dm = re.search(r"(\w+)=\$\(\s*skopeo inspect [^\n]*\)", rrun)
             if not dm:
-                bad.append("weekly persona-uat's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
+                bad.append("weekly persona-uat's resolver does not capture the digest with `skopeo inspect --format={{.Digest}} <registry>/<owner>/cache:<tag>` (skopeo from the runner image; no buildx, no docker)")
             # the resolver is EXACTLY these five lines, in this order (no other line, no second output line, nothing inside the quotes but the fixed references): a closed list
             RESOLVER_EXACT = (r'set -euo pipefail\n(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)\n'
-                              r'(\w+)=\$\(crane digest "ghcr\.io/\$\{REGISTRY_OWNER\}/cache:\$\{\1#v\}"\)\n'
+                              r'(\w+)=\$\(skopeo inspect --format=\{\{\.Digest\}\} "docker://ghcr\.io/\$\{REGISTRY_OWNER\}/cache:\$\{\1#v\}"\)\n'
                               r'echo "tag=\$(?:\{\1\}|\1(?!\w))" >> "\$GITHUB_OUTPUT"\n'
                               r'echo "image=ghcr\.io/\$\{REGISTRY_OWNER\}/cache@\$(?:\{\2\}|\2(?!\w))" >> "\$GITHUB_OUTPUT"')
             rlines = [l.strip() for l in rrun.splitlines() if l.strip()]
             if not re.fullmatch(RESOLVER_EXACT, "\n".join(rlines)):
-                bad.append("weekly persona-uat's resolver is not one of the five allowed shapes, exactly and in this order (set -euo pipefail; the gh release view read; the one crane digest read of ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}; the tag= output; the image= output built from that digest): any extra, repeated or altered line is refused")
-            if any(not re.fullmatch(r'\s*\w+=\$\(crane digest "[^"\n]*"\)\s*', l) for l in insp):
-                bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback, the whole line exactly NAME=$(crane digest \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
+                bad.append("weekly persona-uat's resolver is not one of the five allowed shapes, exactly and in this order (set -euo pipefail; the gh release view read; the one skopeo inspect --format={{.Digest}} read of ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}; the tag= output; the image= output built from that digest): any extra, repeated or altered line is refused")
+            if any(not re.fullmatch(r'\s*\w+=\$\(skopeo inspect --format=\{\{\.Digest\}\} "[^"\n]*"\)\s*', l) for l in insp):
+                bad.append("weekly persona-uat's digest line must be one `skopeo inspect --format={{.Digest}}` with no pipe or fallback, the whole line exactly NAME=$(skopeo inspect --format={{.Digest}} \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
             if not dm or not re.search(r"image=[^\n]*@\$\{?" + re.escape(dm.group(1)) + r"\}?(?![\w])[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
                 bad.append("weekly persona-uat's resolver does not write an image= output built from the digest it inspected")
             if not expr_is(r.get("env", {}).get("GH_TOKEN", ""), "github.token"):
@@ -1081,13 +1061,13 @@ def synth_persona_job(weekly):
            {"uses": "actions/checkout@" + H40, "with": {"path": "release-docs", "ref": "${{ steps.resolve.outputs.tag }}", "persist-credentials": "false"}}] if weekly
           else [{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}}])
     resolver = [{"id": "resolve", "env": {"GH_REPO": "${{ github.repository }}", "REGISTRY_OWNER": "${{ github.repository_owner }}", "GH_TOKEN": "${{ github.token }}"},
-                 "run": 'set -euo pipefail\ntag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
+                 "run": 'set -euo pipefail\ntag=$(gh release view --json tagName -q .tagName)\nd=$(skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
-    # the weekly job: the root checkout (it provides bin/install-scanner.sh), the pinned crane, the resolver, then the docs checkout; the rc job has the one checkout
+    # the weekly job: the root checkout, the resolver (skopeo is the runner image's), then the docs checkout; the rc job has the one checkout
     rc_load = [{"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "with": {"name": "images", "path": "candidate/images"}},
                {"run": "./" + pre + "bin/install-scanner.sh crane"},
                {"name": "load", "env": {"DIGESTS": "${{ needs.build.outputs.digests }}"}, "run": RC_LOAD_RUN}]
-    head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co + rc_load
+    head = ([co[0]] + resolver + [co[1]]) if weekly else co + rc_load
     steps = (head + [{"run": KIND_RUN},
              {"run": PIN_PIP_RUN},
              {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
@@ -1375,15 +1355,15 @@ mutate("weekly workflow: another job enters the persona-uat environment", "outsi
 mutate("rc workflow: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "rel_wf")
 mutate("weekly workflow: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "fresh_wf")
 mutate("weekly job resolves a fixed release tag", "does not resolve the LATEST release's image digest",
-       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run="gh release view v0.2.0 --json tagName; crane digest x"), "fresh")
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run="gh release view v0.2.0 --json tagName; skopeo inspect --format={{.Digest}} x"), "fresh")
 mutate("weekly driver is handed a fixed image", "does not hand the resolved latest-release image digest",
        lambda j: drv(j).update(run=re.sub(r"--image\s+\S+", "--image ghcr.io/x/cache@sha256:" + "a" * 64, drv(j)["run"])), "fresh")
 mutate("weekly cron literal reformatted", "does not run only on the Monday cron", lambda j: j.update({"if": "${{ github.event.schedule == '436**1' }}"}), "fresh")
 mutate("weekly resolver moved after the driver", "AFTER running the driver", lambda j: (lambda r: (j["steps"].remove(r), j["steps"].insert(j["steps"].index(drv(j)) + 1, r)))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("weekly resolver uses a fixed tag variable", "does not resolve the LATEST release's image digest",
-       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run='tag=v0.1.0; gh release view "$tag" --json tagName; d=$(crane digest "ghcr.io/x/cache:$tag"); echo "image=$d" >> "$GITHUB_OUTPUT"'), "fresh")
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run='tag=v0.1.0; gh release view "$tag" --json tagName; d=$(skopeo inspect --format={{.Digest}} "docker://ghcr.io/x/cache:$tag"); echo "image=$d" >> "$GITHUB_OUTPUT"'), "fresh")
 mutate("weekly resolver inspects an unrelated tag", "does not read the digest of the release it just resolved",
-       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run=re.sub(r"crane digest \S+", "crane digest ghcr.io/x/cache:latest", next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))["run"])), "fresh")
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run=re.sub(r"skopeo inspect --format={{.Digest}} \S+", "skopeo inspect --format={{.Digest}} docker://ghcr.io/x/cache:latest", next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))["run"])), "fresh")
 mutate("weekly driver image argument fully replaced", "does not hand the resolved latest-release image digest",
        lambda j: set_image(j, "ghcr.io/x/cache@sha256:" + "a" * 64), "fresh")
 mutate("weekly image is the literal text, not an expression", "does not hand the resolved latest-release image digest",
@@ -1405,29 +1385,28 @@ mutate("weekly job has a single checkout", "expected exactly 2 actions/checkout"
 mutate("weekly job gains needs (skipped on the Monday cron)", "has needs", lambda j: j.update(needs=["check"]), "fresh")
 mutate("weekly resolver emits tag=main", "does not write tag=<release tag>",
        lambda j: _resolver(j).update(run=re.sub(r"(?m)^.*tag=.*GITHUB_OUTPUT.*$", 'echo "tag=main" >> "$GITHUB_OUTPUT"', _resolver(j)["run"])), "fresh")
-mutate("weekly resolver inspects the v-prefixed image tag", "resolver failed against recording gh/crane",
+mutate("weekly resolver inspects the v-prefixed image tag", "resolver failed against recording gh/skopeo",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${tag#v}", "${tag}")), "fresh")
-mutate("weekly resolver reads the manifest, not the digest (another crane verb)", "resolver failed against recording gh/crane",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("crane digest", "crane manifest")), "fresh")
-def _crane(j): return next(s for s in j["steps"] if "install-scanner.sh crane" in str(s.get("run", "")))
+mutate("weekly resolver reads the manifest, not the digest (another skopeo form)", "resolver failed against recording gh/skopeo",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("skopeo inspect --format={{.Digest}}", "skopeo inspect --raw")), "fresh")
 mutate("weekly resolver reads the digest with buildx again (rule 61)", "uses docker or buildx",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\'')), "fresh")
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\'')), "fresh")
 mutate("weekly resolver reads the digest with docker manifest inspect", "uses docker or buildx",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker manifest inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"')), "fresh")
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker manifest inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"')), "fresh")
 mutate("weekly resolver falls back to a fixed digest when crane fails", "no pipe or fallback",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" || echo sha256:' + "a" * 64 + ')')), "fresh")
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" || echo sha256:' + "a" * 64 + ')')), "fresh")
 mutate("weekly resolver follows the digest with a plain || fallback (no later parenthesis)", "no pipe or fallback",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") || d=sha256:' + "a" * 64)), "fresh")
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") || d=sha256:' + "a" * 64)), "fresh")
 mutate("weekly resolver wraps the digest read in an if-not", "no pipe or fallback",
-       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=(\$\(crane digest [^\n]*\))$", r"if ! \1=\2; then \1=sha256:" + "a" * 64 + "; fi", _resolver(j)["run"])), "fresh")
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=(\$\(skopeo inspect [^\n]*\))$", r"if ! \1=\2; then \1=sha256:" + "a" * 64 + "; fi", _resolver(j)["run"])), "fresh")
 mutate("weekly resolver pipes the output after the substitution", "no pipe or fallback",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") | cat')), "fresh")
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") | cat')), "fresh")
 mutate("weekly resolver puts the digest read in a group with a fallback after it", "is not one of the five allowed shapes",
-       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+=\$\(crane digest [^\n]*\))$", lambda m: "{\n" + m.group(1) + "\n} || " + m.group(1).split("=")[0] + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+=\$\(skopeo inspect [^\n]*\))$", lambda m: "{\n" + m.group(1) + "\n} || " + m.group(1).split("=")[0] + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
 mutate("weekly resolver turns errexit off before the digest read", "is not one of the five allowed shapes",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("tag=$(gh release view", "set +e\ntag=$(gh release view", 1)), "fresh")
 mutate("weekly resolver reassigns the digest on a line of its own", "is not one of the five allowed shapes",
-       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=\$\(crane digest [^\n]*\)$", lambda m: m.group(0) + "\n" + m.group(1) + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=\$\(skopeo inspect [^\n]*\)$", lambda m: m.group(0) + "\n" + m.group(1) + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
 mutate("weekly resolver does not start with set -euo pipefail", "is not one of the five allowed shapes",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("set -euo pipefail\n", "", 1)), "fresh")
 mutate("weekly resolver writes a second image= line after the real one", "is not one of the five allowed shapes",
@@ -1441,7 +1420,7 @@ mutate("weekly resolver runs a backtick command inside the crane reference", "is
 mutate("weekly resolver rewrites the owner with a parameter expansion", "is not one of the five allowed shapes",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${REGISTRY_OWNER}/cache:", "${REGISTRY_OWNER/#[!o]*/attacker}/cache:")), "fresh")
 mutate("weekly resolver reads a second digest with another crane line", "is not one of the five allowed shapes",
-       lambda j: _resolver(j).update(run=re.sub(r'(?m)^(\w+)=\$\(crane digest ([^\n]*)\)$', lambda m: m.group(0) + "\nz=$(crane digest " + m.group(2) + ")", _resolver(j)["run"])), "fresh")
+       lambda j: _resolver(j).update(run=re.sub(r'(?m)^(\w+)=\$\(skopeo inspect --format=\{\{\.Digest\}\} ([^\n]*)\)$', lambda m: m.group(0) + "\nz=$(skopeo inspect --format={{.Digest}} " + m.group(2) + ")", _resolver(j)["run"])), "fresh")
 mutate("weekly job-level env exports a shell function (BASH_FUNC_crane%%)", "env must be empty", lambda j: j.update(env={"BASH_FUNC_crane%%": "() { echo sha256:evil; }"}), "fresh")
 mutate("weekly job-level env sets OPENSSL_CONF", "env must be empty", lambda j: j.update(env={"OPENSSL_CONF": "/tmp/x"}), "fresh")
 mutate("weekly job-level env holds a harmless-looking key", "env must be empty", lambda j: j.update(env={"FOO": "1"}), "fresh")
@@ -1452,14 +1431,9 @@ mutate("rc job-level env sets PATH", "env must be empty", lambda j: j.update(env
 mutate("weekly resolver step env sets BASH_ENV", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(BASH_ENV="$(true)"), "fresh")
 mutate("weekly resolver step env sets GH_HOST", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(GH_HOST="evil.example"), "fresh")
 mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
-mutate("weekly job has no crane install", "must install crane with exactly one step", lambda j: j["steps"].remove(_crane(j)), "fresh")
-mutate("weekly job installs crane twice", "must install crane with exactly one step", lambda j: j["steps"].insert(j["steps"].index(_crane(j)) + 1, dict(_crane(j))), "fresh")
-mutate("weekly crane install into a directory of its own (not the installer's default)", "must install crane with exactly one step", lambda j: _crane(j).update(run="./bin/install-scanner.sh crane /opt/crane-elsewhere"), "fresh")
-mutate("weekly crane install runs AFTER the resolver", "AFTER the resolver", lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(j["steps"].index(_resolver(j)) + 1, c)))(_crane(j)), "fresh")
-mutate("weekly crane install runs BEFORE the root checkout", "BEFORE the checkout that provides bin/install-scanner.sh", lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(0, c)))(_crane(j)), "fresh")
-mutate("weekly crane install is conditional", "crane install step is conditional or non-fatal", lambda j: _crane(j).update({"if": "false"}), "fresh")
-mutate("weekly crane install carries an env", "crane install step has a custom shell, working-directory or env", lambda j: _crane(j).update(env={"X": "1"}), "fresh")
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
+mutate("weekly job installs crane again", "a run step before the driver other than",
+       lambda j: j["steps"].insert(1, {"run": "./bin/install-scanner.sh crane"}), "fresh")
 mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
 mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
 mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
@@ -1489,8 +1463,8 @@ mutate("tools: jenkins names another image", "does not name its own official ima
 mutate("weekly job leaves the persona-uat environment", "does not run in the persona-uat environment", lambda j: j.pop("environment"), "fresh")
 mutate("weekly resolver is conditional", "resolver step is conditional or non-fatal",
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update({"if": "false"}), "fresh")
-mutate("weekly resolver does not capture a crane digest (a fixed value instead)", "does not capture the digest",
-       lambda j: (lambda r: r.update(run=r["run"].replace('$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', '$(echo sha256:' + "a" * 64 + ')')))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
+mutate("weekly resolver does not capture a skopeo digest (a fixed value instead)", "does not capture the digest",
+       lambda j: (lambda r: r.update(run=r["run"].replace('$(skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', '$(echo sha256:' + "a" * 64 + ')')))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("weekly resolver emits an unrelated fixed digest", "built from the digest it inspected",
        lambda j: (lambda r: r.update(run=re.sub(r'image=[^\n]*>>', 'image=ghcr.io/x/cache@sha256:' + 'a' * 64 + ' >>', r["run"])))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("rc driver is given a second --mode (last wins)", "--mode exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --mode weekly"))

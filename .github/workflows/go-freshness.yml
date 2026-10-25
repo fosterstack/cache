@@ -198,9 +198,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: install the pinned crane binary
-        run: ./bin/install-scanner.sh crane
-
       - name: resolve the latest release and its image digest
         id: resolve
         env:
@@ -210,7 +207,7 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(gh release view --json tagName -q .tagName)
-          digest=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")
+          digest=$(skopeo inspect --format={{.Digest}} "docker://ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${REGISTRY_OWNER}/cache@${digest}" >> "$GITHUB_OUTPUT"
 
