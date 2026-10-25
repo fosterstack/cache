@@ -2204,10 +2204,11 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-# the one tar a job may name: a scan tar under /tmp/arc/ that bin/layout-archive.sh builds in the job from the layout directory
+# the one tar a job may name: a scan tar under /tmp/arc/, built in the job by bin/layout-archive.sh from the layout
 own_tars = re.sub(r"/tmp/arc/[^\s\"']*\.tar\b", "", text)
 if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.(?:image\.(?:index|manifest|config)\.v1|empty\.v1)\+json(?![A-Za-z0-9._+-])", "", own_tars)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
-if "/tmp/oci/" in text and not re.search(r"\boci:/tmp/oci/\$\{v\}|\boci:%s|layout-archive\.sh \"/tmp/oci/\$\{v\}\"", text):
+layout_read = r"\boci:/tmp/oci/\$\{v\}|\boci:%s|layout-archive\.sh \"/tmp/oci/\$\{v\}\""
+if "/tmp/oci/" in text and not re.search(layout_read, text):
     bad.append("does not read the layout with skopeo oci: or bin/layout-archive.sh")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
@@ -2221,8 +2222,12 @@ f1 caught "an archive path that only looks like a media type (/tmp/oci/vnd.oci) 
 f1 caught "an archive path glued onto a media type (application/vnd.oci.x.tar) is caught (take 30 round 2, Codex terra)" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf \/tmp\/application\/vnd.oci.x.tar/'
 f1 caught "an archive path glued onto a real media type (application/vnd.oci.image.manifest.v1.oci) is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf application\/vnd.oci.image.manifest.v1.oci/'
 f1 caught "an archive path glued onto a real media type (application/vnd.oci.image.index.v1+json.tar) is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf application\/vnd.oci.image.index.v1+json.tar/'
-f1 caught "a Build archive spelled as a tar of the layout (/tmp/oci/production.tar) is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf \/tmp\/oci\/production.tar/'
-f1 ok "a scan tar the job builds itself under /tmp/arc/ is not a Build archive" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # grype docker-archive:\/tmp\/arc\/x.tar/'
+f1 caught "a Build archive spelled as a tar of the layout (/tmp/oci/production.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/oci\/production.tar/'
+f1 ok "a scan tar the job builds itself under /tmp/arc/ is not a Build archive" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # grype docker-archive:\/tmp\/arc\/x.tar/'
 f1 caught "an archive file production.oci is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf production.oci/'
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
 f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
@@ -2230,7 +2235,9 @@ f1 caught "a download of vex-attach in a workflow whose own vex-attach job does 
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
-f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#layout-archive.sh "/tmp/oci/${v}"#layout-archive.sh "/tmp/oci/${v}.tar"#'
+f1 caught "a <variant>.tar archive path is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's#layout-archive.sh "/tmp/oci/${v}"#layout-archive.sh "/tmp/oci/${v}.tar"#'
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
 f1 caught "a panel download by artifact id of something that is not a scanner job's own artifact is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/artifact-ids: ${{ needs.vex-attach.outputs.artifact-id }}/'
 f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
