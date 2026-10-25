@@ -106,8 +106,9 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
+bin/layout-archive.sh bin/layout-archive-test.sh
 """.split())
-if len(DECLARED) != 54: errs.append("declared list is not 54 paths: %d" % len(DECLARED))
+if len(DECLARED) != 56: errs.append("declared list is not 56 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -117,7 +118,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 201, 6   # 201 allow patterns: chain-v030 (cache#735 removed install-kind) plus the bin/audit-record pattern (REQ-REL-012)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 202, 6   # 202 allow patterns: chain-v030 (201 with the layout-archive pattern, 0674) plus the bin/audit-record pattern (REQ-REL-012)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0

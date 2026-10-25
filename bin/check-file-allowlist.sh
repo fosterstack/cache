@@ -317,6 +317,7 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.md$'
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
+  '^bin/layout-archive(-test)?\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

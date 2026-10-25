@@ -1931,7 +1931,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "f4cf56ae548a10aa4b1691a481494e94ef825ee3999ff07ad83f5f803f202fdf",
+      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
       "tools": [
         "at",
         "curl",
@@ -2012,7 +2012,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "b4469b84e9822df6de8d5d29ebcffbcfab3d9816dd035b022a71b9cefcd118a2",
+      "sha256": "3980fc06bf599e35e945a30419727006e9dffe825dd41695b881f45503be9711",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
