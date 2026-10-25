@@ -56,10 +56,13 @@ def wit(step, env):
     e = "".join(f"          {k}: {v}\n" for k, v in env.items())
     cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
     return f"      - name: {step}\n" + cond + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
+def renv(step, always=False):
+    cond = "" if always or step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"
+    return f"      - name: {step} record holds no token\n" + cond + f"        run: python3 -I bin/chain-verify.py record-env --record witness-{step}/{step}-collection.json\n"
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
-VDOWN = ("witness-build", "digests", "items", "witness-rebuild", "witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
-VPATH = {"witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "witness-rebuild": "witness-rebuild", "witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
-def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
+VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "signed-witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
+VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
+def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
 # REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
 # no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read + id-token write
@@ -70,10 +73,11 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          "  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          + dn("apk-ubuntu-24.04", "apks/ubuntu-24.04") + dn("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm") + dn("rapk-ubuntu-24.04", "rapks/ubuntu-24.04") + dn("rapk-ubuntu-24.04-arm", "rapks/ubuntu-24.04-arm")
+         + dn("signed-witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04") + dn("signed-witness-rapk-ubuntu-24.04-arm", "witness-rapk-ubuntu-24.04-arm")
          + "      - name: compare Build's and Rebuild's apks\n        run: bash bin/release-compare.sh\n" + up_checked("apk-compare")
          + "  verify:\n    needs: compare\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
-         + inst("witness") + vdowns() + wit("release-verify", {}) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
+         + inst("witness") + vdowns() + wit("release-verify", {}) + renv("release-verify", True) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
          + "  release:\n    needs: [compare, verify]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
@@ -82,6 +86,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
          + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
          + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
+         + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"))      # rc-2 R4: the six records are checked for a token before any upload
          + up("release-evidence") + up("witness-release"))
 open(w + "/stage.yml", "w").write(stage)
 open(w + "/release.yml", "w").write("""name: Release
@@ -103,14 +108,20 @@ jobs:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-sign.yml
   rebuild:
-    needs: build
+    needs: [build, sign]
     uses: ./.github/workflows/stage-reproducibility.yml
+  sign-rebuild:
+    needs: [build, rebuild]
+    uses: ./.github/workflows/stage-sign.yml
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
+  sign-check:
+    needs: [build, check]
+    uses: ./.github/workflows/stage-sign.yml
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [check, rebuild, sign]
+    needs: [check, sign, sign-rebuild, sign-check]
     uses: ./.github/workflows/stage-promote.yml
     permissions:
       contents: write
@@ -158,7 +169,7 @@ for n, b in BODY.items():
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
 rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": [], "reason": "fixture"})
 open(w + "/s/bin/release-compare.py", "w").write("import sys\n")
-rows.append({"path": "bin/release-compare.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-compare.py", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": ["bin/apk-tool.py"], "reason": "fixture"})
+rows.append({"path": "bin/release-compare.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-compare.py", "rb").read()).hexdigest(), "tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"], "reason": "fixture"})
 open(w + "/s/bin/release-layout.py", "w").write("import sys\n")
 rows.append({"path": "bin/release-layout.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-layout.py", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 open(w + "/s/bin/witnessed.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
@@ -191,6 +202,26 @@ done
 expect ok "fixture: all release scripts and the helper are listed with sha256, tools, signs and runs" "" listed "$work/s/.github/policy/chain-scripts.json" "$work/s"
 expect ok "fixture: a Witness record with none of the credentials" "" record "$work/record.json" SENTINEL-VALUE-123
 mkdir -p "$work/rm" && expect ok "fixture: none of the old authorization machinery" "" removed "$work/rm"
+# ---- rc-2 R4 (Fable): the run strings of the real stage-promote.yml are EXECUTED: a clean record exits 0, a leaking one exits 1, a missing one exits 2 -------------
+python3 - "$root" "$work" <<'PYX' && ok "AC12 (R4) every record-env run string of the real stage-promote.yml executes: clean 0, leaking 1, missing 2 (seven steps: six in the release job, one in the verify job)" || bad "AC12 (R4) the record-env run strings do not execute as the grammar says"
+import base64, json, os, re, subprocess, sys, tempfile, yaml
+root, work = sys.argv[1], sys.argv[2]
+wf = yaml.safe_load(open(root + "/.github/workflows/stage-promote.yml"))
+runs = [(jn, s["run"]) for jn in ("verify", "release") for s in wf["jobs"][jn]["steps"] if "record-env" in (s.get("run") or "")]
+assert len(runs) == 7, runs
+def env(payload):
+    st = {"_type": "https://in-toto.io/Statement/v1", "predicateType": "https://witness.dev/attestations/collection/v0.1", "subject": [], "predicate": {"name": "x", "attestations": [payload]}}
+    return json.dumps({"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(st).encode()).decode(), "signatures": []})
+for jn, run in runs:
+    step = re.search(r"witness-(release-[a-z]+)/", run).group(1)
+    for kind, body, want in (("clean", env({"type": "environment", "attestation": {"variables": {"CI": "true"}}}), 0), ("leaking", env({"type": "environment", "attestation": {"variables": {"GH_TOKEN": "x"}}}), 1), ("missing", None, 2)):
+        with tempfile.TemporaryDirectory() as d:
+            os.symlink(root + "/bin", d + "/bin"); os.symlink(root + "/.github", d + "/.github")     # the verifier reads the helper hashes in .github/policy, as in the checkout
+            if body is not None:
+                os.makedirs("%s/witness-%s" % (d, step)); open("%s/witness-%s/%s-collection.json" % (d, step, step), "w").write(body)
+            r = subprocess.run(["bash", "-c", run], cwd=d, capture_output=True, text=True)
+            assert r.returncode == want, (jn, step, kind, r.returncode, want, r.stdout[-200:], r.stderr[-300:])
+PYX
 # ---- AC1: the stage file, mutated one rule at a time ----------------------------------------------------------------------
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
@@ -210,7 +241,7 @@ m s_trig    'workflow_call:'                                'workflow_call:\n  p
 m s_unp     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                          'digest-pinned'      "AC1 an unpinned checkout"
 m s_persist 'persist-credentials: false'                    'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
 m s_dlname  'name: provenance\n          path: provenance' 'name: not-listed\n          path: provenance'             'download-artifact'  "AC1 a download outside the allowlist"
-m s_noarm   '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-check-arm64\n          path: witness-check/witness-arm64\n' '' 'witness-check-arm64' "AC16 the arm64 Check record is not downloaded (check-list would refuse the release, so the stage must fetch it)"
+m s_noarm   '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-check-arm64\n          path: witness-check/witness-arm64\n' '' 'witness-check-arm64' "AC16 the arm64 Check record is not downloaded (check-list would refuse the release, so the stage must fetch it)"
 m s_nocr    '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: check-results\n          path: check-results\n' '' 'check-results' "G Check's scanner product (check-results/govulncheck.json) is not downloaded: release-sign would have no file to pass"
 m s_crpath  'name: check-results\n          path: check-results' 'name: check-results\n          path: witness-check' 'check-results' "G check-results lands inside witness-check/ (check-list refuses a stray file there)"
 m s_armpath 'path: witness-check/witness-arm64' 'path: witness-arm64'                          'witness-check-arm64' "AC16 the arm64 record lands outside witness-check/ (check-list reads witness-check/witness-arm64/)"
@@ -218,6 +249,13 @@ m s_dlbin   'name: images\n          path: images'        'name: images\n       
 m s_dlgh    'name: dist\n          path: dist'            'name: dist\n          path: .github'                       'download-artifact'  "AC1 a download into .github/"
 m s_upname  'name: release-evidence\n          path: release-evidence' 'name: anything\n          path: release-evidence' 'upload-artifact'  "AC1 an upload outside the allowlist"
 m s_noup    '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence\n          path: release-evidence\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-release\n          path: witness-release\n' '' 'only uploads' "AC1 no upload of the evidence"
+# rc-2 R4 (Fable R4): the Release job checks each of its own six Witness records for a token (REQ-CHAIN-007-AC12) right after the witnessed steps and before any upload
+m s_re_none '      - name: release-apks record holds no token\n        if: [^\n]*\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-apks/release-apks-collection\.json\n' '' 'Witness records for a token' "AC12 (R4) one of the six record checks is missing"
+m s_re_path '=record-env --record witness-release-sign/release-sign-collection.json' 'record-env --record witness-release-sign/release-apks-collection.json' 'none of checkout' "AC12 (R4) a record check that reads another step's record"
+m s_re_swallow '=record-env --record witness-release-publish/release-publish-collection.json' 'record-env --record witness-release-publish/release-publish-collection.json || true' 'none of checkout' "AC12 (R4) a record check whose failure is swallowed"
+m s_re_noif '(      - name: release-assets record holds no token\n)        if: [^\n]*\n' '\1' 'must carry' "AC12 (R4) a record check that runs for a release candidate (no if)"
+m s_vre_none '      - name: release-verify record holds no token[^\n]*\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-verify/release-verify-collection\.json\n' '' 'verify job: right after' "AC12 (R4) the verify job uploads its Witness record without checking it for a token"
+m s_vre_if '(      - name: release-verify record holds no token[^\n]*\n)' '\1        if: true\n' 'no env, no if' "AC12 (R4) the verify job's record check carries an if"
 m s_swap    'install cosign\n        run: bash bin/install-scanner.sh cosign\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
 m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' ''                                                                    'start with checkout' "AC1 cosign is not installed"
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
@@ -241,6 +279,8 @@ m c_norel   '=needs: [compare, verify]'                        'needs: verify'  
 m c_novneed '=  verify:\n    needs: compare\n'                  '  verify:\n'                                           'needs'   "SIGNER the verify job does not need the compare job"
 m c_order   '=  compare:\n'                                    '  zzz:\n'                                              'exactly'  "SIGNER the compare job is missing (a job of another name stands in)"
 m c_env     '=  compare:\n    runs-on: ubuntu-24.04\n'           '  compare:\n    environment: release\n    runs-on: ubuntu-24.04\n' 'compare job' "SIGNER the compare job is in the release environment"
+m c_nosigned '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-rapk-ubuntu-24.04-arm\n          path: witness-rapk-ubuntu-24.04-arm\n' '' 'exactly' "SIGNER the compare job lacks the signed rapk record of the arm runner (it could not bind Rebuild's apks to a record Sign signed)"
+m c_badpath '=          name: signed-witness-rapk-ubuntu-24.04\n          path: witness-rapk-ubuntu-24.04\n' '          name: signed-witness-rapk-ubuntu-24.04\n          path: rapks/ubuntu-24.04\n' 'exactly' "SIGNER the signed rapk record is downloaded over the rapk files"
 m c_idt     '=  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n' 'compare job' "SIGNER the compare job holds the id-token (an OIDC token can get a signing certificate)"
 m c_wr      '=  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n' 'compare job' "SIGNER the compare job holds contents write"
 m c_pk      '=  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      packages: write\n' 'compare job' "SIGNER the compare job holds packages write"
@@ -269,10 +309,10 @@ m s_vupname  '=name: witness-release-verify\n          path: witness-release-ver
 m s_vuppath  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release-verify\n          path: docs' 'verify' "AC1 (Astra R6, round 1) the verify job's upload holds a path other than its Witness record"
 # round 2 (Codex PR 415): the verify job's upload and downloads are exact
 m s_vupwarn  '=          path: witness-release-verify\n          if-no-files-found: error\n' '          path: witness-release-verify\n' 'verify' "AC1 (Astra R6, round 2) the verify job's upload does not fail when it finds no file (the default is a warning)"
-m s_vdist    '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: witness-release-verify\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n' 'verify' "AC1 (Astra R6, round 2) the verify job downloads dist into its proof directory (it would be uploaded with the record)"
+m s_vdist    '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: witness-release-verify\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n' 'verify' "AC1 (Astra R6, round 2) the verify job downloads dist into its proof directory (it would be uploaded with the record)"
 # round 3 (Codex PR 415, a reproduced blocker): download-artifact trims its path input, so a padded path reached the directory the verify job uploads; the verify job's downloads are the exact nine pairs, and no download path has surrounding whitespace
 m s_vws      '=      - name: release-verify\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: " witness-release-verify"\n      - name: release-verify\n' 'verify' "AC1 (Astra R6, round 3) a download into ' witness-release-verify' (the action trims the path) puts digests.json into the uploaded directory"
-m s_vtrail   '=          name: witness-build\n          path: witness-build\n' '          name: witness-build\n          path: "witness-build "\n' 'verify' "AC1 (Astra R6, round 3) a download path with trailing whitespace"
+m s_vtrail   '=          name: signed-witness-build\n          path: witness-build\n' '          name: signed-witness-build\n          path: "witness-build "\n' 'verify' "AC1 (Astra R6, round 3) a download path with trailing whitespace"
 m s_vdupdl   '=          name: provenance\n          path: provenance\n' '          name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n' 'verify' "AC1 (Astra R6, round 3) the same artifact downloaded twice in the verify job"
 m s_vpair    '=          name: check-results\n          path: check-results\n' '          name: check-results\n          path: witness-check\n' 'verify' "AC1 (Astra R6, round 3) a verify download into another artifact's directory"
 m s_rws      '=          name: images\n          path: images\n' '          name: images\n          path: " bin"\n' 'download' "AC1 (Astra R6, round 3) a release-job download whose padded path the action trims into bin/"
@@ -357,14 +397,21 @@ PY
 expect caught "AC3 the Check call grants packages write (only the release job may)" "only the release job" others "$work/o_cp"
 # ---- AC11: the job graph -----------------------------------------------------------------------------------------------------
 gm() { if mutate "$work/release.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" graph "$work/$1.yml"; fi; }
-# Rule 70 (advisor step-5 revisit, Oct 10): Rebuild and Check run side by side off Build's output; the release job needs EXACTLY check,
-# rebuild and sign, the set PR 2's (3e883b3) and PR 3's graph judges pin. Build is reached through check (check needs build and sign).
-gm g_nosign  'needs: \[check, rebuild, sign\]'                'needs: [check, rebuild]'                                 'exactly check, rebuild and sign' "AC11 release does not need sign"
-gm g_nochk   'needs: \[check, rebuild, sign\]'                'needs: [rebuild, sign]'                                  'exactly check, rebuild and sign' "AC11 release does not need check"
-gm g_norb    'needs: \[check, rebuild, sign\]'                'needs: [check, sign]'                                    'exactly check, rebuild and sign' "AC11 release does not need rebuild"
-gm g_extra   'needs: \[check, rebuild, sign\]'                'needs: [check, rebuild, sign, decide]'                   'exactly check, rebuild and sign' "AC11 release waits for something else"
-gm g_relbld  'needs: \[check, rebuild, sign\]'                'needs: [build, check, rebuild, sign]'                    'exactly check, rebuild and sign' "AC11 release also lists build (not exactly the set: build is reached through check)"
-gm g_always  '  rebuild:\n    needs: build'                  "  rebuild:\n    if: \${{ always() }}\n    needs: build"  'no if' "AC11 rebuild runs even when build failed"
+# Rule 70 (advisor step-5 revisit, Oct 10), amended by the Witness move (owner Oct 22): Sign signs the building stages' records, so Rebuild and Check run side by side AFTER sign,
+# sign-rebuild signs Rebuild's records, and the release job needs EXACTLY check, sign and sign-rebuild. Build is reached through check (check needs build and sign).
+gm g_nosc    'needs: \[check, sign, sign-rebuild, sign-check\]'  'needs: [check, sign, sign-rebuild]'                       'exactly check, sign, sign-rebuild and sign-check' "REL-011 release does not need sign-check (Check's signed record)"
+gm g_scnochk '  sign-check:\n    needs: \[build, check\]'     '  sign-check:\n    needs: [build]'                       'sign-check must need exactly build and check' "REL-011 sign-check does not wait for check"
+gm g_scnobld '  sign-check:\n    needs: \[build, check\]'     '  sign-check:\n    needs: [check]'                       'sign-check must need exactly build and check' "REL-011 sign-check does not wait for build"
+gm g_scextra '  sign-check:\n    needs: \[build, check\]'     '  sign-check:\n    needs: [build, check, rebuild]'       'sign-check must need exactly build and check' "REL-011 sign-check also waits for rebuild"
+gm g_nosign  'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, sign-rebuild, sign-check]'                            'exactly check, sign, sign-rebuild and sign-check' "AC11 release does not need sign"
+gm g_nochk   'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [sign, sign-rebuild, sign-check]'                             'exactly check, sign, sign-rebuild and sign-check' "AC11 release does not need check"
+gm g_norb    'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, sign, sign-check]'                                    'exactly check, sign, sign-rebuild and sign-check' "AC11 release does not need sign-rebuild (Rebuild's signed record)"
+gm g_extra   'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, sign, sign-rebuild, sign-check, decide]'              'exactly check, sign, sign-rebuild and sign-check' "AC11 release waits for something else"
+gm g_relbld  'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [build, check, sign, sign-rebuild, sign-check]'               'exactly check, sign, sign-rebuild and sign-check' "AC11 release also lists build (not exactly the set: build is reached through check)"
+gm g_relrb   'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, rebuild, sign, sign-rebuild, sign-check]'             'exactly check, sign, sign-rebuild and sign-check' "AC11 release also lists rebuild (its signed record is what Release needs)"
+gm g_rbnosign '  rebuild:\n    needs: \[build, sign\]'         '  rebuild:\n    needs: build'                          'rebuild must need exactly build and sign' "AC11 rebuild does not wait for sign"
+gm g_srnoreb '  sign-rebuild:\n    needs: \[build, rebuild\]'  '  sign-rebuild:\n    needs: [build]'                       'sign-rebuild must need exactly build and rebuild' "AC11 sign-rebuild does not wait for rebuild"
+gm g_always  '  rebuild:\n    needs: \[build, sign\]'          "  rebuild:\n    if: \${{ always() }}\n    needs: [build, sign]"  'no if' "AC11 rebuild runs even when build failed"
 gm g_prom    '=    if: ${{ startsWith(github.ref, '\''refs/tags/v'\'') && !inputs.dry-run }}' '    if: ${{ !cancelled() }}' 'exactly the if' "AC11 release runs when a predecessor was skipped"
 gm g_coe     '  sign:\n    needs: build'                    '  sign:\n    continue-on-error: true\n    needs: build'   'continue-on-error' "AC11 sign may fail without stopping release"
 gm g_sec     '  check:\n    needs: \[build, sign\]'          '  check:\n    secrets: inherit\n    needs: [build, sign]'  'secrets'  "AC11 the Check call inherits secrets"
@@ -372,11 +419,11 @@ gm g_perm    '      packages: write\n      id-token: write\n'  '      id-token: 
 gm g_uses    '    uses: ./.github/workflows/stage-promote.yml' '    uses: ./.github/workflows/stage-verify.yml'          'stage-promote.yml'  "AC11 the release job calls another workflow"
 # Q9 (advisor, Oct 10): the ratified rules call the last stage Release, so release.yml's last job is named release (PR 2's and PR 3's judges)
 gm g_promo   '  release:\n    if'                            '  promotion:\n    if'                                     'the last job is named release' "AC11 the last job named promotion (the ratified name is release, Q9)"
-gm g_tag     '  rebuild:\n    needs: build' '  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git tag v9.9.9 && git push origin v9.9.9\n  rebuild:\n    needs: build' 'creates a tag' "AC11 a job of release.yml other than decide (the CI patch tag, REQ-REL-009) creates a tag"
+gm g_tag     '  rebuild:\n    needs: \[build, sign\]' '  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git tag v9.9.9 && git push origin v9.9.9\n  rebuild:\n    needs: [build, sign]' 'creates a tag' "AC11 a job of release.yml other than decide (the CI patch tag, REQ-REL-009) creates a tag"
 if mutate "$work/release.yml" "$work/g_decideok.yml" '=  decide:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.AUDITOR_APP_ID }}' '  decide:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git push origin refs/tags/v9.9.9'; then
   expect ok "AC11 the decide job (the CI patch tag, REQ-REL-009) may push its signed tag: it is not Release" "" graph "$work/g_decideok.yml"; fi
 gm g_noif    '=    if: ${{ startsWith(github.ref, '\''refs/tags/v'\'') && !inputs.dry-run }}\n' ''                                                       'exactly the if'    "AC11 release carries no positive tag conjunct (a branch run would not be refused by its own if)"
-gm g_gate    '  rebuild:\n    needs: build'                  "  rebuild:\n    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\n    needs: build" 'no if' "AC11 the gate G on rebuild (only build and sign carry it)"
+gm g_gate    '  rebuild:\n    needs: \[build, sign\]'                  "  rebuild:\n    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\n    needs: [build, sign]" 'no if' "AC11 the gate G on rebuild (only build, sign and sign-rebuild carry it)"
 # ---- AC4: the order of bin/release-verify.sh ------------------------------------------------------------------------------------
 vm() { if mutate "$work/verify.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" verify "$work/$1.sh"; fi; }
 vm v_notag   '\[\[ "\$\{GITHUB_REF_NAME[^\n]*\n'            ''                                                       'commands'           "AC4 the tag check dropped"
@@ -508,7 +555,7 @@ expect caught "AC13 the manifest is made before the VEX and CSAF files exist" "m
 expect ok "the real stage-promote.yml is the Release stage" "" stage "$root/.github/workflows/stage-promote.yml"
 expect ok "the real credentials reach only the steps that need them" "" credentials "$root/.github/workflows/stage-promote.yml"
 expect ok "nothing outside the release job holds packages write or a credential" "" others "$root"
-expect ok "the real release.yml: the release job needs exactly check, rebuild and sign, no skip, no tag" "" graph "$root/.github/workflows/release.yml"
+expect ok "the real release.yml: the release job needs exactly check, sign and sign-rebuild, no skip, no tag" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real bin/release-verify.sh verifies in rule 69's order" "" verify "$root/bin/release-verify.sh"
 for n in release-verify release-apks release-publish release-sign release-assets release-postverify; do
   expect ok "the real bin/$n.sh is plain" "" scan "$root/bin/$n.sh" "$root/.github/policy/chain-scripts.json"
@@ -537,7 +584,7 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-EXPECT=267
+EXPECT=283
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

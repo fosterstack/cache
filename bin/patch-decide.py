@@ -104,10 +104,9 @@ def _alone(m, mark="<redacted>"):
 # the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
 # NEW-01): a workflow is neutral only when it is reviewed as outside the release chain (release.yml calls stage-*.yml and
 # the acceptance workflows); any other — including one added later — is not patch-clean until it is reviewed here.
-NEUTRAL_WORKFLOWS = {"agent-review-gate.yml", "auditor.yml", "ci.yml", "codeql.yml", "daily-rescan.yml",
-                     "dependabot-auto-merge.yml", "dependabot-reviewer.yml", "dependency-review.yml", "go-freshness.yml",
-                     "hygiene.yml", "main-candidate-rescan.yml", "release-chain-pr.yml", "requirements.yml",
-                     "rescan-v010.yml", "reserved-branch-guard.yml", "scan.yml", "scorecard.yml"}
+NEUTRAL_WORKFLOWS = {"agent-review-gate.yml", "auditor.yml", "ci.yml", "codeql.yml", "dependabot-auto-merge.yml",
+                     "dependabot-reviewer.yml", "go-freshness.yml", "main-candidate-rescan.yml",
+                     "reserved-branch-guard.yml", "scan.yml", "scorecard.yml"}
 # Outside workflows, .github/ is release-chain input by default: the stage workflows run .github/agent/bin and read
 # .github/policy (Codex #158 phase-2 r2, B04). Neutral only what is reviewed as never read by the release chain.
 NEUTRAL_GITHUB = {".github/dependabot.yml", ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md"}
