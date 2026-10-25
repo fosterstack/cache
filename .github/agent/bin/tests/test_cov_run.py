@@ -708,6 +708,16 @@ class LiftTrigger(Base):
         ask.assert_called_once()                 # not skipped as "unmet": the model is asked, as for a legacy trigger
         self.assertNotEqual(row.get("lift_trigger"), about_openssl)       # and the mismatched trigger is not re-carried
 
+    def test_a_recheck_whose_model_call_fails_says_the_adjudicator_was_unavailable(self):
+        c = "CVE-2099-28"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.3"}     # the trigger is met
+        env = self.env(carriers=[carrier], carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+                       carried_lift_trigger={key: self.GOOD})
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            row, mi = R._dispose(c, [f], [c], env, [])
+        self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
+        self.assertIn("recheck deferred (adjudicator unavailable)", row["action"])           # the suppression is retained
+
     def test_a_trigger_must_name_the_findings_own_component(self):
         self.assertEqual(R._trigger_for(self.GOOD, "libz"), self.GOOD)
         self.assertEqual(R._trigger_for(self.GOOD, " LIBZ "), self.GOOD)                 # case and spaces do not matter
