@@ -180,7 +180,9 @@ PYD
 mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
-cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh "$root"/bin/layout-archive.sh "$fx/bin/" 2> /dev/null || true
+cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py \
+  "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh \
+  "$root"/bin/layout-archive.sh "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
@@ -299,9 +301,12 @@ want_rc() { # want_rc LABEL RC SCRIPT ARGS...
   local l=$1 r=$2; shift 2; run "$@"; if [ "$rc" = "$r" ]; then ok "$l"; else bad "$l -> rc=$rc, wanted $r: ${out:0:140}"; fi; }
 SCAN=(check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out)
 # ---- REQ-CHAIN-006-AC4: check-scan.sh ---------------------------------------------------------------------------------------
-# one definition of the image archive (Fable on #732): check-scan.sh runs bin/layout-archive.sh and defines no archive or child lookup of its own
-if ! grep -Eq '^(osv_archive|child_digest)[(]' "$root/bin/check-scan.sh" && grep -Fq 'bin/layout-archive.sh' "$root/bin/check-scan.sh"; then
-  ok "AC4 check-scan.sh builds every image archive with bin/layout-archive.sh and defines no osv_archive or child_digest"
+# one definition of the image archive (Fable on #732): check-scan.sh runs bin/layout-archive.sh and defines no
+# archive or child lookup of its own
+scan="$root/bin/check-scan.sh"
+if ! grep -Fq 'osv_archive()' "$scan" && ! grep -Fq 'child_digest()' "$scan" \
+  && grep -Fq 'bin/layout-archive.sh' "$scan"; then
+  ok "AC4 check-scan.sh builds every image archive with bin/layout-archive.sh, defining no osv_archive or child_digest"
 else
   bad "AC4 check-scan.sh still defines its own osv_archive or child_digest, or does not run bin/layout-archive.sh"
 fi

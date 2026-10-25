@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # bin/check-scan.sh --scanners FILE --digests FILE --images DIR --archives DIR --out DIR
 # Runs every scanner listed in FILE (.github/policy/scanners.json, "scanners") against the exact candidates (v0.3.0 rule 55;
-# REQ-CHAIN-006-AC4; REQ-REL-004-AC1). The candidate image is selected by the index digest in the digest list; grype scans each of its two
-# platform children (linux/amd64 and linux/arm64, named in the results by the child's own manifest digest), osv-scanner scans each child from a docker-save archive built from the layout (bin/layout-archive.sh); grype
+# REQ-CHAIN-006-AC4; REQ-REL-004-AC1). The candidate image is selected by the index digest in the digest list; grype
+# scans each of its two platform children (linux/amd64 and linux/arm64, named in the results by the child's own manifest
+# digest), osv-scanner scans each child from a docker-save archive built from the layout (bin/layout-archive.sh); grype
 # also scans every release archive (ARCHIVES/*.tar.gz) and osv-scanner the Go
 # modules (go.mod, tools/requirements/go.mod), as scanners.json (row 45) and today's stage-verify.yml have it. No unlisted scanner runs.
 # A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
@@ -98,16 +99,26 @@ MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 : > "$tmp/empty.yaml"; : > "$tmp/empty.toml"   # empty.yaml is the one config grype reads (it needs the extension); empty.toml is osv-scanner's
 
-add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); tplat+=("${4:-}"); tconf+=("${5:-}"); }   # one scan target: its name, its digest, the file the scanner reads and (grype on an image) the platform it must scan
+# one scan target: its name, digest, the file the scanner reads and, for an image, its platform and config digest
+add_target() {
+  tname+=("$1")
+  tdigest+=("$2")
+  tpath+=("$3")
+  tplat+=("${4:-}")
+  tconf+=("${5:-}")
+}
 # The platform children of an image layout (S1, chain-v030 review): grype on the multi-platform index with no platform scans only the runner's own
 # platform, so each variant is scanned once per child, by the child's own manifest digest, and an index that lacks a child is a failure.
 # Layout is already bound to digests.json by check-bind (index, child manifests, every blob re-hashed), so the index it reads here is Build's.
 PLATFORMS=(amd64 arm64)
-# image_archive LAYOUT ARCH ARCHIVE TAG: the docker-save tar of the linux/ARCH child, made by bin/layout-archive.sh (the one definition of it:
-# it re-hashes every blob it packs). Prints "<child manifest digest> <config digest>", or fails; the script's own message is on stderr.
+# image_archive LAYOUT ARCH ARCHIVE TAG: the docker-save tar of the linux/ARCH child, made by bin/layout-archive.sh
+# (the one definition of it: it re-hashes every blob it packs). Prints "<child manifest digest> <config digest>", or
+# fails; the script's own message is on stderr.
 image_archive() {
   local line
   line=$(bash bin/layout-archive.sh "$@") || return 1
+  # the script's one output line: "child sha256:<64 hex> config sha256:<64 hex>" yes; a missing config, an extra
+  # word or an upper-case digest no
   [[ "$line" =~ ^child\ (sha256:[0-9a-f]{64})\ config\ (sha256:[0-9a-f]{64})$ ]] || return 1
   echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
 }
@@ -191,7 +202,7 @@ for s in "${scanners[@]}"; do
         if ids=$(image_archive "$images/$v" "$a" "$arc" "${imgrepo:+$imgrepo:}cand-$v-$a"); then
           add_target "$v/linux/$a" "${ids% *}" "$arc" "linux/$a" "${ids#* }"
         else
-          echo "check-scan: grype: no archive of the $v image for linux/$a (bin/layout-archive.sh refused it): it cannot be scanned for linux/$a, so it is not scanned clean" >&2
+          echo "check-scan: grype: no archive of $v/linux/$a (bin/layout-archive.sh refused it): not scanned clean" >&2
           verdict=fail
           subjects=$(jq -c --arg n "$v/linux/$a" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
         fi
@@ -202,7 +213,7 @@ for s in "${scanners[@]}"; do
         if ids=$(image_archive "$images/$v" "$a" "$arc" "cand-$v-$a"); then
           add_target "$v/linux/$a" "${ids% *}" "$arc" "linux/$a" "${ids#* }"
         else
-          echo "check-scan: $s: no archive of the $v image for linux/$a (bin/layout-archive.sh refused it): it cannot be scanned for linux/$a, so it is not scanned clean" >&2
+          echo "check-scan: $s: no archive of $v/linux/$a (bin/layout-archive.sh refused it): not scanned clean" >&2
           verdict=fail
           subjects=$(jq -c --arg n "$v/linux/$a" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
         fi
@@ -228,11 +239,15 @@ for s in "${scanners[@]}"; do
         if [ -z "$imgrepo" ]; then
           echo "check-scan: grype: the published VEX names no single cache image repository, so $name cannot be scanned under its image name" >&2; rc=2
         else
-          GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "docker-archive:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$?
+          GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h \
+            grype "docker-archive:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" \
+            -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$?
         fi ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --config "$tmp/empty.toml" --all-vulns --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
-        OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --config "$tmp/empty.toml" --all-vulns --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
+        OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --config "$tmp/empty.toml" --all-vulns \
+          --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" \
+          > "$tmp/out.json" || rc=$? ;;
     esac
     # A tool that failed before writing leaves nothing to read, and anything but a number is 0 packages (did not run).
     if [ "$s" = grype ]; then
