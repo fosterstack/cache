@@ -697,6 +697,17 @@ class LiftTrigger(Base):
                            ("1.1.1nn", "1.1.1", None), ("1.1.1N", "1.1.1", None), ("1.1.1n", "3.0.9-1", None)):
             self.assertIs(R._version_ge(a, b), want, (a, b))
 
+    def test_a_carried_trigger_for_another_component_is_not_trusted_on_the_recheck(self):
+        c = "CVE-2099-27"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}   # below the trigger
+        about_openssl = dict(self.GOOD, component="openssl")
+        env = self.env(carriers=[carrier], carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+                       carried_lift_trigger={key: about_openssl})
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "token_usage": 1}) as ask:
+            row, mi = R._dispose(c, [f], [c], env, [])
+        ask.assert_called_once()                 # not skipped as "unmet": the model is asked, as for a legacy trigger
+        self.assertNotEqual(row.get("lift_trigger"), about_openssl)       # and the mismatched trigger is not re-carried
+
     def test_a_trigger_must_name_the_findings_own_component(self):
         self.assertEqual(R._trigger_for(self.GOOD, "libz"), self.GOOD)
         self.assertEqual(R._trigger_for(self.GOOD, " LIBZ "), self.GOOD)                 # case and spaces do not matter
@@ -1687,7 +1698,7 @@ class Run(Base):
         self.wj(os.path.join(ws, ".auditor", "accepted-items.json"), {"accepted_items": [
             {"cve": "CVE-2099-60", "scope_purls": [pa], "expiry": "2026-12-01",
              "not_pullable": "upstream-held", "lift_trigger": {"carrier": "nodejs", "min_version": "20.2",
-                 "component": "openssl", "component_min_version": "3.0.13"}},
+                 "component": "liba", "component_min_version": "3.0.13"}},
             {"cve": "CVE-2099-61", "scope_purls": [pb], "not_pullable": "upstream-held"},      # no expiry: ignored
             {"cve": "CVE-2099-62", "vex_id": "V#unknown", "expiry": "2026-12-01",
              "not_pullable": "upstream-held"}]})                                                # unresolvable: ignored
@@ -1706,7 +1717,7 @@ class Run(Base):
         self.assertEqual([(i["cve"], i["threshold"], i["lift_trigger"]) for i in items],
                          # KEV unparseable -> fail closed
                          [("CVE-2099-60", "at_or_above", {"carrier": "nodejs", "min_version": "20.2",
-                             "component": "openssl", "component_min_version": "3.0.13"})])
+                             "component": "liba", "component_min_version": "3.0.13"})])
         self.assertTrue(os.path.exists(os.path.join(out, ".auditor", "knowledge.md")))
 
     def test_a_consistency_check_that_did_not_complete_makes_the_run_incomplete(self):

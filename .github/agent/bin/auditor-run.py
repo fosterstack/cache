@@ -1631,7 +1631,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         pull = None
         # rc-5b R1: a carried structured trigger the SBOM's carrier version has not reached needs no model call (and no
         # new verdict): the suppression is re-carried
-        carried_trig = env.get("carried_lift_trigger", {}).get((c, this_scope))
+        carried_trig = _trigger_for(env.get("carried_lift_trigger", {}).get((c, this_scope)), gf["package"])
         # a base-held scope can also lift through a base release the carrier says nothing about
         trig_unmet = ((c, this_scope) in env.get("carried_not_pullable",
             set()) and carrier is not None and not base_hold
@@ -1736,6 +1736,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
             # than a generic placeholder, so a deferred recheck does not lose the condition (Codex
             # round-2 P2). Falls back to a note only if none was carried.
             prior_trigger = env.get("carried_lift_trigger", {}).get((c, this_scope))
+            if _lift_trigger(prior_trigger) and not _trigger_for(prior_trigger, gf["package"]):
+                prior_trigger = None             # a structured trigger about another component is not carried on
             deferred_trigger = (prior_trigger if prior_trigger
                                 else "prior lift trigger stands (recheck deferred: %s)" % cause)
             ev = {"check": "fix-not-pullable", "hold": hold, "recheck": "deferred", "cause": cause,
