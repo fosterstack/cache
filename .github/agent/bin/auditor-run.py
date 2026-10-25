@@ -472,14 +472,17 @@ def _bump_files(ws, git):
 
 
 def _vmajor(v):
-    """The major number of a Go version (`v1.2.3`, `0.3.0`, a prerelease, `+incompatible`), None when it is not a readable semantic version."""
+    """The major number of a Go version (`v1.2.3`, `0.3.0`, a prerelease, `+incompatible`), None when it is not a
+    readable semantic version."""
     m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", str(v or ""))
     return int(m.group(1)) if m else None
 
 
 def _is_major_bump(module, frm, to):
-    """rc-5b A6 (agent-remediation-rules: "a major bump means an API changed"): the transition changes the major number (v0.9 -> v1.0 included), the
-    module path's /vN suffix disagrees with the target's major, or either version is unreadable (fail safe: held, never auto-treated as a patch)."""
+    """rc-5b A6 (agent-remediation-rules: "a major bump means an API changed"): the transition changes the major number
+    (v0.9 -> v1.0 included), the
+    module path's /vN suffix disagrees with the target's major, or either version is unreadable (fail safe: held, never
+    auto-treated as a patch)."""
     f, t = _vmajor(frm), _vmajor(to)
     if f is None or t is None or f != t:
         return True
@@ -491,25 +494,30 @@ _DEPENDABOT_TITLE = re.compile(r"\b[Bb]ump (\S+) from \S+ to (\S+)")
 
 
 def _dependabot_match(prs, module, tkey):
-    """The open Dependabot PR (number, url) whose title is `Bump <module> from X to <tkey>` for exactly this module and version, else None."""
+    """The open Dependabot PR (number, url) whose title is `Bump <module> from X to <tkey>` for exactly this module and
+    version, else None."""
     for pr in prs or []:
         title = str(pr.get("title") or "")
         m = _DEPENDABOT_TITLE.search(title)
-        # a Dependabot PR for another directory says so ("... in /tools/govulncheck"): it bumps that module's go.mod, never ours
-        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey and not re.search(r" in /\S", title):
+        # a Dependabot PR for another directory says so ("... in /tools/govulncheck"): it bumps that module's go.mod,
+        # never ours
+        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey and not re.search(r" in /\S",
+            title):
             return pr.get("number"), pr.get("url") or ""
     return None
 
 
 def _open_dependabot_prs(ws):
-    """(list of {number,title,url}, None) of the open Dependabot PRs, or (None, the failure text). Row 47 (owner, Sep 21): the auditor performs bumps
+    """(list of {number,title,url}, None) of the open Dependabot PRs, or (None, the failure text). Row 47 (owner, Sep
+    21): the auditor performs bumps
     "deferring to an open Dependabot PR where one exists"."""
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         if os.environ.get("AUDITOR_SHIM_DEPENDABOT_FAIL"):
             return None, "simulated lookup failure"
         return json.loads(os.environ.get("AUDITOR_SHIM_DEPENDABOT_PRS") or "[]"), None
-    r = subprocess.run(["gh", "pr", "list", "--state", "open", "--author", "app/dependabot", "--json", "number,title,url", "--limit", "200"],
+    r = subprocess.run(["gh", "pr", "list", "--state", "open", "--author", "app/dependabot", "--json",
+        "number,title,url", "--limit", "200"],
                        cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "gh pr list: " + (r.stderr or "").strip()
@@ -520,7 +528,8 @@ def _open_dependabot_prs(ws):
 
 
 def _emit_fixer_issue(title, body, dry, would, cves=(), target=None):
-    """Open OR update the issue that hands a held MAJOR bump to the fixer lane (rc-5b A6: a major is judged by a machine, never by the owner). NOT an
+    """Open OR update the issue that hands a held MAJOR bump to the fixer lane (rc-5b A6: a major is judged by a
+    machine, never by the owner). NOT an
     owner-decision issue: no owner label, no assignee. Returns (ok, ref) like _emit_owner_issue."""
     cmd = "gh issue create --title %s" % shlex.quote(title)
     if dry:
@@ -533,20 +542,24 @@ def _emit_fixer_issue(title, body, dry, would, cves=(), target=None):
             open(log, "a").write("gh issue comment --title %s --body %s\n" % (shlex.quote(title), shlex.quote(body)))
             return True, "shim-updated"
         open(log, "a").write(cmd + " --body " + shlex.quote(body) + "\n")
-        return (not os.environ.get("AUDITOR_SHIM_ISSUE_FAIL")), ("shim-created" if not os.environ.get("AUDITOR_SHIM_ISSUE_FAIL") else None)
+        failing = bool(os.environ.get("AUDITOR_SHIM_ISSUE_FAIL"))
+        return (not failing), (None if failing else "shim-created")
     if not _real_gh_allowed():
         print("would open/update fixer issue (real gh disabled): " + title); return True, "skipped"
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
-        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"], capture_output=True, text=True, env=ienv)
+        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
+            capture_output=True, text=True, env=ienv)
         if r.returncode != 0:
             print("fixer-issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
         found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
         if found:
-            c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body], capture_output=True, text=True, env=ienv)
+            c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body], capture_output=True,
+                text=True, env=ienv)
             return (c.returncode == 0), found[0]["number"]
-        c = subprocess.run(["gh", "issue", "create", "--title", title, "--body", body], capture_output=True, text=True, env=ienv)
+        c = subprocess.run(["gh", "issue", "create", "--title", title, "--body", body], capture_output=True, text=True,
+            env=ienv)
         if c.returncode != 0:
             print("fixer-issue create FAILED: %s" % (c.stderr or "").strip()); return False, None
         url = (c.stdout or "").strip().splitlines()[-1] if c.stdout else ""
@@ -584,13 +597,18 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
     for tk, group in targets.items():
         delivered[tk] = _deliver_fix_pr(group, today, commit, dry, would, is_test=is_test)
         fb0 = group[0]["fix_bump"]
-        if delivered[tk][2] in ("delivered", "delivered-unchecked", "would") and _is_major_bump(fb0.get("module"), fb0.get("from"), fb0.get("to")):  # MAJOR-HELD
+        # MAJOR-HELD
+        if delivered[tk][2] in ("delivered", "delivered-unchecked", "would") and _is_major_bump(fb0.get("module"),
+            fb0.get("from"), fb0.get("to")):
             cves = sorted({g["fix_bump"].get("cve") or g["id"] for g in group})
             title = policy.subject("major bump %s -> %s held for the fixer lane" % (fb0["module"], fb0["to"]))
-            body = ("The daily CVE auditor found a fixed version of %s that is a MAJOR transition (%s -> %s). A major bump means an API changed (judged by a machine, "
-                    "not by the repository owner), so the auditor opened the draft PR but did not arm it; the fixer lane makes the change on our side.\n\n- Vulnerabilities: %s\n- Draft PR: %s\n"
+            body = ("The daily CVE auditor found a fixed version of %s that is a MAJOR transition (%s -> %s). "
+                    "A major bump means an API changed (judged by a machine, not by the repository owner), "
+                    "so the auditor opened the draft PR but did not arm it; the fixer lane makes the change on our "
+                    "side.\n\n- Vulnerabilities: %s\n- Draft PR: %s\n"
                     % (fb0["module"], fb0.get("from"), fb0["to"], ", ".join(cves), delivered[tk][0] or "(dry run)"))
-            held[tk] = _emit_fixer_issue(title, body, dry, would, cves=cves, target="%s %s -> %s" % (fb0["module"], fb0.get("from"), fb0["to"]))
+            held[tk] = _emit_fixer_issue(title, body, dry, would, cves=cves, target="%s %s -> %s" % (fb0["module"],
+                fb0.get("from"), fb0["to"]))
     for r in rows:
         if not r.get("fix_bump"):
             continue
@@ -600,9 +618,13 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
         held_note = ""
         if hold is not None:
             if hold[0]:
-                held_note = ("; MAJOR transition: the fixer-lane issue would be opened (dry run)" if hold[1] == "dry" else
-                             "; MAJOR transition: held for the fixer lane, issue NOT opened (delivery disabled)" if hold[1] == "skipped" else
-                             "; MAJOR transition: held for the fixer lane (issue %s)" % (hold[1] if hold[1] not in (None, "shim-created", "shim-updated") else "opened"))
+                if hold[1] == "dry":
+                    held_note = "; MAJOR transition: the fixer-lane issue would be opened (dry run)"
+                elif hold[1] == "skipped":
+                    held_note = "; MAJOR transition: held for the fixer lane, issue NOT opened (delivery disabled)"
+                else:
+                    ref = hold[1] if hold[1] not in (None, "shim-created", "shim-updated") else "opened"
+                    held_note = "; MAJOR transition: held for the fixer lane (issue %s)" % ref
             else:
                 held_note = "; MAJOR transition: the fixer-lane issue FAILED to open (run INCOMPLETE)"
                 r["pending_delivery"] = True
@@ -616,7 +638,8 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
         elif fstatus == "deferred":
             r["action"] = ("deferred to Dependabot PR %s: it already carries this bump" % furl) + lift
         elif fstatus == "would":
-            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"], fb["to"])) + held_note + lift
+            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"],
+                fb["to"])) + held_note + lift
         elif fstatus == "unresolvable":
             r["action"] = ("fix not resolvable: %s@%s did not resolve from the module proxy — stays in section 3" % (fb["module"], fb["to"])) + lift
         elif fstatus == "skipped-test":
@@ -669,7 +692,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if log or _real_gh_allowed():
         prs, lerr = _open_dependabot_prs(ws0)
         hit = _dependabot_match(prs, module, tkey) if prs is not None else None
-        if hit:                                  # row 47: defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
+        # row 47: defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
+        if hit:
             if dry:
                 _plan(would, "bump PR", target, cves, note="deferred to Dependabot PR #%s" % hit[0], key=branch)
             print("bump %s -> %s deferred to Dependabot PR #%s" % (module, to, hit[0]))
