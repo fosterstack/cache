@@ -449,7 +449,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
 # rc-5b A5 (option b, advisor Oct 23): a bump PR carries go.mod, go.sum and vendor/** (CI's vendored-dependencies check, ci.yml) but dependency-provenance.json
 # needs records (checksum-database, origins, licences) the auditor does not produce: the PR is a DRAFT that is never armed and says so.
-BUMP_PROVENANCE_LINE = "dependency provenance not regenerated; a lane regenerates it on its own branch cut from this one and opens a replacement PR"
+BUMP_PROVENANCE_LINE = "dependency provenance not regenerated; a lane regenerates it on its own branch cut from this one and replaces this PR"
 BUMP_MAX_FILES = 2000            # a signed API commit is a request body, not a git push: a bump that vendors more than this is refused, not cut short
 BUMP_MAX_BYTES = 20 * 1024 * 1024
 
