@@ -3080,7 +3080,17 @@ refusal_block=$(cat <<'BLOCK'
       fi
 BLOCK
 )
-grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && python3 -I -c 'import sys; sys.exit(0 if sys.argv[1] in open(sys.argv[2]).read() else 1)' "$refusal_block" build/melange.yaml && python3 -I -c 'import sys; sys.exit(0 if sys.argv[1] in open(sys.argv[2]).read() else 1)' "$refusal_block" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
+has_refusal_block() {
+  python3 -I -c 'import sys; sys.exit(0 if sys.argv[1] in open(sys.argv[2]).read() else 1)' "$refusal_block" "$1"
+}
+if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh \
+  && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh \
+  && has_refusal_block build/melange.yaml && has_refusal_block build/melange-fips.yaml; then
+  msg="REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh"
+  ok "$msg ((devel) and vcs.modified) and in each of the two recipes"
+else
+  bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
+fi
 EXPECT=1061
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
