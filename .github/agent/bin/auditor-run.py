@@ -679,11 +679,12 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     oid = None
     if remote_same:                              # reuse = ONE verified commit on main changing only these files, with these exact bytes
         oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, signed_commit.read_changes(ws, files))
-    replaced = oid is None                       # the replace path has already demoted the PR it found
-    if replaced:
+    demoted = None                               # the PR the replace path demoted to draft before it wrote anything
+    if oid is None:
         err = _disarm_before_replace(ws, ex)     # the existing PR is found and DISARMED first, then its branch is replaced
         # ... and demoted to draft first: a failed demotion writes nothing
         err = err or (_ensure_draft(ws, ex) if ex else None)
+        demoted = ex
         if err:
             return None, err, "error"
         oid, err = _signed_delivery(ws, branch, base_sha, title, files)
@@ -696,7 +697,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         # a bump PR is never armed: one armed by hand (or by an earlier release of this driver) is disarmed on every
         # path
         err = _disarm_before_replace(ws, u)
-        err = err or (None if replaced and u == ex else _ensure_draft(ws, u))        # ... and always a draft
+        err = err or (None if u == demoted else _ensure_draft(ws, u))        # ... and always a draft
         if err:
             return None, err, "error"
         e = subprocess.run(["gh", "pr", "edit", u, "--title", title, "--body", body], cwd=ws,

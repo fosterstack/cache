@@ -825,6 +825,13 @@ class FixPR(Base):
         self.assertEqual(sum(1 for a in fr.argvs() if a[:3] == ["gh", "pr", "view"] and "isDraft" in a), 1)
         # a new target has no PR to look at: nothing is asked of an empty selector, the draft is created
         new_pr = {**self.CHG, ("gh", "pr", "list"): (0, "", ""), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}
+        # the PR a create race finds is demoted too (it was not the one looked at before the replace)
+        race = {**self.CHG, ("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")],
+                ("gh", "pr", "create"): (1, "", "already exists"),
+                ("gh", "pr", "view", "https://x/pull/8", "--json", "isDraft"): (0, "false\n", "")}
+        res, fr = self.real(race)
+        self.assertEqual(res[2], "delivered")
+        self.assertIn(["gh", "pr", "ready", "--undo", "https://x/pull/8"], fr.argvs())
         res, fr = self.real(new_pr)
         self.assertEqual(res, ("https://x/pull/9", None, "delivered"))
         self.assertFalse(any(a[:3] == ["gh", "pr", "view"] and a[3:4] in ([""], []) for a in fr.argvs()))
