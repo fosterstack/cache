@@ -2204,7 +2204,7 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-# the tars a job may name: the three scan tars under /tmp/arc/ that bin/layout-archive.sh builds in the job (exact names)
+# the tars a job may name: the three scan tars bin/layout-archive.sh builds under /tmp/arc/ in the job (exact names)
 own = r"/tmp/arc/(?:\$\{tag\}|\$\{v\}-\$\{arch\}|\$\{v\}-amd64)\.tar\b"
 own_tars = re.sub(r"(?<![^\s\"':=])" + own, "", text)
 if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.(?:image\.(?:index|manifest|config)\.v1|empty\.v1)\+json(?![A-Za-z0-9._+-])", "", own_tars)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
