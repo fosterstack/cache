@@ -681,6 +681,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, signed_commit.read_changes(ws, files))
     if oid is None:
         err = _disarm_before_replace(ws, ex)     # the existing PR is found and DISARMED first, then its branch is replaced
+        err = err or _ensure_draft(ws, ex)       # ... and demoted to draft first: a failed demotion writes nothing
+        err = err or _ensure_draft(ws, ex)       # ... and demoted to draft first: a failed demotion writes nothing
         if err:
             return None, err, "error"
         oid, err = _signed_delivery(ws, branch, base_sha, title, files)

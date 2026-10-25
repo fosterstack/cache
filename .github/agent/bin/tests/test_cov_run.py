@@ -817,6 +817,7 @@ class FixPR(Base):
         res, fr = self.real({**rules, self.IS_DRAFT: (0, "false\n", ""), ("gh", "pr", "ready"): (1, "", "HTTP 500")})
         # a failed demotion is a failed delivery
         self.assertEqual(res[2], "error"); self.assertIn("ready --undo", res[1])
+        self.assertEqual(fr.ref_writes(), [])                      # ... before anything is written
         res, fr = self.real({**rules, self.IS_DRAFT: (1, "", "HTTP 500")})            # the state could not be read
         self.assertEqual(res[2], "error")
 
