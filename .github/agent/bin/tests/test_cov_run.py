@@ -716,7 +716,8 @@ class LiftTrigger(Base):
         with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
             row, mi = R._dispose(c, [f], [c], env, [])
         self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
-        self.assertIn("recheck deferred (adjudicator unavailable)", row["action"])           # the suppression is retained
+        # the suppression is retained
+        self.assertIn("recheck deferred (adjudicator unavailable)", row["action"])
 
     def test_a_trigger_must_name_the_findings_own_component(self):
         self.assertEqual(R._trigger_for(self.GOOD, "libz"), self.GOOD)
