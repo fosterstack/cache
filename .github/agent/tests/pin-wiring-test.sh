@@ -398,6 +398,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-both-scanners-test.sh"
   },
   {
+   "name": "the candidate's OCI layout turned into a scan tar, digests checked (REQ-REL-004-AC1)",
+   "run": "bash bin/layout-archive-test.sh"
+  },
+  {
    "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
    "run": "bash bin/vex-forms-test.sh"
   },

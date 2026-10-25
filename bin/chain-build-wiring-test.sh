@@ -2204,8 +2204,16 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.(?:image\.(?:index|manifest|config)\.v1|empty\.v1)\+json(?![A-Za-z0-9._+-])", "", text)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
-if "/tmp/oci/" in text and not re.search(r"\boci:/tmp/oci/\$\{v\}|\boci:%s", text): bad.append("does not read the layout with skopeo oci:")
+# the tars a job may name: the three scan tars bin/layout-archive.sh builds under /tmp/arc/ in the job,
+# each a whole double-quoted word with a space on both sides; any other spelling keeps its .tar and is caught
+own_tars = text
+for name in ("${tag}", "${v}-${arch}", "${v}-amd64"):
+    for scheme in ("", "docker-archive:"):
+        own_tars = own_tars.replace(' "' + scheme + "/tmp/arc/" + name + '.tar" ', " ")
+if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.(?:image\.(?:index|manifest|config)\.v1|empty\.v1)\+json(?![A-Za-z0-9._+-])", "", own_tars)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
+layout_read = r"\boci:/tmp/oci/\$\{v\}|\boci:%s|layout-archive\.sh \"/tmp/oci/\$\{v\}\""
+if "/tmp/oci/" in text and not re.search(layout_read, text):
+    bad.append("does not read the layout with skopeo oci: or bin/layout-archive.sh")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 f1() { # f1 ok|caught LABEL FILE [sed-expr]
@@ -2218,6 +2226,36 @@ f1 caught "an archive path that only looks like a media type (/tmp/oci/vnd.oci) 
 f1 caught "an archive path glued onto a media type (application/vnd.oci.x.tar) is caught (take 30 round 2, Codex terra)" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf \/tmp\/application\/vnd.oci.x.tar/'
 f1 caught "an archive path glued onto a real media type (application/vnd.oci.image.manifest.v1.oci) is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf application\/vnd.oci.image.manifest.v1.oci/'
 f1 caught "an archive path glued onto a real media type (application/vnd.oci.image.index.v1+json.tar) is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf application\/vnd.oci.image.index.v1+json.tar/'
+f1 caught "a Build archive spelled as a tar of the layout (/tmp/oci/production.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/oci\/production.tar/'
+f1 ok "a scan tar the job builds itself under /tmp/arc/ is not a Build archive" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # grype "docker-archive:\/tmp\/arc\/${v}-amd64.tar" x/'
+f1 caught "a Build archive nested so it ends in /tmp/arc/ (/tmp/oci/tmp/arc/production.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/oci\/tmp\/arc\/production.tar/'
+f1 caught "a Build archive reached from /tmp/arc/ by .. (/tmp/arc/../oci/production.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/arc\/..\/oci\/production.tar/'
+f1 caught "a variable prefix before /tmp/arc/ (\${ROOT}/tmp/arc/production.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf ${ROOT}\/tmp\/arc\/production.tar/'
+f1 caught "a glob under /tmp/arc/ (/tmp/arc/*.tar) is not one of the job's own tar names" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/arc\/*.tar/'
+f1 caught "a suffix after an own tar name (/tmp/arc/\${v}-amd64.tar.evil) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/arc\/${v}-amd64.tar.evil/'
+f1 caught "a variable prefix before an own tar name (\${ROOT}/tmp/arc/\${v}-amd64.tar) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf ${ROOT}\/tmp\/arc\/${v}-amd64.tar/'
+f1 caught "a quoted own tar name with a word glued on (\"/tmp/arc/\${v}-amd64.tar\"evil) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf "\/tmp\/arc\/${v}-amd64.tar"evil/'
+f1 caught "an own tar name with a colon suffix (/tmp/arc/\${v}-amd64.tar:evil) is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's/name: images/name: images # tar -xf \/tmp\/arc\/${v}-amd64.tar:evil/'
 f1 caught "an archive file production.oci is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf production.oci/'
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
 f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
@@ -2225,7 +2263,9 @@ f1 caught "a download of vex-attach in a workflow whose own vex-attach job does 
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
-f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#oci:/tmp/oci/${v}#oci-archive:/tmp/oci/${v}.tar#'
+f1 caught "a <variant>.tar archive path is caught" \
+  "$root/.github/workflows/main-candidate-rescan.yml" \
+  's#layout-archive.sh "/tmp/oci/${v}"#layout-archive.sh "/tmp/oci/${v}.tar"#'
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
 f1 caught "a panel download by artifact id of something that is not a scanner job's own artifact is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/artifact-ids: ${{ needs.vex-attach.outputs.artifact-id }}/'
 f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
@@ -3031,8 +3071,27 @@ e = [i for i, l in enumerate(t) if l == "# tree-exclude end"]
 m = [i for i, l in enumerate(t) if l.startswith('melange_bin=')]
 assert len(b) == 1 and len(e) == 1 and b[0] < e[0] < m[0]
 PY
-grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange.yaml && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
-EXPECT=1051
+# the whole refusal, branch and exit included: a recipe that warns and goes on must stay red
+refusal_block=$(cat <<'BLOCK'
+      if grep -Eq '\(devel\)|vcs.modified=true' ${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then
+        cat ${{targets.destdir}}/usr/share/fscache/buildinfo.txt
+        echo 'the binary says (devel) or vcs.modified=true' >&2
+        exit 1
+      fi
+BLOCK
+)
+has_refusal_block() {
+  python3 -I -c 'import sys; sys.exit(0 if sys.argv[1] in open(sys.argv[2]).read() else 1)' "$refusal_block" "$1"
+}
+if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh \
+  && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh \
+  && has_refusal_block build/melange.yaml && has_refusal_block build/melange-fips.yaml; then
+  msg="REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh"
+  ok "$msg ((devel) and vcs.modified) and in each of the two recipes"
+else
+  bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
+fi
+EXPECT=1061
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
