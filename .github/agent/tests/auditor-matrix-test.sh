@@ -4230,8 +4230,8 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 echo "=== rc-5b item 11 (R1): the lift trigger is {carrier, min_version, component, component_min_version}," \
      "checked by shape and compared on the daily recheck ==="
 begin "rc5b11-trigger-tests-pass-and-each-cut-of-the-new-code-is-caught" \
-  "the LiftTrigger unit tests pass on the driver, and fail on a copy with the shape check, the unmet skip or the" \
-  "version comparison cut out"
+  "the LiftTrigger unit tests pass on the driver, and fail on a copy with the shape check, the unmet skip or the \
+version comparison cut out"
 t11_ok=yes; t11_detail=""
 mr="$WORK/rc5b11-mr-control"; rm -rf "$mr"; mkdir -p "$mr/.github"
 cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
