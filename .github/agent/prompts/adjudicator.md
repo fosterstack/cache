@@ -50,7 +50,8 @@ carrier (the carrier's or base's name, e.g. nodejs or debian), min_version (the 
 that carrier that embeds the fix, e.g. 20.11.0), component (the vulnerable component, e.g. openssl)
 and component_min_version (its fixed version, e.g. 3.0.13): "carrier >= min_version embeds
 component >= component_min_version"; the daily recheck compares the SBOM's carrier version with
-min_version; free text or any other shape is discarded and the finding stays visible);
+min_version; a NEW proposal in free text or any other shape is discarded and the finding stays visible; a trigger an
+earlier run already carried stays through the rechecks);
 repo_version and base_release
 when policy-held; evidence (object: how it is carried, and the source). Do NOT produce exploit
 code.

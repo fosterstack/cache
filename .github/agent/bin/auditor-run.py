@@ -564,9 +564,12 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     return url, None
 
 
-# rc-5b R1 (REQ-AUD-14 AC3/AC4): the lift trigger is {carrier, min_version, component, component_min_version} ("carrier >= X embeds component >= Y"), validated by shape and compared with the SBOM's carrier version on
-# the daily recheck before the model is asked. A free-text trigger is no acceptance (the finding stays visible), exactly like a missing one.
+# rc-5b R1 (REQ-AUD-14 AC3/AC4): the lift trigger is {carrier, min_version, component, component_min_version} ("carrier
+# >= X embeds component >= Y"), validated by shape and compared with the SBOM's carrier version on
+# the daily recheck before the model is asked. A free-text trigger is no acceptance (the finding stays visible), exactly
+# like a missing one.
 _LIFT_KEYS = {"carrier", "min_version", "component", "component_min_version"}
+# matches 20.2, v1.1.1n, 3.0.9-1+deb12u1, 20.2~rc1; refuses soon, 20.2; rm, an Arabic-Indic digit string
 _LIFT_VERSION = re.compile(r"^v?[0-9]+(?:\.[0-9]+)*[0-9A-Za-z.+~:-]*$")
 
 
@@ -584,18 +587,40 @@ def _lift_trigger(t):
     return out
 
 
-def _version_numbers(v):
-    m = re.match(r"^v?([0-9]+(?:\.[0-9]+)*)", str(v or "").strip())
-    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+def _trigger_for(trigger, package):
+    """The well-formed trigger, only when it names the finding's own component (a trigger about another component is no
+    acceptance: the finding stays visible)."""
+    t = _lift_trigger(trigger)
+    return t if t and t["component"].lower() == str(package or "").strip().lower() else None
+
+
+def _version_key(v):
+    """(numbers, tail) for a version the trigger can order, else None. The tail is empty for a plain version,
+    ("l", n) for a lone letter (OpenSSL 1.1.1n) and ("r", rev, deb, u) for a Debian revision (3.0.9-1 or
+    3.0.9-1+deb12u1). Any other suffix (~rc1, +dfsg, a second letter) is not ordered here."""
+    m = re.match(r"^v?([0-9]+(?:\.[0-9]+)*)(.*)$", str(v or "").strip())
+    if not m:
+        return None
+    numbers, rest = tuple(int(x) for x in m.group(1).split(".")), m.group(2)
+    if not rest:
+        return numbers, ()
+    if re.fullmatch(r"[a-z]", rest):                       # matches n; refuses N, nn, 1
+        return numbers, ("l", ord(rest))
+    rev = re.fullmatch(r"-([0-9]+)(?:\+deb([0-9]+)u([0-9]+))?", rest)      # matches -1, -1+deb12u1; refuses -1~rc1, -a
+    return (numbers, ("r",) + tuple(int(x or 0) for x in rev.groups())) if rev else None
 
 
 def _version_ge(a, b):
-    """True/False when a >= b by their leading numbers (20.10 > 20.2; a distro suffix is ignored), None when either has no readable number."""
-    x, y = _version_numbers(a), _version_numbers(b)
+    """True/False when a >= b (20.10 > 20.2; 1.1.1n < 1.1.1w; 3.0.9-1 < 3.0.9-1+deb12u1), None when either is not a
+    version it can order: the model is asked then, as for an unreadable one."""
+    x, y = _version_key(a), _version_key(b)
     if x is None or y is None:
         return None
-    n = max(len(x), len(y))
-    return x + (0,) * (n - len(x)) >= y + (0,) * (n - len(y))
+    if x[1] and y[1] and x[1][0] != y[1][0]:               # a letter against a Debian revision has no order
+        return None
+    n = max(len(x[0]), len(y[0]))
+    pad = lambda numbers: numbers + (0,) * (n - len(numbers))
+    return (pad(x[0]), x[1]) >= (pad(y[0]), y[1])
 
 
 def _carrier_name(c):
@@ -607,8 +632,9 @@ def _carrier_name(c):
 
 
 def _trigger_state(trigger, carrier):
-    """'met' / 'unmet' when a well-formed trigger and the SBOM's record of the SAME carrier let the version be compared, else 'unknown'
-    (a legacy text trigger, another carrier, an unreadable version: nothing is concluded and the model is asked as before)."""
+    """'met' / 'unmet' when a well-formed trigger and the SBOM's record of the SAME carrier let the version be
+    compared, else 'unknown' (a legacy text trigger, another carrier, an unreadable version: nothing is
+    concluded and the model is asked as before)."""
     t = _lift_trigger(trigger)
     if t is None or not carrier:
         return "unknown"
@@ -1603,9 +1629,12 @@ def _dispose(c, findings, aliases, env, would, name=None):
         carrier = _carrier_for(env.get("carriers"), _purls)
         base_hold = bool(env.get("base_policy_held"))
         pull = None
-        # rc-5b R1: a carried structured trigger the SBOM's carrier version has not reached needs no model call (and no new verdict): the suppression is re-carried
+        # rc-5b R1: a carried structured trigger the SBOM's carrier version has not reached needs no model call (and no
+        # new verdict): the suppression is re-carried
         carried_trig = env.get("carried_lift_trigger", {}).get((c, this_scope))
-        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable", set()) and carrier is not None and not base_hold      # a base-held scope can also lift through a base release the carrier says nothing about
+        # a base-held scope can also lift through a base release the carrier says nothing about
+        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable",
+            set()) and carrier is not None and not base_hold
                       and _trigger_state(carried_trig, carrier) == "unmet")
         if (carrier or base_hold) and not gf["is_go"] and not trig_unmet:
             pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
@@ -1619,8 +1648,9 @@ def _dispose(c, findings, aliases, env, would, name=None):
         # risk ONLY when it carries a machine-checkable lift trigger (AC3). An incomplete verdict
         # ({"pullable": false} with no lift trigger) must NOT create a silent suppression — it falls
         # through to the normal fixable routing, so the finding stays visible (Codex R1 residual 3).
-        _lt = _lift_trigger(pull.get("lift_trigger")) if pull else None
-        # a trigger the SBOM's carrier ALREADY meets contradicts "not pullable": no acceptance (the finding stays visible), never a suppression that reads "lifts when X" beside "carried at X or later"
+        _lt = _trigger_for(pull.get("lift_trigger"), gf["package"]) if pull else None
+        # a trigger the SBOM's carrier ALREADY meets contradicts "not pullable": no acceptance (the finding stays
+        # visible), never a suppression that reads "lifts when X" beside "carried at X or later"
         _not_pullable = bool(pull and pull.get("pullable") is False and _lt and _trigger_state(_lt, carrier) != "met")
         if _not_pullable:
             hold = pull.get("hold") or ("policy-held" if (base_hold and not carrier) else "upstream-held")
@@ -1694,9 +1724,14 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 return row, m_inc
             hold = "policy-held" if (base_hold and not carrier) else "upstream-held"
             this_exp3 = _cexp or exp
-            cause = ("lift trigger not met: %s at %s, below %s" % (_carrier_name(carrier.get("carrier") or carrier.get("carrier_purl")), carrier.get("carrier_version"), carried_trig["min_version"])
-                     if trig_unmet else
-                     "adjudicator unavailable" if (carrier or base_hold) and pull is None else "carrier signal absent this run")
+            if trig_unmet:
+                cause = "lift trigger not met: %s at %s, below %s" % (
+                    _carrier_name(carrier.get("carrier") or carrier.get("carrier_purl")),
+                    carrier.get("carrier_version"), carried_trig["min_version"])
+            elif (carrier or base_hold) and pull is None:
+                cause = "adjudicator unavailable"
+            else:
+                cause = "carrier signal absent this run"
             # preserve the CONCRETE machine-checkable lift trigger from the prior acceptance rather
             # than a generic placeholder, so a deferred recheck does not lose the condition (Codex
             # round-2 P2). Falls back to a note only if none was carried.

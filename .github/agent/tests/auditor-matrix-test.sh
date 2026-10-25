@@ -2528,7 +2528,9 @@ R._dispose('CVE-2099-CARRIED',[mkf('CVE-2099-CARRIED')],['CVE-2099-CARRIED'],env
 R.cli.close_adjudicators()
 side=json.load(open(glob.glob('$WORK/req14-3/evidence/*.json')[0]))
 doc=json.load(open(glob.glob('$WORK/req14-3/vex/*.json')[0]))
-good=(doc['statements'][0]['status']=='affected' and side.get('target_date') and side.get('lift_trigger')=={'carrier':'nodejs','min_version':'20.11.0','component':'openssl','component_min_version':'3.0.13'} and side.get('evidence'))
+good=(doc['statements'][0]['status']=='affected' and side.get('target_date')
+      and side.get('lift_trigger')=={'carrier':'nodejs','min_version':'20.11.0','component':'openssl',
+                                     'component_min_version':'3.0.13'} and side.get('evidence'))
 print('OK' if good else 'BAD trig=%r td=%r'%(side.get('lift_trigger'),side.get('target_date')))" 2>/dev/null | tail -1)"
 { eq "$a3" "OK"; } && ok || no "VEX affected + time box + lift trigger" "$a3"
 
@@ -2559,7 +2561,9 @@ pc="$("$PY" -c "
 import importlib.util,os
 os.environ['AUDITOR_MODEL_PRIMARY']='m'
 spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-class B: text='Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", \"lift_trigger\": {\"carrier\": \"nodejs\", \"min_version\": \"20.11.0\", \"component\": \"openssl\", \"component_min_version\": \"3.0.13\"}, \"candidate_release\": null}'
+class B: text=('Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", '
+    '\"lift_trigger\": {\"carrier\": \"nodejs\", \"min_version\": \"20.11.0\", \"component\": \"openssl\", '
+    '\"component_min_version\": \"3.0.13\"}, \"candidate_release\": null}')
 class Msg: content=[B()]; usage=None
 class _M:
     @staticmethod
@@ -2567,7 +2571,8 @@ class _M:
 class Client: messages=_M()
 req={'kind':'pullability','finding_id':'CVE-X','component':'openssl','component_fixed':'3.0.13','carrier':{'carrier':'nodejs','carrier_version':'18.19.0'}}
 ans=C._handle(req,Client())
-good=ans.get('pullable') is False and ans.get('hold')=='upstream-held' and (ans.get('lift_trigger') or {}).get('carrier')=='nodejs'
+good=(ans.get('pullable') is False and ans.get('hold')=='upstream-held'
+      and (ans.get('lift_trigger') or {}).get('carrier')=='nodejs')
 print('OK' if good else 'BAD:%r'%ans)" 2>/dev/null | tail -1)"
 { eq "$pc" "OK"; } && ok || no "production client answers pullability" "$pc"
 
@@ -2657,10 +2662,14 @@ print('OK' if good else 'BAD sec=%s disp=%s'%(row['section'],row.get('dispositio
 begin "req14-deferred-recheck-keeps-threshold-and-trigger" "a deferred recheck of a carried §2B finding recomputes and PRESERVES the policy threshold + owner-decision requirement (never silently downgrades a Critical to below) and keeps the CONCRETE lift trigger (Codex round-2 P1 + P2)"
 dt="$("$PY" -c "$(_req14_env)
 purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
-env=mkenv('$WORK/req14-defthr',carriers=[],carried_scopes={('CVE-2099-CRIT',sc)},carried_status={('CVE-2099-CRIT',sc):'affected'},carried_not_pullable={('CVE-2099-CRIT',sc)},carried_lift_trigger={('CVE-2099-CRIT',sc):{'carrier':'nodejs','min_version':'20.11.0','component':'openssl','component_min_version':'3.0.13'}})
+trig={'carrier':'nodejs','min_version':'20.11.0','component':'openssl','component_min_version':'3.0.13'}
+env=mkenv('$WORK/req14-defthr',carriers=[],carried_scopes={('CVE-2099-CRIT',sc)},
+          carried_status={('CVE-2099-CRIT',sc):'affected'},carried_not_pullable={('CVE-2099-CRIT',sc)},
+          carried_lift_trigger={('CVE-2099-CRIT',sc):trig})
 row,_=R._dispose('CVE-2099-CRIT',[mkf('CVE-2099-CRIT',sev='Critical')],['CVE-2099-CRIT'],env,[])
 R.cli.close_adjudicators()
-good=row['section']==2 and row.get('threshold')=='at_or_above' and bool(row.get('owner_issue_intent')) and (row.get('lift_trigger') or {}).get('carrier')=='nodejs'
+good=(row['section']==2 and row.get('threshold')=='at_or_above' and bool(row.get('owner_issue_intent'))
+      and (row.get('lift_trigger') or {}).get('carrier')=='nodejs')
 print('OK' if good else 'BAD thr=%s oi=%s trig=%r'%(row.get('threshold'),bool(row.get('owner_issue_intent')),row.get('lift_trigger')))" 2>/dev/null | tail -1)"
 { eq "$dt" "OK"; } && ok || no "deferred recheck keeps threshold + owner + concrete trigger" "$dt"
 
@@ -4218,14 +4227,22 @@ rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/m
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
-echo "=== rc-5b item 11 (R1): the lift trigger is {carrier, min_version, component, component_min_version}, checked by shape and compared on the daily recheck ==="
-begin "rc5b11-trigger-tests-pass-and-each-cut-of-the-new-code-is-caught" "the LiftTrigger unit tests pass on the driver, and fail on a copy with the shape check, the unmet skip or the version comparison cut out"
+echo "=== rc-5b item 11 (R1): the lift trigger is {carrier, min_version, component, component_min_version}," \
+     "checked by shape and compared on the daily recheck ==="
+begin "rc5b11-trigger-tests-pass-and-each-cut-of-the-new-code-is-caught" \
+  "the LiftTrigger unit tests pass on the driver, and fail on a copy with the shape check, the unmet skip or the" \
+  "version comparison cut out"
 t11_ok=yes; t11_detail=""
-mr="$WORK/rc5b11-mr-control"; rm -rf "$mr"; mkdir -p "$mr/.github"; cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
-( cd "$mr/.github/agent/bin/tests" && "$PY" -m unittest test_cov_run.LiftTrigger >/dev/null 2>&1 ) || { t11_ok=no; t11_detail=" [the uncut copy fails the unit tests]"; }
-for m in "shape|    if not isinstance(t, dict) or set(t) != _LIFT_KEYS or not all(isinstance(v, str) for v in t.values()):|    if False:" "unmet-skip|and not trig_unmet:|:" "compare|    return x + (0,) * (n - len(x)) >= y + (0,) * (n - len(y))|    return x + (0,) * (n - len(x)) > y + (0,) * (n - len(y))"; do
+mr="$WORK/rc5b11-mr-control"; rm -rf "$mr"; mkdir -p "$mr/.github"
+cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
+( cd "$mr/.github/agent/bin/tests" && "$PY" -m unittest test_cov_run.LiftTrigger >/dev/null 2>&1 ) \
+  || { t11_ok=no; t11_detail=" [the uncut copy fails the unit tests]"; }
+SHAPE_OLD='    if not isinstance(t, dict) or set(t) != _LIFT_KEYS or not all(isinstance(v, str) for v in t.values()):'
+CMP_OLD='    return (pad(x[0]), x[1]) >= (pad(y[0]), y[1])'
+for m in "shape|$SHAPE_OLD|    if False:" "unmet-skip|and not trig_unmet:|:" "compare|$CMP_OLD|${CMP_OLD/>=/>}"; do
   IFS='|' read -r name old new <<<"$m"
-  mr="$WORK/rc5b11-mr-$name"; rm -rf "$mr"; mkdir -p "$mr/.github"; cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
+  mr="$WORK/rc5b11-mr-$name"; rm -rf "$mr"; mkdir -p "$mr/.github"
+  cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
   if ! "$PY" - "$mr/.github/agent/bin/auditor-run.py" "$old" "$new" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
@@ -4234,7 +4251,9 @@ if src.count(sys.argv[2]) != 1:
 open(sys.argv[1], "w").write(src.replace(sys.argv[2], sys.argv[3]))
 PY
   then t11_ok=no; t11_detail="$t11_detail [$name: mutation site not found exactly once]"; continue; fi
-  if ( cd "$mr/.github/agent/bin/tests" && "$PY" -m unittest test_cov_run.LiftTrigger >/dev/null 2>&1 ); then t11_ok=no; t11_detail="$t11_detail [$name: the unit tests still pass]"; fi
+  if ( cd "$mr/.github/agent/bin/tests" && "$PY" -m unittest test_cov_run.LiftTrigger >/dev/null 2>&1 ); then
+    t11_ok=no; t11_detail="$t11_detail [$name: the unit tests still pass]"
+  fi
 done
 eq "$t11_ok" "yes" && ok || no "unit tests pass uncut and fail on every cut" "$t11_detail"
 
