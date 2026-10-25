@@ -919,6 +919,14 @@ class FixPR(Base):
         res, fr = self.real({**self.CHG, ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (1, "", "HTTP 500"), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(res, ("https://x/pull/9", None, "delivered-unchecked"))
 
+    def test_only_a_changed_major_is_held_so_a_v0_minor_is_not(self):
+        m = "example.com/m"
+        self.assertFalse(R._is_major_bump(m, "v0.9.0", "v0.10.0"))          # advisor Oct 24: v0.9 -> v0.10 is not a major
+        self.assertFalse(R._is_major_bump(m + "/v2", "v2.1.0", "v2.2.0"))
+        self.assertTrue(R._is_major_bump(m, "v0.9.0", "v1.0.0"))            # v0 -> v1 is
+        self.assertTrue(R._is_major_bump(m, "v1.9.0", "v2.0.0"))
+        self.assertTrue(R._is_major_bump(m, "v1.0.0", "garbage"))           # unreadable: held, never treated as a patch
+
     def test_a_dry_run_and_a_disabled_delivery_do_not_claim_an_issue_was_opened_and_a_dry_run_checks_the_deferral(self):
         row = lambda: {"id": "CVE-2099-50", "fix_bump": {"cve": "CVE-2099-50", "module": "example.com/m", "from": "v0.9.0", "to": "v1.0.0"}}
         r1 = row(); would = []
