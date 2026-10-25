@@ -783,7 +783,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "71ea56e5d09394c4f06ac9125a6631c959225e1fe900372871b614d888e0bd8f",
+      "sha256": "fc0300fd53f7bcf2376d4759217e59512495dcd3500aabf84f925d2ffd7b6dea",
       "tools": [
         "bash",
         "find",
