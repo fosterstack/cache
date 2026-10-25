@@ -783,8 +783,9 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "a08f30aeeb55a85acf24961c8d17e855e1c9c31b6af31dd4b2317c7f6c2ab3ba",
+      "sha256": "fc0300fd53f7bcf2376d4759217e59512495dcd3500aabf84f925d2ffd7b6dea",
       "tools": [
+        "bash",
         "find",
         "python3",
         "script",
@@ -796,7 +797,8 @@
       "runs": [
         "bin/check-osv-db.py",
         "bin/check-bind.py",
-        "bin/check-osv-vex.py"
+        "bin/check-osv-vex.py",
+        "bin/layout-archive.sh"
       ],
       "signs": false,
       "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)",
@@ -2684,6 +2686,22 @@
       "runs": [],
       "signs": false,
       "reason": "a Check job's list of the records it made, as a job output Sign compares with what it receives (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/layout-archive.sh",
+      "sha256": "7836f557cfa126a2b09d3bed57aa883591ed82f6fe3e0d7b8037db4b74b2ce6f",
+      "tools": [
+        "awk",
+        "cp",
+        "jq",
+        "mktemp",
+        "sha256sum",
+        "tar",
+        "trap"
+      ],
+      "signs": false,
+      "runs": [],
+      "reason": "the one builder of the docker-save tar of an OCI layout's linux/ARCH image, which check-scan.sh gives to the scanners: it copies each blob to a private stage, re-hashes it and packs only the config and layers (REQ-CHAIN-006-AC4)"
     }
   ],
   "ambient_env": [
