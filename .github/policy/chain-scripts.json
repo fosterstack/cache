@@ -2162,8 +2162,8 @@
         "bin/apk-tool.py"
       ],
       "signs": "other",
-      "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "c54bf2cf1fe75277941fd19ef3ec177db8a610b025c77e012e0ce381d028c54b",
+      "reason": "cache P4's release signing: re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "ba3c434fe1d2162e61a797907e487fe9f31fcbfe237cc0e9f4e7599efee6876f",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2185,28 +2185,28 @@
           "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] ||",
           "line_sha256": "8edde846c25cb6d9bdc4d9a3363070a5509b1e5b2a8a9689dfc27e7017734d39",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
           "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $build_dir\"",
           "line_sha256": "c1d6baed7abf8eabb6177604f72b5eac4945f97ecf55d071db51797af175c7fd",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
           "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; $kept\" 1",
           "line_sha256": "04f704f7e54ef983d81b05f55c4d3d78825fe1a0bac1cd59c045126abaff9eb9",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
           "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$build_dir/$rel\")\" = release.rsa.pub ] ||",
           "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         }
       ],
       "env_mentions": [

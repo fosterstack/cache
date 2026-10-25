@@ -61,6 +61,7 @@ key=$tmp/key/release.rsa
 # the file must hold exactly ONE PEM block, labelled exactly RSA PRIVATE KEY, with no headers (so not encrypted) and
 # no CR, and its public half is derived from that one block. The assembly key is recognised by its public half (not
 # by its bytes or file name), derived the same way from the committed files.
+# One function because the key checks and the openssl call are one heredoc and share its variables.
 derive_pub() { # <private key file>  -> the public key (PEM) of its single RSA PRIVATE KEY block, or exit 2
   "$PY3" -I -B - "$1" "$OPENSSL" <<'PY'
 import base64, re, subprocess, sys
