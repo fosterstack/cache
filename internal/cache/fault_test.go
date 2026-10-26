@@ -499,11 +499,13 @@ func TestEvictOneReportsMetadataDeleteFailure(t *testing.T) {
 	if _, err := c.Put(ctx, "key1", strings.NewReader("payload")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := c.meta.Close(); err != nil { // the injection: metadata Delete now fails
-		t.Fatalf("closing metadata store: %v", err)
+	entry, ok, lerr := c.meta.Lookup("key1")
+	if lerr != nil || !ok {
+		t.Fatalf("Lookup: %+v %v %v", entry, ok, lerr)
 	}
+	c.meta = &faultMeta{metaStore: c.meta, deleteErr: errors.New("delete failed")} // the injection: metadata Delete now fails
 
-	err := c.evictOne("key1")
+	err := c.evictOne(entry)
 	if err == nil {
 		t.Fatal("evictOne succeeded although the metadata record could not be deleted")
 	}

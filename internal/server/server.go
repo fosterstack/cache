@@ -9,11 +9,15 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -140,17 +144,7 @@ func New(cfg Config) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	metricsHandler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
-	var scrapeMu sync.Mutex // set the disk gauges and gather under one lock, so two scrapes can never export a mix of two samples
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		smp := diskSample(cfg) // the wait for a refresh (at most the sampler's few milliseconds) happens BEFORE the lock, so scrapes do not queue behind it
-		buf := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
-		scrapeMu.Lock()
-		setDiskGauges(cfg, smp)
-		metricsHandler.ServeHTTP(buf, r) // gathered into memory: the lock is not held while a slow client reads the response
-		scrapeMu.Unlock()
-		buf.writeTo(w)
-	})
+	mux.Handle("GET /metrics", metricsEndpoint(cfg))
 
 	// /statusz and the landing page sit behind the same Basic Auth as the
 	// cache when auth is enabled (punch list #8d): they are read-only, so
@@ -176,6 +170,25 @@ func New(cfg Config) http.Handler {
 	// and reserves the application endpoints across every method, so the
 	// cache handler never sees them.
 	return newFrontController(mux)
+}
+
+// metricsEndpoint serves /metrics. One lock covers setting the disk gauges
+// and gathering, so two scrapes never export a mix of two samples.
+func metricsEndpoint(cfg Config) http.Handler {
+	gatherer := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
+	var scrapeMu sync.Mutex
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The wait for a refresh (at most the sampler's few milliseconds) happens
+		// BEFORE the lock, so scrapes do not queue behind it.
+		smp := diskSample(cfg)
+		buf := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
+		scrapeMu.Lock()
+		setDiskGauges(cfg, smp)
+		// Gathered into memory: the lock is not held while a slow client reads the response.
+		gatherer.ServeHTTP(buf, r)
+		scrapeMu.Unlock()
+		buf.writeTo(w)
+	})
 }
 
 // reservedPaths are the application endpoints: read-only (GET/HEAD), and a
@@ -243,11 +256,49 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// credHasher makes the fixed-size form a credential is compared in: an
+// HMAC-SHA256 of its bytes under a key drawn from crypto/rand when the
+// hasher is built, so the comparison never sees inputs of differing length
+// (crypto/subtle.ConstantTimeCompare returns early on those, which would
+// make the configured credential's length measurable). The digest is a
+// comparison aid and is never stored or logged; the key lives only in this
+// process.
+type credHasher struct{ key [32]byte }
+
+func newCredHasher() *credHasher {
+	h := &credHasher{}
+	_, _ = rand.Read(h.key[:]) // crypto/rand.Read does not return an error since Go 1.24
+	return h
+}
+
+func (h *credHasher) digest(s string) []byte {
+	m := hmac.New(sha256.New, h.key[:])
+	m.Write([]byte(s))
+	return m.Sum(nil)
+}
+
+// credDigests are the digests of one configured credential pair.
+type credDigests struct{ user, pass []byte }
+
+// digestsOf digests a configured pair; withAuth does it once, when it is
+// built, not on every request.
+func digestsOf(h *credHasher, c Credentials) credDigests {
+	return credDigests{user: h.digest(c.Username), pass: h.digest(c.Password)}
+}
+
+// digestEqual compares two credential digests in constant time
+// (REQ-AUTH-002); both are always 32 bytes, so ConstantTimeCompare never
+// takes its early return on a length mismatch.
+func digestEqual(a, b []byte) bool {
+	return subtle.ConstantTimeCompare(a, b) == 1
+}
+
 // withAuth wraps h with HTTP Basic Auth when Credentials are configured.
-// Constant-time comparison avoids leaking password length/prefix via
-// timing (COMMIT-REQ style hygiene: this is exactly the kind of small
-// correctness detail the addendum's algorithm-discipline section expects
-// applied to all code, not just the crypto module choice).
+// Presented and configured credentials are compared as fixed-size digests
+// in constant time: ConstantTimeCompare never sees inputs of differing
+// length, so its early return cannot reveal the configured credential's
+// length. (It does not claim to hide the cost of hashing the presented
+// value.)
 //
 // Two pairs (REQ-AUTH-005): the read-write pair passes everything
 // through; the read-only pair passes GET and HEAD and answers writes
@@ -259,12 +310,15 @@ func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	if !creds.enabled() {
 		return next
 	}
+	hasher := newCredHasher()
+	rw, roD := digestsOf(hasher, creds), digestsOf(hasher, ro)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		rwUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
-		rwPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
-		roUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(ro.Username)) == 1
-		roPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(ro.Password)) == 1
+		pu, pp := hasher.digest(user), hasher.digest(pass)
+		rwUserOK := digestEqual(pu, rw.user)
+		rwPassOK := digestEqual(pp, rw.pass)
+		roUserOK := digestEqual(pu, roD.user)
+		roPassOK := digestEqual(pp, roD.pass)
 		isRW := rwUserOK && rwPassOK
 		isRO := ro.enabled() && roUserOK && roPassOK
 		if !ok || (!isRW && !isRO) {
@@ -315,9 +369,21 @@ func withMetrics(m *metrics.Metrics, next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		m.RequestsTotal.WithLabelValues(r.Method, strconv.Itoa(sw.status)).Inc()
-		m.RequestDuration.WithLabelValues(r.Method).Observe(time.Since(start).Seconds())
+		method := methodLabel(r.Method)
+		m.RequestsTotal.WithLabelValues(method, strconv.Itoa(sw.status)).Inc()
+		m.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	})
+}
+
+// methodLabel bounds the method label to the three methods the server
+// serves plus "other": a client may send any method token, and each distinct
+// value would otherwise live as its own series until the process exits.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut:
+		return method
+	}
+	return "other"
 }
 
 type statusWriter struct {
@@ -366,7 +432,7 @@ func handleGet(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 		cfg.Metrics.BytesRead.Add(float64(n))
 	}
 	if err != nil {
-		cfg.Log.Warn("server: GET: short write to client", "key", key, "error", err)
+		cfg.Log.Warn("server: GET: short write to client", "key", key, "error", loggableErr(err))
 	}
 }
 
@@ -407,22 +473,37 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// gaugesReadHook runs after a gauge refresh has read the totals and before it
+// sets the gauges. Production does nothing there; a test holds the refresh at
+// that point to make an overlapping upload's refresh run inside the window.
+var gaugesReadHook = func() {}
+
+// gaugesMu orders gauge refreshes: the last refresh to run also read last, so
+// the gauges end at the totals the last completed upload saw.
+var gaugesMu sync.Mutex
+
 // updateStoreGauges refreshes the store_bytes/store_entries gauges after a
-// successful write. Two extra read-only lookups per PUT (cheap: an
-// in-memory bbolt view transaction each) versus letting these gauges sit
-// at zero forever — which is what "Prometheus metrics" in the README
-// would otherwise silently not mean for the two numbers an operator
-// actually needs (bytes used vs. configured cap).
+// successful write. Each refresh makes two read-only passes over the metadata
+// index (TotalSize and Count each visit every record, so the cost grows with
+// the number of entries; a running total would be a metadata-layer change).
+// The whole refresh runs under gaugesMu: the reads and the sets of one
+// refresh cannot interleave with another's, so overlapping uploads cannot
+// leave the gauges at an older total.
 func updateStoreGauges(cfg Config) {
-	if total, err := cfg.Cache.TotalSize(); err == nil {
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	total, totalErr := cfg.Cache.TotalSize()
+	n, countErr := cfg.Cache.EntryCount()
+	gaugesReadHook()
+	if totalErr == nil {
 		cfg.Metrics.StoreBytesTotal.Set(float64(total))
 	} else {
-		cfg.Log.Error("server: store_bytes gauge update failed", "error", err)
+		cfg.Log.Error("server: store_bytes gauge update failed", "error", totalErr)
 	}
-	if n, err := cfg.Cache.EntryCount(); err == nil {
+	if countErr == nil {
 		cfg.Metrics.StoreEntries.Set(float64(n))
 	} else {
-		cfg.Log.Error("server: store_entries gauge update failed", "error", err)
+		cfg.Log.Error("server: store_entries gauge update failed", "error", countErr)
 	}
 }
 
@@ -447,7 +528,7 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		cfg.Log.Error("server: store error", "method", method, "key", key, "error", err)
+		cfg.Log.Error("server: store error", "method", method, "key", key, "error", loggableErr(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
@@ -533,4 +614,21 @@ func classifyPutError(err, ctxErr error) (reason string, counted bool) {
 		return "client_aborted", true
 	}
 	return "other", true
+}
+
+// loggableErr is the text a failure log may carry for err. A *net.OpError
+// formats the local and remote socket addresses, so a dropped client would
+// put its IP:port in the log; REQ-OBS-006 forbids that. An error whose
+// chain holds one is reduced to its operation and underlying cause, and the
+// result passes through scrubAddrs, so an address nested deeper in the
+// cause is replaced too.
+func loggableErr(err error) string {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		if op.Err == nil {
+			return scrubAddrs("net " + op.Op)
+		}
+		return scrubAddrs("net " + op.Op + ": " + op.Err.Error())
+	}
+	return scrubAddrs(err.Error())
 }

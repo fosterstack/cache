@@ -2,10 +2,13 @@
 # bin/acceptance-gradle-capped.sh: the Gradle capped-server suite (REQ-EVICT-002-AC3) and the suite's results line, extracted
 # unchanged from acceptance.yml (advisor ruling Q7; REQ-CHAIN-006-AC5). The capped server is already listening on localhost:18096.
 # Its last step writes the asserted ACs to $GITHUB_OUTPUT (the results step of acceptance.yml; the Check acceptance wrapper reads it).
-# Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
+# Before the steps, the wrapper jar is checked (preamble, not from acceptance.yml). Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
+# the wrapper jar is the reviewed one before anything runs it (REQ-SUP-001-AC32): the expected file is exactly one line, the one for the jar, and the jar matches it; else refuse
+sed -n 1p .github/policy/gradle-wrapper-jar-sha256.txt | grep -qxE '[0-9a-f]{64}  bench/gradle-sample/gradle/wrapper/gradle-wrapper\.jar' && ! sed -n '2,$p' .github/policy/gradle-wrapper-jar-sha256.txt | grep '' > /dev/null \
+  && sha256sum -c --status .github/policy/gradle-wrapper-jar-sha256.txt || { echo "acceptance-gradle-capped: gradle-wrapper.jar does not match .github/policy/gradle-wrapper-jar-sha256.txt" >&2; exit 1; }
 # The one Gradle invocation of the three builds below (the sample project's own wrapper, as acceptance.yml ran it).
 capped_build() { ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1; }
 

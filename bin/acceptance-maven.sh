@@ -40,8 +40,8 @@ curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt
 puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/m-cold.txt || true)
 gets404=$(awk '/^fscache_http_requests_total\{method="GET",status="404"\}/ {print $2}' /tmp/m-cold.txt || true)
 echo "cold: uploads=${puts:-0} lookups-missed=${gets404:-0}"
-[ "${puts:-0}" -eq "$COLD_UPLOADS" ] || { echo "::error::cold uploads ${puts:-0}, expected $COLD_UPLOADS" >&2; exit 1; }
-[ "${gets404:-0}" -eq "$COLD_LOOKUPS" ] || { echo "::error::cold lookups ${gets404:-0}, expected $COLD_LOOKUPS" >&2; exit 1; }
+test "${puts:-0}" -eq "$COLD_UPLOADS" || { echo "::error::cold uploads ${puts:-0}, expected $COLD_UPLOADS" >&2; exit 1; }
+test "${gets404:-0}" -eq "$COLD_LOOKUPS" || { echo "::error::cold lookups ${gets404:-0}, expected $COLD_LOOKUPS" >&2; exit 1; }
 )
 
 # acceptance.yml, job acceptance-maven, step 9: checksum the cold build's artifacts (working-directory bench/maven-sample)
@@ -74,11 +74,11 @@ step_12() (
 set -euo pipefail
 restored=$(grep -c 'Found cached build, restoring' /tmp/warm.log || true)
 echo "restored modules: ${restored}"
-[ "${restored}" -eq "$MODULES" ] || { echo "::error::${restored} modules restored, expected $MODULES" >&2; exit 1; }
+test "${restored}" -eq "$MODULES" || { echo "::error::${restored} modules restored, expected $MODULES" >&2; exit 1; }
 curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt
 hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/m-warm.txt)
 echo "server-side cache hits: ${hits:-0}"
-[ "${hits:-0}" -ge "$MODULES" ] || { echo "::error::server saw ${hits:-0} hits; the restore did not come from the remote" >&2; exit 1; }
+test "${hits:-0}" -ge "$MODULES" || { echo "::error::server saw ${hits:-0} hits; the restore did not come from the remote" >&2; exit 1; }
 )
 
 # acceptance.yml, job acceptance-maven, step 13: assert restored artifacts are byte-identical (working-directory bench/maven-sample)
@@ -99,8 +99,7 @@ echo "restored jars byte-identical"
 step_14() (
 cd bench/maven-sample
 set -euo pipefail
-before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
-  | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
+before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
 
 rm -rf /tmp/mvn-bad lib/target app/target
 mvn -B -s /tmp/m2-bad/settings.xml verify \
@@ -118,10 +117,9 @@ mvn -B verify \
 grep -q 'Error downloading cache item' /tmp/none.log \
   || { echo "::error::missing credentials produced no logged download errors" >&2; exit 1; }
 
-after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
-  | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
+after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
 echo "stored uploads before=${before_puts} after=${after_puts}"
-[ "${after_puts}" -eq "${before_puts}" ] \
+test "${after_puts}" -eq "${before_puts}" \
   || { echo "::error::unauthenticated runs stored entries on the server" >&2; exit 1; }
 )
 
