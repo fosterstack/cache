@@ -130,7 +130,8 @@ Description=FosterStack Cache
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/fscache          # fscache-fips for the FIPS build — must match what you installed
+# fscache-fips for the FIPS build: must match what you installed
+ExecStart=/usr/local/bin/fscache
 Environment=FSCACHE_ADDR=:8080
 Environment=FSCACHE_DATA_DIR=/var/lib/fscache
 Environment=FSCACHE_MAX_BYTES=53687091200
