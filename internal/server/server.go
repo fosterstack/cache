@@ -144,17 +144,7 @@ func New(cfg Config) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	metricsHandler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
-	var scrapeMu sync.Mutex // set the disk gauges and gather under one lock, so two scrapes can never export a mix of two samples
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		smp := diskSample(cfg) // the wait for a refresh (at most the sampler's few milliseconds) happens BEFORE the lock, so scrapes do not queue behind it
-		buf := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
-		scrapeMu.Lock()
-		setDiskGauges(cfg, smp)
-		metricsHandler.ServeHTTP(buf, r) // gathered into memory: the lock is not held while a slow client reads the response
-		scrapeMu.Unlock()
-		buf.writeTo(w)
-	})
+	mux.Handle("GET /metrics", metricsEndpoint(cfg))
 
 	// /statusz and the landing page sit behind the same Basic Auth as the
 	// cache when auth is enabled (punch list #8d): they are read-only, so
@@ -180,6 +170,25 @@ func New(cfg Config) http.Handler {
 	// and reserves the application endpoints across every method, so the
 	// cache handler never sees them.
 	return newFrontController(mux)
+}
+
+// metricsEndpoint serves /metrics. One lock covers setting the disk gauges
+// and gathering, so two scrapes never export a mix of two samples.
+func metricsEndpoint(cfg Config) http.Handler {
+	gatherer := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
+	var scrapeMu sync.Mutex
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The wait for a refresh (at most the sampler's few milliseconds) happens
+		// BEFORE the lock, so scrapes do not queue behind it.
+		smp := diskSample(cfg)
+		buf := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
+		scrapeMu.Lock()
+		setDiskGauges(cfg, smp)
+		// Gathered into memory: the lock is not held while a slow client reads the response.
+		gatherer.ServeHTTP(buf, r)
+		scrapeMu.Unlock()
+		buf.writeTo(w)
+	})
 }
 
 // reservedPaths are the application endpoints: read-only (GET/HEAD), and a

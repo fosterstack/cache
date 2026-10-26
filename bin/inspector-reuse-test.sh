@@ -852,7 +852,9 @@ cat > "$sim/bin/inspector-sbomgen" <<'EOF'
 #!/usr/bin/env bash
 ref=""; out=""
 while [ $# -gt 0 ]; do case "$1" in --image) ref=$2; shift ;; --outfile) out=$2; shift ;; esac; shift; done
-cp "$FAKE_SBOMS/${ref##*:}.json" "$out"
+n=${ref##*[:/]}; n=${n%.tar}
+[ -f "$ref" ] && n=$(cat "$ref")   # the rescan's fake tar holds the tag it stands for
+cp "$FAKE_SBOMS/$n.json" "$out"
 EOF
 cat > "$sim/bin/aws" <<'EOF'
 #!/usr/bin/env bash
@@ -914,7 +916,7 @@ sys.stdout.write(t)' "$1"; }
 CLEAN='{"sbom":{"bomFormat":"CycloneDX","components":[],"vulnerabilities":[]}}'
 
 # --- scan.yml: the PR gate
-extract scan.yml inspector "Amazon Inspector scan every loaded image" > "$sim/scan-raw.sh" || { bad "extract scan.yml's Inspector step"; }
+extract scan.yml inspector "Amazon Inspector scan every image tar" > "$sim/scan-raw.sh" || { bad "extract scan.yml's Inspector step"; }
 sandbox < "$sim/scan-raw.sh" > "$sim/scan-step.sh"
 reset_scan() { rm -rf "$sim/tmp"; mkdir -p "$sim/tmp"; printf 'ghcr.io/fosterstack/cache:cand-production-amd64\nghcr.io/fosterstack/cache:cand-production-arm64\nghcr.io/fosterstack/cache:cand-debug-amd64\n' > "$sim/tmp/refs.txt"; }
 gate_lines() { grep -c '^- ' "$sim/summary.md" | tr -d ' '; }  # one verdict line per image, plus the "SBOMs assessed" line
@@ -1069,7 +1071,11 @@ mscan2 "the store happens without the day re-check" "$M_NO_RECHECK" daycross_sca
 # --- main-candidate-rescan.yml: the daily panel
 extract main-candidate-rescan.yml panel-inspector "Amazon Inspector every image" > "$sim/rescan-raw.sh" || { bad "extract the rescan's Inspector step"; }
 sandbox < "$sim/rescan-raw.sh" > "$sim/rescan-step.sh"
-reset_rescan() { rm -rf "$sim/tmp"; mkdir -p "$sim/tmp"; }
+# the tars the earlier step made: a file naming its tag, which is what the fake inspector-sbomgen reads
+reset_rescan() {
+  rm -rf "$sim/tmp"; mkdir -p "$sim/tmp/arc"
+  for v in production fips; do for a in amd64 arm64; do echo "cand-$v-$a" > "$sim/tmp/arc/$v-$a.tar"; done; done
+}
 scans() { ls "$sim"/tmp/panel/inspector/*/scan.json 2>/dev/null | wc -l | tr -d ' '; }
 valid_scans() { for f in "$sim"/tmp/panel/inspector/*/scan.json; do python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d['sbom']['bomFormat']=='CycloneDX' else 1)" "$f" && echo y; done | wc -l | tr -d ' '; }
 mksbom "$sim/sboms/cand-debug-amd64.json" urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
@@ -1263,7 +1269,7 @@ if which == "scan":
     IF_REST = FORK
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
-    job, scan_name, marker = "inspector", "Amazon Inspector scan every loaded image", "python3 bin/inspector-gate.py"
+    job, scan_name, marker = "inspector", "Amazon Inspector scan every image tar", "python3 bin/inspector-gate.py"
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
              "rebuild": {"contents": "read"}, "reproducibility": None, "scanners": None,
              "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
@@ -1291,9 +1297,9 @@ if which == "scan":
     # (ruling, cache#603) the load step still produces the four refs and the scan step refuses to run on fewer; the aggregate needs both jobs and asserts Inspector's result;
     # the evidence upload exists and the role assumption comes before the scan; the matrix list is the real pr_gate minus inspector
     isteps = d["jobs"]["inspector"]["steps"]
-    ld = [st for st in isteps if "load every variant/platform child" in (st.get("name") or "")]
+    ld = [st for st in isteps if "make a tar of every variant/platform child" in (st.get("name") or "")]
     if len(ld) != 1 or "for v in production fips; do" not in ld[0].get("run", "") or "for arch in amd64 arm64; do" not in ld[0].get("run", ""):
-        bad.append("the Inspector job's load step no longer loops over production and fips on amd64 and arm64 (four refs)")
+        bad.append("the Inspector job's tar step no longer loops over production and fips on amd64 and arm64 (four refs)")
     sc_ = [st for st in isteps if st.get("id") == "insp-scan"]
     if len(sc_) != 1 or (sc_[0].get("env") or {}) != {"EXPECTED_REFS": "4"} or 'grep -c . /tmp/refs.txt' not in sc_[0].get("run", "") or '-ne "${EXPECTED_REFS}"' not in sc_[0].get("run", "") or sc_[0].get("run", "").count('[ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2') != 1:
         bad.append("the Inspector scan step does not refuse to run unless it was given exactly the four expected image references (EXPECTED_REFS 4)")
@@ -1507,7 +1513,7 @@ mut_def W_INSPECTOR_DAY_BACK <<'EOF'
 if 'EXPECTED_REFS: "4"' in t:
     t = t.replace('          EXPECTED_REFS: "4"', '          EXPECTED_REFS: "4"\n          INSPECTOR_DAY: x', 1)
 else:
-    t = t.replace("      - name: Amazon Inspector scan every loaded image\n", "      - name: Amazon Inspector scan every loaded image\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every loaded" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
+    t = t.replace("      - name: Amazon Inspector scan every image tar\n", "      - name: Amazon Inspector scan every image tar\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every image tar" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
 EOF
 for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   set -- $pair; f=$1; k=$2

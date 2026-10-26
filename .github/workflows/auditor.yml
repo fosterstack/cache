@@ -159,12 +159,12 @@ jobs:
           gh run download "$rid" -n panel-evidence -D "${RUNNER_TEMP}/panel" \
             || echo "::warning::selected run has no panel-evidence artifact; the scanner panel's audits cannot run"
           # REQ-AUD-3 AC3 (no-change day, zero model calls): yesterday's verdicts and narrative ride in a small artifact, `auditor-state`,
-          # uploaded by a real run of THIS workflow on main. Only a successful scheduled or dispatch run of main is a candidate (never a
-          # pull request or another branch); the driver (AUDITOR_PREV_STATE) validates the file and uses it only when its finding-set
+          # uploaded by a real run of THIS workflow on main. Only a COMPLETED scheduled or dispatch run of main is a candidate (success or failure: the five-run counter must see a run that failed
+          # after writing its state; an incomplete run's reusable verdicts are already emptied by the driver; never a pull request or another branch); the driver (AUDITOR_PREV_STATE) validates the file and uses it only when its finding-set
           # hash equals today's, so a missing or unusable file just means today's behaviour (model calls). Never fails the step.
           mkdir -p "${RUNNER_TEMP}/prev-state"
-          prev_ids=$( { gh run list --workflow auditor.yml --branch main --event schedule --status success --limit 5 --json databaseId,createdAt
-                        gh run list --workflow auditor.yml --branch main --event workflow_dispatch --status success --limit 5 --json databaseId,createdAt
+          prev_ids=$( { gh run list --workflow auditor.yml --branch main --event schedule --status completed --limit 5 --json databaseId,createdAt
+                        gh run list --workflow auditor.yml --branch main --event workflow_dispatch --status completed --limit 5 --json databaseId,createdAt
                       } | jq -s -r 'add | sort_by(.createdAt) | reverse | .[].databaseId' ) || prev_ids=""
           for prid in $prev_ids; do
             if gh run download "$prid" -n auditor-state -D "${RUNNER_TEMP}/prev-state"; then
@@ -219,7 +219,7 @@ jobs:
           KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
         run: |
           set -uo pipefail
-          command -v skopeo >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; } || true
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           # govulncheck is built by the govulncheck-build job (no credential, module pinned there) and used only when its sha256 equals
           # that job's output; syft a pinned, checksummed release binary (below). Both best-effort: syft catalogues the image's
           # carriers and base OS (it reads distroless status.d)
@@ -298,7 +298,7 @@ jobs:
         # AUDITOR_SCHEDULE_MODE to be exactly "live"; unset or anything else keeps the schedule
         # dry (the rollout's dry week). On dispatch it follows the dry_run input as before.
         if: ${{ (github.event_name == 'schedule' && vars.AUDITOR_SCHEDULE_MODE == 'live') || (github.event_name != 'schedule' && inputs.dry_run == false) }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}

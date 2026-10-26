@@ -35,7 +35,7 @@ fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 # Sharding (advisor 0618; coverage-gate.sh runs the cases as parallel shards under coverage): PINS_SHARD=<i>/<n> runs only every n-th UNIT
-# (a unit is one case_, gitcase, case_out, case3_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
+# (a unit is one case_, gitcase, case_out, case3_, mutant_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
 # unit as `UNIT <index> <name>` and, for the units this shard would run, `RUN <name>` (counted in ran=), without executing anything. Unset, every unit runs.
 # The last lines say which shard this was and how many units the file has and how many it ran, so coverage-shard-sum.py can prove the
 # shards together ran the whole list exactly once. The pm-case checks below count every case_out call, run or not, so they hold in a shard.
@@ -73,7 +73,7 @@ case_() {
   if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"  # the gate's committed programs
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -96,6 +96,31 @@ case_ pinned-quoted        ok  "$head
 case_ pinned-subpath       ok  "$head
     steps:
       - uses: github/codeql-action/init@$SHA # v4.1.0"
+# actions/cache (restore and save subactions, REQ-REL-004-AC8 on the release chain): a node action, pinned like every other
+case_ cache-restore-pinned ok  "$head
+    steps:
+      - uses: actions/cache/restore@$SHA # v5.0.5"
+case_ cache-save-pinned    ok  "$head
+    steps:
+      - uses: actions/cache/save@$SHA # v5.0.5"
+case_ cache-root-pinned    ok  "$head
+    steps:
+      - uses: actions/cache@$SHA # v5.0.5"
+case_ cache-restore-tag    bad "$head
+    steps:
+      - uses: actions/cache/restore@v5"
+case_ cache-save-short-sha bad "$head
+    steps:
+      - uses: actions/cache/save@3d3c42e # v5.0.5"
+case_ cache-restore-no-comment bad "$head
+    steps:
+      - uses: actions/cache/restore@$SHA"
+case_ cache-lookalike-subpath bad "$head
+    steps:
+      - uses: actions/cachex/restore@$SHA # v5.0.5"
+case_ cache-lookalike-name bad "$head
+    steps:
+      - uses: actions/cache-evil@$SHA # v1.0.0"
 case_ remote-reusable      bad "on: push
 jobs:
   j:
@@ -564,84 +589,6 @@ case_ service-port-loopback-ok     ok  "$head
           - 127.0.0.1:5000:5000
     steps:
       - run: true"
-case_ service-port-all-interfaces  bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - 5000:5000
-    steps:
-      - run: true"
-case_ service-port-any-address     bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - 0.0.0.0:5000:5000
-    steps:
-      - run: true"
-case_ service-port-localhost-name  bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - localhost:5000:5000
-    steps:
-      - run: true"
-case_ service-port-injects-flag    bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - '127.0.0.1:5000:5000 --privileged'
-    steps:
-      - run: true"
-case_ service-port-expression      bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - 127.0.0.1:\${{ vars.PORT }}:5000
-    steps:
-      - run: true"
-case_ service-port-not-a-list      bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports: 127.0.0.1:5000:5000
-    steps:
-      - run: true"
-case_ service-port-nested          bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - [127.0.0.1:5000:5000]
-    steps:
-      - run: true"
-case_ service-port-out-of-range    bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - 127.0.0.1:99999:5000
-    steps:
-      - run: true"
-case_ service-port-zero            bad "$head
-    services:
-      registry:
-        image: alpine@$DIG
-        ports:
-          - 127.0.0.1:0:5000
-    steps:
-      - run: true"
-case_ container-port-loopback      bad "$head
-    container:
-      image: alpine@$DIG
-      ports:
-        - 127.0.0.1:5000:5000
-    steps:
-      - run: true"
 
 # --- adversarial round 8 (audits/2026-09-30/pins/round8): only positively classified shapes pass
 case_ container-env-ok     ok  "$head
@@ -751,7 +698,7 @@ gitcase() {
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
@@ -1169,7 +1116,7 @@ case_out() {
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
     printf '#!/usr/bin/env bash\nset -euo pipefail\n:\n' > "$d/bin/$s"; chmod +x "$d/bin/$s"
@@ -1519,11 +1466,98 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=132
+# the release chain's service-port and job-container port cases (cache#569 ruling F3): each refusing case asserts the checker's finding text, so a crash cannot pass as a refusal
+case_out service-port-all-interfaces  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 5000:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-any-address     bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 0.0.0.0:5000:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-localhost-name  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - localhost:5000:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-injects-flag    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - '127.0.0.1:5000:5000 --privileged'
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-expression      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:\${{ vars.PORT }}:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-not-a-list      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports: 127.0.0.1:5000:5000
+    steps:
+      - run: true" 'ports: not a list'
+case_out service-port-nested          bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - [127.0.0.1:5000:5000]
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-out-of-range    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:99999:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-container-overflow bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:5000:70000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-zero            bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:0:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out container-port-loopback      bad "$head
+    container:
+      image: alpine@$DIG
+      ports:
+        - 127.0.0.1:5000:5000
+    steps:
+      - run: true" 'ports on a service'
+PM_EXPECT=143
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # Codex round 1 at 643db58 (both seats): the count alone does not pin WHICH cases ran; the sha256 of the sorted case names does
-PM_NAMES_SHA=0163536e0856f6f4eb0a70d2dc6eac52a213dfca69801b916badbc325541f878
+PM_NAMES_SHA=fac15d64929fb9fb7ec05ad79cebdd18d64856ce1ae7c013aaff1f5bbba07b0d
 pm_names_sha=$(printf '%s' "$pm_names" | LC_ALL=C sort | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
 if [ "$pm_names_sha" = "$PM_NAMES_SHA" ]; then pass=$((pass+1)); echo "PASS pm-case-names → $pm_names_sha"
 else failn=$((failn+1)); echo "FAIL pm-case-names → the sorted pm case names hash to $pm_names_sha, want $PM_NAMES_SHA"; fi
@@ -1693,6 +1727,79 @@ case_ n32-combined-o-file-ok   ok  "$(rb 'bash -eo pipefail bin/x.sh')" "mkdir -
 case_ n32-repo-script-ok       ok  "$(rb 'bash bin/x.sh --flag; sh ./tools/y.sh')" "mkdir -p bin tools; printf 'echo x\\n' > bin/x.sh; printf 'echo y\\n' > tools/y.sh"
 case_ n32-bash-c-ok            ok  "$(rb 'bash -c "echo hi"')"
 case_ n32-docker-shell-arg-ok  ok  "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c true')"
+
+# --- the command a step runs INSIDE a container is a command of its own (docker/podman/nerdctl exec, and the words after the image of run):
+#     judged like a top-level command, pinned by digest or refused (#593 review: `exec` sat in the safe verbs, so a pull through it was invisible)
+case_ exec-inner-pull-bad          bad "$(r 'docker exec C docker pull alpine:latest')"
+case_ exec-inner-options-bad       bad "$(r 'docker exec -it -e A=b -u root -w /x C docker pull alpine:latest')"
+case_ exec-inner-dashdash-bad      bad "$(r 'docker exec -i -- C docker pull alpine:latest')"
+case_ exec-inner-podman-bad        bad "$(r 'podman exec C docker pull alpine:latest')"
+case_ exec-inner-nerdctl-bad       bad "$(r 'nerdctl exec C docker pull alpine:latest')"
+case_ exec-inner-container-verb-bad bad "$(r 'docker container exec C docker pull alpine:latest')"
+case_ exec-inner-sh-c-bad          bad "$(r "docker exec C sh -c 'docker pull alpine:latest'")"
+case_ exec-inner-pip-bad           bad "$(r 'docker exec C pip install requests')"
+case_ exec-unknown-option-bad      bad "$(r 'docker exec --frobnicate C true')"
+case_ exec-inner-plain-ok          ok  "$(r 'docker exec C make test')"
+case_ exec-inner-bash-c-ok         ok  "$(r "docker exec -it C bash -c 'echo hi'")"
+case_ exec-inner-pinned-pull-ok    ok  "$(r 'docker exec C docker pull alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ run-inner-pull-bad           bad "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ run-inner-sh-c-bad           bad "$(r "docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c 'docker pull alpine:latest'")"
+case_ run-inner-pip-flags-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pip install requests')"
+case_ run-entrypoint-inner-bad     bad "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ run-flags-image-tag-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpine:latest true')"
+case_ run-flags-image-digest-ok    ok  "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 make test')"
+case_ run-option-value-looks-pinned-bad  bad "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
+# mutants: the checker with ONE branch cut must let the matching probe through (the probe depends on that branch)
+mutant_() {   # name, python replace (old|||new), probe script, optional setup
+  local name=$1 d="$work/mut-$1"
+  take "mutant-$name" || return 0
+  mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
+  python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+old, new = sys.argv[3].split("|||")
+assert src.count(old) == 1, "mutation site not found exactly once: " + old
+open(sys.argv[2], "w").write(src.replace(old, new))
+PY
+  if python3 "$d/mut.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
+  if [ "$got" = ok ]; then pass=$((pass+1)); echo "PASS mutant-$name → escapes (the probe needs that branch)"
+  else failn=$((failn+1)); echo "FAIL mutant-$name → still caught with the branch cut"; fi
+}
+case_ run-entrypoint-attached-bad  bad "$(r 'docker run --entrypoint=docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ create-inner-pull-bad        bad "$(r 'docker create alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ exec-nested-too-deep-bad     bad "$(r 'docker exec C docker exec C docker exec C docker exec C docker exec C docker exec C true')"
+case_ run-inner-script-not-bound-ok ok "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash evil.sh')" "printf 'docker pull alpine:latest\\n' > evil.sh"  # a same-name committed file is not what runs in the container
+# a script path inside a container names the container's file: it is never bound to a committed file of the checkout (the image is pinned by digest;
+# stage-acceptance-egress.yml runs ./configure and /trace/strace this way) and, as before, not read
+case_ exec-inner-path-not-bound-ok ok  "$(r 'docker exec C ./run.sh')"
+case_ container-create-inner-bad   bad "$(r 'docker container create --name c alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ exec-inner-committed-name-ok ok "$(r 'docker exec C bash safe.sh')" "printf 'echo safe\\n' > safe.sh"
+case_ run-inner-committed-name-ok ok "$(r 'docker run --rm -v x:y alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash bin/x.sh')" "mkdir -p bin; printf 'echo safe\\n' > bin/x.sh"
+# a `sh -c` body keeps the rule it always had (the script it names is the committed file: `-v "$PWD":/w … sh -c 'bash ci.sh'` mounts the checkout); only the plain inner command is not bound
+case_ exec-sh-c-script-as-before-bad bad "$(r "docker exec C sh -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ run-sh-c-script-as-before-bad  bad "$(r "docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ exec-sh-c-inner-tool-bad      bad "$(r "docker exec C sh -c 'bash evil.sh; docker pull alpine:latest'")"
+case_ run-entrypoint-value-of-other-option-bad bad "$(r "docker run --entrypoint docker --label '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
+case_ run-entrypoint-last-wins-ok  ok  "$(r 'docker run --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 hello')"
+case_ run-entrypoint-repeated-last-wins-ok  ok  "$(r 'docker run --entrypoint docker --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ run-entrypoint-repeated-last-wins-bad bad "$(r 'docker run --entrypoint echo --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+# the attached form `--entrypoint=sh` has no separate `sh` word for the outer scan to see: the body is read by the inner command alone (#712 review)
+case_ run-entrypoint-attached-sh-script-bad bad "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ run-entrypoint-attached-sh-pull-bad   bad "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'docker pull alpine:latest'")"
+case_ run-entrypoint-attached-sh-ok         ok  "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'bash safe.sh'")" "printf 'echo safe\\n' > safe.sh"
+case_ run-entrypoint-value-of-short-group-bad bad "$(r "docker run --entrypoint docker -il '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
+mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
+mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+mutant_ container-create 'rest[:1] in (["exec"], ["run"], ["create"])|||rest[:1] in (["exec"], ["run"])' "$(r 'docker container create --name c alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+mutant_ run-flags-image 'k, unknown = _options(rest, val, boolean)
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "|||k, unknown = next((i for i, a in enumerate(rest) if not a.startswith("-")), len(rest)), None
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "' "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
 # --- Codex #164 adversarial r1 (C01, C03-C13): each a fail-closed reading of what bash, pip, docker or BuildKit does
 case_ c01-backslash-newline    bad "$(rb "doc\\
           ker run alpine:3.20")"
@@ -1961,7 +2068,7 @@ realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
 cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"
-: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"
+: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
 marker = '    steps:\n'
