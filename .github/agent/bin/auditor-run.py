@@ -353,6 +353,23 @@ def _disarm_before_replace(ws, pr):
     return None
 
 
+def _hold_as_draft(ws, pr):
+    """A held major's PR is a draft with auto-merge off, whatever an earlier run (or a person) left it as. None, or the
+    failure text."""
+    err = _disarm_before_replace(ws, pr)
+    if err:
+        return err
+    v = subprocess.run(["gh", "pr", "view", pr, "--json", "isDraft", "--jq", ".isDraft"], cwd=ws, capture_output=True,
+        text=True)
+    if v.returncode != 0:
+        return "gh pr view (isDraft): " + (v.stderr or "").strip()
+    if (v.stdout or "").strip() != "true":
+        r = subprocess.run(["gh", "pr", "ready", "--undo", pr], cwd=ws, capture_output=True, text=True)
+        if r.returncode != 0:
+            return "could not make %s a draft: %s" % (pr, (r.stderr or "").strip())
+    return None
+
+
 def _head_is(ws, pr, oid):
     """Arm only the head THIS run wrote: another run's later replacement must never inherit this run's arming. None, or the failure text."""
     h = subprocess.run(["gh", "pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid"], cwd=ws, capture_output=True, text=True)
@@ -649,10 +666,15 @@ def _trigger_text(t):
     return "%s >= %s embeds %s >= %s" % (t["carrier"], t["min_version"], t["component"], t["component_min_version"])
 
 
+# dot-separated identifiers of a semantic version's prerelease or build part. Matches "rc.1", "incompatible",
+# "0.20200101000000-abc"; refuses "" (a bare "-" or "+"), "a..b" and "x y"
+_SEMVER_IDS = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
+
+
 def _vmajor(v):
     """The major number of a Go version (`v1.2.3`, `0.3.0`, a prerelease, `+incompatible`), None when it is not a
     readable semantic version."""
-    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", str(v or ""))
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:-%s)?(?:\+%s)?$" % (_SEMVER_IDS, _SEMVER_IDS), str(v or ""))
     return int(m.group(1)) if m else None
 
 
@@ -883,7 +905,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         unchecked = False
     # AC3/AC4: a bump PR touches only go.mod/go.sum (no prompt file), so it auto-merges when the
     # owner turned auto-merge on; otherwise draft. A MAJOR transition is held (rc-5b A6): always a draft, never armed.
-    automerge = _automerge_allowed(["go.mod", "go.sum"]) and not _is_major_bump(module, frm, to)
+    major = _is_major_bump(module, frm, to)
+    automerge = _automerge_allowed(["go.mod", "go.sum"]) and not major
     draft = "" if automerge else "--draft "
     if dry:
         _plan(would, "bump PR", target, cves,
@@ -988,6 +1011,11 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     def _reuse(u):
         # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never
         # armed, never reported delivered) — whichever discovery path found the PR
+        # a held major stays a draft with auto-merge off, even a PR an earlier run armed
+        if major:
+            err = _hold_as_draft(ws, u)
+            if err:
+                return None, err, "error"
         e = subprocess.run(["gh", "pr", "edit", u, "--title", title, "--body", body], cwd=ws,
                            capture_output=True, text=True)
         if e.returncode != 0:

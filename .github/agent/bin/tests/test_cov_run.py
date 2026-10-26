@@ -1294,7 +1294,7 @@ class FixPR(Base):
     ROW = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v1.0.0", "to": "v1.1.0"}}
     BR = "auditor/bump-example.com-m-1.1.0"       # keyed by TARGET, never by CVE or commit (LR-32)
 
-    def real(self, rules, automerge=False, api=None, repo="o/r"):
+    def real(self, rules, automerge=False, api=None, repo="o/r", row=None):
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY=repo)
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
@@ -1303,7 +1303,7 @@ class FixPR(Base):
         if not os.path.exists(os.path.join(self.d("ws"), "go.mod")):      # what `go get` + `go mod tidy` leave in the checkout
             open(os.path.join(self.d("ws"), "go.mod"), "w").write("module m\n")
         with mock.patch.object(R.subprocess, "run", fr):
-            res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
+            res = self.quiet(R._deliver_fix_pr, row or self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
         return res, fr
 
     def test_dry_and_shim_automerge(self):
@@ -1330,6 +1330,40 @@ class FixPR(Base):
         lines = open(log).read().splitlines()
         self.assertFalse(any("pr merge --auto" in l for l in lines))
         self.assertTrue(any(l.startswith("gh pr create --draft") for l in lines))
+
+    MAJOR = {**ROW, "fix_bump": {**ROW["fix_bump"], "from": "v1.9.0", "to": "v2.0.0"}}
+
+    def test_a_reused_major_bump_pr_is_demoted_to_a_draft_with_auto_merge_off_before_anything_else(self):
+        u = "https://x/pull/7"
+        state = lambda armed, draft: {**self.REUSE, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0,
+            armed + "\n", ""),
+                                      ("gh", "pr", "view", u, "--json", "isDraft"): (0, draft + "\n", "")}
+        look = {"lookup": head_lookup(True, SHA)}
+        # armed and ready: both undone
+        res, fr = self.real(state("true", "false"), automerge=True, row=self.MAJOR, api=look)
+        self.assertEqual(res, (u, None, "delivered")); argv = fr.argvs()
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", u], argv)
+        self.assertIn(["gh", "pr", "ready", "--undo", u], argv)
+        self.assertLess(argv.index(["gh", "pr", "ready", "--undo", u]), [i for i,
+            a in enumerate(argv) if a[:3] == ["gh", "pr", "edit"]][0])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in argv))
+        # already a draft, unarmed: left alone
+        res, fr = self.real(state("false", "true"), automerge=True, row=self.MAJOR, api=look)
+        self.assertEqual(res, (u, None, "delivered"))
+        self.assertFalse(any(a[:3] in (["gh", "pr", "ready"], ["gh", "pr", "merge"]) for a in fr.argvs()))
+        # not a major: chain's rule, no demotion
+        res, fr = self.real(state("true", "false"), automerge=True, row=self.ROW, api=look)
+        self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
+
+    def test_a_reused_major_bump_pr_that_cannot_be_demoted_fails_the_delivery_and_is_not_edited(self):
+        u = "https://x/pull/7"; look = {"lookup": head_lookup(True, SHA)}
+        base = {**self.REUSE, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0, "false\n", ""),
+                ("gh", "pr", "view", u, "--json", "isDraft"): (0, "false\n", "")}
+        for rules, word in (({**base, ("gh", "pr", "ready", "--undo"): (1, "", "HTTP 500")}, "draft"),
+                            ({**base, ("gh", "pr", "view", u, "--json", "isDraft"): (1, "", "HTTP 500")}, "isDraft")):
+            res, fr = self.real(rules, automerge=True, row=self.MAJOR, api=look)
+            self.assertEqual((res[0], res[2]), (None, "error")); self.assertIn(word, res[1])
+            self.assertFalse(any(a[:3] == ["gh", "pr", "edit"] for a in fr.argvs()))
 
     def test_git_failures(self):
         for pre, label in ((("git", "fetch"), "git fetch"), (("git", "checkout"), "git checkout")):
@@ -1508,6 +1542,11 @@ class FixPR(Base):
         # advisor Oct 24: v0.9 -> v0.10 is not a major
         self.assertFalse(R._is_major_bump(m, "v0.9.0", "v0.10.0"))
         self.assertFalse(R._is_major_bump(m + "/v2", "v2.1.0", "v2.2.0"))
+        # not versions: held
+        for bad in ("v1.2.3-", "v1.2.3+", "v1.2.3-..", "v1.2.3-a..b", "v1.2.3+x y", "v1.2"):
+            self.assertTrue(R._is_major_bump(m, "v1.2.3", bad), bad)
+        for good in ("v1.2.4-rc.1", "v1.2.4+incompatible", "v1.2.4-0.20200101000000-abcdef123456"):
+            self.assertFalse(R._is_major_bump(m, "v1.2.3", good), good)
         self.assertTrue(R._is_major_bump(m, "v0.9.0", "v1.0.0"))            # v0 -> v1 is
         self.assertTrue(R._is_major_bump(m, "v1.9.0", "v2.0.0"))
         self.assertTrue(R._is_major_bump(m, "v1.0.0", "garbage"))           # unreadable: held, never treated as a patch
