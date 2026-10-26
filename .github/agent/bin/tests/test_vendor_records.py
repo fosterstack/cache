@@ -5,6 +5,7 @@ branch alone.
 Real git repositories in a temporary directory (an origin and a clone); a fake GitHub API; the Go steps are a function
 the test supplies."""
 import json, os, shutil, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -213,12 +214,6 @@ class Sweep(unittest.TestCase):
             self.assertEqual(status, "skipped: the regeneration changed %s; the sweep never writes it" % name)
             self.assertEqual(api.made, [])
 
-    def test_a_symlink_in_the_regenerated_tree_is_a_skip(self):
-        def regen(work, a, b):
-            self.regen(work, a, b); os.symlink("target", os.path.join(work, "vendor", "link"))
-        status, api = self.sweep(regen)
-        self.assertEqual(status, "skipped: vendor/link is a symlink"); self.assertEqual(api.made, [])
-
     def test_a_branch_without_go_sum_or_a_provenance_file_is_regenerated_the_same_way(self):
         self.bump(BR, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n"}, remove=("go.sum",
             "dependency-provenance.json"))
@@ -241,10 +236,60 @@ class Sweep(unittest.TestCase):
         git(self.seed, "commit", "-qm", "b")
         git(self.seed, "push", "-q", "-f", self.origin, BR)
         status, api = self.sweep()
-        self.assertEqual(status, "skipped: vendor/link is a link or a special file"); self.assertEqual(api.made, [])
+        self.assertEqual(status, "skipped: vendor/link is a link or a submodule"); self.assertEqual(api.made, [])
         status, api = self.sweep(api=Api("dependabot/go_modules/not-in-origin", OID),
             branch="dependabot/go_modules/not-in-origin")
         self.assertTrue(status.startswith("failed: git fetch"), status)
+
+    def commit_files(self, files, links=()):
+        git(self.seed, "checkout", "-q", "-B", BR, "main")
+        put(self.seed, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n", **files})
+        for name in links:
+            os.symlink("target", os.path.join(self.seed, name))
+        git(self.seed, "add", "-A")
+        git(self.seed, "commit", "-qm", "b")
+        git(self.seed, "push", "-q", "-f", self.origin, BR)
+
+    def test_attributes_on_the_branch_cannot_hide_a_link_from_the_sweep(self):
+        self.commit_files({"vendor/.gitattributes": b"link export-ignore\n"}, links=("vendor/link",))
+        status, api = self.sweep()
+        self.assertEqual(status, "skipped: vendor/link is a link or a submodule"); self.assertEqual(api.made, [])
+
+    def test_attributes_on_the_branch_cannot_hide_a_file_from_the_deletion_list(self):
+        self.commit_files({"vendor/.gitattributes": b"hidden.go export-ignore\n",
+            "vendor/hidden.go": b"package hidden\n"})
+
+        def regen(work, a, b):                       # what go mod vendor does: the whole vendored tree is rebuilt
+            shutil.rmtree(os.path.join(work, "vendor"))
+            put(work, {"vendor/example.com/m/LICENSE": b"MIT text\n"})
+            self.regen(work, a, b)
+        status, api = self.sweep(regen)
+        self.assertEqual(status, "committed " + OID)
+        self.assertEqual(sorted(d["path"] for d in api.made[0]["fileChanges"]["deletions"]),
+                         ["vendor/.gitattributes", "vendor/hidden.go"])
+
+    def test_an_executable_file_is_a_file_and_a_submodule_is_a_skip(self):
+        self.commit_files({"vendor/run.sh": b"#!/bin/sh\n"})
+        os.chmod(os.path.join(self.seed, "vendor/run.sh"), 0o755)
+        git(self.seed, "add", "-A")
+        git(self.seed, "commit", "-qm", "x")
+        git(self.seed, "push", "-q", "-f", self.origin, BR)
+        status, api = self.sweep()
+        self.assertEqual(status, "committed " + OID)
+        sha = git(self.seed, "rev-parse", "HEAD")
+        git(self.seed, "update-index", "--add", "--cacheinfo", "160000,%s,vendor/sub" % sha)
+        git(self.seed, "commit", "-qm", "sub")
+        git(self.seed, "push", "-q", "-f", self.origin, BR)
+        status, api = self.sweep()
+        self.assertEqual(status, "skipped: vendor/sub is a link or a submodule")
+
+    def test_a_failing_blob_read_is_a_failed_line(self):
+        real = subprocess.run
+        fail = lambda cmd, **kw: (subprocess.CompletedProcess(cmd, 1, b"",
+            b"fatal:\nno blob") if "cat-file" in cmd else real(cmd, **kw))
+        with mock.patch.object(V.subprocess, "run", fail):
+            status, api = self.sweep()
+        self.assertEqual(status, "failed: git cat-file failed: fatal: no blob"); self.assertEqual(api.made, [])
 
     def test_a_missing_branch_a_moved_branch_and_a_failed_commit(self):
         status, api = self.sweep(api=Api("other", OID))

@@ -353,13 +353,14 @@ class Reusable(unittest.TestCase):
     files, with exactly the wanted bytes. It returns the verified head oid (the caller binds arming to it), else None."""
     WANT = {"go.mod": b"module m\n", "go.sum": None}
 
-    def lookup(self, verified=True, parents=(BASE,), files=(("go.mod", "modified"),), **extra):
+    def lookup(self, verified=True, parents=(BASE,), files=(("go.mod", "modified"),), committer="web-flow", **extra):
         fs = []
         for f in files:
             d = {"filename": f[0], "status": f[1]}
             d.update(f[2] if len(f) > 2 else {})
             fs.append(d)
         return (0, json.dumps({"parents": [{"sha": p} for p in parents], "files": fs, "author": {"login": APP},
+            "committer": {"login": committer},
                                  "commit": {"verification": {"verified": verified}}, **extra}), "")
 
     def ok(self, **kw):
@@ -378,10 +379,12 @@ class Reusable(unittest.TestCase):
 
     def test_everything_else_is_not_reusable_so_the_branch_is_rebuilt_through_the_api(self):
         other = (0, json.dumps({"parents": [{"sha": BASE}], "author": {"login": "someone"},
+            "committer": {"login": "web-flow"},
                                 "files": [{"filename": "go.mod", "status": "modified"}],
                                 "commit": {"verification": {"verified": True}}}), "")
         cases = {"unsigned head": self.ok(verified=False),
                  "a head by another author": Gh(live=H1, lookup=other),
+                 "a head committed by someone else": self.ok(committer="someone"),
                  "a head with no author": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}],
                                             "files": [{"filename": "go.mod", "status": "modified"}],
                                             "commit": {"verification": {"verified": True}}}), "")),
@@ -657,10 +660,11 @@ class RecordsReusable(unittest.TestCase):
             return super().__call__(cmd, **kw)
 
     @staticmethod
-    def doc(parent, files=(("go.mod", "modified"),), message="Bump", verified=True, login=APP, parents=None):
-        return (0, json.dumps({"parents": [{"sha": p} for p in (parents or [parent])],
+    def doc(parent, files=(("go.mod", "modified"),), message="Bump", verified=True, login=APP, parents=None,
+            committer="web-flow"):
+        return (0, json.dumps({"parents": [{"sha": p} for p in (parents if parents is not None else [parent])],
                                "files": [{"filename": f, "status": st} for f, st in files],
-                               "author": {"login": login},
+                               "author": {"login": login}, "committer": {"login": committer},
                                "commit": {"message": message, "verification": {"verified": verified}}}), "")
 
     def gh(self, job=None, bump=None, **kw):
@@ -685,6 +689,10 @@ class RecordsReusable(unittest.TestCase):
     def test_every_way_the_records_commit_can_be_wrong_is_not_reusable(self):
         wrong = {"an unsigned records commit": self.gh(job=self.doc(H2, message=JM, verified=False)),
                  "a records commit by another author": self.gh(job=self.doc(H2, message=JM, login="someone")),
+                 "a records commit committed by someone else": self.gh(job=self.doc(H2, message=JM,
+                     committer="someone")),
+                 "a records commit with no committer": self.gh(job=self.doc(H2, message=JM, committer=None)),
+                 "a bump commit committed by someone else": self.gh(bump=self.doc(BASE, committer="someone")),
                  "a message that only starts like the sweep's": self.gh(job=self.doc(H2, message=JM + "\n\nmore")),
                  "another branch's message": self.gh(job=self.doc(H2, message=JOB_MSG)),
                  "an ordinary message on a second commit": self.gh(job=self.doc(H2, message="Bump")),

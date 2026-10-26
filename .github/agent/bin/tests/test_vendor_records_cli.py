@@ -42,6 +42,12 @@ class Cli(unittest.TestCase):
         self.assertEqual(self.calls, [["gh", "api", "--paginate", "repos/o/r/branches?per_page=100", "--jq",
             ".[].name"]])
 
+    def test_a_status_with_newlines_is_printed_as_one_line(self):
+        rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws", "--branch", "dependabot/go_modules/a"],
+            self.gh([]),
+                                       {"dependabot/go_modules/a": "skipped: a\nb\r\n  c"})
+        self.assertEqual(out, "dependabot/go_modules/a: skipped: a b c\n")
+
     def test_a_failed_branch_makes_the_exit_one_after_the_others_were_visited(self):
         rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws", "--dry-run"],
             self.gh(["dependabot/go_modules/a", "dependabot/go_modules/b"]),

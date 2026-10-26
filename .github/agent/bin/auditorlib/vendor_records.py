@@ -20,7 +20,7 @@ nothing is ever invented in it: a changed module@version gets its earlier versio
 module's vendored LICENSE is byte-identical to the base's; a changed LICENSE, a new module or a missing LICENSE
 is a Skip and a human does it as before.
 """
-import io, json, os, shutil, subprocess, tarfile, tempfile
+import json, os, shutil, subprocess, tempfile
 
 from . import signed_commit
 
@@ -29,7 +29,7 @@ LICENCES = "test-evidence/dependency-licenses.yaml"
 _GO_MOD_DIRECTIVES = ("replace", "toolchain", "godebug")
 # the pinned toolchain at its fixed install path (bin/install-scanner.sh go), never a go found by name
 GO = "/usr/local/bin/fscache-go/bin/go"
-# reviewed, read only: a module whose origin it must supply makes the records step refuse
+# reviewed, read only: a module whose origin neither the toolchain nor this file supplies makes the records step refuse
 ORIGINS = "test-evidence/dependency-origins.yaml"
 PROVENANCE = "dependency-provenance.json"
 
@@ -86,17 +86,13 @@ def render_licences(licences):
 
 
 def _records(root):
-    """{path: bytes} of every records path under root. A link anywhere under vendor/ is a Skip."""
+    """{path: bytes} of every records path under root."""
     out = {}
     for name in signed_commit.RECORDS_FILES:
         if os.path.isfile(os.path.join(root, name)):
             with open(os.path.join(root, name), "rb") as fh:
                 out[name] = fh.read()
-    for here, dirs, files in os.walk(os.path.join(root, "vendor")):
-        for entry in dirs + files:
-            full = os.path.join(here, entry)
-            if os.path.islink(full):
-                raise Skip("%s is a symlink" % os.path.relpath(full, root))
+    for here, _, files in os.walk(os.path.join(root, "vendor")):
         for entry in files:
             with open(os.path.join(here, entry), "rb") as fh:
                 out[os.path.relpath(os.path.join(here, entry), root)] = fh.read()
@@ -115,8 +111,8 @@ def records_changes(head_dir, work_dir):
 def _git(ws, *args):
     r = subprocess.run(["git", "-C", ws, *args], capture_output=True)
     if r.returncode != 0:
-        raise RuntimeError("git %s failed: %s" % (" ".join(args[:2]), r.stderr.decode("utf-8",
-            "replace").strip()[-300:]))
+        why = r.stderr.decode("utf-8", "replace").strip()[-300:]
+        raise RuntimeError("git %s failed: %s" % (" ".join(args[:2]), why))
     return r.stdout
 
 
@@ -126,19 +122,32 @@ def _show(ws, rev, path):
 
 
 def _export(ws, head, dest):
-    """The head's tree as plain files in dest: data only. A link or special file anywhere in it is a Skip (the
-    repository has none)."""
-    with tarfile.open(fileobj=io.BytesIO(_git(ws, "archive", head))) as tar:
-        for member in tar:
-            if member.isdir():
-                os.makedirs(os.path.join(dest, member.name), exist_ok=True)
-            elif member.isreg():
-                target = os.path.join(dest, member.name)
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with open(target, "wb") as fh:
-                    fh.write(tar.extractfile(member).read())
-            else:
-                raise Skip("%s is a link or a special file" % member.name)
+    """The head's whole tree as plain files in dest, read from the raw git tree (so no attribute on the branch can hide
+    a path): data only. A link or a submodule anywhere in it is a Skip."""
+    files = {}
+    for entry in _git(ws, "ls-tree", "-r", "-z", head).split(b"\0"):
+        if entry:
+            meta, path = entry.decode("utf-8", "replace").split("\t", 1)
+            mode, _, sha = meta.split(" ")
+            if mode not in ("100644", "100755"):
+                raise Skip("%s is a link or a submodule" % path)
+            files[path] = sha
+    blobs = subprocess.run(["git", "-C", ws, "cat-file", "--batch"],
+        input="".join(sha + "\n" for sha in sorted(set(files.values()))).encode(),
+                           capture_output=True)
+    if blobs.returncode != 0:
+        raise RuntimeError("git cat-file failed: %s" % " ".join(blobs.stderr.decode("utf-8", "replace").split())[-300:])
+    contents, out, at = {}, blobs.stdout, 0
+    for sha in sorted(set(files.values())):
+        header_end = out.index(b"\n", at)
+        size = int(out[at:header_end].split(b" ")[2])
+        contents[sha] = out[header_end + 1:header_end + 1 + size]
+        at = header_end + 1 + size + 1
+    for path, sha in files.items():
+        target = os.path.join(dest, path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as fh:
+            fh.write(contents[sha])
 
 
 def _skip_reason(names, base_go_mod, head_go_mod):
@@ -164,7 +173,7 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
         if head is None:
             return "gone"
         _git(ws, "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main",
-            "+refs/heads/%s:refs/remotes/origin/%s" % (branch, branch))
+             "+refs/heads/%s:refs/remotes/origin/%s" % (branch, branch))
         if _git(ws, "rev-parse", "refs/remotes/origin/" + branch).decode().strip() != head:
             return "skipped: the branch moved while it was fetched"
         base = _git(ws, "merge-base", "origin/main", head).decode().strip()
@@ -188,8 +197,8 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
         if not changes:
             return "up to date"
         if _git(ws, "log", "-1", "--format=%B", head).decode().strip() == subject(branch):
-            return ("skipped: the records commit on the head does not match what is "
-                "regenerated (%d files differ)") % len(changes)
+            return ("skipped: the records commit on the head does not match what is regenerated (%d files differ)"
+                    % len(changes))
         if dry_run:
             return "dry run: would commit %d files" % len(changes)
         return "committed " + signed_commit.commit_on_branch(repo, branch, head, subject(branch), changes, run=run)

@@ -46,12 +46,12 @@ _AUDIT_BRANCH = re.compile(r"^audit/[0-9a-f]{40}$")
 # matches dependabot/go_modules/github.com/prometheus/client_golang-1.25.0 and auditor/bump-example.com-m-1.1.0;
 # refuses dependabot/npm_and_yarn/x, auditor/panel, auditor/bump- (nothing after the dash) and main
 _BUMP_BRANCH = re.compile(r"^(?:dependabot/go_modules/|auditor/bump-)[A-Za-z0-9._/+-]+$")
-# the first words of the sweep's commit message: how a records commit is recognised
-# the commits API lists at most this many files; a list this long may be cut
-COMMIT_FILES_CAP = 300
+# the first words of the sweep's commit message
 RECORDS_HEADLINE = "Vendor records for the "
-# beside everything under vendor/
+# beside everything under vendor/, the places a records commit may write
 RECORDS_FILES = ("dependency-provenance.json", "test-evidence/dependency-licenses.yaml")
+# GitHub itself commits (and signs) what the API creates; a pushed commit cannot carry that signature
+GITHUB_COMMITTER = "web-flow"
 
 MUTATION = ("mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) "
             "{ commit { oid signature { isValid state } } } }")
@@ -305,10 +305,12 @@ def _verified(doc):
 
 
 def _by_app(doc, app_login):
-    """The commit's author is the App (its login, e.g. 'name[bot]'). Without a login to compare, nothing is by the
-    App."""
-    author = doc.get("author")
-    return bool(app_login) and isinstance(author, dict) and author.get("login") == app_login
+    """The commit was made through the API on the App's behalf: authored by the App (its login, e.g. 'name[bot]') and
+    committed by GitHub itself. The author is only an email anyone can set; the committer GitHub signs is not.
+    Without a login to compare, nothing is by the App."""
+    author, committer = doc.get("author"), doc.get("committer")
+    return (bool(app_login) and isinstance(author, dict) and author.get("login") == app_login
+            and isinstance(committer, dict) and committer.get("login") == GITHUB_COMMITTER)
 
 
 def _is_records_commit(doc, branch):

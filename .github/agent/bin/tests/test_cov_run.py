@@ -64,11 +64,13 @@ OLDHEAD = "c" * 40
 GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": True, "state": "VALID"}}}}})
 
 
-def head_lookup(verified=True, parent=SHA, parents=None, files=(("go.mod", "modified"),), author="app[bot]"):
+def head_lookup(verified=True, parent=SHA, parents=None, files=(("go.mod", "modified"),), author="app[bot]",
+                committer="web-flow"):
     """GitHub's answer for a commit: its parents, its changed files, who made it and whether it is verified."""
     return (0, json.dumps({"parents": [{"sha": x} for x in (parents if parents is not None else [parent])],
                            "files": [{"filename": f[0], "status": f[1], **(f[2] if len(f) > 2 else {})} for f in files],
-                           "author": {"login": author}, "commit": {"verification": {"verified": verified}}}), "")
+                           "author": {"login": author}, "committer": {"login": committer},
+                           "commit": {"verification": {"verified": verified}}}), "")
 
 
 class ApiRun(FakeRun):
