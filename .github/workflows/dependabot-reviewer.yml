@@ -511,6 +511,8 @@ jobs:
 
   vendor-records:
     name: vendor records
+    # main's copy only: a manual run from another ref would run that ref's installer and sweep with the App's write path
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:

@@ -332,6 +332,7 @@ class Regenerate(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.work, True)
         os.makedirs(os.path.join(self.work, "test-evidence"))
+        put(self.work, {"dependency-provenance.json": b"old\n"})                 # the branch's tree already has one
         self.calls = []
 
     def runner(self, fail=None):
@@ -342,6 +343,12 @@ class Regenerate(unittest.TestCase):
                     "vendor/example.com/m/LICENSE": b"MIT text\n"})
             if "--out-dir" in cmd:
                 os.makedirs(cmd[cmd.index("--out-dir") + 1])
+            # the real builder refuses a destination that exists; the branch's tree has one
+            if "build" in cmd:
+                dest = cmd[cmd.index("--out") + 1]
+                if os.path.lexists(dest):
+                    return subprocess.CompletedProcess(cmd, 2, b"", b"--out %s already exists" % dest.encode())
+                put(os.path.dirname(dest), {os.path.basename(dest): b'{"built": true}\n'})
             rc = 0
             for key, code in (fail or {}).items():
                 if key in cmd or key in cmd[1:3]:
@@ -362,11 +369,16 @@ class Regenerate(unittest.TestCase):
             "--go-sum", "go.sum", "--licenses",
                                    "test-evidence/dependency-licenses.yaml", "--recorded-origins",
                                        "test-evidence/dependency-origins.yaml", "--out-dir", out])
+        built = cmds[2][cmds[2].index("--out") + 1]
+        # a fresh path: the branch's file exists
+        self.assertNotEqual(built, os.path.join(self.work, "dependency-provenance.json"))
         self.assertEqual(cmds[2], ["python3", "-I", "/ws/bin/vendor-provenance.py", "build", "--vendor-dir", "vendor",
-            "--go-sum", "go.sum", "--sumdb-record", out + "/sumdb.json",
-                                   "--origins", out + "/origins.json", "--licenses", out + "/licenses.json",
-                                       "--recorded-origins", "test-evidence/dependency-origins.yaml",
-                                   "--out", "dependency-provenance.json"])
+            "--go-sum", "go.sum",
+                                   "--sumdb-record", out + "/sumdb.json", "--origins", out + "/origins.json",
+                                       "--licenses", out + "/licenses.json",
+                                   "--recorded-origins", "test-evidence/dependency-origins.yaml", "--out", built])
+        # then put in place, before the check
+        self.assertEqual(read(os.path.join(self.work, "dependency-provenance.json")), b'{"built": true}\n')
         self.assertEqual(cmds[3], ["python3", "-I", "/ws/bin/vendor-provenance.py", "check", "--vendor-dir", "vendor",
             "--go-sum", "go.sum", "--provenance", "dependency-provenance.json"])
         self.assertEqual(len(cmds), 4)
@@ -388,14 +400,19 @@ class Regenerate(unittest.TestCase):
     def test_a_failed_go_mod_vendor_and_a_refused_records_step_or_build_or_check_are_skips_naming_the_reason(self):
         for key, code, word in (("vendor", 1, "go mod vendor"), ("--out-dir", 2, "records step"), ("build", 2,
             "provenance build"), ("check", 2, "provenance check")):
-            self.calls.clear(); shutil.rmtree(self.work); os.makedirs(os.path.join(self.work, "test-evidence"))
+            self.calls.clear()
+            shutil.rmtree(self.work)
+            os.makedirs(os.path.join(self.work, "test-evidence"))
+            put(self.work, {"dependency-provenance.json": b"old\n"})
             with self.assertRaises(V.Skip, msg=key) as ctx:
                 self.go(fail={key: code})
             self.assertIn(word, str(ctx.exception)); self.assertIn("the reason it gave", str(ctx.exception))
 
     def test_any_other_failure_of_a_step_is_an_error_not_a_skip(self):
         for key in ("--out-dir", "build", "check"):
-            shutil.rmtree(self.work); os.makedirs(os.path.join(self.work, "test-evidence"))
+            shutil.rmtree(self.work)
+            os.makedirs(os.path.join(self.work, "test-evidence"))
+            put(self.work, {"dependency-provenance.json": b"old\n"})
             with self.assertRaises(RuntimeError, msg=key):
                 self.go(fail={key: 1})
 

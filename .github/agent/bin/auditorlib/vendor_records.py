@@ -261,11 +261,14 @@ def make_regenerate(tools, runner=subprocess.run, go=GO):
             step("the records step", ["python3", "-I", script("vendor-provenance-records.py"), *vendor_args,
                 "--licenses", LICENCES,
                                       "--recorded-origins", ORIGINS, "--out-dir", out], work, env)
+            # build refuses a destination that exists, and the branch has one
+            built = os.path.join(scratch, "provenance.json")
             step("the provenance build", ["python3", "-I", script("vendor-provenance.py"), "build", *vendor_args,
                 "--sumdb-record", out + "/sumdb.json",
                                           "--origins", out + "/origins.json", "--licenses", out + "/licenses.json",
                                               "--recorded-origins", ORIGINS,
-                                          "--out", PROVENANCE], work, env)
+                                          "--out", built], work, env)
+            os.replace(built, os.path.join(work, PROVENANCE))
             step("the provenance check", ["python3", "-I", script("vendor-provenance.py"), "check", *vendor_args,
                 "--provenance", PROVENANCE], work, env)
         finally:

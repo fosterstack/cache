@@ -43,9 +43,13 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_PREFIXES = ("auditor/", "patch-notes/", "audit/")   # the only lanes the App may write: a caller names which of them it uses (audit/ = the passed-audit record, REQ-REL-012)
 _BRANCH = re.compile(r"^(?:auditor|patch-notes|audit)/[A-Za-z0-9._/+-]+$")
 _AUDIT_BRANCH = re.compile(r"^audit/[0-9a-f]{40}$")
-# the two dependency-bump lanes: Dependabot's Go branches and the auditor's own bump branches
+# the two dependency-bump lanes: Dependabot's Go branches and the auditor's own bump branches.
+# matches dependabot/go_modules/github.com/prometheus/client_golang-1.25.0 and auditor/bump-example.com-m-1.1.0;
+# refuses dependabot/npm_and_yarn/x, auditor/panel, auditor/bump- (nothing after the dash) and main
 _BUMP_BRANCH = re.compile(r"^(?:dependabot/go_modules/|auditor/bump-)[A-Za-z0-9._/+-]+$")
 # the first words of the sweep's commit message: how a records commit is recognised
+# the commits API lists at most this many files; a list this long may be cut
+COMMIT_FILES_CAP = 300
 RECORDS_HEADLINE = "Vendor records for the "
 # beside everything under vendor/
 RECORDS_FILES = ("dependency-provenance.json", "test-evidence/dependency-licenses.yaml")
@@ -288,7 +292,11 @@ def _commit_doc(run, repo, sha):
     rc, out, err = _api(run, ["gh", "api", "repos/%s/commits/%s" % (repo, sha)])
     if rc != 0:
         raise CommitError("signed commit: reading commit %s failed" % str(sha)[:12])
-    return _json(out, "the commit lookup")
+    doc = _json(out, "the commit lookup")
+    if isinstance(doc.get("files"), list) and len(doc["files"]) >= COMMIT_FILES_CAP:
+        raise CommitError("signed commit: commit %s lists %d files, the API's cap: the list may be cut"
+                          % (str(sha)[:12], len(doc["files"])))
+    return doc
 
 
 def _verified(doc):

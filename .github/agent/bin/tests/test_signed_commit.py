@@ -687,6 +687,16 @@ class RecordsReusable(unittest.TestCase):
             self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), name)
             self.assertEqual(gh.writes(), [], name)
 
+    def test_a_file_list_at_the_apis_cap_may_be_cut_so_nothing_is_reused(self):
+        for n, reusable in ((S.COMMIT_FILES_CAP - 1, True), (S.COMMIT_FILES_CAP, False)):
+            files = [("vendor/f%d.go" % i, "modified") for i in range(n)]
+            gh = self.gh(job=self.doc(H2, files, JOB_MSG))
+            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1 if reusable else None, n)
+        gh = self.gh(bump=self.doc(BASE, [("go.mod", "modified")] + [("x%d" % i,
+            "modified") for i in range(S.COMMIT_FILES_CAP)]))
+        # the bump commit's list too
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh))
+
     def test_a_plain_commit_with_a_records_looking_message_is_judged_by_the_ordinary_rules(self):
         gh = self.Gh2({H1: self.doc(BASE, [("go.mod", "modified")], JOB_MSG)}, live=H1)
         self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)

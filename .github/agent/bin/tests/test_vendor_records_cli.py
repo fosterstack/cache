@@ -70,5 +70,27 @@ class Cli(unittest.TestCase):
         self.assertEqual(r.returncode, 2); self.assertIn("--repo", r.stderr)
 
 
+
+class Workflow(unittest.TestCase):
+    """The vendor-records job in dependabot-reviewer.yml (AC21): main's copy only, a read-only job token, one App token
+    with contents:write for this repository."""
+    TEXT = open(os.path.join(BIN, "..", "..", "workflows", "dependabot-reviewer.yml")).read()
+    JOB = TEXT[TEXT.index("\n  vendor-records:\n"):]
+
+    def test_it_runs_only_from_main_even_when_started_by_hand(self):
+        self.assertIn("    if: ${{ github.ref == 'refs/heads/main' }}\n", self.JOB)
+        # the checkout follows the ref the `if` just fixed
+        self.assertNotIn("ref:", self.JOB)
+
+    def test_the_job_token_reads_and_the_one_app_token_writes_contents_of_this_repository(self):
+        self.assertIn("    permissions:\n      contents: read\n    steps:", self.JOB)
+        self.assertEqual(self.JOB.count("permission-"), 1)
+        self.assertIn("          repositories: cache\n          permission-contents: write\n", self.JOB)
+
+    def test_no_pull_request_target_and_no_second_trigger_for_the_job(self):
+        self.assertNotIn("pull_request_target", self.TEXT)
+        self.assertNotIn("\n  push:", self.TEXT)
+
+
 if __name__ == "__main__":
     unittest.main()
