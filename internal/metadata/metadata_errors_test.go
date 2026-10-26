@@ -255,3 +255,22 @@ func TestAllSurfacesCorruptRecord(t *testing.T) {
 		t.Fatal("All with corrupt record: want error, got nil")
 	}
 }
+
+// REQ-STORE-001-AC2: Lookup reads one record, so eviction can revalidate the entry it selected after taking the key's lock.
+func TestLookupFoundMissingAndCorrupt(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Record("k", 42); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	e, ok, err := s.Lookup("k")
+	if err != nil || !ok || e.Key != "k" || e.Size != 42 || e.LastAccess.IsZero() {
+		t.Fatalf("Lookup(k) = %+v, %v, %v; want the recorded entry", e, ok, err)
+	}
+	if _, ok, err := s.Lookup("missing"); err != nil || ok {
+		t.Fatalf("Lookup(missing) = %v, %v; want absent without an error", ok, err)
+	}
+	putRaw(t, s, corruptRecord())
+	if _, _, err := s.Lookup("bad"); err == nil {
+		t.Fatal("Lookup on a corrupt record: want an error")
+	}
+}

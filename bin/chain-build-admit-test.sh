@@ -144,6 +144,43 @@ SHA=0123456789abcdef0123456789abcdef01234567
 bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	$2	" \
     "	build	-ldflags=\"-s -w\"" "	build	vcs=git" "	build	vcs.revision=$3" "	build	vcs.modified=$4";
 }
+# REQ-CHAIN-004-AC7 (release-candidate review, build area): the version check reads the buildinfo with the pinned toolchain at its fixed path
+# and a closed environment, never a `go` found on PATH. The production file holds the path as one TEST-SUBST line; the cases run a copy that
+# differs from it in that line only and points it at a recording wrapper.
+VCGO="$W/vcgo/go"; mkdir -p "$W/vcgo"
+cat > "$VCGO" <<EOF
+#!/bin/bash
+{ echo "WHICH-GO pinned \$*"; for v in GOTOOLCHAIN GOFLAGS GOENV GOROOT GOPROXY GOPATH GOMODCACHE GOEXPERIMENT; do echo "ENV \$v=\${!v-unset}"; done; } >> "$W/vcgo.log"
+/bin/cat "$W/buildinfo.txt"
+EOF
+chmod +x "$VCGO"
+cat > "$FB/go" <<EOF
+#!/usr/bin/env bash
+echo "WHICH-GO runner-path \$*" >> "$W/vcgo.log"
+cat "$W/buildinfo.txt"
+EOF
+chmod +x "$FB/go"
+mkvcopy() { # mkvcopy OUT GOPATH: a copy of the production file whose TEST-SUBST line points at GOPATH, differing from it in no other line
+  python3 - "$BV" "$1" "$2" <<'PY'
+import re, sys
+src, out, gopath = sys.argv[1:4]
+lines = open(src).read().split("\n"); res = []; n = 0
+for ln in lines:
+    if re.match(r"^GO_TOOL = .*#\s*TEST-SUBST\s*$", ln):
+        res.append('GO_TOOL = "%s"  # TEST-SUBST' % gopath); n += 1
+    else:
+        res.append(ln)
+if n != 1:
+    sys.exit("expected exactly one GO_TOOL line marked TEST-SUBST in %s, found %d" % (src, n))
+open(out, "w").write("\n".join(res))
+PY
+}
+if [ -f "$BV" ] && mkvcopy "$W/bvc.py" "$VCGO" 2> "$W/mkvcopy.err"; then BVR=$BV; BV="$W/bvc.py"; ok "AC7 the version check holds its go as one TEST-SUBST line (the cases run a copy that differs in that line only)"
+else bad "AC7 the version check holds its go as one TEST-SUBST line (RED): $(head -c 150 "$W/mkvcopy.err" 2> /dev/null)"; BVR=$BV; fi
+hostile() { # env settings a hostile or sloppy runner could carry into the check
+  GOTOOLCHAIN=go1.99.9 GOFLAGS=-mod=mod GOENV=/nonexistent/env GOROOT=/nonexistent/goroot GOPROXY=https://evil.invalid GOPATH=/nonexistent/gopath \
+    GOMODCACHE=/nonexistent/mod GOEXPERIMENT=evil "$@"
+}
 vc() { # vc ok|refuse LABEL WORD VERSION REV MODIFIED [TAG]
   local want=$1 label=$2 word=$3 ver=$4 rev=$5 mod=$6 tag=${7:-v0.3.0} rc=0
   if [ ! -f "$BV" ]; then bad "$label (bin/build-version-check.py does not exist: RED)"; return; fi
@@ -223,6 +260,24 @@ then rc=0;
   [ "$rc" = 2 ] && ok "AC7 both --binary and --apk-dir is a usage error (exit 2)" || bad "AC7 both options -> exit $rc, wanted 2";
   else bad "AC7 both options (bin/build-version-check.py does not exist: RED)";
   fi
+# the fixed path and the closed environment (the cases above ran through the wrapper at the substituted path, with a runner `go` on PATH)
+bi out/fscache v0.3.0 "$SHA" false > "$W/buildinfo.txt"; : > "$W/fscache"; : > "$W/vcgo.log"; rc=0
+hostile env PATH="$FB:$PATH" python3 "$BV" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
+[ "$rc" = 0 ] && grep -q 'WHICH-GO pinned version -m' "$W/vcgo.log" && ! grep -q 'runner-path' "$W/vcgo.log" \
+  && ok "AC7 the buildinfo is read by the go at the fixed path, never the runner's go on PATH" \
+  || bad "AC7 fixed go path -> exit $rc, log: $(head -c 200 "$W/vcgo.log")"
+for want in GOTOOLCHAIN=local GOFLAGS= GOENV=off GOROOT=unset GOPROXY=unset GOPATH=unset GOMODCACHE=unset GOEXPERIMENT=unset; do
+  grep -qxF "ENV $want" "$W/vcgo.log" && ok "AC7 the go call's environment has $want (closed: nothing inherited)" || bad "AC7 the go call's environment lacks $want: $(grep '^ENV' "$W/vcgo.log" | tr '\n' ' ')"
+done
+if mkvcopy "$W/bvc-absent.py" "$W/no-such-go" 2> /dev/null; then rc=0; : > "$W/vcgo.log"
+  PATH="$FB:$PATH" python3 "$W/bvc-absent.py" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
+  [ "$rc" = 1 ] && grep -Fq "buildinfo" "$W/vc.err" && ! grep -q 'runner-path' "$W/vcgo.log" && ok "AC7 an absent go at the fixed path is a refusal, and PATH is not consulted" \
+    || bad "AC7 absent go -> exit $rc, stderr $(head -c 150 "$W/vc.err"), log $(head -c 100 "$W/vcgo.log")"
+else bad "AC7 absent go (RED: no TEST-SUBST line)"; fi
+if [ -f "$BVR" ]; then
+  grep -Eq '^GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST$' "$BVR" && ok "AC7 the production file names the pinned toolchain's fixed path" || bad "AC7 the production file does not name /usr/local/bin/fscache-go/bin/go"
+  ! grep -Eq 'subprocess\.run\(\[ *"go"' "$BVR" && ok "AC7 the production file never runs go by its bare name" || bad "AC7 the production file runs go by its bare name"
+fi
 # ---- the admission fixtures ----------------------------------------------------------------------------------------------
 mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25519 -N "" -C "$k@example.com" -f "$W/keys/$k"; done
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/keys/ci.key" -out "$W/keys/ci.crt" -subj "/CN=release-workflow" -days 2 2> /dev/null
@@ -234,7 +289,7 @@ mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25
   gpg --batch --quiet --passphrase '' --quick-gen-key "other <other@example.com>" ed25519 sign never 2> /dev/null
   OTHERID=$(gpg --list-keys --with-colons other@example.com | awk -F: '/^pub/{print $5; exit}'); unset GNUPGHOME; }
 mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagged commit, policy on main
-  local b="$W/base"; mkdir -p "$b"; git init -q --bare "$b/origin.git"; git clone -q "$b/origin.git" "$b/repo" 2> /dev/null
+  local b="$W/base"; mkdir -p "$b"; git init -q --bare "$b/origin.git"; git init -q "$b/repo"; git -C "$b/repo" remote add origin "$b/origin.git"
   cd "$b/repo"; git config user.name t; git config user.email t@example.com; git config gpg.format ssh; git config user.signingkey "$W/keys/owner"
   git config tag.gpgsign false; git checkout -q -b main
   mkdir -p .github/policy bin requirements/releases tools/requirements
@@ -317,7 +372,7 @@ EOF
 chmod +x "$FB/gh" "$FB/gitsign"
 # case DIR runner: each case gets a fresh copy of the base repo
 n_cases=0
-fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origin.git"; git clone -q "$W/c/origin.git" "$W/c/repo" 2> /dev/null
+fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origin.git"; git init -q "$W/c/repo"; git -C "$W/c/repo" remote add origin "$W/c/origin.git"
   (cd "$W/c/repo";
   git config user.name t;
   git config user.email t@example.com;
@@ -425,8 +480,9 @@ if [ -f "$W/c/repo/admission.json" ]; then
       || bad \
       "AC4 gh calls are not exactly GETs of the commits API (count $(grep -c '^gh api' "$W/c/calls.log")): $(grep NON-GET "$W/c/calls.log" | head -1)"
 else for l in "canonical" "content" "sources" "token" "deterministic" "GET only"; do bad "AC4 admission.json $l (no admission.json: RED)"; done; fi
+FXD_1='\b(curl|wget)\b|api\.github\.com'
 if [ -f "$BA" ];
-then ! grep -Eq '\b(curl|wget)\b|api\.github\.com' "$BA" && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
+then ! grep -Eq "$FXD_1" "$BA" && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
     "AC4 build-admit.py calls the network itself";
 else bad "AC4 no network of its own (bin/build-admit.py missing: RED)";
 fi
@@ -804,10 +860,15 @@ G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
+# the committed web-flow keyring (rc-2 signing review R9): exactly the current GitHub web-flow key, no expired key
+wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
+[ "$wf_keys" = "B5690EEEBB952194:-" ] && ok "the committed github-web-flow.gpg holds only the current web-flow key B5690EEEBB952194, not expired" || bad "github-web-flow.gpg holds: ${wf_keys//$'\n'/ } (want only B5690EEEBB952194, not expired)"
+wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "fpr" { print $10 }')
+[ "$wf_fprs" = "968479A1AFF927E37D1A566BB5690EEEBB952194" ] && ok "the committed github-web-flow.gpg fingerprint is 968479A1AFF927E37D1A566BB5690EEEBB952194" || bad "github-web-flow.gpg fingerprints: ${wf_fprs//$'\n'/ }"
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=135
+EXPECT_TOTAL=150
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -1,14 +1,12 @@
-// Package blobstore implements a filesystem-backed, path-keyed content
-// store. It is deliberately dumb: callers supply the key (Gradle's remote
-// build cache protocol computes the cache key client-side; the Apache Maven
-// Build Cache Extension does the same), and the store never hashes, parses,
-// or interprets the bytes it holds.
+// Package blobstore implements a filesystem-backed, path-keyed content store.
+// It is deliberately dumb: callers supply the key (Gradle and the Apache Maven
+// Build Cache Extension both compute it client-side), and the store never
+// hashes, parses, or interprets the bytes it holds.
 //
-// Keys may contain '/' so that both frontends work naturally: Gradle keys
-// are a single opaque segment, Maven's remote layout is a short path. Every
-// segment is validated, and all filesystem access goes through an
-// os.Root scoped to the store's directory (Go 1.24+), so a key can neither
-// be sanitized past nor symlinked past the store root — traversal is
+// Keys may contain '/': Gradle keys are one opaque segment, Maven's remote
+// layout is a short path. Every segment is validated, and all filesystem
+// access goes through an os.Root scoped to the store's directory, so a key can
+// be neither sanitized past nor symlinked past the store root: traversal is
 // rejected by the OS, not just by string checks.
 package blobstore
 
@@ -21,8 +19,8 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"regexp"
 	"strings"
+	"syscall"
 )
 
 // ErrNotFound is returned when a key has no stored blob.
@@ -32,11 +30,23 @@ var ErrNotFound = errors.New("blobstore: not found")
 // disallowed characters, path traversal attempt, etc).
 var ErrInvalidKey = errors.New("blobstore: invalid key")
 
-// segmentRE matches a single safe path segment: letters, digits, '.', '_',
-// '-'. This covers Gradle's hex cache keys and Maven's group/artifact/
-// version-shaped segments while rejecting anything that could escape the
-// store root.
-var segmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,255}$`)
+// segmentOK reports whether seg is one safe path segment: 1 to 255 letters,
+// digits, '.', '_' or '-'. That covers Gradle's hex cache keys and Maven's
+// group/artifact/version-shaped segments and rejects anything that could
+// escape the store root.
+func segmentOK(seg string) bool {
+	if len(seg) == 0 || len(seg) > 255 {
+		return false
+	}
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
 
 const maxSegments = 16
 
@@ -44,31 +54,32 @@ const maxSegments = 16
 const dotLeafShard = "__"
 
 // tempDirName is the directory, at the top of the store, that holds the
-// temporary files of writes in flight. '+' is outside segmentRE, so no
-// key's path can contain this name: temporary files no longer share a
-// name space with keys (REQ-PROTO-003-AC4).
+// temporary files of writes in flight. '+' is outside segmentOK's set, so no
+// key's path can contain this name (REQ-PROTO-003-AC4).
 const tempDirName = "+tmp"
 
-// dirPerm/filePerm are deliberately tight: this store holds build-artifact
-// bytes with no need for group/other access, and a compliance-tier buyer's
-// assessor will check exactly this kind of default.
+// dirPerm/filePerm are deliberately tight: the store holds build-artifact bytes
+// that need no group/other access.
 const (
 	dirPerm  fs.FileMode = 0o750
 	filePerm fs.FileMode = 0o600
 )
 
-// Test seams. Production behavior is identical (each is the plain os call
-// it names); tests override these to exercise error paths that cannot be
-// reached through the real filesystem: crypto/rand.Read never returns an
-// error on Go 1.24+, and fsync/close/fstat on a healthy local file — or
-// readdir/close on an open directory handle — have no portable fault
-// injection.
+// Test seams: each is the plain call it names, replaced by tests to reach error
+// paths a real filesystem cannot produce (crypto/rand.Read never fails; fsync,
+// close, fstat and readdir have no portable fault injection).
 var (
-	randRead   = rand.Read
-	fileSync   = (*os.File).Sync
-	fileClose  = (*os.File).Close
-	fileStat   = (*os.File).Stat
-	dirClose   = (*os.File).Close
+	randRead  = rand.Read
+	fileSync  = (*os.File).Sync
+	fileClose = (*os.File).Close
+	fileStat  = (*os.File).Stat
+	dirClose  = (*os.File).Close
+	// rootOpen opens a regular file for reading without blocking: if something
+	// replaced the checked file with a FIFO in between, the open returns at
+	// once and the same-file check refuses it.
+	rootOpen = func(r *os.Root, name string) (*os.File, error) {
+		return r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	}
 	readDirAll = func(f *os.File) ([]os.DirEntry, error) { return f.ReadDir(-1) }
 	// On some platforms (e.g. darwin's getattrlistbulk-backed ReadDir) the
 	// entries above carry their stat info eagerly, so DirEntry.Info cannot
@@ -107,10 +118,7 @@ func ValidateKey(key string) error {
 		return ErrInvalidKey
 	}
 	for _, seg := range segments {
-		if seg == "." || seg == ".." {
-			return ErrInvalidKey
-		}
-		if !segmentRE.MatchString(seg) {
+		if seg == "." || seg == ".." || !segmentOK(seg) {
 			return ErrInvalidKey
 		}
 	}
@@ -139,12 +147,11 @@ func relPath(key string) (string, error) {
 	return path.Join(parts...), nil
 }
 
-// Put stores the bytes read from r under key, atomically: write to a
-// randomly-named temp file in the store's temporary directory (inside the
-// same root, so on the same filesystem), fsync, then rename over the
-// destination. Every path passed to the OS is resolved
-// through s.root, so nothing can land outside the store even if a caller
-// somehow got a validated-looking key that resolves to a symlink.
+// Put stores the bytes read from r under key, atomically: write to a randomly
+// named temp file in the store's temporary directory (inside the same root, so
+// on the same filesystem), fsync, then rename over the destination. Every path
+// goes through s.root, so nothing can land outside the store even if a key
+// resolves to a symlink.
 func (s *Store) Put(key string, r io.Reader) (int64, error) {
 	dest, err := relPath(key)
 	if err != nil {
@@ -193,16 +200,48 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 	return n, nil
 }
 
+// absent reports whether err says that nothing is stored at the path: the
+// path does not exist, or a component of it is a file where a directory
+// would have to be (a stored key's blob can sit where another key's
+// directory would go).
+func absent(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
+}
+
+// regularFile returns the description of the entry at rel when it is a
+// regular file. A directory, a symbolic link or any other kind of file at
+// a key's path is not a blob (REQ-PROTO-003-AC5): the answer is
+// ErrNotFound, and nothing is opened, so a FIFO cannot block the caller.
+// op names the caller's operation in a failure that is not "absent".
+func (s *Store) regularFile(rel, op string) (fs.FileInfo, error) {
+	info, err := s.root.Lstat(rel)
+	if err != nil {
+		if absent(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("blobstore: %s: %w", op, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrNotFound
+	}
+	return info, nil
+}
+
 // Get opens the blob stored under key. Callers must Close the returned
-// reader. Returns ErrNotFound if the key is unknown.
+// reader. Returns ErrNotFound if the key is unknown, or if the path of the
+// key is not a regular file.
 func (s *Store) Get(key string) (io.ReadCloser, int64, error) {
 	rel, err := relPath(key)
 	if err != nil {
 		return nil, 0, err
 	}
-	f, err := s.root.Open(rel)
+	before, err := s.regularFile(rel, "open")
 	if err != nil {
-		if os.IsNotExist(err) {
+		return nil, 0, err
+	}
+	f, err := rootOpen(s.root, rel)
+	if err != nil {
+		if absent(err) {
 			return nil, 0, ErrNotFound
 		}
 		return nil, 0, fmt.Errorf("blobstore: open: %w", err)
@@ -212,22 +251,26 @@ func (s *Store) Get(key string) (io.ReadCloser, int64, error) {
 		_ = f.Close()
 		return nil, 0, fmt.Errorf("blobstore: stat: %w", err)
 	}
+	// The path was checked before it was opened: what was opened must be
+	// that same regular file, not something swapped in between.
+	if !info.Mode().IsRegular() || !os.SameFile(before, info) {
+		_ = f.Close()
+		return nil, 0, ErrNotFound
+	}
 	return f, info.Size(), nil
 }
 
 // Stat reports the size of the blob stored under key without reading it.
-// Returns ErrNotFound if the key is unknown.
+// Returns ErrNotFound if the key is unknown, or if the path of the key is
+// not a regular file.
 func (s *Store) Stat(key string) (int64, error) {
 	rel, err := relPath(key)
 	if err != nil {
 		return 0, err
 	}
-	info, err := s.root.Stat(rel)
+	info, err := s.regularFile(rel, "stat")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, ErrNotFound
-		}
-		return 0, fmt.Errorf("blobstore: stat: %w", err)
+		return 0, err
 	}
 	return info.Size(), nil
 }
@@ -302,6 +345,9 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 				}
 				continue
 			}
+			if !e.Type().IsRegular() {
+				continue // a symbolic link, FIFO or the like is never a blob (REQ-PROTO-003-AC5)
+			}
 			if top {
 				// A file at the root is not a blob this store wrote; a
 				// .tmp- one is a leftover temporary file.
@@ -313,6 +359,9 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 			info, err := dirEntryInfo(e)
 			if err != nil {
 				return fmt.Errorf("blobstore: walk stat %q: %w", child, err)
+			}
+			if !info.Mode().IsRegular() {
+				continue // swapped for a link or the like since the listing
 			}
 			// Invert relPath: drop the shard directory (parent of the leaf).
 			parts := strings.Split(child, "/")
@@ -337,10 +386,10 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 	return staleTemp, nil
 }
 
-// opensFile reports whether opening rel through the store root reaches the
-// file described by info (the file Get would serve for rel).
+// opensFile reports whether rel is the regular file described by info: the
+// file Get would serve for rel (a link at rel is not followed).
 func (s *Store) opensFile(rel string, info fs.FileInfo) bool {
-	target, err := s.root.Stat(rel)
+	target, err := s.regularFile(rel, "stat")
 	return err == nil && os.SameFile(target, info)
 }
 
