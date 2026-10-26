@@ -356,6 +356,8 @@ def _disarm_before_replace(ws, pr):
 def _hold_as_draft(ws, pr):
     """A held major's PR is a draft with auto-merge off, whatever an earlier run (or a person) left it as. None, or the
     failure text."""
+    if not pr:
+        return None
     err = _disarm_before_replace(ws, pr)
     if err:
         return err
@@ -994,7 +996,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if remote_same:                              # reuse = ONE verified commit on main changing only these files, with these exact bytes
         oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, signed_commit.read_changes(ws, files))
     if oid is None:
-        err = _disarm_before_replace(ws, ex)     # the existing PR is found and DISARMED first, then its branch is replaced
+        # the existing PR is found and DISARMED first (a held major is made a draft too), then its branch is replaced
+        err = _hold_as_draft(ws, ex) if major else _disarm_before_replace(ws, ex)
         if err:
             return None, err, "error"
         oid, err = _signed_delivery(ws, branch, base_sha, title, files)

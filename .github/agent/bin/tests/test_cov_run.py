@@ -1355,6 +1355,24 @@ class FixPR(Base):
         res, fr = self.real(state("true", "false"), automerge=True, row=self.ROW, api=look)
         self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
 
+    def test_a_major_bump_pr_is_demoted_before_its_branch_is_replaced_even_when_the_replacement_fails(self):
+        u = "https://x/pull/7"
+        armed = {**self.CHG, ("gh", "pr", "list"): (0, u + "\n", ""), ("gh", "pr", "view", u, "--json",
+            "autoMergeRequest"): (0, "true\n", ""),
+                 ("gh", "pr", "view", u, "--json", "isDraft"): (0, "false\n", "")}
+        res, fr = self.real(armed, automerge=True, row=self.MAJOR, api={"mutation": (1, "", "HTTP 403")})
+        self.assertEqual(res[2], "error"); argv = fr.argvs()
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", u], argv)
+        self.assertIn(["gh", "pr", "ready", "--undo", u], argv)
+        self.assertLess(argv.index(["gh", "pr", "ready", "--undo", u]), argv.index(["gh", "api", "graphql", "--input",
+            "-"]))
+        # not a major: only disarmed, as before
+        res, fr = self.real(armed, automerge=True, api={"mutation": (1, "", "HTTP 403")})
+        self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
+        # no PR yet: nothing to demote
+        res, fr = self.real({**self.CHG}, automerge=True, row=self.MAJOR)
+        self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
+
     def test_a_reused_major_bump_pr_that_cannot_be_demoted_fails_the_delivery_and_is_not_edited(self):
         u = "https://x/pull/7"; look = {"lookup": head_lookup(True, SHA)}
         base = {**self.REUSE, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0, "false\n", ""),
