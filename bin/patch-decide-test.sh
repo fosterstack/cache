@@ -3236,8 +3236,8 @@ check("r12 R12-3: a vendor name is still redacted to the visible marker in a quo
 check("r12 R12-3: 'redacted' alone, 'redacted>' and '<redacted' are not marker forms: printed as before",
       all(P._lit(v_) == old_lit_(v_) for v_ in ("redacted", "redacted>", "<redacted", "(redacted", "redacted)", "<redacted)")),
       [P._lit(v_) for v_ in ("redacted", "<redacted)")])
-# R12-4 the real .vex document: the notes are byte-identical to the pre-cut printer's in every scenario
-REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".vex", "fosterstack-cache.openvex.json")))
+# R12-4 the multi-statement fixture document (the retired real one): the notes are byte-identical to the pre-cut printer's in every scenario
+REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", "test-evidence", "vex-scope", "busybox.openvex.json")))
 def real_scenarios_():
     out_ = [P.notes("v0.2.3", [], P.vex_changes(None, REAL12_))]
     for i_ in range(len(REAL12_["statements"])):
@@ -3256,7 +3256,7 @@ try:
     was_ = refused(real_scenarios_)
 finally:
     P._lit = real_lit_
-check("r12 R12-4: the real .vex document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
+check("r12 R12-4: the multi-statement fixture document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
       % (len(now_) if isinstance(now_, list) else 0), isinstance(now_, list) and now_ == was_ and len(now_) > 4, (now_, was_))
 # R12-5 the round trip property with marker forms: random documents whose printed values sometimes hold a marker form are
 # refused exactly then (naming the statement or document field); every other one prints and reads back as before

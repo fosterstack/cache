@@ -482,12 +482,15 @@ check python3 - "$work/finish/fp.log" "$work/finish/out.json" <<'PY'
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 first_cmd = json.dumps(calls[0]["req"]["messages"])
-assert "42" not in first_cmd and "42" in json.dumps(calls[1]["req"]["messages"]), "the action's COMPUTED output never reached the model"
+import re
+# the computed output is the number 42 ON ITS OWN: a random port or id in a request can hold the digits 42 inside a longer number, which is not the output
+standalone_42 = lambda text: re.search(r"(?<![0-9])42(?![0-9])", text) is not None
+assert not standalone_42(first_cmd) and standalone_42(json.dumps(calls[1]["req"]["messages"])), "the action's COMPUTED output never reached the model"
 a = json.load(open(sys.argv[2]))
 assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"kind": "blocking", "text": "step 2 fails as written"}], a
 assert a["tokens"] == 550, a
 assert a["commands"] == ["echo $((6*7)) > made.txt; cat made.txt"] and a["actions"] == [{"tool": "shell", "argv": ["sh", "-c", "echo $((6*7)) > made.txt; cat made.txt"], "exit": 0}], ("every executed action has its tool, argv and exit status, in order", a)
-assert "42" in a["transcript"] and "step 2 fails" in a["transcript"], a
+assert standalone_42(a["transcript"]) and "step 2 fails" in a["transcript"], a
 PY
 CASE="the first model call carries the restriction: only the public documentation, do not clone the repository, do not read its source"
 check python3 - "$work/finish/fp.log" <<'PY'
