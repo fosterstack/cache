@@ -30,9 +30,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   services:  a mapping of plain identifiers (the runner passes the name unquoted to docker); each
              service is an image string or a mapping with an image.
   An action path with a `.`, `..` or empty segment is refused (it could reach another action).
-  container:/service mappings may carry only image, credentials and env (plainly named variables):
-             the runner splices `options`, `ports` and `volumes` unquoted into `docker create` ahead
-             of the image, where any of them can name another image (this repo uses none).
+  container:/service mappings may carry only image, credentials and env (plainly named variables),
+             and a SERVICE may also carry `ports`, each item a plain 127.0.0.1:<host>:<container>
+             string (loopback only, both numbers 1..65535): the runner splices `options`, `ports` and
+             `volumes` unquoted into `docker create` ahead of the image, where any of them can name
+             another image, so every other key, and `ports` on a job container, is refused.
   Every action must be CLASSIFIED (ACTIONS below, or EXECUTOR_ALLOWED): an action we have not
              classified may run an image we hand it through an input, so it fails closed until a
              reviewed change to this file says what it runs.
@@ -42,12 +44,12 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Script-text inputs: an input an action executes as a command (github-script `script`,
              golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
              a `run:` block — outside this check, covered by the review pass (see ACTIONS).
-  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (skopeo from the runner's
-             signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
+  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (PyYAML for this checker)
+             are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while cache PR #316 is bootstrapped; a later change leaves one)
+             frozen set of exactly two digests while the passed-audit record judge (cache#669) is bootstrapped; a later change leaves one)
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the independent
              second review: the enforcement cannot be removed from its caller by an ordinary merge either.
@@ -123,6 +125,10 @@ Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or c
 --config are refused, and so are DOCKER_HOST, DOCKER_CONTEXT, BUILDKIT_HOST and any DOCKER_CONFIG but a fresh
 $(mktemp -d), in scripts or env blocks; plugin, context, import, system, trust, secret, config and buildx create/use
 are off the reviewed list (refused).
+Inside a container (#593 review): the command `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` runs, and the words after the
+image of `… run [opts] IMAGE CMD…` (led by an --entrypoint program), are read as a command of their own and judged like a top-level
+one: `docker exec C docker pull alpine:latest` is the same finding `docker pull alpine:latest` is. An exec option this check does not
+know is a finding (it cannot tell which word is the container).
 Round 12 (NEW-14/15): every verb of docker/podman/nerdctl, skopeo and crane is either read (run/create/pull/build/
 scout/…), on a reviewed list of verbs that pull or run nothing remote, or refused (podman kube play, skopeo sync, crane
 append/mutate, …). Tool words match by exact case (the scope is ubuntu runners, where `Docker` is not found); PATH
@@ -230,11 +236,11 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO for the bootstrap of
-# cache PR #316 (scanner guard): main's gate workflow and #316's; a later change removes main's old one, leaving one
+# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
+# main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d",   # main's gate workflow before #316
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # the gate workflow of cache PR #316
+    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -302,7 +308,7 @@ class GitTree:
 
     def __init__(self, commit):
         out = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", commit],
-                             capture_output=True, check=True).stdout.decode("utf-8", "replace")
+                             capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")   # distinct bytes stay distinct names (rc-5b R10c)
         self.entries, self.blobs = {}, {}
         for rec in filter(None, out.split("\0")):
             meta, path = rec.split("\t", 1)
@@ -599,6 +605,8 @@ RUN_VAL = {"--add-host", "--annotation", "-a", "--attach", "--blkio-weight", "--
 RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--interactive", "--no-healthcheck",
             "--oom-kill-disable", "--privileged", "-P", "--publish-all", "-q", "--quiet", "--read-only", "--rm",
             "--sig-proxy", "-t", "--tty"}
+EXEC_VAL = {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys"}
+EXEC_BOOL = {"-d", "--detach", "-i", "--interactive", "--privileged", "-t", "--tty"}
 PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
@@ -1029,7 +1037,57 @@ def _command_words(toks):
     return words
 
 
-def _commands(script, depth=0):
+def _container_inner(tool, args):
+    """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
+    container, for `… run|create [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
+    container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
+    was a safe verb, so `docker exec C docker pull alpine:latest` was invisible). None when there is no inner command or it cannot be placed
+    (an option this check does not know is a finding elsewhere)."""
+    if tool not in ("docker", "podman", "nerdctl"):
+        return None
+    k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
+    rest = args[k:]
+    if unknown or not rest:
+        return None
+    verb, rest = rest[0], rest[1:]
+    if verb == "container" and rest[:1] in (["exec"], ["run"], ["create"]):
+        verb, rest = rest[0], rest[1:]
+    if verb == "exec":  # INNER-EXEC
+        k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+        return None if unknown or k >= len(rest) else rest[k + 1:]
+    if verb in ("run", "create"):  # INNER-RUN
+        k, unknown = _options(rest, RUN_VAL, RUN_BOOL)
+        if unknown or k >= len(rest):
+            return None
+        entry, j = None, 0
+        while j < k:                       # the same walk _options makes: a value of another option (--label '--entrypoint=x', -il '--entrypoint=x') is not the entrypoint
+            a = rest[j]
+            if a == "--":
+                break
+            if a == "--entrypoint" and j + 1 < k:
+                entry, j = rest[j + 1], j + 2
+            elif a.startswith("--entrypoint="):
+                entry, j = a.split("=", 1)[1], j + 1
+            elif a.startswith("--"):
+                j += 2 if (a in RUN_VAL) else 1
+            else:                          # a short option cluster (or a stray word: one step)
+                step = 1
+                for c, ch in enumerate(a[1:], 1):
+                    o = "-" + ch
+                    if o in RUN_BOOL:
+                        continue
+                    if o in RUN_VAL:
+                        step = 1 if c + 1 < len(a) else 2     # the value is attached, or the next word
+                    break
+                j += step
+        inner = rest[k + 1:]
+        if entry:  # INNER-ENTRYPOINT
+            inner = [entry] + inner
+        return inner
+    return None
+
+
+def _commands(script, depth=0, in_container=False):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
@@ -1086,7 +1144,11 @@ def _commands(script, depth=0):
         if bad_wrap:          # env -S runs a string, env -C moves the working directory (Codex r3, C02)
             out.append(["__wrapper_opt__", bad_wrap])
             continue
-        if words:             # a script this command runs (Codex #164 r2, C02): through wrappers, $( ), -c, eval alike
+        # a script path in the PLAIN inner command of a container names the container's file, never the checkout's: not
+        # bound to a committed file (the bytes are the image's, pinned by digest), as before not read. A `sh -c` / eval
+        # body or $( ) on the line is read by its own _commands call (in_container False) and keeps main's rule (#712
+        # review: a filter on the whole result once dropped the body's script too; `--entrypoint=sh IMG -c 'bash x.sh'`)
+        if words and not in_container:    # a script this command runs (Codex #164 r2, C02): through wrappers, $( ), -c, eval alike
             w = words[-1]
             rest = toks[toks.index(w) + 1:]
             ops = [a for k, a in enumerate(rest) if not a.startswith(("-", "<", ">")) and not re.match(r"^[0-9]+[<>]", a)
@@ -1127,6 +1189,12 @@ def _commands(script, depth=0):
         at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
+            inner = _container_inner(_base(toks[at]), toks[at + 1:])
+            if inner:         # the command run inside the container is a command of its own
+                if depth >= 4:
+                    out.append(["__too_deep__", _base(toks[at])])
+                else:
+                    out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1, True)
     return out
 
 
@@ -1689,6 +1757,11 @@ def script_images(script):
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
                 ev.append(("tag", rest[-2], rest[-1]))      # judged in check_runs: the source must be ours (NEW-21)
+            elif verb == "exec":
+                k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+                if unknown:
+                    ev.append(("finding", "`%s exec` has an option this check does not know (%s): it cannot tell which word is "
+                                          "the container, so the command inside cannot be read" % (cmd, unknown)))
             elif verb in DOCKER_SAFE:
                 pass
             elif verb not in ("build",):
@@ -2250,13 +2323,18 @@ def _resolve_script(path, text, entries, bases=()):
         # the pull request's base sha is main's copy; the script runs from it at a literal path. Nothing else in the job may write under it.
         d = re.escape(mb.group(1))
         for ln in re.sub(r"\\\n", " ", text).splitlines():
-            if re.search(r"(?<![\w.-])" + d + r"/", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
+            if re.search(r"(?<![\w.-])" + d + r"(?:/|[\"']|\s|$)", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
                 return None
         return mb.group(2)
     m = re.match(r"^(\$\{?RUNNER_TEMP\}?|/tmp(?:/[\w.-]+)*)/([\w.-]+)$", path)
     if not m:
         return None
     d, base = m.group(1), m.group(2)
+    dn = "$RUNNER_TEMP" if d.startswith("$") else d
+    for wm_ in re.finditer(r"tar -x -C '([^']*)'", text):    # a writer step (or an extraction) into the copy's directory or a parent of it
+        w_ = "$RUNNER_TEMP" + wm_.group(1)[len("$RUNNER_TEMP"):] if wm_.group(1).startswith("$RUNNER_TEMP") else wm_.group(1)
+        if w_ == "." or dn == w_ or dn.startswith(w_.rstrip("/") + "/"):
+            return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
     writes = len(re.findall(dst + r"\"?", text))
@@ -2621,7 +2699,7 @@ def _unsafe_downloads(text):
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+    (".github/workflows/auditor.yml", "audit", 10, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
@@ -2694,10 +2772,12 @@ def check_runs(where_job, scripts, bad, tree=None):
         # what writes it before it runs: the job's own text or ANOTHER script it runs (its own later writes do not count)
         # a harness's own text is fixture data here as everywhere (documented); a write TO a harness still counts
         others = [read(c) for r, c in read_scripts.items() if r != rel and not TEST_HARNESS.search(r)]
-        lines = job0.split("\n")                        # only what runs before the script's first RUN
+        lines = job0.split("\n")                        # only what runs before the script's last RUN
         norm = lambda p: re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", p)
-        k = next((n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel
-                                                          for t in _commands(ln))), len(lines))
+        runs = [n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel for t in _commands(ln))]
+        via_other = any(any(t[0] in ("__script__", "__exec__") and (norm(t[1]) == rel or _base(t[1]) == _base(rel)) for t in _commands(ln))
+                        for src in others for ln in src.split("\n"))
+        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job           
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
         if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
@@ -2836,6 +2916,58 @@ def _default_shell(node):
     return sh.value if isinstance(sh, yaml.ScalarNode) else None
 
 
+def _writer_dir(value):
+    """The directory that a step's `path:` fills: relative to the workspace, or an absolute directory ("/tmp/x", "$RUNNER_TEMP/x", written from the ${{ runner.temp }}/x expression only,
+    "~/.cache/x") that is provably not the workspace. Anything this check cannot place by reading it writes everywhere, written ".",
+    fail closed: "${{ }}", a "$", a quote, "..", the workspace's own absolute path and every parent of it ("/", "/home", "/home/runner",
+    "/github", "~", "~/work/..."). Outside means exactly /tmp, runner.temp and ~/<anything but work> (rc-5b 618 fix, Fable ruling)."""
+    v = str(value).strip().strip("\"'")           # an empty path normalises to "." below (the checkout's own directory)
+    m = re.match(r"\$\{\{\s*runner\.temp\s*\}\}(/.*)?$", v)      # only the expression: the runner does not expand $RUNNER_TEMP in a with: value, so that is a relative directory
+    if m:
+        rest = m.group(1) or ""
+        if "${{" in rest or "$" in rest or ".." in rest or "'" in rest or '"' in rest:
+            return "."                                   # an expression or a variable after the prefix can resolve to anything
+        return "$RUNNER_TEMP" + (os.path.normpath(rest) if rest.strip("/") else "")
+    if "${{" in v or "$" in v or "'" in v or '"' in v or ".." in v:
+        return "."
+    if v == "/tmp" or v.startswith("/tmp/") or re.match(r"~/(?!work(/|$))[^/]", v):
+        return os.path.normpath(v)                       # outside the workspace: still a directory a /tmp copy of a script can live in
+    if v.startswith(("/", "~")):
+        return "."                                       # the workspace, a parent of it, or somewhere this check cannot place
+    return os.path.normpath(v)
+
+
+def _uses_writes(uses, with_node, key_of):
+    """rc-5b B2 (handoff 0663): the directories a `uses:` step fills, from a CLOSED list of writers; [] for any other action.
+    actions/checkout with `repository`, `path`, a `ref` or `lfs` other than false (the plain default checkout and the base-sha fence
+    form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions write
+    nothing into the tree). The action name is read in any letter case. A `with:` that is not a mapping writes everywhere. Every
+    cache step writes everywhere: a cache entry's own paths are not read (618 fix, Fable ruling)."""
+    name = uses.strip().split("@")[0].lower()
+    if name not in ("actions/checkout", "actions/download-artifact", "actions/cache", "actions/cache/restore"):
+        return []
+    empty = with_node is None or (isinstance(with_node, yaml.ScalarNode) and with_node.value.strip() in ("", "~", "null"))
+    if not empty and not isinstance(with_node, yaml.MappingNode):
+        return ["."]                                     # GitHub rejects it, but this check does not read it as "no inputs"
+    if isinstance(with_node, yaml.MappingNode) and len({key_of(k) for k, _ in with_node.value}) != len(with_node.value):
+        return ["."]                                     # path / Path / "path " name one input after case and space are folded: which copy the runner reads is not read here
+    wm = {key_of(k): v for k, v in with_node.value} if isinstance(with_node, yaml.MappingNode) else {}
+    val = lambda k: wm[k].value if isinstance(wm.get(k), yaml.ScalarNode) else ("${{" if k in wm else None)
+    if name == "actions/checkout":
+        ref, pth, lfs = val("ref"), val("path"), val("lfs")
+        lfs_on = lfs is not None and lfs.strip().strip("\"'").lower() != "false"
+        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() == BASE_SHA_REF and \
+                re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
+            return []                                    # the base-sha fence: main's copy, handled as a base directory
+        if "repository" in wm or ref is not None or pth is not None or lfs_on:
+            return [_writer_dir(pth if pth is not None else ".")]
+        return []
+    if name == "actions/download-artifact":
+        pth = val("path")
+        return [_writer_dir(pth if pth is not None else ".")]
+    return ["."]
+
+
 def run_scripts(doc):
     """{job or composite: [(path, run text, shell)]} for every step run: GitHub executes, in order; shell is the
     step's own `shell:`, else its job's then its workflow's defaults.run.shell, else None (bash)."""
@@ -2860,12 +2992,23 @@ def run_scripts(doc):
                         groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft,
                                                               ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
                     uses, w = m.get("uses"), m.get("with")
-                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip()):
+                    if isinstance(uses, yaml.ScalarNode):
+                        wdirs = _uses_writes(uses.value, w, key_of)
+                        if wdirs:                        # rc-5b B2: a step that puts bytes into the tree is a writer, in step order
+                            groups.setdefault(group, []).append((f"{base}[{i}].uses", "\n".join(f"tar -x -C '{d_}'" for d_ in wdirs),
+                                                                  None, None, "if" in m, "", tuple(base_dirs)))
+                            for d_ in list(base_dirs):   # a LATER writer into (or over) a base-sha directory: it is no longer main's copy
+                                if any(w_ == "." or w_ == d_ or w_.startswith(d_ + "/") or d_.startswith(w_ + "/") for w_ in wdirs):
+                                    base_dirs.remove(d_)
+                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip(), re.I):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
                         pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
+                        dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
+                        lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
+                        lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
                         if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
-                                and re.fullmatch(r"[\w][\w-]*", pdir)):
+                                and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
                         else:
@@ -3088,6 +3231,15 @@ def check_file(tree, rel, pins, bad):
             check_image(where, node, bad)
 
 
+def _utf8(name):
+    """True when the name is valid UTF-8 (a str that holds surrogate escapes is not)."""
+    try:
+        name.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def main():
     argv = sys.argv[1:]
     verify = "--verify-tags" in argv
@@ -3102,6 +3254,11 @@ def main():
         sys.exit("check-action-pins: no .github/workflows/ — nothing checked")
     bad, pins, files = [], [], []
     for rel, kind in sorted(tree.entries.items()):
+        if rel.startswith(".github/") and not _utf8(rel):
+            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed
+            bad.append(f"{rel.encode('utf-8', 'surrogateescape').decode('ascii', 'backslashreplace')}: a name under .github/ that is not "
+                       f"valid UTF-8; refused (the file would otherwise go unread)")
+            continue
         parts = rel.split("/")
         in_wf = parts[:2] == [".github", "workflows"]
         name = parts[-1]
@@ -3127,7 +3284,7 @@ def main():
     if verify:
         bad += verify_pins(pins)
     for b in bad:
-        print(b)
+        print(b.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace"))   # a name that is not UTF-8 prints escaped, never a traceback
     print(f"check-action-pins: {len(files)} YAML file(s), {len(pins)} pinned action(s)"
           f"{' verified against their tags' if verify else ''}, {len(bad)} finding(s)")
     sys.exit(1 if bad else 0)
