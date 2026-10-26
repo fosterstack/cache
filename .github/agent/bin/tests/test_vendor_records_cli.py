@@ -72,7 +72,8 @@ class Cli(unittest.TestCase):
         mk.assert_called_once_with("/ws"); self.assertEqual(pb.call_args.args[4], "regen")
 
     def test_run_as_a_script_it_exits_with_the_argument_parsers_status(self):
-        r = subprocess.run([sys.executable, os.path.join(BIN, "auditor-vendor-records.py")], capture_output=True, text=True)
+        script = os.path.join(BIN, "auditor-vendor-records.py")
+        r = subprocess.run([sys.executable, script], capture_output=True, text=True)
         self.assertEqual(r.returncode, 2); self.assertIn("--repo", r.stderr)
 
 

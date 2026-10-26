@@ -296,7 +296,8 @@ class Sweep(unittest.TestCase):
         self.odd_path(BR)
         status, api = self.sweep()                                      # the diff of the branch meets it first
         self.assertEqual(status, "skipped: " + V.NOT_UTF8); self.assertEqual(api.made, [])
-        with self.assertRaises(V.Skip) as ctx:                          # and a tree that holds it (the base, say) never exports
+        # and a tree that holds it (the base, say) never exports
+        with self.assertRaises(V.Skip) as ctx:
             V._export(self.ws, self.head(), os.path.join(self.tmp, "out"))
         self.assertEqual(str(ctx.exception), V.NOT_UTF8)
 

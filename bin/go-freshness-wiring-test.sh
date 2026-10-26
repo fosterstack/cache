@@ -42,7 +42,8 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # never touches the App's secrets)
            ("release.yml", "decide"), ("release.yml", "patch-notes"),
            # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
-           # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it on main
+           # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
+           # on main
            ("dependabot-reviewer.yml", "vendor-records")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
