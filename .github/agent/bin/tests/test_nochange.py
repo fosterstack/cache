@@ -129,6 +129,10 @@ class Load(unittest.TestCase):
     def test_the_known_good_pullability_shapes_are_valid(self):
         for rec in ({"pullable": True}, {"pullable": False, "hold": "policy-held", "lift_trigger": "base >= 3"},
                     {"hold": None, "evidence": None}, {"evidence": "text"}, {"evidence": {"how": "pin", "carrier": "nodejs", "n": 2, "ok": True}},
+                    {"pullable": False, "lift_trigger": {"carrier": "nodejs", "min_version": "20.2",
+                        "component": "libz",
+                                                         # rc-5b R1: the structured trigger
+                                                         "component_min_version": "1.1"}},
                     {"bump_attempted": False, "bump_result": "none", "component_fixed": "1.2", "repo_version": "1.2",
                      "base_release": "debian 12.6", "candidate_release": None}, {}):
             d = good(); d["pullability"] = {K2: rec}
