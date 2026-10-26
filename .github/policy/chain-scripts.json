@@ -83,7 +83,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "6bbc34ef5a13ddf74491a87c55b4a554a0ba00c29cdb754abb2120069b9245b2",
+      "sha256": "45f99586b72c3cc2ae654981e04af9518a7fb03c4c63e5203ec5186e657a23c5",
       "tools": [
         "at",
         "curl",
@@ -296,7 +296,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
     },
     {
       "path": "bin/witnessed.sh",
@@ -316,7 +316,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "1805ad0d354671fa4ee805736f31747d0b396af96d397a0f4eb098165a4d5c13",
+      "sha256": "0b95fcac85c4e52273299b557d78fb9677bb2ec1901a137bb3ebe22dc879dccd",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -346,13 +346,6 @@
           "rule": "script-name",
           "text": "bin/chain-test-shape.py",
           "why": "a comment naming the helper that judges this file's exact text; it is never run from here"
-        },
-        {
-          "rule": "deny",
-          "line": "if [ \"$step\" = release-sign ]; then sig=$(sh bin/loopback-get.sh -sSf -H \"Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN\" \"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore\" | jq -r .value); [ -n \"$sig\" ] && [ \"$sig\" != null ] || { echo \"witnessed: no identity token for release-sign\" >&2; exit 1; }; echo \"::add-mask::$sig\"; export SIGSTORE_ID_TOKEN=\"$sig\"; fi",
-          "line_sha256": "3354f0851eada9aac8c6906ec43f0852375173efb379d52453d0f685475c9cbf",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -764,7 +757,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "3b61991b22cf0c4b005da92c2aacd5b2200b93aa3b3053646448c85d004c118f",
+      "sha256": "5fa2ab1c2d4cf32e29832d0a24f2fb910b752e812d108ba85449b4e219e5cb8f",
       "tools": [
         "env",
         "go",
@@ -783,8 +776,9 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "a08f30aeeb55a85acf24961c8d17e855e1c9c31b6af31dd4b2317c7f6c2ab3ba",
+      "sha256": "fc0300fd53f7bcf2376d4759217e59512495dcd3500aabf84f925d2ffd7b6dea",
       "tools": [
+        "bash",
         "find",
         "python3",
         "script",
@@ -796,7 +790,8 @@
       "runs": [
         "bin/check-osv-db.py",
         "bin/check-bind.py",
-        "bin/check-osv-vex.py"
+        "bin/check-osv-vex.py",
+        "bin/layout-archive.sh"
       ],
       "signs": false,
       "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)",
@@ -902,7 +897,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "62708883efa8b77b4ccd0dd8b73af8a5ed158e1b904d82fd3f9b8a7d3b07f7e0",
+      "sha256": "1bd55a2be1e76399546deb4379e01a142993c0c215a8e215b580911a591617d0",
       "tools": [
         "bash",
         "docker",
@@ -1366,7 +1361,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "559d11a534978607c3176b899c64239e20127dc9e0a7a4a1da114b5fe19087a9",
+      "sha256": "492fa6c7eda66c28d0a0305ad2e6b588ddbc1eac6a60551863e0533ef41ad265",
       "tools": [
         "at",
         "bash",
@@ -1386,7 +1381,6 @@
       "runs": [
         "bin/acceptance-k8s-manifests.py",
         "bin/acceptance-k8s-smoke.py",
-        "bin/install-kind.sh",
         "bin/loopback-get.sh"
       ],
       "signs": false,
@@ -1406,7 +1400,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "36d088685db1fe88b0d69043988f367ea6bb7c6586cbe8696c02adf55946e5b1",
+      "sha256": "27093e3c59ebd2f42dec74c96ec30d803e81a82bf474301062b94ece902f1a2a",
       "tools": [
         "curl",
         "docker",
@@ -1424,29 +1418,6 @@
           "rule": "deny",
           "line": "[ -n \"${IMAGE_REF:-}\" ] || { echo \"acceptance-serve: IMAGE_REF is unset\" >&2; exit 2; }",
           "line_sha256": "a7202d42c28be3cd7fd93c0abe990931ff36274c6312ee55b9706a6fc04ade30",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
-    },
-    {
-      "path": "bin/install-kind.sh",
-      "sha256": "f4e7f3e861fdcb46086f6118d2ef3dcdc8934d0442c721f22c69cd0f2c30fc18",
-      "tools": [
-        "curl",
-        "docker",
-        "kubectl",
-        "node",
-        "trap"
-      ],
-      "runs": [],
-      "signs": false,
-      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "[ \"$(uname -s)-$(uname -m)\" = Linux-x86_64 ] || { echo \"install-kind: only linux amd64 is pinned (the Check runner is ubuntu-24.04)\" >&2; exit 1; }",
-          "line_sha256": "af6d30eba1ea58ca8a9c0c6e505928a618923927c3bb79e95e4e1e695719e779",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -1849,7 +1820,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "2b706582f3d46ec1f22e0ebda52f0878376c75e77ccf36212054f58b41e84f9b",
+      "sha256": "c55e049c80aa4a2d0873d6eae090793ba132ec5630b7544cf0194b405ab76d4d",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1877,7 +1848,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "8a030a98d013b754c5c8e9806bac1c98e1adf4cdced1ca71aaa17516a5f42b76",
+      "sha256": "f0f2083bca437f02dece6af7dce3fb03bd40d9f5e667c4fe0bbc236949e96a46",
       "env_mentions": [
         {
           "name": "ENV",
@@ -1955,7 +1926,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "f4cf56ae548a10aa4b1691a481494e94ef825ee3999ff07ad83f5f803f202fdf",
+      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
       "tools": [
         "at",
         "curl",
@@ -2036,7 +2007,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "b4469b84e9822df6de8d5d29ebcffbcfab3d9816dd035b022a71b9cefcd118a2",
+      "sha256": "3980fc06bf599e35e945a30419727006e9dffe825dd41695b881f45503be9711",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
@@ -2046,7 +2017,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "17b8fd7cd291e117570cd12a78e0594bbe35af2511661e2b46d554fb6b35aa7a",
+      "sha256": "7102fb6b83d6b2cf4c444ec35e01144daa92b6305b75f9b49d1165785e93f1d2",
       "tools": [
         "at",
         "gh",
@@ -2089,7 +2060,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "7148c225516cd40d754c40f93b58e1c54c4af1ebea78c39b5ab644e7d9b2ebf2",
+      "sha256": "ec4c3549b7bece428ea93db4bba00e03a00a2e9b2a242f3675fbc0d445e871e6",
       "tools": [
         "at",
         "python3"
@@ -2186,8 +2157,8 @@
         "bin/apk-tool.py"
       ],
       "signs": "other",
-      "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "42201bbb58cffc49f69e06c385534e931ae25a85ad5c3b0178ead644e2b9022b",
+      "reason": "cache P4's release signing: re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "ba3c434fe1d2162e61a797907e487fe9f31fcbfe237cc0e9f4e7599efee6876f",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2206,51 +2177,37 @@
         },
         {
           "rule": "deny",
-          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] || die \"--key must be a file named release.rsa: melange names the signature after the key file, and the committed public key is build/keys/release.rsa.pub\"",
-          "line_sha256": "778607070774d4ea884498a62ba3d2b4a3e2d4a7298f6e90cf309f3a7409557a",
+          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] ||",
+          "line_sha256": "8edde846c25cb6d9bdc4d9a3363070a5509b1e5b2a8a9689dfc27e7017734d39",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $orig_a\"",
-          "line_sha256": "0c465c41778098158f8fc325dcca5187f8b3bc1bc494e1d9580370a5f2a40eb1",
+          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $build_dir\"",
+          "line_sha256": "c1d6baed7abf8eabb6177604f72b5eac4945f97ecf55d071db51797af175c7fd",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$orig_a/$rel\")\" = release.rsa.pub ] || die \"after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory\" 1",
-          "line_sha256": "d17bc0110e83028ab9a33ed16e1a69e6952ccefe1bed960dfc50d36ff778fb5e",
+          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; $kept\" 1",
+          "line_sha256": "04f704f7e54ef983d81b05f55c4d3d78825fe1a0bac1cd59c045126abaff9eb9",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ -z \"$ctl\" ] || die \"a file name under $d holds a control character (newline or other): ${ctl#\"$d\"/}; refusing (a name is never split into two)\"",
-          "line_sha256": "c5cb77bf9ce3302712e5cbd2e35204d6da817856f598354be4a49a90e534284d",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$build_dir/$rel\")\" = release.rsa.pub ] ||",
+          "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed\" 1",
-          "line_sha256": "cdafaca2bb8feae6f3ade2acaf46d44da378429425627d9e632f9dea6f5ffa44",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$sg\" = assembly.rsa.pub ] || die \"${rel#./} is signed by '$sg', not assembly.rsa.pub: Build must carry the assembly key's signature\"",
-          "line_sha256": "9cacb3ed41ec99346374fd13c3795d92b178c5879a712400904164141a2a8e70",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         }
       ],
       "env_mentions": [
         {
           "name": "PATH",
-          "text": "r = subprocess.run([sys.argv[2], \"rsa\", \"-pubout\", \"-passin\", \"pass:\"], input=block.encode(), capture_output=True, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "text": "child_env = {\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"}",
           "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
@@ -2647,7 +2604,8 @@
         "wc"
       ],
       "signs": false,
-      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)"
+      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)",
+      "runs": []
     },
     {
       "path": "bin/release-compare.sh",
@@ -2707,6 +2665,22 @@
       "runs": [],
       "signs": false,
       "reason": "a Check job's list of the records it made, as a job output Sign compares with what it receives (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/layout-archive.sh",
+      "sha256": "7836f557cfa126a2b09d3bed57aa883591ed82f6fe3e0d7b8037db4b74b2ce6f",
+      "tools": [
+        "awk",
+        "cp",
+        "jq",
+        "mktemp",
+        "sha256sum",
+        "tar",
+        "trap"
+      ],
+      "signs": false,
+      "runs": [],
+      "reason": "the one builder of the docker-save tar of an OCI layout's linux/ARCH image, which check-scan.sh gives to the scanners: it copies each blob to a private stage, re-hashes it and packs only the config and layers (REQ-CHAIN-006-AC4)"
     }
   ],
   "ambient_env": [

@@ -214,6 +214,25 @@ shape mixed 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[
 out="$(GRYPE="$grype" bash "$gs" "sbom:$w/g-cov.json" cov-json 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "grype: VEX-covered busybox 1.37.0 still passes with the native JSON checked (every ignored entry is a VEX rule)" || bad "grype: covered case with the JSON check (rc $rc)" "$out"
 
+# 0674: a scan of a tar made from a layout's child names the config digest of that child as its image ID;
+# grype-scan.sh checks it when the caller says which one it expects (EXPECT_IMAGE_ID), so a tar of another
+# image can never be scanned in place of the one we ship.
+CFG=sha256:$(printf 'a%.0s' $(seq 64))
+fake_grype grype-id-ok "$OKCDX" "{\"matches\":[],\"ignoredMatches\":[],\"source\":{\"target\":{\"imageID\":\"$CFG\"}}}"
+fake_grype grype-id-other "$OKCDX" '{"matches":[],"ignoredMatches":[],"source":{"target":{"imageID":"sha256:other"}}}'
+fake_grype grype-id-none "$OKCDX" "$OKJSON"
+out="$(EXPECT_IMAGE_ID=$CFG GRYPE="$w/grype-id-ok" bash "$gs" "sbom:$w/g-cov.json" id-ok 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "grype: the expected image ID is read from the report and passes" \
+  || bad "grype: expected image ID (rc $rc)" "$out"
+for g in id-other id-none; do
+  out="$(EXPECT_IMAGE_ID=$CFG GRYPE="$w/grype-$g" bash "$gs" "sbom:$w/g-cov.json" "$g" 2>&1)"; rc=$?
+  [ "$rc" -eq 2 ] && grep -q "image ID" <<<"$out" && ok "grype: $g is not the expected image: exit 2, the IDs named" \
+    || bad "grype: $g (rc $rc, want 2 naming the image ID)" "$out"
+done
+out="$(GRYPE="$w/grype-id-other" bash "$gs" "sbom:$w/g-cov.json" id-unset 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "grype: with no expected image ID nothing is compared (the PR gate's other targets)" \
+  || bad "grype: id unset (rc $rc)" "$out"
+
 # rc-5a C (astra B3): the package count is the components that carry a package URL; files, which grype also lists as components (946 of 965 on a real
 # image), are not packages. A file-only inventory is 0 packages = did not run (row 53), never a pass.
 fake_grype grype-fileonly '{"components":[{"type":"file","name":"/usr/lib/f0"},{"type":"file","name":"/usr/lib/f1"}],"vulnerabilities":[]}' "$OKJSON"
@@ -221,7 +240,10 @@ fake_grype grype-emptypurl '{"components":[{"type":"library","name":"busybox","v
 fake_grype grype-nullpurl '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":null}],"vulnerabilities":[]}' "$OKJSON"
 fake_grype grype-filesandone '{"components":[{"type":"file","name":"/usr/lib/f0"},{"type":"file","name":"/usr/lib/f1"},{"type":"library","name":"busybox","version":"1.36.0","purl":"pkg:generic/busybox@1.36.0"}],"vulnerabilities":[]}' "$OKJSON"
 fake_grype grype-numpurl '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":7},{"type":"library","name":"x","purl":{}},{"type":"library","name":"y","purl":[]},{"type":"library","name":"z","purl":true}],"vulnerabilities":[]}' "$OKJSON"
-for g in grype-fileonly grype-emptypurl grype-nullpurl grype-numpurl; do
+fake_grype grype-strpurl '{"components":[{"type":"file","name":"/usr/lib/f0","purl":"not-a-purl"}],"vulnerabilities":[]}' "$OKJSON"
+fake_grype grype-schemeonly '{"components":[{"type":"library","name":"busybox","version":"1.36.0","purl":"pkg:"}],"vulnerabilities":[]}' "$OKJSON"
+fake_grype grype-noname '{"components":[{"type":"library","name":"b","purl":"pkg:/"},{"type":"library","name":"c","purl":"pkg:deb/"},{"type":"library","name":"d","purl":"pkg:?q=/"}],"vulnerabilities":[]}' "$OKJSON"
+for g in grype-fileonly grype-emptypurl grype-nullpurl grype-numpurl grype-strpurl grype-schemeonly grype-noname; do
   out="$(GRYPE="$w/$g" bash "$here/grype-scan.sh" "sbom:$w/does-not-matter.json" "$g" 2>&1)"; rc=$?
   [ "$rc" -eq 2 ] && grep -q "$g: 0 packages" <<<"$out" && grep -q "0 packages in $g.*did not run" <<<"$out" \
     && ok "grype: $g is 0 packages (components without a package URL are not packages), exit 2" || bad "grype: $g (rc $rc)" "$out"
