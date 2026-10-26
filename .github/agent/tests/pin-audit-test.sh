@@ -25,9 +25,10 @@ check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
 # would otherwise read /dev/null).
 BG_N=0
 check_bg() {
-  BG_N=$((BG_N+1)); BG_CASE[$BG_N]=$CASE
-  ( "$@" >/dev/null 2>&1; echo $? >"$work/bg.$BG_N.rc.tmp" && mv "$work/bg.$BG_N.rc.tmp" "$work/bg.$BG_N.rc" ) <&0 &
-  BG_PID[$BG_N]=$!
+  local n=$((BG_N+1))
+  BG_N=$n; BG_CASE[$n]=$CASE
+  ( "$@" >/dev/null 2>&1; echo $? >"$work/bg.$n.rc.tmp" && mv "$work/bg.$n.rc.tmp" "$work/bg.$n.rc" ) <&0 &
+  BG_PID[$n]=$!
 }
 bg_collect() {
   local i
@@ -50,15 +51,17 @@ X
     CASE="p6"; check_bg bash -s <<'X'
 exit 0
 X
+    for k in $(seq 1 60); do CASE="q$k"; check_bg true; done
     bg_collect )
 }
 bgout=$(bgprobe 2>/dev/null) || true
 CASE="background checks: one line each in launch order; exit 0 is ok, any other exit (failure, killed) is FAIL"
-check test "$bgout" = "$(printf 'ok   p1\nFAIL p2\nok   p3\nFAIL p4\nFAIL p5\nok   p6')"
+want=$(printf 'ok   p1\nFAIL p2\nok   p3\nFAIL p4\nFAIL p5\nok   p6\n'; printf 'ok   q%s\n' $(seq 1 60))
+check test "$bgout" = "$want"
 CASE="background checks: a heredoc given to the check reaches it (a script that exits 3 is FAIL, not /dev/null)"
 check grep -qx 'FAIL p5' <<<"$bgout"
 CASE="background checks: a check that never reports is FAIL, not skipped (one line per launch)"
-check test "$(printf '%s\n' "$bgout" | grep -c '^\(ok  \|FAIL\) p')" -eq 6
+check test "$(printf '%s\n' "$bgout" | grep -c '^\(ok  \|FAIL\) [pq]')" -eq 66
 
 NOW="2026-10-05T12:00:00Z"
 dago() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
