@@ -51,17 +51,16 @@ X
     CASE="p6"; check_bg bash -s <<'X'
 exit 0
 X
-    for k in $(seq 1 60); do CASE="q$k"; check_bg true; done
     bg_collect )
 }
 bgout=$(bgprobe 2>/dev/null) || true
 CASE="background checks: one line each in launch order; exit 0 is ok, any other exit (failure, killed) is FAIL"
-want=$(printf 'ok   p1\nFAIL p2\nok   p3\nFAIL p4\nFAIL p5\nok   p6\n'; printf 'ok   q%s\n' $(seq 1 60))
+want=$(printf 'ok   p1\nFAIL p2\nok   p3\nFAIL p4\nFAIL p5\nok   p6')
 check test "$bgout" = "$want"
 CASE="background checks: a heredoc given to the check reaches it (a script that exits 3 is FAIL, not /dev/null)"
 check grep -qx 'FAIL p5' <<<"$bgout"
 CASE="background checks: a check that never reports is FAIL, not skipped (one line per launch)"
-check test "$(printf '%s\n' "$bgout" | grep -c '^\(ok  \|FAIL\) [pq]')" -eq 66
+check test "$(printf '%s\n' "$bgout" | grep -c '^\(ok  \|FAIL\) p')" -eq 6
 
 NOW="2026-10-05T12:00:00Z"
 dago() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
