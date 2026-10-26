@@ -1018,7 +1018,8 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json rescan-statement-test.sh bin/rescan-statement-test.sh
 
   dependency-review:
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}   # required on pull requests and in the merge queue; never on a push (nothing to compare)
+    # required on pull requests and in the merge queue; never on a push (nothing to compare)
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

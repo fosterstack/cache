@@ -105,14 +105,18 @@ for c in ("test", "lint", "gosec", "govulncheck", "allowlist", "allowlist-person
 EXCEPT = {"auditor-review-gate", "marker-gate"}
 out = []
 def res(ok, label): out.append(("ok   " if ok else "FAIL ") + label)
-res(set(req) - set(TABLE) == EXCEPT, "every required context is known to the merge-queue table (unknown: %s)" % sorted(set(req) - set(TABLE) - EXCEPT))
+unknown = sorted(set(req) - set(TABLE) - EXCEPT)
+res(set(req) - set(TABLE) == EXCEPT, "every required context is known to the merge-queue table (unknown: %s)" % unknown)
 res(EXCEPT == {"auditor-review-gate", "marker-gate"},
     "the merge-queue exceptions are exactly the review gate's check (published by the App) and marker-gate (pull requests only)")
 def has_event(d, name):
     on = d.get(True) if True in d else d.get("on")
     return (isinstance(on, dict) and name in on) or on == name or (isinstance(on, list) and name in on)
 def skips(txt):
-    return isinstance(txt, str) and "github.event_name" in txt and "merge_group" not in txt
+    if not isinstance(txt, str) or "github.event_name" not in txt:
+        return False
+    # an event_name condition skips the queue unless it names merge_group, or names it only to exclude it
+    return "merge_group" not in txt or re.search(r"event_name\s*!=\s*['\"]merge_group['\"]", txt) is not None
 for c in req:
     if c in EXCEPT or c not in TABLE: continue
     f, j = TABLE[c]; d = wf.get(f)

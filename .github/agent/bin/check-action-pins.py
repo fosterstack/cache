@@ -2303,8 +2303,12 @@ def _drop_foreign_heredocs(text):
 GENERATED_OK = {}
 
 
-# main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, which is main as the queue found it; the queue's HEAD is never main's copy
-BASE_SHA_REFS = ("${{ github.event.pull_request.base.sha }}", "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}")
+# main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha,
+# which is main as the queue found it; the queue's HEAD is never main's copy
+BASE_SHA_REFS = (
+    "${{ github.event.pull_request.base.sha }}",
+    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+)
 _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
 
 
