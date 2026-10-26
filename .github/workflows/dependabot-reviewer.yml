@@ -511,8 +511,8 @@ jobs:
 
   vendor-records:
     name: vendor records
-    # main's copy only: a manual run from another ref would run that ref's installer and sweep with the App's write path
-    if: ${{ github.ref == 'refs/heads/main' }}
+    # The `agent` environment is limited to branch main, so a run from any other ref fails before the App key exists:
+    # the environment is the boundary here, not a condition inside this file (a hostile ref would just omit it).
     runs-on: ubuntu-latest
     environment: agent
     permissions:

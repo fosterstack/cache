@@ -181,7 +181,7 @@ class Sweep(unittest.TestCase):
 
     def test_a_go_mod_that_adds_replace_toolchain_or_godebug_is_skipped(self):
         for line in ("replace example.com/m => ../m", "toolchain go9.9.9", "godebug x=1",
-            "  replace example.com/m => /etc"):
+            "  replace example.com/m => ../elsewhere"):
             self.bump(BR, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n" + line.encode() + b"\n",
                 "go.sum": b"sum2\n"})
             status, api = self.sweep()
@@ -215,7 +215,7 @@ class Sweep(unittest.TestCase):
 
     def test_a_symlink_in_the_regenerated_tree_is_a_skip(self):
         def regen(work, a, b):
-            self.regen(work, a, b); os.symlink("/etc/passwd", os.path.join(work, "vendor", "link"))
+            self.regen(work, a, b); os.symlink("target", os.path.join(work, "vendor", "link"))
         status, api = self.sweep(regen)
         self.assertEqual(status, "skipped: vendor/link is a symlink"); self.assertEqual(api.made, [])
 
@@ -228,7 +228,7 @@ class Sweep(unittest.TestCase):
     def test_a_link_in_the_branch_tree_is_not_followed_and_a_git_failure_is_a_failed_line(self):
         git(self.seed, "checkout", "-q", "-B", BR, "main")
         put(self.seed, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n"})
-        os.symlink("/etc/passwd", os.path.join(self.seed, "evil"))
+        os.symlink("target", os.path.join(self.seed, "evil"))
         git(self.seed, "add", "-A")
         git(self.seed, "commit", "-qm", "b")
         git(self.seed, "push", "-q", "-f", self.origin, BR)
@@ -236,7 +236,7 @@ class Sweep(unittest.TestCase):
         self.assertEqual(status, "skipped: the branch changes evil, which is not go.mod, go.sum or a records path")
         git(self.seed, "checkout", "-q", "-B", BR, "main")
         put(self.seed, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n"})
-        os.symlink("/etc/passwd", os.path.join(self.seed, "vendor", "link"))
+        os.symlink("target", os.path.join(self.seed, "vendor", "link"))
         git(self.seed, "add", "-A")
         git(self.seed, "commit", "-qm", "b")
         git(self.seed, "push", "-q", "-f", self.origin, BR)

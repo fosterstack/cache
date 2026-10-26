@@ -820,7 +820,11 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     files = [f for f in ("go.mod", "go.sum") if os.path.exists(os.path.join(ws, f))]    # a module with no dependencies has no go.sum
     oid = None
     if remote_same:                              # reuse = ONE verified commit on main changing only these files, with these exact bytes
-        oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, signed_commit.read_changes(ws, files))
+        # the App's login is its slug plus [bot]: reuse only what the App itself made
+        slug = os.environ.get("AUDITOR_APP_SLUG")
+        want = signed_commit.read_changes(ws, files)
+        oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, want,
+                                            app_login=slug + "[bot]" if slug else None)
     if oid is None:
         err = _disarm_before_replace(ws, ex)     # the existing PR is found and DISARMED first, then its branch is replaced
         if err:

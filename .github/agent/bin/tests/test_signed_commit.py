@@ -25,6 +25,7 @@ def mutation(oid=OID, signature=OK_SIG, **extra):
 
 
 H1 = "3" * 40          # the live branch head the run observed
+APP = "app[bot]"        # the App's login: the only author whose commits a branch may keep
 H2 = "4" * 40          # a head some other writer left there
 TMP = "auditor/tmp-test0001"
 
@@ -358,22 +359,32 @@ class Reusable(unittest.TestCase):
             d = {"filename": f[0], "status": f[1]}
             d.update(f[2] if len(f) > 2 else {})
             fs.append(d)
-        return (0, json.dumps({"parents": [{"sha": p} for p in parents], "files": fs, "commit": {"verification": {"verified": verified}}, **extra}), "")
+        return (0, json.dumps({"parents": [{"sha": p} for p in parents], "files": fs, "author": {"login": APP},
+                                 "commit": {"verification": {"verified": verified}}, **extra}), "")
 
     def ok(self, **kw):
         return Gh(live=H1, lookup=self.lookup(**kw))
 
     def test_one_verified_commit_on_main_with_the_wanted_bytes_is_reused_and_nothing_is_written(self):
         gh = self.ok()
-        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)            # the verified head oid
+        # the verified head oid
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
         self.assertEqual(gh.writes(), [])
         self.assertIn(["gh", "api", "repos/o/r/commits/" + H1], gh.calls)
         self.assertIn(["gh", "api", "repos/o/r/contents/go.mod?ref=" + H1], gh.calls)
         both = Gh(live=H1, lookup=self.lookup(files=(("go.mod", "modified"), ("go.sum", "added"))), contents={"go.mod": b"module m\n", "go.sum": b"x\n"})
-        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, {"go.mod": b"module m\n", "go.sum": b"x\n"}, run=both), H1)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, {"go.mod": b"module m\n", "go.sum": b"x\n"}, run=both,
+            app_login=APP), H1)
 
     def test_everything_else_is_not_reusable_so_the_branch_is_rebuilt_through_the_api(self):
+        other = (0, json.dumps({"parents": [{"sha": BASE}], "author": {"login": "someone"},
+                                "files": [{"filename": "go.mod", "status": "modified"}],
+                                "commit": {"verification": {"verified": True}}}), "")
         cases = {"unsigned head": self.ok(verified=False),
+                 "a head by another author": Gh(live=H1, lookup=other),
+                 "a head with no author": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}],
+                                            "files": [{"filename": "go.mod", "status": "modified"}],
+                                            "commit": {"verification": {"verified": True}}}), "")),
                  "verified string": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": [{"filename": "go.mod", "status": "modified"}], "commit": {"verification": {"verified": "true"}}}), "")),
                  "signed on an old main": self.ok(parents=("9" * 40,)),
                  "two parents, main first (a merge commit)": self.ok(parents=(BASE, "9" * 40)),
@@ -403,7 +414,7 @@ class Reusable(unittest.TestCase):
         orig = cases["contents not base64"].__call__
         cases["contents not base64"] = lambda cmd, **kw: subprocess.CompletedProcess(list(cmd), 0, json.dumps({"encoding": "none", "content": ""}), "") if "/contents/" in cmd[2] else orig(cmd, **kw)
         for name, gh in cases.items():
-            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), name)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
             if hasattr(gh, "writes"):
                 self.assertEqual(gh.writes(), [], name)
 
@@ -411,14 +422,14 @@ class Reusable(unittest.TestCase):
         for answer in ((1, "", "HTTP 500"), (0, json.dumps({"encoding": "base64", "content": "abc"}), "")):
             gh = self.ok(); orig = gh.__call__
             run = lambda cmd, answer=answer, orig=orig, **kw: subprocess.CompletedProcess(list(cmd), answer[0], answer[1], answer[2]) if "/contents/" in cmd[2] else orig(cmd, **kw)
-            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=run), answer)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=run, app_login=APP), answer)
 
     def test_the_default_runner_and_input_checks(self):
         gh = self.ok()
         with mock.patch.object(S.subprocess, "run", gh):
-            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT), H1)
+            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, app_login=APP), H1)
         for kw in (dict(repo="o"), dict(branch="main"), dict(base_sha="abc"), dict(want={}), dict(want={"../x": b""}), dict(want={"go.mod": "text"})):
-            args = dict(repo=REPO, branch=BRANCH, base_sha=BASE, want=self.WANT); args.update(kw)
+            args = dict(repo=REPO, branch=BRANCH, base_sha=BASE, want=self.WANT, app_login=APP); args.update(kw)
             self.assertIsNone(S.branch_reusable(run=Gh(), **args), kw)
 
 
@@ -510,7 +521,7 @@ class Prefixes(unittest.TestCase):
         evil = "go.mod?ref=main#"
         gh = Gh(live=H1, lookup=Reusable.lookup(None, files=((evil, "modified"), ("a b/c d.txt", "added"))),
                  contents={"go.mod%3Fref%3Dmain%23": b"x", "a%20b/c%20d.txt": b"y"})
-        S.branch_reusable(REPO, BRANCH, BASE, {evil: b"x", "a b/c d.txt": b"y"}, run=gh)
+        S.branch_reusable(REPO, BRANCH, BASE, {evil: b"x", "a b/c d.txt": b"y"}, run=gh, app_login=APP)
         urls = [c[2] for c in gh.calls if "/contents/" in c[2]]
         self.assertIn("repos/o/r/contents/go.mod%3Fref%3Dmain%23?ref=" + H1, urls)   # the request cannot be altered by the path
         self.assertIn("repos/o/r/contents/a%20b/c%20d.txt?ref=" + H1, urls)          # components encoded, the separators kept
@@ -561,6 +572,14 @@ class RecordsCommit(unittest.TestCase):
                 S.commit_on_branch(REPO, br, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
             self.assertEqual(gh.calls, [], br)
 
+    def test_a_path_outside_the_records_places_is_refused_by_the_helper_itself(self):
+        for path in ("go.mod", "go.sum", ".github/workflows/ci.yml", "README.md",
+            "test-evidence/dependency-origins.yaml"):
+            gh = self.gh()
+            with self.assertRaises(S.CommitError, msg=path):
+                S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x", path: b"y"}, run=gh)
+            self.assertEqual(gh.calls, [], path)
+
     def test_bad_arguments_are_refused_before_any_call(self):
         ok = dict(repo=REPO, branch=self.BR, head_sha=H1, message=JOB_MSG, changes={"vendor/a.go": b"x"})
         for kw in (dict(repo="o"), dict(head_sha="abc"), dict(message=" "), dict(changes={}),
@@ -610,20 +629,19 @@ class RecordsPaths(unittest.TestCase):
                       "vendor/./a", "/vendor/a", 7, None):
             self.assertFalse(S.is_records_path(p), repr(p))
 
-    def test_the_headline_is_recognised_only_as_a_prefix_of_the_first_line(self):
-        self.assertTrue(S.is_records_message(JOB_MSG))
-        self.assertTrue(S.is_records_message(JOB_MSG + "\n\nbody"))
-        for m in ("Bump x", "vendor records for the x bump", " " + JOB_MSG, "x\n" + JOB_MSG, "", None, 3):
-            self.assertFalse(S.is_records_message(m), repr(m))
+    def test_the_records_message_is_one_line_naming_the_last_part_of_the_branch(self):
+        self.assertEqual(S.records_message(RecordsCommit.BR), JOB_MSG)
+        self.assertEqual(S.records_message("auditor/bump-example.com-m-1.1.0"),
+            "Vendor records for the bump-example.com-m-1.1.0 bump")
+
+
+JM = S.records_message(BRANCH)    # the sweep's message on BRANCH
 
 
 class RecordsReusable(unittest.TestCase):
-    """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: verified, one parent that
-    is itself reusable by the
-    ordinary rules (verified, one parent = main, changing only the wanted files), its own files only records paths, its
-    message the sweep's.
-    The wanted files still hold exactly the wanted bytes at the head. The daily replace therefore leaves such a branch
-    as it is."""
+    """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: GitHub-verified, by the App,
+    its message exactly records_message(branch), one parent; that parent is judged by the ordinary rules (by the App
+    too). The identity is the proof, so the records commit's own file list is not read: a big bump needs no cap."""
     WANT = {"go.mod": b"module m\n", "go.sum": None}
 
     class Gh2(Gh):
@@ -639,67 +657,62 @@ class RecordsReusable(unittest.TestCase):
             return super().__call__(cmd, **kw)
 
     @staticmethod
-    def doc(parent, files, message="Bump", verified=True):
-        return (0, json.dumps({"parents": [{"sha": parent}], "files": [{"filename": f, "status": s} for f, s in files],
+    def doc(parent, files=(("go.mod", "modified"),), message="Bump", verified=True, login=APP, parents=None):
+        return (0, json.dumps({"parents": [{"sha": p} for p in (parents or [parent])],
+                               "files": [{"filename": f, "status": st} for f, st in files],
+                               "author": {"login": login},
                                "commit": {"message": message, "verification": {"verified": verified}}}), "")
 
     def gh(self, job=None, bump=None, **kw):
-        return self.Gh2({H1: job or self.doc(H2, [("vendor/a.go", "modified"), ("dependency-provenance.json",
-            "modified")], JOB_MSG),
-                         H2: bump or self.doc(BASE, [("go.mod", "modified")])}, live=H1, **kw)
+        return self.Gh2({H1: job or self.doc(H2, message=JM), H2: bump or self.doc(BASE)}, live=H1, **kw)
+
+    def reuse(self, gh, branch=BRANCH, login=APP):
+        gh.refs = {branch: H1}
+        return S.branch_reusable(REPO, branch, BASE, self.WANT, run=gh, app_login=login)
 
     def test_a_records_commit_on_a_reusable_bump_commit_is_reused_and_nothing_is_written(self):
         gh = self.gh()
-        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
         self.assertEqual(gh.writes(), [])
         # the wanted bytes are read at the real head
         self.assertIn(["gh", "api", "repos/o/r/contents/go.mod?ref=" + H1], gh.calls)
 
+    def test_a_records_commit_of_any_size_is_reused(self):
+        many = tuple(("vendor/f%d.go" % i, "modified") for i in range(400))
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(job=self.doc(H2, many, JM)),
+                                           app_login=APP), H1)
+
     def test_every_way_the_records_commit_can_be_wrong_is_not_reusable(self):
-        two_parents = (0, json.dumps({"parents": [{"sha": H2}, {"sha": BASE}],
-                                      "files": [{"filename": "vendor/a.go", "status": "modified"}],
-                                      "commit": {"message": JOB_MSG, "verification": {"verified": True}}}), "")
-        wrong = {"an unsigned records commit": self.gh(job=self.doc(H2, [("vendor/a.go", "modified")], JOB_MSG,
-            verified=False)),
-                 "a records commit touching go.mod": self.gh(job=self.doc(H2, [("vendor/a.go", "modified"), ("go.mod",
-                     "modified")], JOB_MSG)),
-                 "a records commit touching a workflow": self.gh(job=self.doc(H2, [("vendor/a.go", "added"),
-                     (".github/workflows/ci.yml", "modified")], JOB_MSG)),
-                 "a records commit touching origins": self.gh(job=self.doc(H2,
-                     [("test-evidence/dependency-origins.yaml", "modified")], JOB_MSG)),
-                 "a records commit that renames": self.gh(job=self.doc(H2, [("vendor/a.go", "renamed")], JOB_MSG)),
-                 "a records commit with no files": self.gh(job=self.doc(H2, [], JOB_MSG)),
-                 "a commit that is not the sweep's message": self.gh(job=self.doc(H2, [("vendor/a.go", "modified")],
-                     "Bump x")),
-                 "an unsigned bump commit under it": self.gh(bump=self.doc(BASE, [("go.mod", "modified")],
-                     verified=False)),
-                 "a bump commit on an old main": self.gh(bump=self.doc("9" * 40, [("go.mod", "modified")])),
-                 "a bump commit changing another file": self.gh(bump=self.doc(BASE, [("go.mod", "modified"),
-                     ("README.md", "modified")])),
-                 "a records commit on a records commit": self.gh(bump=self.doc(H2, [("vendor/a.go", "modified")],
-                     JOB_MSG)),
-                 "the bump commit cannot be read": self.Gh2({H1: self.doc(H2, [("vendor/a.go", "modified")], JOB_MSG)},
-                     live=H1),
-                 "two parents on the records commit": self.Gh2(
-                     {H1: two_parents, H2: self.doc(BASE, [("go.mod", "modified")])}, live=H1),
+        wrong = {"an unsigned records commit": self.gh(job=self.doc(H2, message=JM, verified=False)),
+                 "a records commit by another author": self.gh(job=self.doc(H2, message=JM, login="someone")),
+                 "a message that only starts like the sweep's": self.gh(job=self.doc(H2, message=JM + "\n\nmore")),
+                 "another branch's message": self.gh(job=self.doc(H2, message=JOB_MSG)),
+                 "an ordinary message on a second commit": self.gh(job=self.doc(H2, message="Bump")),
+                 "two parents on the records commit": self.gh(job=self.doc(None, message=JM, parents=[H2, BASE])),
+                 "no parent on the records commit": self.gh(job=self.doc(None, message=JM, parents=[])),
+                 "an unsigned bump commit under it": self.gh(bump=self.doc(BASE, verified=False)),
+                 "a bump commit by another author": self.gh(bump=self.doc(BASE, login="someone")),
+                 "a bump commit on an old main": self.gh(bump=self.doc("9" * 40)),
+                 "a bump commit changing another file": self.gh(bump=self.doc(BASE, (("go.mod", "modified"),
+                     ("README.md", "modified")))),
+                 "a records commit on a records commit": self.gh(bump=self.doc(H2, message=JM)),
+                 "the bump commit cannot be read": self.Gh2({H1: self.doc(H2, message=JM)}, live=H1),
                  "the wanted bytes differ at the head": self.gh(contents={"go.mod": b"module other\n"})}
         for name, gh in wrong.items():
-            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), name)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
             self.assertEqual(gh.writes(), [], name)
 
-    def test_a_file_list_at_the_apis_cap_may_be_cut_so_nothing_is_reused(self):
-        for n, reusable in ((S.COMMIT_FILES_CAP - 1, True), (S.COMMIT_FILES_CAP, False)):
-            files = [("vendor/f%d.go" % i, "modified") for i in range(n)]
-            gh = self.gh(job=self.doc(H2, files, JOB_MSG))
-            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1 if reusable else None, n)
-        gh = self.gh(bump=self.doc(BASE, [("go.mod", "modified")] + [("x%d" % i,
-            "modified") for i in range(S.COMMIT_FILES_CAP)]))
-        # the bump commit's list too
-        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh))
+    def test_without_the_apps_login_nothing_is_reusable(self):
+        for login in (None, "", "other[bot]"):
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(), app_login=login), login)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.Gh2({H1: self.doc(BASE)},
+                live=H1),
+                                                app_login=login), login)
 
     def test_a_plain_commit_with_a_records_looking_message_is_judged_by_the_ordinary_rules(self):
-        gh = self.Gh2({H1: self.doc(BASE, [("go.mod", "modified")], JOB_MSG)}, live=H1)
-        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)
+        # another branch's records message: just a message
+        gh = self.Gh2({H1: self.doc(BASE, message=JOB_MSG)}, live=H1)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
 
 
 if __name__ == "__main__":

@@ -77,9 +77,9 @@ class Workflow(unittest.TestCase):
     TEXT = open(os.path.join(BIN, "..", "..", "workflows", "dependabot-reviewer.yml")).read()
     JOB = TEXT[TEXT.index("\n  vendor-records:\n"):]
 
-    def test_it_runs_only_from_main_even_when_started_by_hand(self):
-        self.assertIn("    if: ${{ github.ref == 'refs/heads/main' }}\n", self.JOB)
-        # the checkout follows the ref the `if` just fixed
+    def test_the_job_runs_in_the_agent_environment_whose_branch_policy_keeps_it_on_main(self):
+        self.assertIn("    environment: agent\n", self.JOB)
+        # the checkout follows the ref the environment admits
         self.assertNotIn("ref:", self.JOB)
 
     def test_the_job_token_reads_and_the_one_app_token_writes_contents_of_this_repository(self):

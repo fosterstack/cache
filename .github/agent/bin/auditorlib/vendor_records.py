@@ -1,27 +1,24 @@
 """The records sweep's library: a dependency-bump branch gets ONE signed commit holding the vendored tree and the
-provenance records its go.mod and
-go.sum change calls for, so nobody finishes a bump by hand (the gap behind cache#394, cache#620 B1/B2).
+provenance records its go.mod and go.sum change calls for, so nobody finishes a bump by hand (the gap behind
+cache#394, cache#620 B1/B2).
 
 process_branch(repo, branch, ws, run, regenerate): for one dependabot/go_modules/* or auditor/bump-* branch,
-  1. the branch must change go.mod (and go.sum) and otherwise only records paths (anything under vendor/,
-  dependency-provenance.json, the reviewed
-     licences), and its go.mod must add no replace, toolchain or godebug line: go mod vendor decides what to vendor
-     from the package imports, so the
-     branch's own tree equals the base's only while nothing else changed;
-  2. the head is exported (data, never run) and `regenerate` rebuilds the records in a copy: go mod vendor, the records
-  step, the provenance build;
+  1. the branch must change go.mod (and go.sum) and otherwise only records paths (anything under vendor/, the
+     provenance record, the reviewed licences), and its go.mod must add no replace, toolchain or godebug line:
+     go mod vendor decides what to vendor from the package imports, so the branch's own tree equals the base's
+     only while nothing else changed;
+  2. the head is exported (data, never run) and `regenerate` rebuilds the records in a copy: go mod vendor, the
+     licences, the records step, the provenance build;
   3. what differs from the head in the records paths is committed on the head through the API
-  (signed_commit.commit_on_branch); nothing differs =
-     no commit; go.mod and go.sum are never written; a regeneration that raises Skip (or leaves go.mod or go.sum
-     changed) leaves the branch alone.
-A head that already is a records commit but still differs from the regeneration is left alone too, so the sweep never
-commits twice in a row.
+     (signed_commit.commit_on_branch); nothing differs = no commit; go.mod and go.sum are never written; a
+     regeneration that raises Skip (or leaves go.mod or go.sum changed) leaves the branch alone.
+A head that already is a records commit but still differs from the regeneration is left alone too, so the sweep
+never commits twice in a row.
 
-carry_licences: the reviewed licences file (test-evidence/dependency-licenses.yaml) is keyed module@version and nothing
-is ever invented in it:
-a changed module@version gets its earlier versions' licence id only when the module's vendored LICENSE is
-byte-identical to the base's; a changed
-LICENSE, a new module or a missing LICENSE is a Skip and a human does it as before.
+carry_licences: the reviewed licences file (test-evidence/dependency-licenses.yaml) is keyed module@version and
+nothing is ever invented in it: a changed module@version gets its earlier versions' licence id only when the
+module's vendored LICENSE is byte-identical to the base's; a changed LICENSE, a new module or a missing LICENSE
+is a Skip and a human does it as before.
 """
 import io, json, os, shutil, subprocess, tarfile, tempfile
 
@@ -41,8 +38,7 @@ class Skip(Exception):
     """The branch is left alone; the message is the reason that goes in the log."""
 
 
-def subject(branch):
-    return signed_commit.RECORDS_HEADLINE + "%s bump" % branch.rsplit("/", 1)[1]
+subject = signed_commit.records_message
 
 
 def modules_of(text):
@@ -61,10 +57,9 @@ def modules_of(text):
 
 
 def carry_licences(modules, old, old_license, new_license):
-    """{module@version: licence id} for exactly `modules`. `old` is the reviewed file as it stands at the base;
-    old_license(path) and
-    new_license(path) are the bytes of the module's vendored LICENSE at the base and in the new tree (None = no such
-    file)."""
+    """{module@version: licence id} for exactly `modules`. `old` is the reviewed file as it stands at the base.
+    old_license(path) and new_license(path) are the bytes of the module's vendored LICENSE at the base and in the
+    new tree (None = no such file)."""
     out = {}
     for path, version in modules:
         key = "%s@%s" % (path, version)
@@ -160,8 +155,8 @@ def _skip_reason(names, base_go_mod, head_go_mod):
 
 
 def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
-    """One branch; returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone', 'skipped:
-    <reason>' or 'failed: <reason>'."""
+    """One branch; returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
+    'skipped: <reason>' or 'failed: <reason>'."""
     if not signed_commit._BUMP_BRANCH.match(branch):
         return "skipped: not a dependency-bump branch"
     try:
@@ -192,7 +187,7 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
             shutil.rmtree(tmp, ignore_errors=True)
         if not changes:
             return "up to date"
-        if signed_commit.is_records_message(_git(ws, "log", "-1", "--format=%s", head).decode()):
+        if _git(ws, "log", "-1", "--format=%B", head).decode().strip() == subject(branch):
             return ("skipped: the records commit on the head does not match what is "
                 "regenerated (%d files differ)") % len(changes)
         if dry_run:
@@ -225,14 +220,13 @@ def go_env(scratch):
 
 def make_regenerate(tools, runner=subprocess.run, go=GO):
     """The function process_branch calls on a copy of the branch's tree: go mod vendor, the carried licences, the
-    records step, the provenance build and check.
-    `tools` is the checkout whose bin/ holds the two provenance scripts (main's copy, never the branch's). Exit 2 of a
-    script is its refusal: a Skip."""
-    def step(what, cmd, work, env, refusal=True):
+    records step, the provenance build and check. `tools` is the checkout whose bin/ holds the two provenance
+    scripts (main's copy, never the branch's). Exit 2 of a script is its refusal: a Skip."""
+    def step(what, cmd, work, env):
         r = runner(cmd, cwd=work, env=env, capture_output=True, stdin=subprocess.DEVNULL)
         if r.returncode != 0:
-            tail = (r.stderr or b"").decode("utf-8", "replace").strip()[-300:]
-            if r.returncode == 2 and refusal:
+            tail = " ".join((r.stderr or b"").decode("utf-8", "replace").split())[-300:]
+            if r.returncode == 2:
                 raise Skip("%s refused: %s" % (what, tail))
             raise RuntimeError("%s failed (exit %d): %s" % (what, r.returncode, tail))
 
@@ -244,7 +238,8 @@ def make_regenerate(tools, runner=subprocess.run, go=GO):
                 os.makedirs(os.path.join(scratch, d))
             r = runner([go, "mod", "vendor"], cwd=work, env=env, capture_output=True, stdin=subprocess.DEVNULL)
             if r.returncode != 0:
-                raise Skip("go mod vendor failed: %s" % (r.stderr or b"").decode("utf-8", "replace").strip()[-300:])
+                raise Skip("go mod vendor failed: %s" % " ".join((r.stderr or b"").decode("utf-8",
+                    "replace").split())[-300:])
             with open(os.path.join(work, "vendor", "modules.txt"), "rb") as fh:
                 modules = modules_of(fh.read())
             def new_license(path):
