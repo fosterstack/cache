@@ -16,6 +16,10 @@ The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 2
 - **Clearer start-up.** The cache opens its listener first, warns about unknown `FSCACHE_` variables, and reports how many uploads it found.
 - **Safer disk handling.** A failed recovery check, or an error while serving or shutting down, keeps the "unclean" marker so the next start checks again. Temporary files no longer share a name space with cache keys, and keys whose last part starts with `..` are stored in a fixed place.
 - **Disk-trouble metrics.** `store_writable`, `store_free_bytes` and `put_errors_total{reason}` are new, and the store gauges are present from start-up.
+- **No client addresses in failure logs.** A dropped client's address no longer appears in the cache's failure logs, including the lines Go's own server writes (for example a failed TLS handshake).
+- **Credential check.** The configured credentials are compared as fixed-size digests, so the comparison no longer reveals how long a configured credential is.
+- **Bounded metrics.** The HTTP method label on the request metrics takes only GET, HEAD, PUT and other, so a client sending unusual methods cannot create new metric series.
+- **Store consistency.** Two uploads of the same key at once no longer leave the size record different from the stored bytes, and the size cap and eviction follow the stored bytes. A directory or other non-regular file at a key's path reads as not found, the store's scan follows no link, and a damaged record is reported as corrupt instead of stopping the cache.
 - **One behaviour change you could notice.** Go 1.27<!-- pinned: upstream --> rejects a request with more than 500 header values with 431 Request Header Fields Too Large before it reaches the cache. Gradle and Maven build-cache clients send far fewer.
 - **Platforms.** Linux on amd64 and arm64 only, for `fscache` and `fscache-fips`. There are no macOS or Windows binaries.
 
@@ -26,6 +30,12 @@ Upgrade by pulling the new tag or `:latest`.
 Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The key that signs the software packages inside the images (the package-signing key) exists in one place only, the release job's environment, and only one step in it receives the key. That job is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. The signatures on the images, and on the checksum list that covers every release archive, are a different thing: they use short-lived certificates tied to the workflow that made them, so no long-lived key signs them. (The archives are not signed one by one; the signed checksum list covers each of them.)
 
 This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5 and Executive Order 14028 with its NIST guidance; we claim no certification. The page `docs/build-and-signing-isolation.md` names the specific controls and lists the known gaps.
+
+### Dependency updates
+
+- Go 1.27.3<!-- pinned: upstream --> (above).
+- `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0).
+- The CA certificate bundle in the images (above).
 
 ### What this release does not do
 
@@ -40,17 +50,20 @@ See `release-manifest.json` for the evidence bundle: image digests, archive chec
 ## For the owner (delete this section before anything is published)
 
 **Open before this can be posted**
-1. The affected functions, the defect line and the VEX verdict for the previous release are not in the repository (the id GO-2026-6809 appears only in the Go 1.27.3<!-- pinned: upstream --> commit message). Take them from pkg.go.dev/vuln/GO-2026-6809 and the VEX the release run generates (`docs/using-our-vex.md` describes it). The owner decided (Oct 22, relayed by the advisor) that the fix ships in this release with no separate patch release, and that the notes name CVE-2026-111943 and GO-2026-6809 as fixed here.
+1. The affected functions, the defect line and the VEX verdict for the previous release are not in the repository (the id GO-2026-6809 appears only in the Go 1.27.3<!-- pinned: upstream --> commit message). Take them from pkg.go.dev/vuln/GO-2026-6809 and the VEX the release run generates (`docs/using-our-vex.md` describes it). The owner decided (relayed by the advisor) that the fix ships in this release with no separate patch release, and that the notes name CVE-2026-111943 and GO-2026-6809 as fixed here.
 2. The "building and signing" section is true only after the release chain's landing pull request (cache#359) merges. Nothing in the pipeline has been proven end to end by a real release yet: the first release candidate is the proof. Do not describe the chain as having run a release before then. (When this draft was written, the hosted build jobs were red on every chain pull request; that is the pipeline lane's work.)
 3. The docs this section quotes: `docs/build-and-signing-isolation.md` is a draft pull request (cache#516) and is not merged.
 4. The version and tag names are the owner's; the heading above is a placeholder.
-5. The CA bundle line (the three eMudhra roots removed by `ca-certificates-bundle` 20260909-r3) is the owner's decision that all the eMudhra fixes ship in this release (Oct 22, relayed by the advisor). Check the bundle version in the image's package list on the day.
+5. The CA bundle line (the three eMudhra roots removed by `ca-certificates-bundle` 20260909-r3) is the owner's decision that all the eMudhra fixes ship in this release (relayed by the advisor). Check the bundle version in the image's package list on the day.
 
 **Where each claim comes from** (pipeline lane, read from the repository)
 - Optional HTTPS and TLS 1.2: REQ-TLS-001 (cache#296). Start-up order, unknown-variable warning, upload count: cache#257. Unclean marker kept: cache#295 and REQ-STORE-005-AC4/AC5. Temp-file and `..` key fixes: cache#292, cache#291. Disk metrics: cache#258; gauges seeded at start-up: cache#254.
-- 431 on more than 500 header values and no macOS or Windows binaries: `docs/next-release-notes.md` (owner decisions, advisor 0115 and Oct 9).
+- 431 on more than 500 header values and no macOS or Windows binaries: `docs/next-release-notes.md` (owner decisions, advisor 0115 and 0390).
 - Go fix: the Go 1.27.3<!-- pinned: upstream --> bump (cache#464).
 - Isolation: the chain's stage workflows (Build, Rebuild, Sign, Check, Release; the `compare`, `verify` and `release` jobs) as described on the isolation page.
+- Logs without client addresses: 741ba075 (failure logs, REQ-OBS-006) and fbd4f5e7 (Go's own server error lines). Credential digests: 428b5ea4 (REQ-AUTH-002). Method label: 13c4bbb0 (REQ-OBS-002). Store consistency: cache#553 (same-key uploads, REQ-STORE-001-AC2), df55ebd2 and 181b3c6e (non-regular file at a key's path, no link followed, no FIFO block), cbe2c1e5 (corrupt record, not a panic).
+- Dependencies: client_golang and its libraries: cache#394 (go.mod). Go 1.27.3<!-- pinned: upstream -->: cache#464.
+- Deliberately not listed as dependency updates: the `build/docker` base-image digests (the release images are built by the chain, not from a container build file) and every update to a build or CI tool (nothing in the shipped files).
 - The list of server changes is built from commits under `cmd/` and `internal/` since the previous release; it is not a vetted complete list. Re-run `git log` from the previous tag before publishing.
 
 **Deliberately not claimed** (do not add): macOS or Windows binaries; hardware-separated builds; automated signing-key rotation; FIPS validation of the pipeline's signing tools; the Docker Scout live check until the first release candidate has passed it; customer suppression files; any statement that the release chain has completed a real release.
