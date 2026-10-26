@@ -40,7 +40,8 @@ sys.path.insert(0, bindir)
 spec = importlib.util.spec_from_file_location("ap", bindir + "/auditor-panel.py"); ap = importlib.util.module_from_spec(spec); spec.loader.exec_module(ap)
 d, repo = tempfile.mkdtemp(), tempfile.mkdtemp()
 subprocess.run(["git", "-C", repo, "init", "-q"])
-json.dump({}, open(d + "/state.json", "w"))
+os.makedirs(repo + "/.github/policy"); json.dump({"entries": []}, open(repo + "/.github/policy/scanner-profiles.json", "w"))      # checked-in policy: an absent profiles file is a stop (cache#707)
+json.dump({"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}, open(d + "/state.json", "w"))      # the shape the judge writes; the delivery validates it before any call (cache#707)
 json.dump({"vex": [], "profiles": [], "issue": "tracking body", "owner": ["decide x"]}, open(d + "/day.json", "w"))
 calls = []
 labels = {"daily-rescan", "security", "owner-decision"} if mode == "exists" else set()     # the repository's labels, as a STATE

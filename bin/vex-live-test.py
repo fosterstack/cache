@@ -586,8 +586,10 @@ def _semver(tag):
 
 
 def release_under_test(releases):
+    # a release carries the rule-10 files only when it carries all three the guide downloads (OpenVEX, the Inspector filters and the CSAF file)
     ok = [r["tagName"] for r in releases if not r.get("isDraft") and _semver(r["tagName"]) and _semver(r["tagName"])[3] == 1 << 30
-          and "fosterstack-cache-%s.csaf.json" % r["tagName"] in r.get("assets", [])]
+          and all(a in r.get("assets", []) for a in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.inspector-filters.json" % r["tagName"],
+                                                    "fosterstack-cache-%s.csaf.json" % r["tagName"]))]
     return max(ok, key=_semver) if ok else None
 
 
@@ -600,7 +602,7 @@ def scout_vex(vex, images, fixture_digest, cve, repository):
 
 def scout_author_pattern(vex):
     """The anchored, escaped author of the file, as the --vex-author pattern: Scout applies only statements whose author matches (its default is Docker's own).
-    The same computation as bin/scout-vex-scan.sh."""
+    This is the pattern the rescan's Scout commands pass as --vex-author."""
     author = vex.get("author") if isinstance(vex, dict) else None
     if not isinstance(author, str) or not author.strip():
         raise ValueError("the OpenVEX file has no author")

@@ -470,7 +470,36 @@ class Prefixes(unittest.TestCase):
                 S.commit_via_api(REPO, branch, BASE, "m", {"x": b"1"}, run=rec, prefixes=prefixes)
             self.assertEqual(rec.calls, [], (branch, prefixes))
 
-    def test_the_prefixes_themselves_are_held_to_the_two_lanes(self):
+    REC = "audit/" + BASE
+
+    def test_the_audit_record_lane_is_committed_only_when_it_is_named(self):
+        """REQ-REL-012: the passed-audit record branch audit/<head sha> is a third lane; it is never the default and never reached by another lane's prefix."""
+        rec, oid = self.make(self.REC, prefixes=("audit/",))
+        self.assertEqual(oid, OID)
+        self.assertEqual(len([c for c in rec.calls if "ref=refs/heads/%s" % self.REC in c]), 1)
+        for prefixes in (None, ("auditor/",), ("patch-notes/",), ("auditor/", "patch-notes/")):
+            rec = self.Rec()
+            kw = {} if prefixes is None else {"prefixes": prefixes}
+            with self.assertRaises(S.CommitError, msg=prefixes):
+                S.commit_via_api(REPO, self.REC, BASE, "m", {"x": b"1"}, run=rec, **kw)
+            self.assertEqual(rec.calls, [], prefixes)
+
+    def test_the_audit_record_is_for_its_own_base_only(self):
+        """audit/<sha> is written only on top of <sha>: the record names the head it was made for by construction."""
+        rec = self.Rec()
+        with self.assertRaises(S.CommitError):
+            S.commit_via_api(REPO, self.REC, "c" * 40, "m", {"x": b"1"}, run=rec, prefixes=("audit/",))
+        self.assertEqual(rec.calls, [])
+
+    def test_the_audit_lane_does_not_reach_the_other_lanes_or_odd_names(self):
+        for branch in ("auditor/x", self.PN, "audit/", "audit", "audit/../main", "audit/x.lock", "refs/heads/" + self.REC, "auditx/y", "audit /x", "audit//x",
+                       "audit/" + "a" * 39, "audit/" + "a" * 41, "audit/" + "A" * 40, "audit/" + "a" * 40 + "/x"):
+            rec = self.Rec()
+            with self.assertRaises(S.CommitError, msg=branch):
+                S.commit_via_api(REPO, branch, BASE, "m", {"x": b"1"}, run=rec, prefixes=("audit/",))
+            self.assertEqual(rec.calls, [], branch)
+
+    def test_the_prefixes_themselves_are_held_to_the_three_lanes(self):
         for prefixes in ((), [], None, "auditor/", ("main/",), ("",), ("auditor/", "x/"), ("patch-notes",)):
             rec = self.Rec()
             with self.assertRaises(S.CommitError, msg=repr(prefixes)):
