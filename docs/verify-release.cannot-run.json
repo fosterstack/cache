@@ -1,0 +1,38 @@
+[
+  {
+    "command": "cosign verify <IMAGE_REF> --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is not run before release (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify <IMAGE_REF_FIPS> --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is not run before release (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  },
+  {
+    "command": "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  },
+  {
+    "command": "jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify-blob --bundle production.sbom.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com production.sbom.json",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify-blob --bundle fips.sbom.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.sbom.json",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify-blob --bundle production.full.lock.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com production.full.lock.json",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify-blob --bundle fips.full.lock.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json",
+    "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
+  }
+]

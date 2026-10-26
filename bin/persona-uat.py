@@ -44,6 +44,7 @@ import uuid
 import shlex as _shlex
 
 warnings.simplefilter("ignore")        # nothing but the fixed lines is ever printed: no interpreter warning either
+RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator")   # the release candidate runs these three; compliance-reviewer and on-call-engineer run weekly only
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
@@ -1656,12 +1657,15 @@ def main():
             return 1
 
 
+ACTIVE = list(PERSONAS)   # the personas this run covers: all five, or RC_PERSONAS in rc mode
+
+
 def last_resort():
     """every persona without a result gets an encrypted blocking report saying the driver failed; then the usual pass/fail lines"""
     results, out_dir, recipient = STATE.get("results"), STATE.get("out_dir"), STATE.get("recipient")
     if results is None or not out_dir or not recipient:
         return 1
-    for persona in PERSONAS:
+    for persona in ACTIVE:
         if persona in results:
             continue
         text = report_text(persona, "blocking", [{"kind": "blocking", "text": "the driver failed before this persona could be recorded (driver error)"}], None, False,
@@ -1673,6 +1677,7 @@ def last_resort():
 
 def _main():
     a = parse_args()
+    ACTIVE[:] = RC_PERSONAS if a.mode == "rc" else PERSONAS
     try:
         models, budget, tools = configure(a)
     except Refuse as e:
@@ -1807,7 +1812,7 @@ def _main():
         sys.stderr.write("persona-uat: %s: %s\n" % (persona, "fail" if verdict == "blocking" else "pass"))
 
     def all_did_not_run(reason):
-        for p in PERSONAS:
+        for p in ACTIVE:
             if p not in results:
                 record(p, None, "did not run: %s\n" % reason, reason)
 
@@ -1821,14 +1826,14 @@ def _main():
             all_did_not_run("the public README.md is missing")
             finish(results, out_dir)
             return 3
-        for persona in PERSONAS:
+        for persona in ACTIVE:
             if persona in results:
                 continue
             if teardown_failed:         # a survivor may still be sending traffic: no window after it is attributable, and nothing new is started
                 record(persona, None, "did not run: %s\n" % TD, "%s (an earlier teardown failed)" % TD)
                 continue
             # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
-            left = len([q for q in PERSONAS if q not in results])
+            left = len([q for q in ACTIVE if q not in results])
             persona_timeout = persona_time_limit(persona, a.agent_timeout, a.evaluator_seconds, a.job_budget, time.time() - job_t0, left)
             if persona_timeout < min(a.min_persona_seconds, a.agent_timeout):      # an explicitly short --agent-timeout is the caller's choice, not a lack of budget
                 why_ = "cannot prove: the job's time budget left no time for this persona (%d seconds each, %d needed)" % (max(persona_timeout, 0), a.min_persona_seconds)
@@ -2036,8 +2041,8 @@ def _main():
 
 
 def finish(results, out_dir=None):
-    blocking = [p for p in PERSONAS if results[p]["verdict"] == "blocking"]
-    enc_failed = [p for p in PERSONAS if results[p].get("encfail")]
+    blocking = [p for p in ACTIVE if results[p]["verdict"] == "blocking"]
+    enc_failed = [p for p in ACTIVE if results[p].get("encfail")]
     if out_dir is not None:
         publish_artifacts(out_dir, not enc_failed)
     line = "persona-uat: overall: %s\n" % ("fail" if blocking else "pass")
@@ -2045,7 +2050,7 @@ def finish(results, out_dir=None):
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
         with open(summ, "a") as fh:
-            for p in PERSONAS:
+            for p in ACTIVE:
                 fh.write("persona-uat: %s: %s\n" % (p, "fail" if results[p]["verdict"] == "blocking" else "pass"))
             fh.write(line)
     return 1 if blocking else 0

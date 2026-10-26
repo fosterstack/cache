@@ -313,7 +313,7 @@ hit("3.14.0", [record("GO-X-25", [(H, INTRO0)])], none_ignored=True, mk=lambda v
 PY
 py "other kinds keep the OLD verdict and log nothing: a gotool item (module resolved to /v3: clean; resolved to the bare path: a hit)" <<'PY'
 for mod, want in ((BARE + "/v3", False), (BARE, True)):
-    pa.age._go_module = lambda n, v, m=mod: (m, None)
+    pa.age._go_module = lambda n, v, m=mod, **k: (m, None)
     net = mknet([G4309], GG, True)
     finds, _ = run(pa.inv.Item("gotool", mod + "/cmd/cosign", "v3.1.3", ""), net)
     assert bool(finds) == want and ignored(net) == [], (mod, finds, ignored(net))
@@ -776,7 +776,7 @@ def slow(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd, kw.get("timeout") or 0)
 pa.subprocess.run = slow
 net = pa.LiveNet(["gh"], ".")
-try: net._gh_json("advisories/x", strict=True); raise AssertionError("no Fail")
+try: net._gh_json("advisories/x", need=(), strict=True); raise AssertionError("no Fail")
 except pa.Fail: pass
 try: pa.Gh("gh").run("api", "x"); raise AssertionError("no Fail")
 except pa.Fail: pass
@@ -897,8 +897,8 @@ os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 assert getattr(age, "GH_TIMEOUT", 0) > 0
 age.GH_TIMEOUT = 1
 t0 = time.time()
-for fn in (age._gh_pages, age._gh_api, age._gh_bytes):
-    try: fn("repos/x/y"); raise AssertionError(fn.__name__ + ": no CouldNotLook")
+for fn in (lambda p: age._gh_pages(p, ()), lambda p: age._gh_api(p, ()), age._gh_bytes):
+    try: fn("repos/x/y"); raise AssertionError("no CouldNotLook")
     except age.CouldNotLook: pass
 assert time.time() - t0 < 20, "the helpers waited for the hanging gh"
 os.remove(d + "/gh"); os.rmdir(d)
@@ -940,7 +940,9 @@ for it in items.values():
             bare = re.sub(r"/v[0-9]+$", "", tp)
             if it.name == bare or it.name.startswith(bare + "/"):
                 pinned.setdefault(name, set()).add((it.version, "gotool " + it.key))
-need = {"trivy", "grype", "syft", "osv", "gitsign", "scout", "goreleaser", "golangci-lint"}
+# goreleaser was pinned by the old stage-build.yml; the v0.3.0 Build (PR 2) builds with cache's scripts and no longer pins it, so it is no longer a tool this
+# tree pins (its GO_TOOLS row stays: a future pin is audited with the right path)
+need = {"trivy", "grype", "syft", "osv", "gitsign", "scout", "golangci-lint"}
 assert need <= set(pinned), ("the check would be vacuous; found only", sorted(pinned))
 wrong = []
 for name, vs in sorted(pinned.items()):

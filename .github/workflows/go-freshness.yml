@@ -220,8 +220,8 @@ jobs:
           ref: ${{ steps.resolve.outputs.tag }}
           persist-credentials: false
 
-      - name: install the pinned kind binary
-        run: ./bin/install-scanner.sh kind
+      - name: kind from the runner image
+        run: kind version || { echo "::error::PIPELINE, no kind"; exit 1; }
 
       - name: pin pip (hash-checked)
         run: |
@@ -323,11 +323,6 @@ jobs:
       - name: check the live Wolfi key against the pinned one
         run: ./bin/refresh-inputs.sh key-check --repo-dir "$GITHUB_WORKSPACE"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-
       - name: install apko and crane at their fixed locations
         run: |
           set -euo pipefail
@@ -336,6 +331,13 @@ jobs:
           # crane is the installer's checksum-pinned release binary: nothing is compiled in this job, which holds the auditor App's key
           # (REQ-REL-011-AC1)
           ./bin/install-scanner.sh crane
+
+      # The certified-module check asks whether OUR toolchain ships a newer certified module, so it reads the checksum-pinned toolchain the recipes build
+      # with (install-scanner.sh go: the version go.mod names, only when it is the pinned one), not whatever the newest 1.27.x on the runner is.
+      - name: install the pinned Go toolchain
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh go
 
       - name: log in to our registry with the job's own token
         env:
@@ -390,7 +392,7 @@ jobs:
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          ./bin/refresh-inputs.sh fips-module --go-root "$(go env GOROOT)" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
+          ./bin/refresh-inputs.sh fips-module --go-root /usr/local/bin/fscache-go --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
 
       # Stored first (rule 6, last step), so the pull request that moves the build to the new versions can carry the new pointer (rule 7).
       # Only when something changed; an archive that no pull request points to is harmless.

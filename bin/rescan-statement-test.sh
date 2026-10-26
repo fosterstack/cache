@@ -3,7 +3,7 @@
 # Repeatable regressions for the daily image rescan's merge, classification
 # and platform-enumeration logic (bin/rescan-statement.py) — audit findings
 # B04d/B04e/B04f. Exercises the ACTUAL logic the workflow calls against real
-# CLI-shaped fixtures (Snyk container test, Trivy image, Grype, and
+# CLI-shaped fixtures (Grype and
 # imagetools index/manifest JSON). Pure python3 + jq: no network, no gh, no
 # scanners, no PyYAML.
 #
@@ -31,20 +31,19 @@ STMT_EXTRA=(--vex "$VEX0")
 
 # ---- statement helpers ---------------------------------------------------
 # Write one child report file and append its manifest line.
-child() { # manifest-file  childno  platform  exit  report-json
-  local mf="$1" no="$2" plat="$3" code="$4" body="$5"
+child() { # manifest-file  childno  platform  exit  report-json  [packages: a number, or "none" to leave the key out; default 5]
+  local mf="$1" no="$2" plat="$3" code="$4" body="$5" pk="${6:-5}"
   local rp="$D/report-${no}.json"
   printf '%s' "$body" > "$rp"
-  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" \
-    '{platform:$p, ref:$r, exit:$e, report:$f}' >> "$mf"
+  if [ "$pk" = none ]; then
+    jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" \
+      '{platform:$p, ref:$r, exit:$e, report:$f}' >> "$mf"
+  else
+    jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" --argjson k "$pk" \
+      '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> "$mf"
+  fi
 }
 # A child whose scanner produced NO file at all (operational crash).
-child_missing() { # manifest-file  childno  platform  exit
-  local mf="$1" plat="$3" code="$4"
-  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg rp "$(dirname "$mf")/does-not-exist-xyz.json" \
-    '{platform:$p, ref:$r, exit:$e, report:$rp}' >> "$mf"
-}
-
 assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
   local desc="$1" scanner="$2" mf="$3" wv="$4" whf="$5" wc="$6" out v hf c
   out=$(python3 "$SCRIPT" statement --scanner "$scanner" --children "$mf" "${STMT_EXTRA[@]}" \
@@ -63,99 +62,13 @@ assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
 }
 
 # ---- CLI-shaped report bodies -------------------------------------------
-TRIVY_CLEAN='{"SchemaVersion":2,"ArtifactName":"x","Results":[]}'
-TRIVY_FIND='{"SchemaVersion":2,"Results":[{"Target":"x (debian 12)","Class":"os-pkgs","Vulnerabilities":[{"VulnerabilityID":"CVE-2024-0001","PkgName":"openssl","Severity":"HIGH","FixedVersion":"3.0.14"}]}]}'
-TRIVY_ERROBJ='{"error":"failed to analyze layer"}'
 GRYPE_CLEAN='{"matches":[],"descriptor":{"name":"grype","version":"0.118.0"}}'
 GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2024-0002","severity":"High","fix":{"versions":["1.2.3"]}},"artifact":{"name":"libfoo"}}],"descriptor":{"name":"grype"}}'
 GRYPE_ERROBJ='{"errors":["db load failed"]}'
-# Snyk: OS findings at top-level .vulnerabilities; application-dependency
-# findings under .applications[].vulnerabilities, each app carrying project
-# context (targetFile / packageManager) — the official v1.1307.0 shape.
-SNYK_CLEAN='{"vulnerabilities":[],"applications":[]}'
-SNYK_OS='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE":["CVE-2024-0003"]},"severity":"high","packageName":"openssl","nearestFixedInVersion":"3.0.14"}],"applications":[]}'
-SNYK_APP='{"vulnerabilities":[],"applications":[{"packageManager":"npm","targetFile":"/srv/app/package.json","vulnerabilities":[{"id":"npm:connect:20120107","identifiers":{"ALTERNATIVE":["SNYK-JS-CONNECT-10382"],"CVE":[],"CWE":["CWE-400"]},"severity":"medium","packageName":"connect"}]}]}'
-SNYK_MIXED='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE":["CVE-2024-0003"]},"severity":"high","packageName":"openssl"}],"applications":[{"packageManager":"npm","targetFile":"/srv/app/package.json","vulnerabilities":[{"id":"npm:connect:20120107","identifiers":{"CVE":[]},"severity":"medium","packageName":"connect"}]}]}'
-SNYK_ERROBJ='{"ok":false,"error":"authentication failed","path":"x"}'
 # OSV-Scanner JSON: results[] -> source.path, packages[] -> {package, vulnerabilities[]}.
 OSV_CLEAN='{"results":[]}'
 OSV_FIND='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0","ecosystem":"Go"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"],"database_specific":{"severity":"HIGH"}}]}]}]}'
 OSV_ERROBJ='{"error":"could not resolve deps.dev"}'
-
-# ---- Snyk cases ----------------------------------------------------------
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 0 "$SNYK_CLEAN"
-child "$mf" 2 linux/arm64 0 "$SNYK_CLEAN"
-assert_stmt "snyk clean (both arches)" snyk "$mf" clean false 0
-
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 1 "$SNYK_OS"
-child "$mf" 2 linux/arm64 0 "$SNYK_CLEAN"
-assert_stmt "snyk OS-only finding" snyk "$mf" findings true 1
-
-# B04d: application-only finding on arm64 (amd64 clean). Snyk exits 1.
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 0 "$SNYK_CLEAN"
-child "$mf" 2 linux/arm64 1 "$SNYK_APP"
-assert_stmt "snyk application-only finding (arm64)" snyk "$mf" findings true 1
-# and the normalized finding must retain project + platform context.
-python3 "$SCRIPT" statement --scanner snyk --children "$mf" "${STMT_EXTRA[@]}" \
-  --raw-out "$D/raw.json" --out "$D/stmt.json" --digest "$AMD" >/dev/null
-if [ "$(jq -r '.findings[0].platform' "$D/stmt.json")" = "linux/arm64" ] \
-   && [ "$(jq -r '.findings[0].target' "$D/stmt.json")" = "/srv/app/package.json" ] \
-   && [ "$(jq -r '.findings[0].package' "$D/stmt.json")" = "connect" ] \
-   && [ "$(jq -r '.findings[0].package_manager' "$D/stmt.json")" = "npm" ]; then
-  ok; else bad "snyk app finding lost platform/project context"; fi
-# and the retained raw report must carry the application section (B04d).
-if [ "$(jq -r '.applications[0].vulnerabilities[0].packageName' "$D/raw.json")" = "connect" ]; then
-  ok; else bad "snyk merged raw report dropped .applications[]"; fi
-
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 1 "$SNYK_MIXED"
-child "$mf" 2 linux/arm64 0 "$SNYK_CLEAN"
-assert_stmt "snyk mixed OS+application findings" snyk "$mf" findings true 2
-
-# ---- B04e: valid-JSON operational exit is not erased by findings --------
-# child1 finding (exit 1), child2 operational failure (exit 2) w/ valid JSON.
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 1 "$SNYK_OS"
-child "$mf" 2 linux/arm64 2 "$SNYK_CLEAN"
-assert_stmt "snyk finding + valid-JSON exit 2 -> notify AND error" snyk "$mf" error true 1
-
-# Preserve the now-correct case: one child finds, another emits NO report.
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 1 "$SNYK_OS"
-child_missing "$mf" 2 linux/arm64 1
-assert_stmt "snyk finding + missing report -> notify AND error" snyk "$mf" error true 1
-
-# A snyk operational error object (exit 2) with no findings anywhere.
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 0 "$SNYK_CLEAN"
-child "$mf" 2 linux/arm64 2 "$SNYK_ERROBJ"
-assert_stmt "snyk operational failure only" snyk "$mf" error false 0
-
-# ---- Trivy cases ---------------------------------------------------------
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 0 "$TRIVY_CLEAN"
-child "$mf" 2 linux/arm64 0 "$TRIVY_CLEAN"
-assert_stmt "trivy clean" trivy "$mf" clean false 0
-
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 0 "$TRIVY_CLEAN"
-child "$mf" 2 linux/arm64 1 "$TRIVY_FIND"
-assert_stmt "trivy finding (arm64, exit 1)" trivy "$mf" findings true 1
-
-# exit 2 = operational error (not the configured finding code).
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 0 "$TRIVY_CLEAN"
-child "$mf" 2 linux/arm64 2 "$TRIVY_CLEAN"
-assert_stmt "trivy operational exit 2" trivy "$mf" error false 0
-
-# malformed report at the finding exit code -> incomplete, not clean.
-mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 1 "$TRIVY_ERROBJ"
-child "$mf" 2 linux/arm64 0 "$TRIVY_CLEAN"
-assert_stmt "trivy malformed report (exit 1)" trivy "$mf" error false 0
 
 # ---- Grype cases ---------------------------------------------------------
 mf=$D/m; : >"$mf"
@@ -351,10 +264,7 @@ OSV_TWO='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{
 vrun osv-scanner 1 "$OSV_TWO" "$D/v/by-cve.json"; expect "osv: with two findings only the covered one is removed (verdict findings, one counts, one suppressed)" findings true 1 1
 if [ "$(jq -r '.findings[0].id' "$D/stmtv.json")" = "CVE-2024-8888" ]; then ok; else bad "osv: the remaining finding is not the uncovered one"; fi
 # the uncovered finding keeps its severity (unknown stays counted: any severity blocks)
-# Snyk cannot read the VEX either: filtered the same way (by its CVE identifier)
-vexdoc "$D/v/snyk.json" "[$(st CVE-2024-0003 '[]' not_affected "[$PROD_REPO]")]"
-vrun snyk 1 "$SNYK_OS" "$D/v/snyk.json"; expect "snyk: a not_affected statement for its CVE removes the finding too" clean false 0 1
-# grype and trivy read the VEX themselves: their findings are NOT filtered a second time
+# grype reads the VEX itself: its findings are NOT filtered a second time
 vexdoc "$D/v/grype.json" "[$(st CVE-2024-0002 '[]' not_affected "[$PROD_REPO]")]"
 vrun grype 2 "$GRYPE_FIND" "$D/v/grype.json"; expect "grype: its own VEX handling stands; the pipeline filter does not apply (a finding it still reports counts)" findings true 1 0
 vrun grype 2 "$GRYPE_FIND" ""; expect "grype: no --vex is fine (it reads the VEX itself)" findings true 1 0
@@ -385,8 +295,19 @@ done
 jq '.scanners += ["newscan"]' .github/policy/scanners.json >"$D/scanners-plus.json"
 miss=0; for s in $(jq -r '.scanners[]' "$D/scanners-plus.json"); do python3 "$SCRIPT" classify --scanner "$s" >/dev/null 2>&1 || miss=$((miss+1)); done
 if [ "$miss" = 1 ]; then ok; else bad "a scanner added to scanners.json without a VEX classification must be caught (missing=$miss, want 1)"; fi
-for s in grype trivy; do [ "$(python3 "$SCRIPT" classify --scanner $s)" = native ] && ok || bad "$s should classify as native"; done
-for s in osv-scanner snyk; do [ "$(python3 "$SCRIPT" classify --scanner $s)" = filtered ] && ok || bad "$s should classify as filtered"; done
+[ "$(python3 "$SCRIPT" classify --scanner grype)" = native ] && ok || bad "grype should classify as native"
+[ "$(python3 "$SCRIPT" classify --scanner osv-scanner)" = filtered ] \
+  && ok || bad "osv-scanner should classify as filtered"
+# rc-5a K: Trivy and Snyk are no longer panel scanners: nothing classifies them, and a statement for them is refused
+# (never a silent pass)
+for s in trivy snyk; do
+  python3 "$SCRIPT" classify --scanner $s >/dev/null 2>&1 && bad "$s must not classify (retired from the panel)" || ok
+done
+for s in trivy snyk; do
+  mf=$D/m; : >"$mf"; child "$mf" 1 linux/amd64 0 "{}"
+  python3 "$SCRIPT" statement --scanner $s --children "$mf" "${STMT_EXTRA[@]}" >/dev/null 2>&1 \
+    && bad "$s statement must be refused (unknown scanner)" || ok
+done
 # the same statement with the workflow's real VEX file still parses (the document the pipeline passes)
 vrun osv-scanner 1 "$OSV_FIND" ".vex/fosterstack-cache.openvex.json"
 if [ "$V" != SCRIPT-FAILED ] && [ "$V" != error ]; then ok; else bad "the published VEX document was rejected by the filter ($V; $(cat "$D/vrun.err"))"; fi
@@ -544,13 +465,10 @@ expect "osv: a product that only resembles ours (oci-version) is not ours: ignor
 printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"x","version":1,"statements":[%s]}' '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/evil/cache"}]}' >"$D/v/ign-repo-evil.json"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/ign-repo-evil.json"
 expect "osv: a product that only resembles ours (repo-evil) is not ours: ignored, it suppresses nothing" findings true 1 0
 badvex variant-unknown '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=nope"}]}'
+badvex variant-debug '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=debug"}]}'
 # a product that is simply not ours is fine (ignored): it neither suppresses nor breaks the document
 vexdoc "$D/v/foreign.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:npm/left-pad@1.0.0"}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/foreign.json"
 expect "osv: a statement for a product that is not ours is ignored (finding kept, no error)" findings true 1 0
-# Snyk: the advisory's alternative identifier is one of the finding's ids
-SNYK_ALT='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE":[],"ALTERNATIVE":["SNYK-ALT-77"]},"severity":"high","packageName":"openssl","version":"3.0.1"}],"applications":[]}'
-vexdoc "$D/v/snyk-alt.json" "[$(st SNYK-ALT-77 '[]' not_affected "[$PROD_REPO]")]"
-vrun snyk 1 "$SNYK_ALT" "$D/v/snyk-alt.json"; expect "snyk: a statement naming the advisory's ALTERNATIVE identifier removes the finding" clean false 0 1
 # find-issue: a valid first page followed by garbage is an error; an object (not an array) reply is an error
 cat >"$D/bin/gh-bad" <<'GH'
 #!/bin/bash
@@ -574,6 +492,14 @@ vrun osv-scanner 1 "$OSV_NOPKG" "$D/v/sub-busybox.json"; expect "osv: a finding 
 vrun osv-scanner 1 "$OSV_NOPKG" "$D/v/by-cve.json"; expect "osv: ...but a product-wide statement still covers it" clean false 0 1
 # conflicting @id and identifiers.purl in one product; a Go product with qualifiers
 badvex id-purl-conflict '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","identifiers":{"purl":"pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"}}]}'
+for suf in '/extra' '#sub' '&arch=arm64' '&x'; do
+  badvex "go-suffix-$(printf '%s' "$suf" | tr -c 'A-Za-z0-9' _)" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",\"products\":[{\"@id\":\"pkg:golang/github.com/fosterstack/cache$suf\"}]}"
+done
+badvex go-suffix-newline '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:golang/github.com/fosterstack/cache\n"}]}'
+# a product with a NULL @id and an identifiers.purl is that purl (as the gate and the panel read it); an EMPTY @id is not replaced (it differs from the purl: refused)
+vexdoc "$D/v/nullid.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":null,"identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/nullid.json"
+expect "a null @id beside an identifiers.purl is that purl (suppressed)" clean false 0 1
+badvex emptyid-purl '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"","identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]}'
 badvex go-qualifier '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:golang/github.com/fosterstack/cache?x=y"}]}'
 # a malformed scanner entry (a list-valued id, a non-string package name) is an operational error; the VALID findings around it are still counted and the outputs are written
 OSV_BADID='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0"},"vulnerabilities":[{"id":["GO-1"],"aliases":[]},{"id":"GO-2024-0002","aliases":["CVE-2024-8888"]}]}]}]}'
@@ -593,43 +519,22 @@ n=$(jq '.statements | length' .vex/fosterstack-cache.openvex.json)
 for i in $(seq 0 $((n-1))); do
   name=$(jq -r ".statements[$i].vulnerability.name" .vex/fosterstack-cache.openvex.json)
   sub=$(jq -r "[.statements[$i].products[] | .subcomponents // [] | .[] | .\"@id\"][0] // empty" .vex/fosterstack-cache.openvex.json)
-  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); pver=${sub##*@}; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
+  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); case $sub in *@*) pver=${sub##*@};; *) pver=v4.5.0;; esac; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
   rep=$(jq -nc --arg n "$name" --arg p "$pname" --arg v "$pver" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}')
   vrun osv-scanner 1 "$rep" ".vex/fosterstack-cache.openvex.json" production linux/amd64 "$REPO@$AMD"
   expect "the published VEX statement $i ($name, $pname@$pver) removes its finding from the cache image" clean false 0 1
 done
 
 # ---- round 3 of the review of #268 --------------------------------------------------------------------------------------------------------------------------------
-# Snyk: the WHOLE report shape is validated, the `applications` container included. A container of an unexpected type is an operational error (verdict error), never
-# skipped; the findings that ARE readable still count and the outputs are written. The top-level CVE-2025-0001 is covered by the VEX, CVE-2025-0002 is not.
-vexdoc "$D/v/snyk-r3.json" "[$(st CVE-2025-0001 '[]' not_affected "[$PROD_REPO]")]"
-SNYK_TOP='{"id":"SNYK-DEBIAN12-X-1","identifiers":{"CVE":["CVE-2025-0001"]},"severity":"low","packageName":"zlib","version":"1.0"}'
-SNYK_UNSUP='{"id":"SNYK-JS-Y-2","identifiers":{"CVE":["CVE-2025-0002"]},"severity":"low","packageName":"left-pad","version":"1.0"}'
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":{\"app\":{\"vulnerabilities\":[$SNYK_UNSUP]}}}" "$D/v/snyk-r3.json"
-expect "snyk: an applications MAPPING (not a list) is an operational error, never skipped (its finding would be lost)" error false 0 1
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[5,\"x\"]}" "$D/v/snyk-r3.json"
-expect "snyk: applications entries that are not objects are malformed (error)" error false 0 1
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"/srv/app/package.json\"}]}" "$D/v/snyk-r3.json"
-expect "snyk: a project without a vulnerabilities list is malformed (error)" error false 0 1
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"/srv/app/package.json\",\"vulnerabilities\":{\"a\":$SNYK_UNSUP}}]}" "$D/v/snyk-r3.json"
-expect "snyk: a project whose vulnerabilities is a mapping is malformed (error)" error false 0 1
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":\"x\"}" "$D/v/snyk-r3.json"
-expect "snyk: an applications string is malformed (error)" error false 0 1
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"a\",\"vulnerabilities\":[$SNYK_UNSUP]},7]}" "$D/v/snyk-r3.json"
-expect "snyk: one malformed project next to a valid one: error, and the valid project's finding still counts" error true 1 1
-vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":{\"CVE\":[\"CVE-2025-0003\",5]},\"packageName\":\"zlib\"},$SNYK_UNSUP]}" "$D/v/snyk-r3.json"
-expect "snyk: a non-string CVE identifier is a malformed entry (error), the valid finding still counts" error true 1 0
-vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":{\"CVE\":[],\"ALTERNATIVE\":[\"SNYK-ALT-1\",{}]},\"packageName\":\"zlib\"},$SNYK_UNSUP]}" "$D/v/snyk-r3.json"
-expect "snyk: a non-string ALTERNATIVE identifier is a malformed entry (error)" error true 1 0
-vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":{\"CVE\":\"CVE-2025-0001\"},\"packageName\":\"zlib\",\"version\":\"1.0\"}]}" "$D/v/snyk-r3.json"
-expect "snyk: a CVE identifier list that is a string is malformed (never read character by character)" error false 0 0
-vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":[\"CVE-2025-0001\"],\"packageName\":\"zlib\"}]}" "$D/v/snyk-r3.json"
-expect "snyk: identifiers that are not an object are malformed (error)" error false 0 0
-vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"a\",\"vulnerabilities\":[$SNYK_UNSUP]}]}" "$D/v/snyk-r3.json"
-expect "snyk: a well-formed applications list still works (one suppressed, the application finding counts)" findings true 1 1
 # namespace-preserving package match against the PUBLISHED VEX (pkg:generic/busybox@1.37.0 covers busybox 1.37.0 only, not another namespace's busybox)
 osvrep() { jq -nc --arg n "$1" --arg p "$2" --arg v "$3" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}'; }
-PUBVEX=.vex/fosterstack-cache.openvex.json
+PUBVEX=test-evidence/vex-scope/busybox.openvex.json   # the retired busybox statements (rc-5a G): the namespace-preserving match still needs a document that holds them
+# the COMMITTED document says no more than it names (rc-5a G review round 1): the jwt/v4 module at any version, not CVE-2024-51744 anywhere, not another module, not a bare "v4"
+LIVE=.vex/fosterstack-cache.openvex.json
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.0.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: jwt/v4 at any version is suppressed" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v5 v5.2.1)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: jwt/v5 is another module, its finding counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 v4 v4.5.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: a bare package named v4 is not the jwt/v4 module, its finding counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 busybox 1.37.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: busybox is not the jwt/v4 module, its finding counts" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; expect "published VEX: evil/busybox 1.37.0 is NOT busybox (namespace kept, finding counts)" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX"; expect "published VEX: busybox 1.37.0 is suppressed in the cache image" clean false 0 1
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX" debug linux/arm64 "$CAND_REPO@$AMD"; expect "published VEX: busybox 1.37.0 is suppressed in the candidates image" clean false 0 1
@@ -666,12 +571,9 @@ open(sys.argv[2], "w").write(src.replace(sys.argv[3], sys.argv[4]))
 P
   echo "$md/rescan-statement.py"
 }
-M=$(mutant pkg 'return name == sub_name and version == sub_version' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
+M=$(mutant pkg 'return name == sub_name and (not sub_version or version == sub_version)' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
 SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; SCRIPT=$SCRIPT_SAVE
 [ "$V" = clean ] && ok || bad "mutant (last-segment package match) was not caught by the evil/busybox case (got $V)"
-M=$(mutant apps 'apps = _bad(bad) or []' 'apps = []')
-SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":{\"app\":{\"vulnerabilities\":[$SNYK_UNSUP]}}}" "$D/v/snyk-r3.json"; SCRIPT=$SCRIPT_SAVE
-[ "$V" = clean ] && ok || bad "mutant (applications container check removed) was not caught by the applications-mapping case (got $V)"
 M=$(mutant purl '_PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")' '_PURL_TYPE = re.compile(r".*")')
 SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vexdoc "$D/v/m-type.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:/busybox@1.37.0"}]}]')]"; vrun osv-scanner 1 "$(osvrep CVE-2024-9999 busybox 1.37.0)" "$D/v/m-type.json"; SCRIPT=$SCRIPT_SAVE
 [ "$V" = clean ] && ok || bad "mutant (purl type check removed) was not caught by the pkg:/busybox case (got $V)"
@@ -693,6 +595,64 @@ for cve in CVE-2025-60876 CVE-2025-46394 CVE-2024-58251; do
   vrun osv-scanner 1 "$(osvrep $cve busybox 1.37.0)" "$PUBVEX"; expect "published VEX ($cve, busybox 1.37.0) still suppresses after the qualifier rule" clean false 0 1
 done
 vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)" "$PUBVEX"; expect "published VEX (CVE-2024-51744, Go product) still suppresses after the qualifier rule" clean false 0 1
+
+# ---- rc-5a D (astra B6, Fable R3): a child that COMPLETED but inventoried no package is not clean ----------------------------------------------------
+# The published-release rescan used to take `matches: []` as clean whatever the scanner had looked at. Register row 53: zero packages = did not run.
+# Each child's package count is recorded by the workflow (children-scanned.jsonl `packages`); a completed child without one, or with zero, is an error.
+OSV_CLEAN='{"results":[]}'
+mf=$D/pk1; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: every child inventoried packages and found nothing is clean" grype "$mf" clean false 0
+mf=$D/pk2; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 0; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: one child with zero packages makes the whole rescan an error, not clean" grype "$mf" error false 0
+mf=$D/pk3; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" none; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: a completed child with no package count is an error" grype "$mf" error false 0
+mf=$D/pk4; : >"$mf"; child "$mf" 1 linux/amd64 0 "$OSV_CLEAN" 0
+assert_stmt "osv-scanner: an empty results list with zero packages is an error, not clean" osv-scanner "$mf" error false 0
+mf=$D/pk5; : >"$mf"; child "$mf" 1 linux/amd64 0 "$OSV_CLEAN" 4
+assert_stmt "osv-scanner: packages inventoried and no finding is clean" osv-scanner "$mf" clean false 0
+mf=$D/pk6; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" '"3"'
+assert_stmt "grype: a package count that is not a number is an error" grype "$mf" error false 0
+mf=$D/pk7; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" -1
+assert_stmt "grype: a negative package count is an error" grype "$mf" error false 0
+if python3 "$SCRIPT" statement --scanner grype --children "$D/pk2" "${STMT_EXTRA[@]}" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 --variant production \
+     --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>&1 >/dev/null | grep -q "inventoried no package"; then ok; else bad "the zero-package error names what happened (inventoried no package)"; fi
+
+# ---- rc-5a D2 round 2 (first look): a manifest shorter than the children that were enumerated is an incomplete rescan, a zero-package child's findings
+# still count, and a JSON true is not a package count ------------------------------------------------------------------------------------------------
+stmt_expect() { # manifest expected-children  -> prints the verdict
+  python3 "$SCRIPT" statement --scanner grype --children "$1" "${STMT_EXTRA[@]}" --expect-children "$2" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 \
+    --variant production --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>/dev/null | jq -r .verdict
+}
+mf=$D/ec1; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3
+[ "$(stmt_expect "$mf" 2)" = error ] && ok || bad "a manifest with one child where two were enumerated is an error, not clean (the second child's record is missing)"
+mf=$D/ec2; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+[ "$(stmt_expect "$mf" 2)" = clean ] && ok || bad "a manifest with every enumerated child is clean"
+[ "$(stmt_expect "$mf" 3)" = error ] && ok || bad "a manifest with fewer children than enumerated (3) is an error"
+mf=$D/pk8; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" true
+assert_stmt "grype: a package count of JSON true is an error, not 1" grype "$mf" error false 0
+GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2099-0001","severity":"High","fix":{"versions":[],"state":"unknown"}},"artifact":{"name":"tzdata","version":"2026c","type":"deb","purl":"pkg:deb/debian/tzdata@2026c"}}],"descriptor":{"name":"grype","version":"0.118.0"}}'
+mf=$D/pk9; : >"$mf"; child "$mf" 1 linux/amd64 2 "$GRYPE_FIND" 0
+assert_stmt "grype: a finding in a child that inventoried no package still counts (verdict error, has_findings true)" grype "$mf" error true 1
+
+# the LATEST statement per (vulnerability id, product, subcomponent set) wins (rc-5a, ruling cache-667 item 4): by timestamp when both parse, else by document order
+lw() { # name want-verdict want-has want-count want-suppressed status[@ts] status[@ts]... : two statements for the finding CVE-2024-9999 on the cache image
+  local desc="$1" wv="$2" wh="$3" wc="$4" ws="$5"; shift 5; local arr="" sp sts ts
+  for sp in "$@"; do sts=${sp%%@*}; ts=""; [ "$sts" = "$sp" ] || ts=${sp#*@}
+    arr="$arr$(st CVE-2024-9999 '[]' "$sts" "[$PROD_REPO]" | jq -c --arg ts "$ts" 'if $ts == "" then . else .timestamp = $ts end'),"; done
+  vexdoc "$D/v/lw.json" "[${arr%,}]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw.json"; expect "$desc" "$wv" "$wh" "$wc" "$ws"
+}
+lw "latest: not_affected then affected (document order): the finding counts again" findings true 1 0 not_affected affected
+lw "latest: affected then not_affected (document order): suppressed" clean false 0 1 affected not_affected
+lw "latest: under_investigation after not_affected retracts too" findings true 1 0 not_affected under_investigation
+lw "latest: the timestamps beat the document order (affected earlier by time): suppressed" clean false 0 1 "not_affected@2026-02-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
+lw "latest: ...and the other way (affected later by time, earlier by position): counts" findings true 1 0 "affected@2026-02-01T00:00:00Z" "not_affected@2026-01-01T00:00:00Z"
+lw "latest: an unparseable timestamp falls back to document order for the pair" findings true 1 0 "not_affected@2026-01-01T00:00:00Z" "affected@garbage"
+lw "latest: a missing timestamp on one side falls back to document order" clean false 0 1 "affected@2026-02-01T00:00:00Z" not_affected
+lw "latest: equal timestamps: the later in the document wins" findings true 1 0 "not_affected@2026-01-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
+vexdoc "$D/v/lw-prod.json" "[$(st CVE-2024-9999 '[]' not_affected "[$PROD_REPO]"),$(st CVE-2024-9999 '[]' affected "[$PROD_GO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-prod.json"
+expect "latest: an affected statement on another product (the Go product) does not retract the image's not_affected" clean false 0 1
+vexdoc "$D/v/lw-alias.json" "[$(st CVE-2024-9999 '["GO-2024-0001"]' not_affected "[$PROD_REPO]"),$(st GO-2024-0001 '[]' affected "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-alias.json"
+expect "latest: a later affected statement under the alias retracts (same vulnerability)" findings true 1 0
 
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

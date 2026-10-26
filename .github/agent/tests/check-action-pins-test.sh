@@ -35,7 +35,7 @@ fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 # Sharding (advisor 0618; coverage-gate.sh runs the cases as parallel shards under coverage): PINS_SHARD=<i>/<n> runs only every n-th UNIT
-# (a unit is one case_, gitcase, case_out, case3_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
+# (a unit is one case_, gitcase, case_out, case3_, mutant_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
 # unit as `UNIT <index> <name>` and, for the units this shard would run, `RUN <name>` (counted in ran=), without executing anything. Unset, every unit runs.
 # The last lines say which shard this was and how many units the file has and how many it ran, so coverage-shard-sum.py can prove the
 # shards together ran the whole list exactly once. The pm-case checks below count every case_out call, run or not, so they hold in a shard.
@@ -73,7 +73,7 @@ case_() {
   if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"  # the gate's committed programs
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -698,7 +698,7 @@ gitcase() {
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
@@ -1116,7 +1116,7 @@ case_out() {
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
     printf '#!/usr/bin/env bash\nset -euo pipefail\n:\n' > "$d/bin/$s"; chmod +x "$d/bin/$s"
@@ -1727,6 +1727,79 @@ case_ n32-combined-o-file-ok   ok  "$(rb 'bash -eo pipefail bin/x.sh')" "mkdir -
 case_ n32-repo-script-ok       ok  "$(rb 'bash bin/x.sh --flag; sh ./tools/y.sh')" "mkdir -p bin tools; printf 'echo x\\n' > bin/x.sh; printf 'echo y\\n' > tools/y.sh"
 case_ n32-bash-c-ok            ok  "$(rb 'bash -c "echo hi"')"
 case_ n32-docker-shell-arg-ok  ok  "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c true')"
+
+# --- the command a step runs INSIDE a container is a command of its own (docker/podman/nerdctl exec, and the words after the image of run):
+#     judged like a top-level command, pinned by digest or refused (#593 review: `exec` sat in the safe verbs, so a pull through it was invisible)
+case_ exec-inner-pull-bad          bad "$(r 'docker exec C docker pull alpine:latest')"
+case_ exec-inner-options-bad       bad "$(r 'docker exec -it -e A=b -u root -w /x C docker pull alpine:latest')"
+case_ exec-inner-dashdash-bad      bad "$(r 'docker exec -i -- C docker pull alpine:latest')"
+case_ exec-inner-podman-bad        bad "$(r 'podman exec C docker pull alpine:latest')"
+case_ exec-inner-nerdctl-bad       bad "$(r 'nerdctl exec C docker pull alpine:latest')"
+case_ exec-inner-container-verb-bad bad "$(r 'docker container exec C docker pull alpine:latest')"
+case_ exec-inner-sh-c-bad          bad "$(r "docker exec C sh -c 'docker pull alpine:latest'")"
+case_ exec-inner-pip-bad           bad "$(r 'docker exec C pip install requests')"
+case_ exec-unknown-option-bad      bad "$(r 'docker exec --frobnicate C true')"
+case_ exec-inner-plain-ok          ok  "$(r 'docker exec C make test')"
+case_ exec-inner-bash-c-ok         ok  "$(r "docker exec -it C bash -c 'echo hi'")"
+case_ exec-inner-pinned-pull-ok    ok  "$(r 'docker exec C docker pull alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ run-inner-pull-bad           bad "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ run-inner-sh-c-bad           bad "$(r "docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c 'docker pull alpine:latest'")"
+case_ run-inner-pip-flags-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pip install requests')"
+case_ run-entrypoint-inner-bad     bad "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ run-flags-image-tag-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpine:latest true')"
+case_ run-flags-image-digest-ok    ok  "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 make test')"
+case_ run-option-value-looks-pinned-bad  bad "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
+# mutants: the checker with ONE branch cut must let the matching probe through (the probe depends on that branch)
+mutant_() {   # name, python replace (old|||new), probe script, optional setup
+  local name=$1 d="$work/mut-$1"
+  take "mutant-$name" || return 0
+  mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
+  python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+old, new = sys.argv[3].split("|||")
+assert src.count(old) == 1, "mutation site not found exactly once: " + old
+open(sys.argv[2], "w").write(src.replace(old, new))
+PY
+  if python3 "$d/mut.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
+  if [ "$got" = ok ]; then pass=$((pass+1)); echo "PASS mutant-$name → escapes (the probe needs that branch)"
+  else failn=$((failn+1)); echo "FAIL mutant-$name → still caught with the branch cut"; fi
+}
+case_ run-entrypoint-attached-bad  bad "$(r 'docker run --entrypoint=docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ create-inner-pull-bad        bad "$(r 'docker create alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ exec-nested-too-deep-bad     bad "$(r 'docker exec C docker exec C docker exec C docker exec C docker exec C docker exec C true')"
+case_ run-inner-script-not-bound-ok ok "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash evil.sh')" "printf 'docker pull alpine:latest\\n' > evil.sh"  # a same-name committed file is not what runs in the container
+# a script path inside a container names the container's file: it is never bound to a committed file of the checkout (the image is pinned by digest;
+# stage-acceptance-egress.yml runs ./configure and /trace/strace this way) and, as before, not read
+case_ exec-inner-path-not-bound-ok ok  "$(r 'docker exec C ./run.sh')"
+case_ container-create-inner-bad   bad "$(r 'docker container create --name c alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ exec-inner-committed-name-ok ok "$(r 'docker exec C bash safe.sh')" "printf 'echo safe\\n' > safe.sh"
+case_ run-inner-committed-name-ok ok "$(r 'docker run --rm -v x:y alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash bin/x.sh')" "mkdir -p bin; printf 'echo safe\\n' > bin/x.sh"
+# a `sh -c` body keeps the rule it always had (the script it names is the committed file: `-v "$PWD":/w … sh -c 'bash ci.sh'` mounts the checkout); only the plain inner command is not bound
+case_ exec-sh-c-script-as-before-bad bad "$(r "docker exec C sh -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ run-sh-c-script-as-before-bad  bad "$(r "docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ exec-sh-c-inner-tool-bad      bad "$(r "docker exec C sh -c 'bash evil.sh; docker pull alpine:latest'")"
+case_ run-entrypoint-value-of-other-option-bad bad "$(r "docker run --entrypoint docker --label '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
+case_ run-entrypoint-last-wins-ok  ok  "$(r 'docker run --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 hello')"
+case_ run-entrypoint-repeated-last-wins-ok  ok  "$(r 'docker run --entrypoint docker --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ run-entrypoint-repeated-last-wins-bad bad "$(r 'docker run --entrypoint echo --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+# the attached form `--entrypoint=sh` has no separate `sh` word for the outer scan to see: the body is read by the inner command alone (#712 review)
+case_ run-entrypoint-attached-sh-script-bad bad "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
+case_ run-entrypoint-attached-sh-pull-bad   bad "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'docker pull alpine:latest'")"
+case_ run-entrypoint-attached-sh-ok         ok  "$(r "docker run --entrypoint=sh alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -c 'bash safe.sh'")" "printf 'echo safe\\n' > safe.sh"
+case_ run-entrypoint-value-of-short-group-bad bad "$(r "docker run --entrypoint docker -il '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
+mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
+mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+mutant_ container-create 'rest[:1] in (["exec"], ["run"], ["create"])|||rest[:1] in (["exec"], ["run"])' "$(r 'docker container create --name c alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+mutant_ run-flags-image 'k, unknown = _options(rest, val, boolean)
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "|||k, unknown = next((i for i, a in enumerate(rest) if not a.startswith("-")), len(rest)), None
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "' "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
 # --- Codex #164 adversarial r1 (C01, C03-C13): each a fail-closed reading of what bash, pip, docker or BuildKit does
 case_ c01-backslash-newline    bad "$(rb "doc\\
           ker run alpine:3.20")"
@@ -1995,7 +2068,7 @@ realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
 cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"
-: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"
+: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
 marker = '    steps:\n'
@@ -2715,10 +2788,226 @@ case_ r25-bare-variable-still-ok ok "$(rb 'docker run --rm "$IMAGE_REF" true')"
 case_ r25-braced-array-variable-still-ok ok "$(rb 'docker run --rm "${IMAGES[0]}" true')"
 case_ r25-mixed-tag-destination-ok ok "$(rb "docker tag $PIN localhost/fa-\${v}")"
 
+# --- rc-5b B2 (handoff 0663): a `uses:` step that writes the tree is a writer, like a run: step. A committed script the job runs after one
+# is not the committed bytes. Closed list: actions/checkout (with repository, path or a ref other than the base sha), actions/download-artifact,
+# actions/cache and actions/cache/restore; the action name is read in any letter case; a path with ${{ }}, .. or an absolute path writes everywhere.
+# The plain default checkout, the base-sha fence form, upload-only steps and actions/cache/save write nothing into the tree.
+BASE_REF='${{ github.event.pull_request.base.sha }}'    # rc-5b 618 fix: assigned BEFORE the w-* cases that use it (under set -u an unset name made two cases test an empty fixture)
+mk_tool='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+us() { printf '      - uses: %s@%s # v7.0.1\n%s\n' "$1" "$SHA" "${2:+        with:
+$2}"; }
+uw() {   # a workflow: a writer step, then the committed script
+  printf '%s\n    steps:\n%s\n      - run: bash bin/tool.sh\n' "$head" "$1"
+}
+case_ w-default-checkout-ok ok "$(uw "$(us actions/checkout)")" "$mk_tool"
+case_ w-checkout-repository-bad bad "$(uw "$(us actions/checkout "          repository: other/x")")" "$mk_tool"
+case_ w-checkout-repository-path-bad bad "$(uw "$(us actions/checkout "          repository: other/x
+          path: bin")")" "$mk_tool"
+case_ w-checkout-path-bad bad "$(uw "$(us actions/checkout "          path: bin")")" "$mk_tool"
+case_ w-checkout-path-elsewhere-ok ok "$(uw "$(us actions/checkout "          path: other")")" "$mk_tool"
+case_ w-checkout-ref-bad bad "$(uw "$(us actions/checkout "          ref: refs/heads/other")")" "$mk_tool"
+case_ w-checkout-upper-case-bad bad "$(uw "$(us Actions/Checkout "          repository: other/x")")" "$mk_tool"
+case_ w-checkout-mixed-case-bad bad "$(uw "$(us ACTIONS/checkout "          path: bin")")" "$mk_tool"
+case_ w-checkout-base-fence-ok ok "$(uw "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted")")" "$mk_tool"
+case_ w-checkout-base-fence-onto-bin-ok ok "$(uw "$(us actions/checkout "          ref: $BASE_REF
+          path: bin")")" "$mk_tool"
+case_ w-checkout-expression-path-bad bad "$(uw "$(us actions/checkout "          path: \${{ inputs.where }}")")" "$mk_tool"
+case_ w-checkout-dotdot-path-bad bad "$(uw "$(us actions/checkout "          path: ../x")")" "$mk_tool"
+case_ w-checkout-absolute-path-bad bad "$(uw "$(us actions/checkout "          path: /home/runner/work/x/x/bin")")" "$mk_tool"
+case_ w-download-artifact-default-bad bad "$(uw "$(us actions/download-artifact "          name: x")")" "$mk_tool"
+case_ w-download-artifact-path-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-download-artifact-upper-bad bad "$(uw "$(us Actions/Download-Artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-download-artifact-elsewhere-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: out")")" "$mk_tool"
+case_ w-download-artifact-expression-bad bad "$(uw "$(us actions/download-artifact "          path: \${{ matrix.dir }}")")" "$mk_tool"
+case_ w-cache-bad bad "$(uw "$(us actions/cache "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-bad bad "$(uw "$(us actions/cache/restore "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-list-bad bad "$(uw "$(us actions/cache/restore "          path: |
+            out
+            bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-upper-bad bad "$(uw "$(us Actions/Cache/Restore "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-elsewhere-bad bad "$(uw "$(us actions/cache/restore "          path: out
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-home-bad bad "$(uw "$(us actions/cache/restore "          path: ~/.cache/go-build
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "          path: \${{ env.D }}
+          key: k")")" "$mk_tool"
+# --- rc-5b 618 fix round (Fable ruling, ops/audits/reviews/cache-618.md): everything tightens
+# 1. every actions/cache and cache/restore step writes everywhere (the glob and the file-path forms are not parsed)
+n=0
+for p in 'bi*' 'bin?' '[b]in' 'bin/tool.sh' '.github/agent/bi*' '~' '~/work/x/x/bin' '/home/runner/work/x/x/bin' '/tmp/x'; do
+  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: $p
+          key: k")")" "$mk_tool"
+done
+case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: bi*
+          key: k")")" "$mk_tool"
+# 2. a parent of the workspace, the home directory and /github are the workspace; outside is /tmp, runner.temp and ~/<not work>
+n=0
+for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x; do
+  n=$((n+1)); case_ "w-download-artifact-path-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
+          path: $p")")" "$mk_tool"
+done
+case_ w-download-artifact-home-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: ~/.cache/x")")" "$mk_tool"
+# 3. runner.temp is outside only when what follows has no expression, no $ and no ..
+case_ w-download-artifact-runner-temp-expression-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/\${{ '..' }}/x/bin")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-variable-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/\$D")")" "$mk_tool"
+# 4. a later writer into the base-sha fence directory itself (or over it) makes the script no longer main's copy
+mk_fence='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+fence_wf() {  # fence checkout into trusted, a writer step ($1), then the script run from trusted
+  printf '%s\n    steps:\n%s\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted")" "$1"
+}
+case_ w-fence-then-nothing-ok ok "$(fence_wf '')" "$mk_fence"
+case_ w-fence-with-lfs-true-bad bad "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted
+          lfs: true")")" "$mk_fence"
+case_ w-fence-with-lfs-false-ok ok "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted
+          lfs: false")")" "$mk_fence"
+case_ w-fence-then-download-into-it-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted")")" "$mk_fence"
+case_ w-fence-then-download-into-it-slash-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted/")")" "$mk_fence"
+case_ w-fence-then-download-into-it-subdir-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted/bin")")" "$mk_fence"
+case_ w-fence-then-cache-restore-bad bad "$(fence_wf "$(us actions/cache/restore "          path: trusted
+          key: k")")" "$mk_fence"
+case_ w-fence-then-download-elsewhere-ok ok "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: /tmp/oci")")" "$mk_fence"
+# 5. a writer into /tmp or runner.temp replaces the copy of main's script a `git show` step wrote there
+tmp_copy() {  # the git show copy step, a writer step ($1), the run of the copy
+  printf '%s\n    steps:\n      - run: |\n          mkdir -p /tmp/policy\n          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh\n%s\n      - run: bash /tmp/policy/tool.sh\n' "$head" "$1"
+}
+case_ w-tmp-copy-alone-ok ok "$(tmp_copy '')" "$mk_tool"
+case_ w-tmp-copy-then-download-over-it-bad bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/policy")")" "$mk_tool"
+case_ w-tmp-copy-then-download-over-its-parent-bad bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp")")" "$mk_tool"
+case_ w-tmp-copy-then-download-elsewhere-ok ok "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/oci")")" "$mk_tool"
+rt_copy() {
+  printf '%s\n    steps:\n      - run: |\n          git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n%s\n      - run: bash "$RUNNER_TEMP/tool.sh"\n' "$head" "$1"
+}
+case_ w-runner-temp-copy-alone-ok ok "$(rt_copy '')" "$mk_tool"
+case_ w-runner-temp-copy-then-download-bad bad "$(rt_copy "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}")")" "$mk_tool"
+# 7. a checkout with lfs not false puts the LFS objects' bytes where the committed pointer files are
+case_ w-checkout-lfs-true-bad bad "$(uw "$(us actions/checkout "          lfs: true")")" "$mk_tool"
+case_ w-checkout-lfs-expression-bad bad "$(uw "$(us actions/checkout "          lfs: \${{ inputs.lfs }}")")" "$mk_tool"
+case_ w-checkout-lfs-false-ok ok "$(uw "$(us actions/checkout "          lfs: false")")" "$mk_tool"
+# 9. a `with:` that is not a mapping on a writer writes everywhere
+case_ w-checkout-with-list-bad bad "$(uw "$(us actions/checkout "          - ref")")" "$mk_tool"
+case_ w-download-artifact-with-list-bad bad "$(uw "$(us actions/download-artifact "          - x")")" "$mk_tool"
+case_ w-cache-with-list-bad bad "$(uw "$(us actions/cache/restore "          - bin")")" "$mk_tool"
+wmsg='is changed by the job before it runs'
+# D4-D6 (seat D of the first look, ruled by the advisor): the script is judged at its LAST run; case-folded duplicate with: keys; a literal $RUNNER_TEMP
+case_ w-writer-between-two-runs-bad bad "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-writer-between-two-runs-elsewhere-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: out")
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-two-runs-no-writer-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-duplicate-path-keys-bad bad "$(uw "$(us actions/download-artifact "          path: bin
+          Path: out")")" "$mk_tool"
+case_ w-duplicate-path-keys-spaced-bad bad "$(uw "$(us actions/download-artifact "          path: bin
+          'path ': out")")" "$mk_tool"
+case_ w-download-artifact-literal-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \$RUNNER_TEMP/x")")" "$mk_tool"
+case_ w-download-artifact-literal-braced-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${RUNNER_TEMP}")")" "$mk_tool"
+# 618 round 3 (seat A): the script is also run THROUGH another committed script; the writer between the direct run and that run is a finding
+mk_via='mkdir -p lib && printf "#!/usr/bin/env bash\necho hi\n" > lib/b.sh && printf "#!/usr/bin/env bash\nbash lib/b.sh\n" > a.sh'
+case_ w-writer-between-direct-run-and-run-through-another-script-bad bad "$head
+    steps:
+      - run: bash lib/b.sh
+$(us actions/download-artifact "          path: lib")
+      - run: bash a.sh" "$mk_via"
+case_ w-direct-run-then-run-through-another-script-no-writer-ok ok "$head
+    steps:
+      - run: bash lib/b.sh
+      - run: bash a.sh" "$mk_via"
+case_ w-writer-elsewhere-between-direct-and-indirect-run-ok ok "$head
+    steps:
+      - run: bash lib/b.sh
+$(us actions/download-artifact "          path: out")
+      - run: bash a.sh" "$mk_via"
+# L1: a fence step whose with: holds case-folded duplicate keys is a writer of "." and is not admitted as main's copy
+case_ w-fence-with-duplicate-path-keys-bad bad "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: .
+          Path: trusted")")" "$mk_fence"
+case_out w-out-writer-between-two-runs bad "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")
+      - run: bash bin/tool.sh" "$wmsg" '' "$mk_tool"
+# 10. the finding is the write-before-run finding, not some other rule (case_ above reads the exit status only)
+case_out w-out-cache-restore-glob bad "$(uw "$(us actions/cache/restore "          path: bi*
+          key: k")")" "$wmsg" '' "$mk_tool"
+case_out w-out-download-artifact-parent-of-workspace bad "$(uw "$(us actions/download-artifact "          name: x
+          path: /home/runner")")" "$wmsg" '' "$mk_tool"
+case_out w-out-checkout-repository bad "$(uw "$(us actions/checkout "          repository: other/x")")" "$wmsg" '' "$mk_tool"
+case_out w-out-checkout-lfs bad "$(uw "$(us actions/checkout "          lfs: true")")" "$wmsg" '' "$mk_tool"
+case_out w-out-fence-overwritten bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted")")" "runs trusted/bin/tool.sh, which is not a committed file" '' "$mk_fence"   # no longer main's copy: the path is read as a plain one
+case_out w-out-tmp-copy-overwritten bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/policy")")" "$wmsg|copy|policy" '' "$mk_tool"
+case_out w-out-with-list bad "$(uw "$(us actions/checkout "          - ref")")" "$wmsg" '' "$mk_tool"
+case_out w-out-ok-plain-checkout ok "$(uw "$(us actions/checkout)")" '0 finding' "$wmsg" "$mk_tool"
+case_ w-download-artifact-tmp-ok ok "$(uw "$(us actions/download-artifact "          name: images
+          path: /tmp/oci/")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/attach")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-dotdot-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/../bin")")" "$mk_tool"
+case_ w-download-artifact-github-workspace-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: /github/workspace/bin")")" "$mk_tool"
+case_ w-checkout-tmp-path-ok ok "$(uw "$(us actions/checkout "          repository: other/x
+          path: /tmp/x")")" "$mk_tool"
+case_ w-cache-save-ok ok "$(uw "$(us actions/cache/save "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-upload-artifact-ok ok "$(uw "$(us actions/upload-artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-writer-after-the-run-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")" "$mk_tool"
+case_ w-writer-in-another-job-ok ok "on: push
+jobs:
+  one:
+    runs-on: ubuntu-latest
+    steps:
+$(us actions/download-artifact "          path: bin")
+  two:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-conditional-writer-bad bad "$head
+    steps:
+$(us actions/download-artifact "          path: bin")
+        if: \${{ inputs.x }}
+      - run: bash bin/tool.sh" "$mk_tool"
+
 # --- advisor 0198 (option A, fenced): a directory that an EARLIER step of the SAME job filled with actions/checkout of THIS repository at
 # exactly the pull request's base sha (`ref: ${{ github.event.pull_request.base.sha }}`, a literal path) is main's copy: a committed script
 # under it runs at a literal path in any interpreter (REQ-SUP-001's trusted checker). Every other shape stays refused.
-BASE_REF='${{ github.event.pull_request.base.sha }}'
 mk_trusted='mkdir -p bin && printf "print(1)\n" > bin/tool.py && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
 co() { printf '      - uses: actions/checkout@%s # v7.0.1\n        with:\n%s\n' "$SHA" "$1"; }
 case_ a-base-checkout-python-ok ok "$head
@@ -3012,14 +3301,28 @@ done
 case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
-# the one exact exclusion (auditor.yml, job audit, step 9, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
+# the privileged bump script (go-freshness.yml runs it with the App token) reads clean: a test written `[[ a =~ x && "$V" =~ y ]]` is split at && and its second operand read as a program named by a variable, which is a finding on every PR
+if take go-bump-script-reads-clean; then
+python3 - "$here/../bin/check-action-pins.py" "$here/../../../bin/go-bump-open-pr.sh" <<'PY' && { pass=$((pass+1)); echo "PASS go-bump-script-reads-clean → ok"; } || { failn=$((failn+1)); echo "FAIL go-bump-script-reads-clean"; }
+import importlib.util, re, sys
+spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+txt = open(sys.argv[2]).read()
+marked = m._drop_foreign_heredocs(m._decode_dollar_quotes(m._mark_defaults(re.sub(r"\\\n", "", txt))))
+bad = [t for t in m._commands(marked) if t and t[0] == "__variable_program__"]
+assert not bad, "the bump script names a program by a variable: %r" % (bad[:3],)
+old = '[[ "$CURRENT" =~ ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ && "$LATEST" =~ ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ ]]'
+assert [t for t in m._commands(m._mark_defaults(old)) if t and t[0] == "__variable_program__"], "the checker no longer reads the old form as a variable program: this case needs a new probe"
+PY
+fi
+
+# the one exact exclusion (auditor.yml, job audit, step 10, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import yaml
 wf = open(sys.argv[2]).read()
-run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]
+run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][10]["run"]
 class Tree:
     entries = {"bin/x-test.sh": "file"}
     def __init__(self, files): self.files = files
@@ -3033,14 +3336,14 @@ def judge(file, job, idx, text, files=None):
     m.check_runs(file, [(f"{file}.jobs.{job}.steps[{idx}].run", text, None), (f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files if files is not None else {file: wf}))
     return [b for b in bad if "REQ-REL-005-AC3" in b]
 F = ".github/workflows/auditor.yml"
-assert not judge(F, "audit", 9, run), "the exact step is excluded"
-assert judge(F, "audit", 10, run), "the same text at another step index is a finding"
-assert judge(F, "other", 9, run), "the same text in another job is a finding"
-assert judge(".github/workflows/other.yml", "audit", 9, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
-assert judge(F, "audit", 9, run, {}), "a workflow file the tree cannot read keeps the finding"
-assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
-assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
-assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
+assert not judge(F, "audit", 10, run), "the exact step is excluded"
+assert judge(F, "audit", 9, run), "the same text at another step index is a finding"
+assert judge(F, "other", 10, run), "the same text in another job is a finding"
+assert judge(".github/workflows/other.yml", "audit", 10, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
+assert judge(F, "audit", 10, run, {}), "a workflow file the tree cannot read keeps the finding"
+assert judge(F, "audit", 10, run + "\n# edited"), "an edited step is a finding"
+assert judge(F, "audit", 10, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
+assert judge(F, "audit", 10, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
