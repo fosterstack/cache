@@ -30,7 +30,6 @@ root = os.environ["PERSONA_ROOT"]
 REL = os.path.join(root, ".github/workflows/release.yml")
 FRESH = os.path.join(root, ".github/workflows/go-freshness.yml")
 TOOLS = os.path.join(root, "bin/persona-uat-tools.json")
-INST = os.path.join(root, "bin/install-scanner.sh")
 SRC = [os.path.join(root, "bin", f) for f in ("persona-uat.py", "persona-uat-agent.py", "persona-uat-provider.py")]
 
 def load(path): return yaml.load(open(path), Loader=yaml.BaseLoader)
@@ -66,9 +65,12 @@ def expr_is(val, expr):
 def literal_false(v):
     return str(v).strip() in ("", "false") if v is not None else True
 
-def install_re(pre):
-    """the ONLY accepted way to get `kind` onto the job: the repo's own installer (version and sha256 pinned inside it), from the same tree as the driver"""
-    return re.compile(r"^(?:\./)?" + re.escape(pre) + r"bin/install-scanner\.sh kind(?: (\S+))?$")
+KIND_RUN = 'kind version || { echo "::error::PIPELINE, no kind"; exit 1; }'
+def is_kind_run(run):
+    """the ONLY accepted way to have `kind` in the job (amended Oct 24, rule 13 of the simplest-correct-form rules): the
+    runner image's own kind, proved present by this one run step: it prints the version and fails with a labelled
+    error"""
+    return run.strip() == KIND_RUN
 
 def crane_re(pre):
     """the ONLY accepted way to get `crane` onto the weekly job: the repo's own installer (version and sha256 pinned inside it), the tool the chain already pins for every digest read"""
@@ -95,174 +97,25 @@ def judge_crane(name, steps, d, pre, bad):
         bad.append(f"{name}: the crane install step has a custom shell, working-directory or env")
 
 def judge_install(name, steps, d, pre, bad):
-    """advisor ruling: the job installs kind in ONE unconditional run step BEFORE the driver, by ./bin/install-scanner.sh kind (no pipe to a shell, no
-    download of its own); the installer itself is judged by judge_installer"""
+    """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver
+    (no download, no install)"""
     di = steps.index(d)
     cands = [(i, s) for i, s in enumerate(steps) if "run" in s and re.search(r"\bkind\b|install-scanner", str(s["run"])) and not crane_re(pre).match(str(s["run"]).strip())]
-    good = [(i, s) for i, s in cands if install_re(pre).match(str(s["run"]).strip())]
+    good = [(i, s) for i, s in cands if is_kind_run(str(s["run"]))]
     if len(good) != 1 or len(cands) != 1:
-        bad.append(f"{name}: the job must install kind with exactly one step `./{pre}bin/install-scanner.sh kind` (version and sha256 pinned in the installer; no other kind download or install step); found {[str(s['run'])[:60] for _, s in cands]}")
+        found = [str(s["run"])[:60] for _, s in cands]
+        bad.append(f"{name}: the job must check kind with exactly one step `{KIND_RUN}` "
+                   f"(the runner image's kind; no kind download or install step); found {found}")
         return
     i, s = good[0]
     if i > di:
-        bad.append(f"{name}: kind is installed AFTER the driver step: the driver would run without it")
-    cos = [(k, x) for k, x in enumerate(steps) if "actions/checkout" in str(x.get("uses", ""))]
-    prov = next((k for k, x in cos if not str((x.get("with") or {}).get("path", ""))), None)       # the checkout at the repository ROOT provides bin/ (in both jobs)
-    if prov is None or i < prov:
-        bad.append(f"{name}: the kind install step runs BEFORE the checkout that provides bin/install-scanner.sh (or there is none): the installer would not exist yet")
-    dest = install_re(pre).match(str(s["run"]).strip()).group(1)
-    if dest not in (None, "/usr/local/bin"):
-        bad.append(f"{name}: the kind install step installs into {dest!r}, a directory that is not on PATH for the driver step (only the installer's default /usr/local/bin is)")
+        bad.append(f"{name}: kind is checked AFTER the driver step: the driver would run without the check")
     if s.get("if") is not None or not literal_false(s.get("continue-on-error")):
-        bad.append(f"{name}: the kind install step is conditional or non-fatal: a job without kind must fail, never skip it")
+        bad.append(f"{name}: the kind check step is conditional or non-fatal: a job without kind must fail")
     if str(s.get("shell", "bash")) != "bash" or s.get("working-directory") or s.get("env"):
-        bad.append(f"{name}: the kind install step has a custom shell, working-directory or env")
+        bad.append(f"{name}: the kind check step has a custom shell, working-directory or env")
 
-def judge_installer(text, bad):
-    """bin/install-scanner.sh knows kind: a pinned version, an allowlisted tool name, a pinned sha256 for both architectures, the release URL of the kind
-    project, a kind branch that VERIFIES the download before installing it into ${DEST}/kind, and a verify() that really hashes. (judge_installer reads;
-    exercise_installer RUNS the installer: both must pass.)"""
-    code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
-    code = re.sub(r"\s#[^\n\"']*$", "", code, flags=re.M)         # trailing comments on a line
-    if not re.search(r"(?m)^KIND_VER=[0-9]+\.[0-9]+\.[0-9]+$", code):
-        bad.append("the installer has no pinned KIND_VER (x.y.z)")
-    if not re.search(r'case "\$TOOL" in [^\n]*\bkind\b', code):
-        bad.append("the installer does not allow the tool name kind")
-    for arch in ("x86_64\\|kind:amd64", "aarch64\\|kind:arm64"):
-        if not re.search(r"(?m)^\s*kind:" + arch + r"\) SUM=[0-9a-f]{64}\s*;?;?\s*$", code):
-            bad.append("the installer has no pinned 64-hex sha256 for kind on " + arch.split("\\")[0])
-    if len(re.findall(r"A_KIND=", code)) < 2:
-        bad.append("the installer maps no kind release asset for both architectures (A_KIND)")
-    kv = re.search(r"(?m)^KIND_VER=([0-9]+\.[0-9]+\.[0-9]+)$", code)
-    urls = re.findall(r'(?m)^\s*kind-linux-(?:amd64|arm64)\) curl [^\n]*"https://github\.com/kubernetes-sigs/kind/releases/download/v([0-9]+\.[0-9]+\.[0-9]+)/(kind-linux-(?:amd64|arm64))"', code)
-    if sorted(a for _, a in urls) != ["kind-linux-amd64", "kind-linux-arm64"] or not kv or any(v != kv.group(1) for v, _ in urls):
-        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download/v<KIND_VER>/ with each architecture's asset (kind-linux-amd64, kind-linux-arm64) written out in its own curl line: the pin-age scan measures a literal release URL, and a variable version, a variable asset or a *_BASE source it can never call a pin")
-    if re.search(r"(?m)^KIND_BASE=", code):
-        bad.append("the installer retargets the kind download through a KIND_BASE variable: the pin-age scan counts that as an unpinned source")
-    vf = re.search(r"(?ms)^verify\(\)\s*\{(.*?)^\}", code)
-    if not vf or "sha256sum" not in vf.group(1) or "SUM" not in vf.group(1):
-        bad.append("the installer verifies no sha256: verify() does not hash the file with sha256sum and compare it with the pinned SUM (a comment does not count)")
-    if not re.search(r'(?m)^DEST="\$\{2:-/usr/local/bin\}"', code):
-        bad.append("the installer's default destination is not /usr/local/bin (the directory on PATH for the driver step)")
-    arm = re.search(r"(?ms)^\s*kind\)\s*\n(.*?)^\s*;;", code)
-    if not arm:
-        bad.append("the installer has no kind branch")
-    else:
-        a = arm.group(1)
-        iv, ii = a.find('verify "$tmp/kind"'), a.find('"${DEST}/kind"')
-        if iv < 0 or ii < 0 or iv > ii or not re.search(r"\binstall\b[^\n]*-m 0?755", a):
-            bad.append("the kind branch does not verify the download BEFORE installing it as an executable ${DEST}/kind")
-        if "curl" not in a or "pipeline_fail" not in a:
-            bad.append("the kind branch does not download with curl and fail as a pipeline failure")
-
-import hashlib, http.server, shutil, subprocess, tempfile, threading, stat
-
-def exercise_installer(path):
-    """RUN the installer for kind against a local fixture server that serves ARCHITECTURE-SPECIFIC bytes at the kind project's real asset paths only
-    (/v<KIND_VER>/kind-linux-amd64 and /v<KIND_VER>/kind-linux-arm64; anything else is a 404): good bytes install an executable `kind` into DEST, the request was
-    for exactly the right asset, and the sha256 check ran (recorded by a sha256sum on PATH); tampered bytes exit non-zero as a PIPELINE failure and install
-    nothing. -> [problems]"""
-    probs = []
-    try:
-        src = open(path).read()
-    except OSError as e:
-        return ["the installer cannot be read: %s" % e]
-    mv = re.search(r"(?m)^KIND_VER=([0-9]+\.[0-9]+\.[0-9]+)$", src)
-    ver = mv.group(1) if mv else "0.0.0"
-    good = {"x86_64": b"#!/bin/sh\necho kind v0.0.0 amd64\n", "aarch64": b"#!/bin/sh\necho kind v0.0.0 arm64\n"}
-    asset = {"x86_64": "/v%s/kind-linux-amd64" % ver, "aarch64": "/v%s/kind-linux-arm64" % ver}
-    state = {"tamper": False, "paths": []}
-    class H(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *a): pass
-        def do_GET(self):
-            state["paths"].append(self.path)
-            arch = next((a for a, p in asset.items() if self.path == p), None)
-            if arch is None:
-                self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
-            body = good[arch] + (b"# tampered\n" if state["tamper"] else b"")
-            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-    work = tempfile.mkdtemp(prefix="inst-ex-")
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    copy = os.path.join(work, "install-scanner.sh")
-    txt = src
-    for a_, pat in (("x86_64", r"(kind:x86_64\|kind:amd64\) SUM=)[0-9a-f]{64}"), ("aarch64", r"(kind:aarch64\|kind:arm64\) SUM=)[0-9a-f]{64}")):
-        txt = re.sub(pat, lambda m, a_=a_: m.group(1) + hashlib.sha256(good[a_]).hexdigest(), txt)
-    open(copy, "w").write(txt); os.chmod(copy, 0o755)
-    rbin = os.path.join(work, "rbin"); os.makedirs(rbin)
-    open(os.path.join(rbin, "sha256sum"), "w").write("#!/usr/bin/env python3\nimport hashlib, sys\nfor f in sys.argv[1:]:\n    h = hashlib.sha256(open(f, 'rb').read()).hexdigest()\n    open('%s/sha.log', 'a').write(h + '\\n')\n    print(h + '  ' + f)\n" % work)
-    os.chmod(os.path.join(rbin, "sha256sum"), 0o755)
-    realcurl = shutil.which("curl")
-    open(os.path.join(rbin, "curl"), "w").write('#!/usr/bin/env bash\nargs=()\nfor a in "$@"; do args+=("${a/https:\\/\\/github.com\\/kubernetes-sigs\\/kind\\/releases\\/download/http:\\/\\/127.0.0.1:%d}"); done\nexec %s "${args[@]}"\n' % (srv.server_address[1], realcurl))
-    os.chmod(os.path.join(rbin, "curl"), 0o755)      # the installer names the real https URL; this shim (the test's only seam) answers it from the local server
-    for arch in ("x86_64", "aarch64"):
-        for label in ("good", "tampered"):
-            state["tamper"] = label == "tampered"; state["paths"] = []
-            dest = os.path.join(work, "dest-%s-%s" % (arch, label)); os.makedirs(dest)
-            open(os.path.join(work, "sha.log"), "w").close()
-            env = dict(os.environ, PATH=rbin + ":" + os.environ["PATH"], INSTALL_SCANNER_ARCH=arch)
-            r = subprocess.run(["bash", copy, "kind", dest], capture_output=True, text=True, env=env, timeout=60)
-            hashed = open(os.path.join(work, "sha.log")).read().split()
-            k = os.path.join(dest, "kind")
-            if state["paths"] != [asset[arch]]:
-                probs.append("%s: the installer requested %s, not exactly the architecture's asset %s" % (arch, state["paths"], asset[arch]))
-            if label == "good":
-                if r.returncode != 0: probs.append("%s: good bytes did not install (rc %d: %s)" % (arch, r.returncode, r.stderr.strip()[:120]))
-                elif not (os.path.isfile(k) and os.access(k, os.X_OK)): probs.append("%s: good bytes left no executable kind in DEST" % arch)
-                else:
-                    pr = subprocess.run([k], capture_output=True, text=True)
-                    if pr.returncode != 0 or ("amd64" if arch == "x86_64" else "arm64") not in pr.stdout: probs.append("%s: the installed kind is not this architecture's binary" % arch)
-                if hashlib.sha256(good[arch]).hexdigest() not in hashed: probs.append("%s: the sha256 of the downloaded bytes was never computed (no verification ran)" % arch)
-            else:
-                if r.returncode == 0: probs.append("%s: TAMPERED bytes were accepted (exit 0)" % arch)
-                if "PIPELINE" not in r.stderr: probs.append("%s: a tampered download is not reported as a PIPELINE failure" % arch)
-                if os.path.exists(k): probs.append("%s: tampered bytes were installed" % arch)
-    srv.shutdown()
-    return probs
-
-SYN_INST = r"""#!/usr/bin/env bash
-set -euo pipefail
-TOOL="${1:-}"
-DEST="${2:-/usr/local/bin}"
-KIND_VER=0.33.0
-pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
-case "$TOOL" in trivy|kind|gitsign) ;; *) pipeline_fail "unknown tool" ;; esac
-arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
-case "$arch" in
-  x86_64|amd64) A_KIND=kind-linux-amd64 ;;
-  aarch64|arm64) A_KIND=kind-linux-arm64 ;;
-  *) pipeline_fail "unsupported architecture" ;;
-esac
-case "${TOOL}:${arch}" in
-  kind:x86_64|kind:amd64) SUM=""" + "a" * 64 + r""" ;;
-  kind:aarch64|kind:arm64) SUM=""" + "b" * 64 + r""" ;;
-  *) pipeline_fail "no pinned checksum" ;;
-esac
-tmp=$(mktemp -d)
-trap 'rm -rf "${tmp:?}"' EXIT
-verify() { # file
-  local got
-  got=$(sha256sum "$1" | cut -d' ' -f1)
-  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM})"
-}
-case "$TOOL" in
-  kind)
-    case "$A_KIND" in
-      kind-linux-amd64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64" || pipeline_fail "download failed: kind v${KIND_VER} amd64" ;;
-      kind-linux-arm64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64" || pipeline_fail "download failed: kind v${KIND_VER} arm64" ;;
-      *) pipeline_fail "no kind asset for ${arch}" ;;
-    esac
-    verify "$tmp/kind"
-    install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
-    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
-    ;;
-  *)
-    pipeline_fail "unknown scanner"
-    ;;
-esac
-echo "installed ${TOOL}"
-"""
-GOODINST = SYN_INST
+import http.server, shutil, subprocess, tempfile, threading
 
 # --- prerequisites of the job (defined BEFORE common(), which calls them; the complete-workflow control below runs them through judge()) ----------------
 CRED_REF = re.compile(r"secrets\.|vars\.PERSONA_UAT|github\.token|ANTHROPIC_")
@@ -295,7 +148,7 @@ def step_kind(x, pre, weekly):
     if "upload-artifact" in u: return "upload"
     if "nohup" in r and "--mint-identity" in r: return "refresher"
     if r == CLEANUP_RUN: return "cleanup"
-    if install_re(pre).match(r) or (weekly and crane_re(pre).match(r)): return "install"
+    if is_kind_run(r) or crane_re(pre).match(r): return "install"
     if PIN_PIP_SHAPE.fullmatch(r): return "pinpip"
     if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
     if weekly and "gh release view" in r: return "resolver"
@@ -374,7 +227,7 @@ def common(name, job, bad):
     if str(job.get("defaults", {}).get("run", {}).get("shell", "bash")) != "bash":
         bad.append(f"{name}: the job's default shell is not plain bash")
     for k in ("container", "services"):
-        if k in job:
+        if k in job and not (k == "services" and name == "release persona-uat"):     # the rc job's one registry service is judged in judge_release
             bad.append(f"{name}: the job declares {k}: the CI tools run only inside the driver, by digest, never as job {k}")
     drivers = [s for s in steps if "persona-uat.py" in str(s.get("run", "")) and not re.search(r"--(?:mint|remove)-identity", str(s.get("run", "")))]
     if len(drivers) != 1:
@@ -404,8 +257,13 @@ def common(name, job, bad):
     for flag in ("--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"):
         if opts.count(flag) != 1:
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
-    if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"}):
-        bad.append(f"{name}: the driver is given options outside the contract (no --publish, no --gh: results stay private, no issue is opened): {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--recipient'})}")
+    contract = {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"} | ({"--allow-listen"} if name == "release persona-uat" else set())
+    if sorted(set(opts) - contract):
+        bad.append(f"{name}: the driver is given options outside the contract (no --publish, no --gh: results stay private, no issue is opened): {sorted(set(opts) - contract)}")
+    if name == "release persona-uat":     # the registry service listens on the runner's loopback; the driver's stray-listener guard must know that one port and no other
+        ports = [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == "--allow-listen"]
+        if ports != ["5000"]:
+            bad.append(f"{name}: the driver must be given --allow-listen 5000 exactly once and no other allowed listener (found {ports}): the registry's port is the one listener that may exist")
     first = next((i for i, t in enumerate(argv) if t == pre + "bin/persona-uat.py"), None)       # the EXACT script token (`python3 <pre>bin/persona-uat.py`), never a suffix such as .py.bak
     if first is None or first != 1 or argv[0] != "python3":
         bad.append(f"{name}: the driver command is not exactly `python3 {pre}bin/persona-uat.py ...` (the tested driver must be the one that runs)")
@@ -491,7 +349,7 @@ def common(name, job, bad):
         blob = json.dumps(s_)
         if re.search(r"PRIVATE KEY|persona-uat\.key|-inkey|cms\s+-decrypt|PERSONA_UAT_(PRIVATE|KEY)|\.key\b", blob) or re.search(r"secrets\.(?!ANTHROPIC_(FEDERATION_RULE_ID|ORGANIZATION_ID|SERVICE_ACCOUNT_ID|WORKSPACE_ID)\b|PERSONA_UAT_(COMPLIANCE_)?MODEL\b)", blob):
             bad.append(f"{name}: a step writes or reads a private key or a secret that holds one (only the four ANTHROPIC_* identity secrets and the two model-id secrets may reach the job; the decryption key never touches CI)")
-    ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact")
+    ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact") + (("actions/download-artifact",) if name == "release persona-uat" else ())   # the rc job downloads Build's images artifact
     for s in steps:
         u = str(s.get("uses", ""))
         if u and not PIN_USES.match(u):
@@ -508,16 +366,19 @@ def common(name, job, bad):
         if s is d: continue
         isrun = "run" in s
         is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
-        is_install = isrun and (install_re(pre).match(str(s.get("run", "")).strip()) is not None or (name.startswith("weekly") and crane_re(pre).match(str(s.get("run", "")).strip()) is not None))
+        kind_run_text = str(s.get("run", ""))
+        is_install = isrun and (is_kind_run(kind_run_text) or crane_re(pre).match(kind_run_text.strip()) is not None)
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
         is_pin = isrun and is_pin_pip(s)
+        is_load = isrun and name == "release persona-uat" and "crane push" in str(s.get("run", ""))      # judged in judge_rc_registry
         is_cleanup = step_kind(s, pre, name.startswith("weekly")) == "cleanup"
         is_refresher = step_kind(s, pre, name.startswith("weekly")) == "refresher"
         if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
             bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
-        if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin:
-            bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install and the one pinned kind install (it could change what the driver sees)")
+        if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin and not is_load:
+            bad.append(f"{name}: a run step before the driver other than the latest-release resolver, "
+                       f"the one hash-pinned SDK install and the one kind check (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
     if weekly:
         judge_crane(name, steps, d, pre, bad)
@@ -823,12 +684,17 @@ def mode_value(run):
     return vals[0] if len(vals) == 1 else None
 
 GATE = "vars.PERSONA_UAT_ENABLED=='true'"
+# the rc job's load step, exactly (comments and blank lines dropped): a closed grammar, so a disabled or weakened digest check cannot pass (review of #428 round 1)
+LOAD_RUN_EXPECTED = ('set -euo pipefail\nwant=$(jq -er \'.["image-production"]\' <<<"$DIGESTS")\ncrane push candidate/images/production localhost:5000/cache:rc\n'
+                     'got=$(crane digest localhost:5000/cache:rc)\n[ "$got" = "$want" ] || { echo "::error::the pushed digest ${got} is not the one Build attested (${want})"; exit 1; }')
 
 def _atom(a, ctx):
     """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, ref, ref_name}. The model is GitHub's own: `==` on strings IGNORES CASE, so 'true' and
     'TRUE' are both on. Enabling the personas by a differently cased value is the owner's act and is accepted; unset, empty, 'false' and '1' are off."""
     if re.fullmatch(r"vars\.PERSONA_UAT_ENABLED=='true'", a):
         return str(ctx["vars"].get("PERSONA_UAT_ENABLED", "")).lower() == "true"
+    if a == "!inputs.dry-run":
+        return not ctx.get("dry_run")
     m = re.fullmatch(r"github\.event\.schedule=='([^']*)'", a)
     if m: return ctx.get("schedule") == m.group(1)
     m = re.fullmatch(r"startsWith\(github\.ref,'([^']*)'\)", a)
@@ -840,6 +706,15 @@ def _atom(a, ctx):
 def job_runs(j, ctx):
     """True when the job's `if:` (a conjunction of known atoms) holds in ctx"""
     return all(_atom(a, ctx) for a in norm(j.get("if", "true")).split("&&"))
+
+def judge_gate_others(name, wf, bad):
+    """no job other than persona-uat enters the persona-uat environment or mints/uses the model identity token (also when the workflow has no persona-uat job at all)"""
+    for jn, oj in (wf.get("jobs") or {}).items():
+        if jn == "persona-uat":
+            continue
+        dumped = json.dumps(oj)
+        if "persona-uat" in str(oj.get("environment", "")) or "api.anthropic.com" in dumped or "ANTHROPIC_IDENTITY_TOKEN" in dumped:
+            bad.append(f"{name} persona-uat gate: job {jn} enters the persona-uat environment or mints/uses the model identity token outside the gated job")
 
 def judge_gate(name, wf, j, bad):
     """the PERSONA_UAT_ENABLED gate (owner): the job runs only for the exact string 'true' (unset = off), on every trigger, and nothing mints a token or enters the persona-uat
@@ -856,6 +731,13 @@ def judge_gate(name, wf, j, bad):
                 got, want = job_runs(j, ctx), (str(v).lower() == "true" and trigger_ok)
                 if got != want:
                     bad.append(f"{name} persona-uat gate: on {tn} with PERSONA_UAT_ENABLED {label} the job {'runs' if got else 'is off'}, expected {'on' if want else 'off'}")
+        if name == "release":
+            dry = {"ref": "refs/tags/v1.2.3-rc.1", "ref_name": "v1.2.3-rc.1", "dry_run": True, "vars": {"PERSONA_UAT_ENABLED": "true"}}
+            if job_runs(j, dry):
+                bad.append("release persona-uat gate: a dry run on an rc tag with the gate on runs the job (an rc dry run publishes nothing and must not enter the persona-uat environment)")
+            final = {"ref": "refs/tags/v1.2.3", "ref_name": "v1.2.3", "vars": {"PERSONA_UAT_ENABLED": "true"}}
+            if job_runs(j, final):
+                bad.append("release persona-uat gate: a final tag with the gate on runs the job (only a release candidate does)")
     except ValueError as e:
         bad.append(f"{name} persona-uat gate: the job's if has an expression this judge cannot evaluate ({e})")
     if not norm(j.get("if", "")).startswith(GATE + "&&"):
@@ -863,12 +745,7 @@ def judge_gate(name, wf, j, bad):
     for sid, s_ in enumerate(j.get("steps", [])):
         if "PERSONA_UAT_ENABLED" in json.dumps(s_):
             bad.append(f"{name} persona-uat gate: step {sid} tests the gate: a step-level gate would let the job (and its environment) start first")
-    for jn, oj in (wf.get("jobs") or {}).items():
-        if jn == "persona-uat":
-            continue
-        dumped = json.dumps(oj)
-        if "persona-uat" in str(oj.get("environment", "")) or "api.anthropic.com" in dumped or "ANTHROPIC_IDENTITY_TOKEN" in dumped:
-            bad.append(f"{name} persona-uat gate: job {jn} enters the persona-uat environment or mints/uses the model identity token outside the gated job")
+    judge_gate_others(name, wf, bad)
 
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
@@ -883,38 +760,107 @@ def judge_release(r, bad):
         bad.append("release.yml's patch-failed lists persona-uat in needs: a failed persona run would then open a public issue (results stay private: it only fails the job)")
     j = r.get("jobs", {}).get("persona-uat")
     if not j:
-        bad.append("release.yml has no persona-uat job"); return
+        bad.append("release.yml has no persona-uat job: the release candidate's persona run (REQ-UAT-001-AC1) is missing")
+        judge_gate_others("release", r, bad)
+        return
     d = common("release persona-uat", j, bad)
     for s_ in j.get("steps", []):
         if "actions/github-script" in str(s_.get("uses", "")):
             bad.extend(run_identity(s_))
     needs = j.get("needs", [])
     needs = [needs] if isinstance(needs, str) else needs
-    for n in ("image", "promotion"):
-        if n not in needs:
-            bad.append(f"release persona-uat does not wait for {n}")
-    if set(needs) != {"image", "promotion"}:
-        bad.append(f"release persona-uat's needs are not exactly image and promotion (an extra dependency that is skipped on RC tags would skip every persona): {sorted(needs)}")
-    if norm(j.get("if", "")) != GATE + "&&startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc.')":
-        bad.append(f"release persona-uat does not run only for v*-rc.* tags behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
+    if sorted(needs) != ["build"]:
+        bad.append(f"release persona-uat's needs are not exactly build (it tests the candidate Build made; it never waits for, or runs after, a stage that publishes): {sorted(needs)}")
+    if norm(j.get("if", "")) != GATE + "&&startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc')&&!inputs.dry-run":
+        bad.append(f"release persona-uat does not run only for a release-candidate tag, outside a dry run, behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
     judge_gate("release", r, j, bad)
     env = j.get("environment")
     if (env if isinstance(env, str) else (env or {}).get("name")) != "persona-uat":
         bad.append("release persona-uat does not run in the persona-uat environment")
     p = j.get("permissions", {})
-    want = {"contents": "read", "id-token": "write", "packages": "read"}
-    if any(p.get(k) != v for k, v in want.items()) or set(p) - set(want):
-        bad.append(f"release persona-uat permissions are not exactly {want} (found {p})")
+    want = {"contents": "read", "id-token": "write"}
+    if p != want:
+        bad.append(f"release persona-uat permissions are not exactly {want}: no packages, no write of any kind (found {p})")
+    judge_rc_registry(j, bad)
+    if j.get("env"):
+        bad.append(f"release persona-uat declares no env of its own is the rule (found {sorted(j['env'])}): an inherited variable (BASH_FUNC_*, PATH, BASH_ENV) could change what the closed load script runs")
+    if r.get("env"):
+        bad.append(f"release.yml declares a workflow-level env ({sorted(r['env'])}): the closed rc load script would inherit it; the chain jobs name what they need on the step")
     if d is not None:
         run = str(d.get("run", ""))
-        m = re.search(r"--image\s+(\S+(?:\s*\"[^\"]*\")?)", run)
-        img = m.group(1) if m else ""
-        arg = run.replace("\\\n", " ").split("--image", 1)[-1].split(" --", 1)[0]
         envimg = str((d.get("env") or {}).get("PERSONA_UAT_IMAGE", ""))
-        if arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"ghcr\.io/\$\{\{\s*github\.repository\s*\}\}@\$\{\{\s*fromJSON\(\s*needs\.image\.outputs\.digests\s*\)\.production\s*\}\}", envimg.strip()):
-            bad.append("release persona-uat takes the image from something other than the chain's digests (fromJSON(needs.image.outputs.digests).production)")
+        arg = run.replace("\\\n", " ").split("--image", 1)[-1].split(" --", 1)[0]
+        if arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"localhost:5000/cache@\$\{\{\s*fromJSON\(\s*needs\.build\.outputs\.digests\s*\)\[\s*'image-production'\s*\]\s*\}\}", envimg.strip()):
+            bad.append("release persona-uat takes the image from something other than Build's own image-production digest on the runner's registry (localhost:5000/cache@fromJSON(needs.build.outputs.digests)['image-production'])")
         if mode_value(run) != "rc":
             bad.append(f"release persona-uat does not run the driver with --mode rc exactly (parsed value {mode_value(run)!r})")
+        steps = j.get("steps", [])
+        loads = [s_ for s_ in steps if "crane push" in str(s_.get("run", ""))]
+        if loads and steps.index(loads[0]) > steps.index(d):
+            bad.append("release persona-uat loads the registry AFTER running the driver")
+
+REG_IMG = re.compile(r"registry:2@sha256:[0-9a-f]{64}")
+DL_ACTION = re.compile(r"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c")
+
+def judge_rc_registry(j, bad):
+    """REQ-UAT-001-AC1 (advisor reading Oct 17): the rc job tests Build's own image from a registry that lives on the runner and nothing else. One registry:2 service pinned by digest and
+    published on the loopback only; Build's images artifact; crane pushes only to localhost:5000; the pushed digest must equal the one Build attested; no registry credential, no other registry."""
+    svc = j.get("services")
+    if not isinstance(svc, dict) or list(svc) != ["registry"] or not isinstance(svc["registry"], dict):
+        bad.append(f"release persona-uat must declare exactly one service, registry (found {svc!r})")
+    else:
+        sv = svc["registry"]
+        if not REG_IMG.fullmatch(str(sv.get("image", ""))):
+            bad.append(f"release persona-uat's registry service is not registry:2 pinned by a full sha256 digest ({sv.get('image')!r})")
+        if sv.get("ports") != ["127.0.0.1:5000:5000"]:
+            bad.append(f"release persona-uat's registry service is not published on the loopback only (ports must be exactly ['127.0.0.1:5000:5000'], found {sv.get('ports')!r})")
+        if set(sv) - {"image", "ports"}:
+            bad.append(f"release persona-uat's registry service has keys beyond image and ports (env, options, credentials or volumes): {sorted(set(sv) - {'image', 'ports'})}")
+    steps = j.get("steps", [])
+    dl = [s_ for s_ in steps if "actions/download-artifact" in str(s_.get("uses", ""))]
+    if len(dl) != 1 or not DL_ACTION.search(str(dl[0].get("uses", ""))) or (dl[0].get("with") or {}) != {"name": "images", "path": "candidate/images"}:
+        bad.append("release persona-uat must download exactly Build's `images` artifact (the allowlisted download-artifact digest, name images, path candidate/images)")
+    elif set(dl[0]) - {"uses", "with"}:
+        bad.append("release persona-uat's download step is not exactly uses + with (no if, continue-on-error or other key: a skipped download must fail the job, not pass it)")
+    loads = [s_ for s_ in steps if "crane push" in str(s_.get("run", ""))]
+    if len(loads) != 1:
+        bad.append(f"release persona-uat must load Build's layout with exactly one crane push step (found {len(loads)})")
+    else:
+        ld = loads[0]
+        lrun = "\n".join(l for l in str(ld.get("run", "")).splitlines() if not l.strip().startswith("#"))
+        if dl and steps.index(dl[0]) > steps.index(ld):
+            bad.append("release persona-uat loads the layout BEFORE it downloads it")
+        ci = [s_ for s_ in steps if re.fullmatch(r"\./bin/install-scanner\.sh crane\s*", str(s_.get("run", "")).strip())]
+        if len(ci) != 1 or steps.index(ci[0]) > steps.index(ld):
+            bad.append("release persona-uat does not install the pinned crane (bin/install-scanner.sh crane) once, before the load step")
+        lnorm = "\n".join(l.rstrip() for l in str(ld.get("run", "")).splitlines() if l.strip() and not l.strip().startswith("#"))
+        if set(ld) - {"name", "env", "run"} or lnorm != LOAD_RUN_EXPECTED:
+            bad.append("release persona-uat's load step is not exactly the closed load script (keys name, env, run only: no if, continue-on-error, shell or timeout; the script verbatim, fatal on a digest mismatch)")
+        if not expr_is((ld.get("env") or {}).get("DIGESTS", ""), "needs.build.outputs.digests"):
+            bad.append("release persona-uat's load step does not take the attested digests from needs.build.outputs.digests")
+        if "image-production" not in lrun or not re.search(r'\[ "\$got" = "\$want" \]', lrun):
+            bad.append("release persona-uat's load step does not compare the pushed digest with Build's image-production digest ([ \"$got\" = \"$want\" ] after crane digest)")
+        if set((ld.get("env") or {})) - {"DIGESTS"}:
+            bad.append(f"release persona-uat's load step takes env beyond DIGESTS: {sorted(set(ld.get('env') or {}) - {'DIGESTS'})}")
+        if "candidate/images/production" not in lrun:
+            bad.append("release persona-uat's load step does not push Build's production layout (candidate/images/production)")
+    for si, st in enumerate(steps):
+        run_ = "\n".join(l for l in str(st.get("run", "")).splitlines() if not l.strip().startswith("#"))
+        for m in re.finditer(r"\bcrane\s+(\S+)([^\n;&|]*)", run_):
+            sub, rest = m.group(1), m.group(2).split()
+            targets = [t.strip("\"'") for t in rest if not t.startswith("-")]
+            if sub not in ("push", "digest") or not targets or not targets[-1].startswith("localhost:5000/"):
+                bad.append(f"release persona-uat step {si}: crane {sub} {' '.join(rest)} is not a push/digest to localhost:5000 (nothing leaves the runner)")
+        if re.search(r"\b(?:docker|buildx|skopeo|regctl|oras)\b", run_) and "persona-uat.py" not in run_:
+            bad.append(f"release persona-uat step {si} runs a container or registry client other than crane")
+    dumped = json.dumps(j)
+    for needle, why in (("ghcr.io", "another registry"), ("GITHUB_TOKEN", "the job token"), ("github.token", "the job token"), ("crane auth", "a registry login"), ("docker login", "a registry login"),
+                        ("--insecure", "an insecure flag")):
+        if needle in dumped:
+            bad.append(f"release persona-uat names {needle} ({why}): it reads no registry credential and pushes nowhere but localhost")
+    for m in re.finditer(r"secrets\.(\w+)", dumped):
+        if m.group(1) not in set(MODEL_SECRETS) | set(CREDS):
+            bad.append(f"release persona-uat reads secrets.{m.group(1)}: only the model names and the federation identifiers")
 
 def judge_weekly(f, bad):
     workflow_defaults(f, "go-freshness.yml", bad)
@@ -1067,12 +1013,6 @@ good = []
 judge_source(good)
 result(not good, "the real driver, agent and provider run no privileged container, no cloud CLI and name no image without a digest" + ("" if not good else ": " + "; ".join(good)))
 good = []
-try:
-    judge_installer(open(INST).read(), good)
-except OSError:
-    good.append("bin/install-scanner.sh is missing")
-result(not good, "the real installer (bin/install-scanner.sh) installs kind pinned by version and sha256" + ("" if not good else ": " + "; ".join(good)))
-good = []
 judge_tools(TGOOD, good)
 result(not good, "the in-test known-good nine-entry tools file is accepted by the judge" + ("" if not good else ": " + "; ".join(good)))
 good = []
@@ -1082,17 +1022,18 @@ result(not good, "a clean source set is accepted by the source judge" + ("" if n
 def synth_steps(weekly):
     pre = ""
     cos = [{"uses": "actions/checkout@" + "0" * 40}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
-    return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": PIN_PIP_RUN}, {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+    words = ["python3", "-m", "pip", "install", "--quiet", "--break-system-packages", "--require-hashes",
+             "--only-binary=:all:", "-r", pre + "bin/persona-uat-requirements.txt"]
+    pip = " ".join(words)
+    return pre, cos + [{"run": KIND_RUN}, {"run": PIN_PIP_RUN}, {"run": pip},
                        {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
     pre, st = synth_steps(weekly)
     bd = []
     judge_install("synth", st, st[-1], pre, bd)
-    result(not bd, f"the install judge accepts the pinned kind install step ({'weekly' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
-bd = []
-judge_installer(GOODINST, bd)
-result(not bd, "the installer judge accepts a installer with kind pinned by version and sha256" + ("" if not bd else ": " + "; ".join(bd)))
-
+    which = "weekly" if weekly else "rc"
+    result(not bd, f"the install judge accepts the kind check step ({which})"
+           + ("" if not bd else ": " + "; ".join(bd)))
 def ins(st):
     return next(x for x in st if "install-scanner" in str(x.get("run", "")) or re.search(r"\bkind\b", str(x.get("run", ""))))
 
@@ -1103,74 +1044,19 @@ def imutate(name, expect, fn, weekly=False):
     judge_install("synth", st, next(x for x in st if "persona-uat.py" in str(x.get("run", "")) and not re.search(r"--(?:mint|remove)-identity", str(x.get("run", "")))), pre, bd)
     result(any(expect in b for b in bd), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
 
-def smutate(name, expect, fn):
-    t = fn(GOODINST)
-    bd = []
-    judge_installer(t, bd)
-    result(t != GOODINST and any(expect in b for b in bd), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
-
-def xmutate(name, expect, fn):
-    """the installer is RUN (exercise_installer): a mutant that reads right but behaves wrong must still be caught"""
-    t = fn(SYN_INST)
-    f = os.path.join(tempfile.mkdtemp(prefix="inst-mut-"), "install-scanner.sh")
-    open(f, "w").write(t)
-    pr = exercise_installer(f)
-    result(t != SYN_INST and any(expect in x for x in pr), f"caught by running it: {name} (reason: {expect!r})" + ("" if any(expect in x for x in pr) else f"; saw {pr}"))
-
-# the synthetic installer is valid shell, is judged clean and RUNS right: the controls
-f = os.path.join(tempfile.mkdtemp(prefix="inst-syn-"), "install-scanner.sh"); open(f, "w").write(SYN_INST)
-rc = subprocess.run(["bash", "-n", f], capture_output=True, text=True)
-result(rc.returncode == 0, "the synthetic reference installer is valid shell (bash -n)" + ("" if rc.returncode == 0 else ": " + rc.stderr.strip()))
-pr = exercise_installer(f)
-result(not pr, "running the reference installer: good bytes install an executable kind and are hashed, tampered bytes exit non-zero as a PIPELINE failure and install nothing, on both architectures" + ("" if not pr else ": " + "; ".join(pr)))
-pr = exercise_installer(INST)
-result(not pr, "running the REAL installer (bin/install-scanner.sh kind) against a local fixture with its pinned sums replaced: good bytes install an executable kind, tampered bytes are a PIPELINE failure" + ("" if not pr else ": " + "; ".join(pr)))
-
 for weekly in (False, True):
     w = " (weekly)" if weekly else ""
-    imutate("kind install missing" + w, "exactly one step", lambda st: st.remove(ins(st)), weekly)
+    imutate("kind check missing" + w, "exactly one step", lambda st: st.remove(ins(st)), weekly)
     imutate("kind install by curl | sh" + w, "exactly one step", lambda st: ins(st).update(run="curl -sSL https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 | sh"), weekly)
     imutate("kind download without checksum" + w, "exactly one step", lambda st: ins(st).update(run="curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && chmod +x /usr/local/bin/kind"), weekly)
     imutate("kind installed by go install" + w, "exactly one step", lambda st: ins(st).update(run="make install-kind"), weekly)
     imutate("kind install after the driver" + w, "AFTER the driver", lambda st: st.append(st.pop(st.index(ins(st)))), weekly)
-    imutate("kind install BEFORE the checkout" + w, "BEFORE the checkout", lambda st: st.insert(0, st.pop(st.index(ins(st)))), weekly)
-    imutate("kind install into a directory not on PATH" + w, "not on PATH", lambda st: ins(st).update(run=ins(st)["run"] + " /tmp/not-on-path"), weekly)
-    imutate("kind install into /opt/bin" + w, "not on PATH", lambda st: ins(st).update(run=ins(st)["run"] + " /opt/bin"), weekly)
     imutate("kind install conditional" + w, "conditional or non-fatal", lambda st: ins(st).update({"if": "github.event_name == 'push'"}), weekly)
     imutate("kind install continue-on-error" + w, "conditional or non-fatal", lambda st: ins(st).update({"continue-on-error": "true"}), weekly)
-    imutate("kind install with another tool name" + w, "exactly one step", lambda st: ins(st).update(run=ins(st)["run"].replace(" kind", " trivy") + "; echo kind"), weekly)
-    imutate("kind install from the other tree" + w, "exactly one step", lambda st: ins(st).update(run="./harness/bin/install-scanner.sh kind"), weekly)
     imutate("kind install piped" + w, "exactly one step", lambda st: ins(st).update(run=ins(st)["run"] + " | sh"), weekly)
     imutate("kind installed twice" + w, "exactly one step", lambda st: st.insert(st.index(ins(st)), dict(ins(st))), weekly)
     imutate("kind install with a custom shell" + w, "custom shell", lambda st: ins(st).update(shell="pwsh"), weekly)
     imutate("kind install with env" + w, "custom shell, working-directory or env", lambda st: ins(st).update(env={"KIND_BASE_URL": "https://evil.example"}), weekly)
-smutate("installer: KIND_VER missing", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.33.0\n", ""))
-smutate("installer: KIND_VER is latest", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.33.0", "KIND_VER=latest"))
-smutate("installer: kind not in the allowlist", "does not allow the tool name kind", lambda t: t.replace("trivy|kind|gitsign", "trivy|gitsign"))
-smutate("installer: x86_64 checksum missing", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("  kind:x86_64|kind:amd64) SUM=" + "a" * 64 + " ;;\n", ""))
-smutate("installer: x86_64 checksum too short", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("a" * 64, "a" * 63))
-smutate("installer: arm64 checksum missing", "no pinned 64-hex sha256 for kind on aarch64", lambda t: t.replace("  kind:aarch64|kind:arm64) SUM=" + "b" * 64 + " ;;\n", ""))
-smutate("installer: checksum is a placeholder", "no pinned 64-hex sha256 for kind on aarch64", lambda t: t.replace("b" * 64, "TODO"))
-smutate("installer: asset mapping missing", "maps no kind release asset", lambda t: t.replace("  aarch64|arm64) A_KIND=kind-linux-arm64 ;;\n", ""))
-smutate("installer: download from another host", "not from github.com/kubernetes-sigs/kind", lambda t: t.replace("github.com/kubernetes-sigs/kind", "evil.example/kind"))
-smutate("installer: checksum only in a comment", "verifies no sha256", lambda t: t.replace('got=$(sha256sum "$1" | cut -d\' \' -f1)', "got=x  # sha256sum"))
-smutate("installer: verify() hashes nothing", "verifies no sha256", lambda t: t.replace("sha256sum", "md5sum"))
-smutate("installer: the kind branch never verifies", "does not verify the download BEFORE", lambda t: t.replace('    verify "$tmp/kind"\n', ""))
-smutate("installer: the kind branch verifies after installing", "does not verify the download BEFORE", lambda t: t.replace('    verify "$tmp/kind"\n', "").replace('    "${DEST}/kind" version', '    verify "$tmp/kind"\n    "${DEST}/kind" version'))
-smutate("installer: the kind branch installs elsewhere", "does not verify the download BEFORE", lambda t: t.replace('"${DEST}/kind" || pipeline_fail', '"/opt/kind-bin/kind" || pipeline_fail').replace('"${DEST}/kind" version', '"/opt/kind-bin/kind" version'))
-smutate("installer: the default destination is not on PATH", "default destination", lambda t: t.replace('DEST="${2:-/usr/local/bin}"', 'DEST="${2:-/opt/kind-bin}"'))
-smutate("installer: no kind branch", "no kind branch", lambda t: t.replace("  kind)\n", "  kindx)\n"))
-xmutate("verification removed from the kind branch", "TAMPERED bytes were accepted", lambda t: t.replace('    verify "$tmp/kind"\n', ""))
-xmutate("verify() compares nothing (always passes)", "TAMPERED bytes were accepted", lambda t: t.replace('[ "$got" = "$SUM" ] || ', "true || "))
-xmutate("verify() only in a comment", "no verification ran", lambda t: t.replace('got=$(sha256sum "$1" | cut -d\' \' -f1)', "got=$SUM  # sha256sum"))
-xmutate("wrong destination", "left no executable kind in DEST", lambda t: t.replace('"${DEST}/kind" || pipeline_fail', '"${DEST}/kind-x" || pipeline_fail').replace('"${DEST}/kind" version', '"${DEST}/kind-x" version'))
-xmutate("not executable", "left no executable kind in DEST", lambda t: t.replace("install -m 0755", "install -m 0644").replace('    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"\n', ""))
-xmutate("architecture assets swapped", "did not install", lambda t: t.replace("A_KIND=kind-linux-amd64", "A_KIND=TMP").replace("A_KIND=kind-linux-arm64", "A_KIND=kind-linux-amd64").replace("A_KIND=TMP", "A_KIND=kind-linux-arm64"))
-xmutate("the release URL lacks the v prefix", "did not install", lambda t: t.replace("/v0.33.0/", "/0.33.0/"))
-xmutate("a wrong version in the URL", "did not install", lambda t: t.replace("/v0.33.0/", "/v0.0.1/"))
-xmutate("one asset for both architectures", "did not install", lambda t: t.replace("A_KIND=kind-linux-arm64", "A_KIND=kind-linux-amd64"))
-xmutate("a mismatch is not a pipeline failure", "not reported as a PIPELINE failure", lambda t: t.replace("(PIPELINE failure - not a scan finding)", "(scan finding)"))
-xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.replace('pipeline_fail "${TOOL} checksum mismatch', 'echo "${TOOL} checksum mismatch'))
 
 # --- a COMPLETE known-good synthetic release.yml and go-freshness.yml, run through the REAL entry point judge() -> judge_release/judge_weekly -> common() ----------
 H40 = "a" * 40
@@ -1179,15 +1065,16 @@ IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https:
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n" + CLAIMS_JS)
 REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    python3 bin/persona-uat.py --mint-identity "$f" || { [ "$?" -eq 3 ] && break; continue; }\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = CLEANUP_RUN
+RC_LOAD_RUN = LOAD_RUN_EXPECTED
 def synth_driver(weekly):
     pre = ""
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
     env.update({c: "${{ secrets.%s }}" % c for c in CREDS})
     env["ANTHROPIC_IDENTITY_TOKEN_FILE"] = "${{ runner.temp }}/anthropic-identity-token"
-    env["PERSONA_UAT_IMAGE"] = "${{ steps.resolve.outputs.image }}" if weekly else "ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"
+    env["PERSONA_UAT_IMAGE"] = "${{ steps.resolve.outputs.image }}" if weekly else "localhost:5000/cache@${{ fromJSON(needs.build.outputs.digests)['image-production'] }}"
     img = '"$PERSONA_UAT_IMAGE"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
-                                f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"'}
+                                f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"' + ("" if weekly else " --allow-listen 5000")}
 def synth_persona_job(weekly):
     pre = ""
     co = ([{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}},
@@ -1196,23 +1083,30 @@ def synth_persona_job(weekly):
     resolver = [{"id": "resolve", "env": {"GH_REPO": "${{ github.repository }}", "REGISTRY_OWNER": "${{ github.repository_owner }}", "GH_TOKEN": "${{ github.token }}"},
                  "run": 'set -euo pipefail\ntag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
-    head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co
-    steps = (head + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
+    # the weekly job: the root checkout (it provides bin/install-scanner.sh), the pinned crane, the resolver, then the docs checkout; the rc job has the one checkout
+    rc_load = [{"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "with": {"name": "images", "path": "candidate/images"}},
+               {"run": "./" + pre + "bin/install-scanner.sh crane"},
+               {"name": "load", "env": {"DIGESTS": "${{ needs.build.outputs.digests }}"}, "run": RC_LOAD_RUN}]
+    head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co + rc_load
+    steps = (head + [{"run": KIND_RUN},
              {"run": PIN_PIP_RUN},
              {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
              {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, {"run": REFRESHER}, synth_driver(weekly),
              {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}},
              {"if": "${{ always() }}", "run": CLEANUP}])
     j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write", "packages": "read"}, "steps": steps}
+    if not weekly:
+        j["permissions"] = {"contents": "read", "id-token": "write"}
+        j["services"] = {"registry": {"image": "registry:2@sha256:" + "b" * 64, "ports": ["127.0.0.1:5000:5000"]}}
     if weekly:
         j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event.schedule == '43 6 * * 1' }}"
     else:
-        j["needs"] = ["image", "promotion"]
-        j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}"
+        j["needs"] = ["build"]
+        j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
     return j
 RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
-    "image": {"steps": [{"run": "true"}]}, "promotion": {"needs": ["image"], "steps": [{"run": "true"}]},
-    "patch-failed": {"needs": ["image", "promotion"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
+    "build": {"steps": [{"run": "true"}]}, "release": {"needs": ["build"], "steps": [{"run": "true"}]},
+    "patch-failed": {"needs": ["build", "release"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
     "persona-uat": synth_persona_job(False)}}
 FS = {"on": {"schedule": [{"cron": "43 6 * * 1"}]}, "jobs": {
     "check": {"if": "${{ github.event.schedule != '43 6 * * 1' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]},
@@ -1255,19 +1149,25 @@ for weekly in (False, True):
     pm("SDK install with a working-directory", "carries keys outside its allowlist", lambda j: boot(j).update({"working-directory": "/tmp"}))
     pm("SDK install with a custom shell", "carries keys outside its allowlist", lambda j: boot(j).update({"shell": "pwsh"}))
     pm("SDK install with an env", "carries keys outside its allowlist", lambda j: boot(j).update({"env": {"PIP_INDEX_URL": "https://evil.example/simple"}}))
-    pm("kind install with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "install-scanner" in str(x.get("run", ""))).update({"working-directory": "/tmp"}))
+    kind_step = lambda j: next(x for x in j["steps"] if x.get("run") == KIND_RUN)
+    pm("kind check with a working-directory", "carries keys outside its allowlist",
+       lambda j: kind_step(j).update({"working-directory": "/tmp"}))
     pm("identity step with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
     pm("identity step with another option", "options outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update({"github-token": "${{ secrets.X }}"}))
     pm("upload with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "upload-artifact" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
 
 BASES = [("synthetic", RS, FS)]
-REAL_JOBS = bool(R.get("jobs", {}).get("persona-uat")) and bool(F.get("jobs", {}).get("persona-uat"))
+REAL_REL_JOB = bool(R.get("jobs", {}).get("persona-uat"))
+REAL_JOBS = bool(F.get("jobs", {}).get("persona-uat"))      # the weekly job is in the real go-freshness.yml; the rc job in release.yml is out until D (see judge_release)
 if REAL_JOBS:
     BASES.append(("real", R, F))
 else:
-    result(False, "the real release.yml and go-freshness.yml have no persona-uat jobs yet (commit 2): every workflow mutation below ran against the synthetic known-good workflows only")
+    result(False, "the real go-freshness.yml has no persona-uat job: every workflow mutation below ran against the synthetic known-good workflows only")
+result(REAL_REL_JOB, "the real release.yml has the persona-uat job (the release candidate's persona run, REQ-UAT-001-AC1, option D of the advisor ruling Oct 17)")
 def mutate(name, expect, fn, which="rel"):
     for label, BR, BF in BASES:
+        if label == "real" and which in ("rel", "rel_patchfailed") and not BR.get("jobs", {}).get("persona-uat"):
+            continue      # the real release.yml has no rc job (option B): nothing there to mutate; the synthetic base still carries every mutation
         if which in ("tools", "src") and label != "synthetic":
             continue
         _mutate(f"[{label}] {name}", expect, fn, which, BR, BF)
@@ -1319,9 +1219,9 @@ def drv(job): return next(s for s in job["steps"] if "persona-uat.py" in str(s.g
 def up(job): return next(s for s in job["steps"] if "upload-artifact" in str(s.get("uses", "")))
 
 # release job
-mutate("rc job no longer waits for promotion", "does not wait for promotion", lambda j: j.update(needs=[n for n in j["needs"] if n != "promotion"]))
-mutate("rc job runs for every tag", "does not run only for v*-rc.* tags", lambda j: j.update({"if": "${{ startsWith(github.ref, 'refs/tags/v') }}"}))
-mutate("rc job's predicate gains && false", "does not run only for v*-rc.* tags", lambda j: j.update({"if": str(j["if"]).rstrip("} ") + " && false }}"}))
+mutate("rc job no longer waits for build", "needs are not exactly build", lambda j: j.update(needs=[]))
+mutate("rc job runs for every tag", "does not run only for a release-candidate tag", lambda j: j.update({"if": "${{ startsWith(github.ref, 'refs/tags/v') }}"}))
+mutate("rc job's predicate gains && false", "does not run only for a release-candidate tag", lambda j: j.update({"if": str(j["if"]).rstrip("} ") + " && false }}"}))
 mutate("rc job continue-on-error", "continue-on-error on the job", lambda j: j.update({"continue-on-error": "true"}))
 mutate("rc driver step continue-on-error", "the driver step has continue-on-error", lambda j: drv(j).update({"continue-on-error": "true"}))
 mutate("rc driver step if: false", "the driver step has an if", lambda j: drv(j).update({"if": "false"}))
@@ -1333,8 +1233,8 @@ mutate("rc job has no timeout", "no timeout-minutes", lambda j: j.pop("timeout-m
 mutate("rc job uses a kind action", "is not on the persona job's allowlist", lambda j: j["steps"].insert(0, {"uses": "helm/kind-action@" + "a" * 40}))
 mutate("rc job runs docker itself", "uses docker or buildx", lambda j: j["steps"].insert(0, {"run": "docker run -d jenkins/jenkins:lts"}))
 mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
-mutate("rc image argument is the raw digests JSON", "takes the image from something other than the chain's digests",
-       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "needs.image.outputs.digests", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
+mutate("rc image argument is the raw digests JSON", "takes the image from something other than Build's own image-production digest",
+       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.build\.outputs\.digests\)\['image-production'\]", "needs.build.outputs.digests", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
 mutate("rc driver run interpolates an expression", "interpolates an expression into its run script", lambda j: drv(j).update(run=drv(j)["run"].replace('"$PERSONA_UAT_IMAGE"', '"${{ github.ref_name }}"')))
 mutate("weekly driver run interpolates an expression", "interpolates an expression into its run script", lambda j: drv(j).update(run=drv(j)["run"].replace('"$PERSONA_UAT_IMAGE"', '"${{ steps.resolve.outputs.image }}"')), "fresh")
 mutate("rc other step interpolates an expression", "interpolates an expression into its run script", lambda j: j["steps"].insert(0, {"run": 'echo "${{ github.event.head_commit.message }}"'}))
@@ -1350,8 +1250,8 @@ def _upload_before_driver(j):
 mutate("rc upload runs before the driver", "immediately after the driver", _upload_before_driver)
 mutate("rc a setup step runs before the driver", "a run step before the driver other than", lambda j: j["steps"].insert(j["steps"].index(drv(j)), {"run": "echo hi"}))
 mutate("rc driver step ends with || true", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
-mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
-       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "github.ref_name", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
+mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than Build's own image-production digest",
+       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.build\.outputs\.digests\)\['image-production'\]", "github.ref_name", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
 mutate("rc job leaves the persona-uat environment", "persona-uat environment", lambda j: j.update(environment="release"))
 mutate("rc model id hard-coded", "PERSONA_UAT_MODEL is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
 mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly secrets.PERSONA_UAT_MODEL",
@@ -1366,13 +1266,54 @@ mutate("rc upload tolerates no files", "if-no-files-found: error", lambda j: up(
 mutate("rc job provisions a cloud instance (plain form)", "names a cloud CLI",
        lambda j: j["steps"].insert(0, {"run": "aws --region us-east-1 ec2 run-instances --image-id ami-1"}))
 mutate("rc job declares an unpinned job container", "declares container", lambda j: j.update(container="jenkins/jenkins:lts"))
-mutate("rc job declares an unpinned service", "declares services", lambda j: j.update(services={"jenkins": {"image": "jenkins/jenkins:lts"}}))
+mutate("rc job declares an unpinned service", "must declare exactly one service", lambda j: j.update(services={"jenkins": {"image": "jenkins/jenkins:lts"}}))
+mutate("rc registry service by tag, not digest", "not registry:2 pinned by a full sha256 digest", lambda j: j["services"]["registry"].update(image="registry:2"))
+mutate("rc registry service by a short digest", "not registry:2 pinned by a full sha256 digest", lambda j: j["services"]["registry"].update(image="registry:2@sha256:abc"))
+mutate("rc registry service of another image", "not registry:2 pinned by a full sha256 digest", lambda j: j["services"]["registry"].update(image="evil/registry@sha256:" + "b" * 64))
+mutate("rc registry service published on every interface", "not published on the loopback only", lambda j: j["services"]["registry"].update(ports=["5000:5000"]))
+mutate("rc registry service on 0.0.0.0", "not published on the loopback only", lambda j: j["services"]["registry"].update(ports=["0.0.0.0:5000:5000"]))
+mutate("rc registry service with a credential env", "keys beyond image and ports", lambda j: j["services"]["registry"].update(env={"REGISTRY_AUTH": "x"}))
+mutate("rc registry service with options (host network)", "keys beyond image and ports", lambda j: j["services"]["registry"].update(options="--network host"))
+mutate("rc job with a second service", "must declare exactly one service", lambda j: j["services"].update(extra={"image": "registry:2@sha256:" + "b" * 64}))
+mutate("rc job without the registry service", "must declare exactly one service", lambda j: j.pop("services"))
+mutate("rc job pushes to ghcr.io", "is not a push/digest to localhost:5000", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run="crane push candidate/images/production ghcr.io/fosterstack/cache:rc"))
+mutate("rc job copies to another registry", "is not a push/digest to localhost:5000", lambda j: j["steps"].insert(0, {"run": "crane copy localhost:5000/cache:rc ghcr.io/fosterstack/cache:rc"}))
+mutate("rc job logs in to a registry", "is not a push/digest to localhost:5000", lambda j: j["steps"].insert(0, {"run": "crane auth login ghcr.io -u x -p y"}))
+mutate("rc job pushes to localhost on another port", "is not a push/digest to localhost:5000", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run="crane push candidate/images/production localhost:5001/cache:rc"))
+mutate("rc job compares nothing after the push", "does not compare the pushed digest", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run='crane push candidate/images/production localhost:5000/cache:rc\necho image-production'))
+mutate("rc job takes the digests from somewhere else", "does not take the attested digests from needs.build.outputs.digests", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(env={"DIGESTS": "${{ needs.check.outputs.digests }}"}))
+mutate("rc job pushes a different layout (fips)", "does not push Build's production layout", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run=next(x for x in j["steps"] if "crane push" in str(x.get("run", "")))["run"].replace("candidate/images/production", "candidate/images/fips")))
+mutate("rc job downloads another artifact", "must download exactly Build's `images` artifact", lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", ""))).update({"with": {"name": "dist", "path": "candidate/images"}}))
+mutate("rc job downloads with an unlisted digest", "must download exactly Build's `images` artifact", lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", ""))).update({"uses": "actions/download-artifact@" + "d" * 40}))
+mutate("rc job has no download", "must download exactly Build's `images` artifact", lambda j: j.update(steps=[x for x in j["steps"] if "download-artifact" not in str(x.get("uses", ""))]))
+LOADSTEP = lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", "")))
+DLSTEP = lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", "")))
+mutate("rc load step if: false", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"if": "${{ false }}"}))
+mutate("rc load step continue-on-error", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"continue-on-error": "true"}))
+mutate("rc load step mismatch exits 0", "is not exactly the closed load script", lambda j: LOADSTEP(j).update(run=LOADSTEP(j)["run"].replace("exit 1", "true")))
+mutate("rc load step compares nothing fatal (|| true)", "is not exactly the closed load script", lambda j: LOADSTEP(j).update(run=LOADSTEP(j)["run"] + " || true"))
+mutate("rc load step drops pipefail", "is not exactly the closed load script", lambda j: LOADSTEP(j).update(run=LOADSTEP(j)["run"].replace("set -euo pipefail", "set -eu")))
+mutate("rc load step with a custom shell", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"shell": "bash {0}"}))
+mutate("rc download step if: false", "download step is not exactly uses + with", lambda j: DLSTEP(j).update({"if": "${{ false }}"}))
+mutate("rc download step continue-on-error", "download step is not exactly uses + with", lambda j: DLSTEP(j).update({"continue-on-error": "true"}))
+mutate("rc job env defines a shell function the load script would call", "declares no env of its own", lambda j: j.update(env={"BASH_FUNC_crane%%": "() { true; }"}))
+mutate("release.yml workflow env defines a shell function", "workflow-level env", lambda r: r.update(env={"BASH_FUNC_crane%%": "() { true; }"}), "rel_wf")
+mutate("rc driver is not told about the registry listener", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"].replace(" --allow-listen 5000", "")))
+mutate("rc driver allows another listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"].replace("--allow-listen 5000", "--allow-listen 5001")))
+mutate("rc driver allows a second listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 22"))
+mutate("weekly driver allows a listener", "outside the contract", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 5000"), "fresh")
+mutate("rc job grants packages read", "permissions are not exactly", lambda j: j["permissions"].update(packages="read"))
+mutate("rc job reads the job token", "names github.token", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(DIGESTS="${{ needs.build.outputs.digests }}", T="${{ github.token }}"))
+mutate("rc job reads a registry secret", "reads secrets.GHCR_TOKEN", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(P="${{ secrets.GHCR_TOKEN }}"))
+mutate("rc job needs release as well", "needs are not exactly build", lambda j: j.update(needs=["build", "release"]))
+mutate("rc job runs in a dry run", "gate: a dry run on an rc tag", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}))
+mutate("rc job also runs on a final tag", "a final tag with the gate on runs the job", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}))
 mutate("rc checkout keeps credentials", "persist-credentials must be false", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {}}))
-mutate("rc image is a literal, not an expression", "takes the image from something other than the chain's digests",
-       lambda j: set_image(j, "ghcr.io/fosterstack/cache@fromJSON(needs.image.outputs.digests).production"))
-mutate("rc image is a fixed digest", "takes the image from something other than the chain's digests",
+mutate("rc image is a literal, not an expression", "takes the image from something other than Build's own image-production digest",
+       lambda j: set_image(j, "localhost:5000/cache@fromJSON(needs.build.outputs.digests)['image-production']"))
+mutate("rc image is a fixed digest", "takes the image from something other than Build's own image-production digest",
        lambda j: set_image(j, "ghcr.io/x/cache@sha256:" + "c" * 64))
-mutate("rc gains a skipped dependency (decide)", "needs are not exactly image and promotion", lambda j: j.update(needs=list(j["needs"]) + ["decide"]))
+mutate("rc gains a skipped dependency (decide)", "needs are not exactly build", lambda j: j.update(needs=list(j["needs"]) + ["decide"]))
 mutate("rc upload may fail without failing the job", "without retaining its transcripts", lambda j: up(j).update({"continue-on-error": "true"}))
 mutate("rc driver step carries an extra credential", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(AWS_SECRET_ACCESS_KEY="x"))
 mutate("rc identity step writes one file and the driver reads another", "which is the file the driver step reads",
@@ -1512,7 +1453,6 @@ mutate("weekly resolver step env sets BASH_ENV", "resolver step's env must be ex
 mutate("weekly resolver step env sets GH_HOST", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(GH_HOST="evil.example"), "fresh")
 mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
-mutate("rc job installs crane it has no use for", "a run step before the driver other than", lambda j: j["steps"].insert(1, {"run": "./bin/install-scanner.sh crane"}))
 mutate("weekly job has no crane install", "must install crane with exactly one step", lambda j: j["steps"].remove(_crane(j)), "fresh")
 mutate("weekly job installs crane twice", "must install crane with exactly one step", lambda j: j["steps"].insert(j["steps"].index(_crane(j)) + 1, dict(_crane(j))), "fresh")
 mutate("weekly crane install into a directory of its own (not the installer's default)", "must install crane with exactly one step", lambda j: _crane(j).update(run="./bin/install-scanner.sh crane /opt/crane-elsewhere"), "fresh")
@@ -1523,19 +1463,20 @@ mutate("weekly crane install carries an env", "crane install step has a custom s
 mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
 mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
 mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
-mutate("rc job-level if: false", "does not run only for v*-rc.* tags", lambda j: j.update({"if": "false"}))
+mutate("rc job-level if: false", "does not run only for a release-candidate tag", lambda j: j.update({"if": "false"}))
 mutate("rc checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}))
 mutate("rc SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
 mutate("rc runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
 mutate("rc matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}))
-mutate("rc kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))))
-mutate("rc kind install before the checkout", "BEFORE the checkout", lambda j: j["steps"].insert(0, j["steps"].pop(j["steps"].index(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))))))
+mutate("rc kind check missing", "exactly one step",
+       lambda j: j["steps"].remove(next(x for x in j["steps"] if "kind version" in str(x.get("run", "")))))
 mutate("weekly job-level if: false", "does not run only on the Monday cron", lambda j: j.update({"if": "false"}), "fresh")
 mutate("weekly checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}), "fresh")
 mutate("weekly SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}), "fresh")
 mutate("weekly runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}), "fresh")
 mutate("weekly matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}), "fresh")
-mutate("weekly kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))), "fresh")
+mutate("weekly kind check missing", "exactly one step",
+       lambda j: j["steps"].remove(next(x for x in j["steps"] if x.get("run") == KIND_RUN)), "fresh")
 mutate("rc checkout of another repository", "checkout of another repository", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(repository="evil/cache"))
 mutate("rc driver step reads another identity token file", "is not exactly ${{ runner.temp }}/anthropic-identity-token", lambda j: drv(j).setdefault("env", {}).update(ANTHROPIC_IDENTITY_TOKEN_FILE="/missing"))
 mutate("rc driver step has no identity token file path", "is not exactly ${{ runner.temp }}/anthropic-identity-token", lambda j: drv(j)["env"].pop("ANTHROPIC_IDENTITY_TOKEN_FILE"))

@@ -17,17 +17,13 @@ import (
 
 var bucketName = []byte("entries")
 
-// now returns the current time. It is a package variable so tests can inject
-// a clock: encode's negative-timestamp check inside Touch is otherwise
-// unreachable, because the decoded size is already validated non-negative and
-// the real time.Now never predates the Unix epoch.
-var now = time.Now
-
-// openDB is bbolt.Open behind a package variable so tests can exercise Open's
-// bucket-initialization failure path, which requires a database that opens
-// successfully but rejects writes (e.g. one opened read-only) — a state the
-// exported Open signature cannot otherwise produce.
-var openDB = bbolt.Open
+// now and openDB are seams for tests: a clock that can predate the epoch
+// (encode's negative-timestamp check is otherwise unreachable), and an open
+// that succeeds on a database that then rejects writes.
+var (
+	now    = time.Now
+	openDB = bbolt.Open
+)
 
 // Entry is a snapshot of one key's bookkeeping record.
 type Entry struct {
@@ -62,6 +58,9 @@ func Open(path string) (*Store, error) {
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// recordLen is the exact length of a record.
+const recordLen = 16
+
 // record is the fixed-width on-disk value: 8 bytes size, 8 bytes unix nano
 // last-access, both stored as the bit pattern of a non-negative int64.
 // encode/decode bounds-check explicitly rather than trusting the int64/
@@ -75,13 +74,16 @@ func encode(size int64, lastAccess time.Time) ([]byte, error) {
 	if nanos < 0 {
 		return nil, fmt.Errorf("metadata: negative timestamp %d", nanos)
 	}
-	buf := make([]byte, 16)
+	buf := make([]byte, recordLen)
 	binary.BigEndian.PutUint64(buf[0:8], uint64(size))   // #nosec G115 -- size validated >= 0 above
 	binary.BigEndian.PutUint64(buf[8:16], uint64(nanos)) // #nosec G115 -- nanos validated >= 0 above
 	return buf, nil
 }
 
 func decode(key string, buf []byte) (Entry, error) {
+	if len(buf) != recordLen {
+		return Entry{}, fmt.Errorf("metadata: corrupt record for key %q: %d bytes, want %d", key, len(buf), recordLen)
+	}
 	rawSize := binary.BigEndian.Uint64(buf[0:8])
 	rawNanos := binary.BigEndian.Uint64(buf[8:16])
 	if rawSize > math.MaxInt64 || rawNanos > math.MaxInt64 {
@@ -95,6 +97,9 @@ func decode(key string, buf []byte) (Entry, error) {
 }
 
 func decodeSize(buf []byte) (int64, error) {
+	if len(buf) != recordLen {
+		return 0, fmt.Errorf("metadata: corrupt record: %d bytes, want %d", len(buf), recordLen)
+	}
 	rawSize := binary.BigEndian.Uint64(buf[0:8])
 	if rawSize > math.MaxInt64 {
 		return 0, fmt.Errorf("metadata: corrupt record: size exceeds int64 range")
@@ -182,17 +187,7 @@ func (s *Store) TotalSize() (int64, error) {
 // LeastRecentlyUsed returns up to n entries with the oldest last-access
 // time, oldest first — candidates for eviction.
 func (s *Store) LeastRecentlyUsed(n int) ([]Entry, error) {
-	var all []Entry
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
-			e, err := decode(string(k), v)
-			if err != nil {
-				return err
-			}
-			all = append(all, e)
-			return nil
-		})
-	})
+	all, err := s.All()
 	if err != nil {
 		return nil, err
 	}
@@ -213,9 +208,8 @@ func (s *Store) Count() (int, error) {
 	return n, err
 }
 
-// All returns every entry in the index. It exists for startup
-// reconciliation, which must compare the complete index against the
-// complete blob set.
+// All returns every entry in the index (startup reconciliation compares it
+// against the complete blob set).
 func (s *Store) All() ([]Entry, error) {
 	var out []Entry
 	err := s.db.View(func(tx *bbolt.Tx) error {

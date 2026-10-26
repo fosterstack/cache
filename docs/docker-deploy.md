@@ -326,55 +326,42 @@ entries in this index, so nothing else should appear here — see
 [Verify our images](verify-images.md).
 
 There are no darwin or windows images: containers on those platforms run a
-Linux VM, and it pulls `linux/*` like any other Linux host. For a native
-macOS binary, see [Install FosterStack Cache](install.md).
+Linux VM, and it pulls `linux/*` like any other Linux host. There is no native
+macOS binary from v0.3.0 either; on a Mac, run the image. <!-- pinned: historical -->
 
-## Troubleshooting with the `:debug` image
+## Troubleshooting without a shell in the image
 
 The production image has no shell, so `docker exec ... sh` into it fails.
 That is deliberate — see [Platforms and multi-arch images](#platforms-and-multi-arch-images)
-above and the [variant docs](verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect).
-When you need a shell, run the `:debug` tag, which is the same binary on a
-base that adds busybox.
-
-**The shell is at `/busybox/sh`, not `/bin/sh`.** Distroless keeps busybox
-under `/busybox/` and ships no `/bin/sh`, no bash, and no package manager.
-If you have used Debian, RHEL, Amazon Linux, Alpine or Wolfi images, this
-is the one thing that will trip you up.
+above and the [variant docs](verify-images.md#the-images-have-no-shell).
+From v0.3.0 there is no `:debug` image (it is only on earlier releases, see <!-- pinned: historical -->
+[verify-images.md](verify-images.md#releases-before-v030)): you bring the
+tools in a separate container that shares the server's namespaces.
 
 ```sh
-# a throwaway shell in the debug image
-docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+# a throwaway toolbox that sees the server's network and processes
+docker run --rm -it --pid=container:<name> --network=container:<name> \
+  busybox:stable sh
 
-# same, with your cache volume attached, to inspect what the server sees
-docker run -it --entrypoint /busybox/sh \
-  -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:debug
+# the blob volume, read-only, to inspect what the server sees
+docker run --rm -it -v fscache-data:/data:ro busybox:stable \
+  sh -c 'du -sh /data; ls -la /data/data/blobs'
 ```
 
-Inside, useful things to check:
+Inside the first one, the server is `localhost:8080`:
 
 ```sh
-ls -la /home/nonroot/data/blobs     # is the blob store where you think it is?
-du -sh /home/nonroot/data           # how big has the cache grown?
-wget -qO- http://localhost:8080/healthz   # only if you exec into a RUNNING container
+wget -qO- http://localhost:8080/healthz
 ```
 
-To get a shell in a container that is already running, swap the deployment
-to the `:debug` tag first — you cannot exec a shell into the production
-image, because there is not one to exec. On Kubernetes, with a pod running
-the `:debug` tag:
+On Kubernetes, attach an ephemeral container to the running pod:
 
 ```sh
-kubectl exec -it <pod> -- /busybox/sh
+kubectl debug -it <pod> --image=busybox:stable --target=<container>
 ```
 
-`/busybox` is on the image `PATH`, so bare `sh` also resolves. The full
-path is shown first because it works regardless of how the container was
-invoked.
-
-These run as the image's default user, uid 65532 (`nonroot`). Do not add
-`--user=root`: clusters that enforce `runAsNonRoot` reject it, and root
-would not show you what the server process sees.
+The toolbox image is yours to choose and pin; it is not part of the release
+and is not covered by its signatures.
 
 ## Not a container shop? Bare binary + systemd
 

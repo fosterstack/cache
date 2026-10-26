@@ -1,0 +1,10 @@
+{
+ "_note": "The guide's command blocks that need a published release or the published image in a registry (the digest, download and verify blocks, the Grype scan of ghcr.io/fosterstack/cache and the Scout scan of it), by exact text (scanner-panel rule 12; the owner's rule 79 precedent for docs/verify-release.cannot-run.json). The live test cannot run them on a release candidate (it publishes nothing on v0.3); it runs them right after a release is published. Any change to a listed block, or to the set, is made here in the same pull request.",
+ "blocks": [
+  "DIGEST=$(docker buildx imagetools inspect \"ghcr.io/fosterstack/cache:${VER}\" --format '{{.Manifest.Digest}}')\n",
+  "curl -fsSLO \"https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache.openvex.json\"\ncurl -fsSLO \"https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.inspector-filters.json\"\ncurl -fsSLO \"https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.csaf.json\"\n",
+  "(set -eo pipefail\ncosign verify-attestation \"ghcr.io/fosterstack/cache@${DIGEST}\" \\\n  --type https://fosterstack.com/attestations/release-manifest/v1 \\\n  --certificate-identity=\"https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}\" \\\n  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' > release-manifest.attestation.json\njq -r '.payload' release-manifest.attestation.json | base64 -d | jq '.predicate' > release-manifest.verified.json\njq -r '.vex[] | \"\\(.sha256)  \\(.file)\"' release-manifest.verified.json | sha256sum -c\n)\n",
+  "grype \"ghcr.io/fosterstack/cache@${DIGEST}\" --vex fosterstack-cache.openvex.json\n",
+  "docker scout cves --vex-author '^FosterStack LLC$' \"registry://ghcr.io/fosterstack/cache@${DIGEST}\"\n"
+ ]
+}

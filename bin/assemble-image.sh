@@ -48,7 +48,7 @@ ENVBIN=/usr/bin/env                  # TEST-SUBST
 WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)
 RENDER_DIR=                          # TEST-SUBST (empty: a private temporary directory; the tests keep the rendered config)
 
-case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   # the script's own directory without running dirname
+here_=${BASH_SOURCE[0]%/*}; [ "$here_" != "${BASH_SOURCE[0]}" ] || here_=.   # the script's own directory without running dirname
 root=$(cd "$here_/.." && pwd -P)
 die() { echo "assemble-image.sh: $1" >&2; exit "${2:-2}"; }
 is_empty_dir() { "$PY3" -I -B bin/oci-digest.py is-empty "$1" 2>/dev/null; }   # a directory that cannot be listed is not empty
@@ -76,7 +76,7 @@ esac
 # a symlink as a ROOT (archive, melange repo, keyring directory, out) is refused: copies and writes would go through it (the config and the base lock are
 # committed constants now: no caller value reaches them, so there is nothing to check there)
 # the version grammar first, with the shell alone: a bad --version is refused before any tool, python included
-[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = 0.0.0-rc.1 ]] || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
+[[ $version =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = 0.0.0-rc.1 ]] || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 for pair in "--archive:$archive" "--melange-repo:$melrepo" "--keyring-dir:$keydir" "--out:$out" "--render-dir:$render"; do
   [ "$(printf '%s' "${pair#*:}" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] || die "${pair%%:*} holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); refusing, the path arguments are plain ASCII text"
   [ "${pair%%:*}" = --render-dir ] && [ -z "${pair#*:}" ] && continue   # no render directory given: a private temporary one is used
@@ -95,7 +95,7 @@ archive=$(absd "$archive"); melrepo=$(absd "$melrepo"); keydir=$(absd "$keydir")
 # 0.0.0-rc.1 (REQ-CHAIN-004-AC12); anything else is refused before any tool runs
 "$PY3" -I -B bin/oci-digest.py check-version "$version" || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 apkver=${version/-rc./_rc}; apkver=${apkver/-rc/_rc}   # the apk version syntax for a pre-release: 0.3.0-rc1 -> 0.3.0_rc1, 0.0.0-rc.1 -> 0.0.0_rc1; the image tag keeps the rc form
-[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)"
+[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)"
 build_date=$("$PY3" -I -B bin/oci-digest.py render-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
 for d in "$archive" "$melrepo" "$keydir"; do
   case $d in *://*) die "the archive, the melange repository and the keyring dir must be local directories, not addresses ($d)";; esac

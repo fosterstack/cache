@@ -250,6 +250,27 @@
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
     },
     {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
+      "line": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
+    },
+    {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "b49f5db9ac9502afd613edb1041a3dd3754fff06283962ccd3e42c992f42a060",
+      "line": "b49f5db9ac9502afd613edb1041a3dd3754fff06283962ccd3e42c992f42a060",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
+    },
+    {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "64aea209513fa6dafd7b1259b6444f55af7d7c9d1de5d6486fff443b010e2e42",
+      "line": "64aea209513fa6dafd7b1259b6444f55af7d7c9d1de5d6486fff443b010e2e42",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586 round 2: the records input of the Sign-rebuild call, the Rebuild record digests); advisor ruling Oct 23"
+    },
+    {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
       "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
@@ -1656,6 +1677,13 @@
       "context": "comment"
     },
     {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "f0e3e2f9c65769916baa11aebb72b72e2e2ada67b0d68f27395238bd44798162",
+      "line": "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd",
+      "ruling": "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): the helper's one curl line, pinned by hash; it reaches only the cache under test or the runner's own token endpoint, host and URL checked before curl starts, and fetches no software"
+    },
+    {
       "file": "bin/acceptance-gradle.sh",
       "form": "a download",
       "key": "85d58dc5457660a946aa5e3aa99ad7bd8518cdf8571d542647b3dc2d0a48ee23",
@@ -1801,6 +1829,667 @@
       "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
       "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
       "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
+    },
+    {
+      "file": "bin/chain-build-admit-test.sh",
+      "form": "a download",
+      "key": "07b428d59678569fd7a3900265c441e714287fda109c5e650ca64c242a48e937",
+      "line": "9aca2ebdd8c73f38cc45f80a41e204e3d457a1ddac8eeeda763fd64304f75e13",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-admit-test.sh",
+      "form": "a download",
+      "key": "258d8c2c6f4f3a703719fed088411404da277426ce7c68a39d7238b4ee968d42",
+      "line": "9aca2ebdd8c73f38cc45f80a41e204e3d457a1ddac8eeeda763fd64304f75e13",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "613e385a8b1ca95218194d29597cc8a678661c65fe07bbd9b623e087bcbec264",
+      "line": "184b2129f379c1bb79a09b09bab8a3f473f56d64155d8a7509b849c6fe08fb30",
+      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
+      "line": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "a908cf85d4a79795572f55f73c4d0cecdfb651d54a9e15e9f6f3463e9894ce99",
+      "line": "9ffeeedbbe1e448a2f7ad9a27037960ef4edd1882b6f9543104f76e767246906",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "b03d0718f5264d4777031b3db1bcc0c674fd7cd062bc13bdfecef75141b6ace0",
+      "line": "2a350716df21ad9a9b5c6cdb931664e11834653867237a441476a557f327b67f",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "c24d2dc3a2575d696bd52cb183ec01f26a26b3a016282a246d13fdf4abfe707c",
+      "line": "c24d2dc3a2575d696bd52cb183ec01f26a26b3a016282a246d13fdf4abfe707c",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "1c31f20da63b06855c5b5cc634a1a44f5c54b288c4b0654f8c083ce11c5dbfb4",
+      "line": "1c31f20da63b06855c5b5cc634a1a44f5c54b288c4b0654f8c083ce11c5dbfb4",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "2ed324cdf57fe41fbea80987b36ac5a9d5ea5f09555899058d8812568018e7cb",
+      "line": "2ed324cdf57fe41fbea80987b36ac5a9d5ea5f09555899058d8812568018e7cb",
+      "ruling": "text, not a command: fed to check-guide.sh as a command the guide check must refuse (it runs only verify forms; a fake curl on PATH is the backstop); nothing downloads",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
+      "line": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "7ac6f5a9d44b3e06c034672ae10d49d95a6f4664603191a745b2b66bfcdc1ba2",
+      "line": "7ac6f5a9d44b3e06c034672ae10d49d95a6f4664603191a745b2b66bfcdc1ba2",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "8026e64071d458454099b9a4f9f558782af2f1f8b3294466b7cdc6bf04139702",
+      "line": "8026e64071d458454099b9a4f9f558782af2f1f8b3294466b7cdc6bf04139702",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "be43d2107501ada9471408c3f0b60af35a6b8a71eba681dd60922f869155eb49",
+      "line": "77e9ce3c64f59f28d7d731685701ebc7732c10ec3ab6c9ccf5d0fba24bfeedd3",
+      "ruling": "text, not a command: fed to check-guide.sh as a command the guide check must refuse (it runs only verify forms; a fake curl on PATH is the backstop); nothing downloads",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-wiring-test.sh",
+      "form": "a download",
+      "key": "05228d8824deae37945f01ae39f7fe95a9eadc72809673fb3e95d2f0c6ba9c15",
+      "line": "5283149b03ab689851a454ed0ff75f822a050107763107003eb28cdfdc1c0e1d",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-wiring-test.sh",
+      "form": "a download",
+      "key": "1919acb14d2c19fc4bd5109f6847aacf23f5d60e893d349c4f2cc8f4d7f6ba59",
+      "line": "1919acb14d2c19fc4bd5109f6847aacf23f5d60e893d349c4f2cc8f4d7f6ba59",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-wiring-test.sh",
+      "form": "a download",
+      "key": "6152628c125088185e57e5ff31f746db4e8b232360468a698f4341385ff24da2",
+      "line": "6152628c125088185e57e5ff31f746db4e8b232360468a698f4341385ff24da2",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-install-crane-test.sh",
+      "form": "a download",
+      "key": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
+      "line": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-install-crane-test.sh",
+      "form": "a download",
+      "key": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
+      "line": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-install-witness-test.sh",
+      "form": "a download",
+      "key": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
+      "line": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-install-witness-test.sh",
+      "form": "a download",
+      "key": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
+      "line": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-release-wiring-test.sh",
+      "form": "a download",
+      "key": "43f885be2f1bc9d17ace84d16c1d63ea23640724e0b6b5fff664610de84c470b",
+      "line": "43f885be2f1bc9d17ace84d16c1d63ea23640724e0b6b5fff664610de84c470b",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-release-wiring-test.sh",
+      "form": "a download",
+      "key": "896e4877a028845bfc2e6459c1067662091503951af58f9086acd4580969e16d",
+      "line": "896e4877a028845bfc2e6459c1067662091503951af58f9086acd4580969e16d",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-release-wiring-test.sh",
+      "form": "a download",
+      "key": "96aef3956494b1292361c10dc953b863e6c5fd910cab03fe083e909f85561fa0",
+      "line": "96aef3956494b1292361c10dc953b863e6c5fd910cab03fe083e909f85561fa0",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-release-wiring-test.sh",
+      "form": "a download",
+      "key": "ed2abc9ca792c78b289f8c3749ea1a8053fd8e9b9a95919c7ba0d84c23968ad3",
+      "line": "ed2abc9ca792c78b289f8c3749ea1a8053fd8e9b9a95919c7ba0d84c23968ad3",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-release-wiring-test.sh",
+      "form": "a download",
+      "key": "ef74c451233ec14d10c4b9a300d6181d227a470449484d701e590f540486c8e0",
+      "line": "f18e21c6ba9e99b189c02451477cead8ad5c0252b8cb0e4ffd032a5be04fbf07",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "0e58ba1f988fbbabdc43db530eebc69edede349483e0f5867a0fdc7ecb54a4d0",
+      "line": "0e58ba1f988fbbabdc43db530eebc69edede349483e0f5867a0fdc7ecb54a4d0",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "11f94bf81d300b553772ba8070fa39ffbc35a39230cd6c60a3e0563225c46ce6",
+      "line": "11f94bf81d300b553772ba8070fa39ffbc35a39230cd6c60a3e0563225c46ce6",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "2dd4a384782c8f8bd8f56fbfca19cd03b649b82a1264d59249081b39dc92eea4",
+      "line": "2dd4a384782c8f8bd8f56fbfca19cd03b649b82a1264d59249081b39dc92eea4",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "2eeacf01f09e2b472d6b6311d9d4d3cc305fc076b4682a7be41157ac0e021e2c",
+      "line": "2eeacf01f09e2b472d6b6311d9d4d3cc305fc076b4682a7be41157ac0e021e2c",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "count": 2,
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "34c543a0e8027d49b5f9cfa0349348cc120c4754bc3c022c08036bd45d5014ff",
+      "line": "34c543a0e8027d49b5f9cfa0349348cc120c4754bc3c022c08036bd45d5014ff",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "count": 2,
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "35ebd1190e372136b8ef03acd4bf9746a10d013e78bc0b3591459c6f116c73c0",
+      "line": "35ebd1190e372136b8ef03acd4bf9746a10d013e78bc0b3591459c6f116c73c0",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "402b7868bf939ec26c3bb3363b6ed178a12257e561bf8fb2ee3ca0119b344602",
+      "line": "09134979163830b65139f8adef4f720b75e493985c34ac965b9122bfd350a757",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "6ae7200147a6ad88a54b7d5146daf2f056966fbd9480310021090e887a2b4676",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "af39a783fe3282d34f928208b312db05f631f78e92bea1dc39018402256e5db2",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "48880d89fa9f366d24efa2bd58dff3d2d3b31f5fa5422ad5ed3953e28a57b29b",
+      "line": "48880d89fa9f366d24efa2bd58dff3d2d3b31f5fa5422ad5ed3953e28a57b29b",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "4b3fe363fc55a37e9c60cf1a4d98610eb66905e8940fd9f31e9c70e2b10283c0",
+      "line": "4b3fe363fc55a37e9c60cf1a4d98610eb66905e8940fd9f31e9c70e2b10283c0",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "53e888e1e298ccb6bb2eaaf525a62e3c2c82fc61e167a422cee5c383140cbdc9",
+      "line": "53e888e1e298ccb6bb2eaaf525a62e3c2c82fc61e167a422cee5c383140cbdc9",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "577f99c7332a667cd69eae1d6388d8e04b3aa0ca5c0ac3227e7d6f0f4cffab2e",
+      "line": "8a48392e58aa55f7fa2c49d8711a545d3b25fbb67f0cadc629f953df2f2c0ed8",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "59db4d6bf78bcd6f40e2dfa9d1441b817c400b22f2758b402edbbeb45c1d15f8",
+      "line": "59db4d6bf78bcd6f40e2dfa9d1441b817c400b22f2758b402edbbeb45c1d15f8",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "5bc6ffa35519944f6f2cd1c498585d2d23d086a722d08b28a0ef172d9e6dff16",
+      "line": "5bc6ffa35519944f6f2cd1c498585d2d23d086a722d08b28a0ef172d9e6dff16",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "5d38ca92b31da1f28b3a9a0fbe51ac801da78ae05dd97e50bb3ea3d408c5c8f1",
+      "line": "5d38ca92b31da1f28b3a9a0fbe51ac801da78ae05dd97e50bb3ea3d408c5c8f1",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "651a1261cc7fa576211f58878bbe8fb41aa307c3189a504baac97843838bae08",
+      "line": "55472c2665283729aff74241489b1f30a49b9e6aa6f36965b0c391a4f4cbd36e",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "66934a09af4ef6527329a5a1a1507ad4fd76e99b8cb762479dd8fcb9fe594418",
+      "line": "66934a09af4ef6527329a5a1a1507ad4fd76e99b8cb762479dd8fcb9fe594418",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "70109bf8d2004e68682735d91b4736a5c56ba040fc2bad625f1156df4c1ad501",
+      "line": "70109bf8d2004e68682735d91b4736a5c56ba040fc2bad625f1156df4c1ad501",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "7f8977d861c257c84546a4cc17ab7b16fe8111e2e7523f25c9b2403e2aa31bce",
+      "line": "7f8977d861c257c84546a4cc17ab7b16fe8111e2e7523f25c9b2403e2aa31bce",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "8736ab7d5fd4e3b0188623f965740f431cdbaad8ae56e7c193cea70dd390ccae",
+      "line": "8736ab7d5fd4e3b0188623f965740f431cdbaad8ae56e7c193cea70dd390ccae",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "875649fb6d2c861b8b8bfe900783dcdab56cb1db0b98ebaa4b4c9b75d965b8b1",
+      "line": "875649fb6d2c861b8b8bfe900783dcdab56cb1db0b98ebaa4b4c9b75d965b8b1",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "8e3fa66660525034011df16fd74c34a768af7a526c86d7ef0c80426be765a1b0",
+      "line": "1e563ea8ed8239c9d578f589b5ccf4b236e7dea0d87f24ed3fdc1be7a5c98a60",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "9776b647c1dcabe90ea38eace9e9b801b4532c36ac332e1e99a76c9d8796b73f",
+      "line": "9776b647c1dcabe90ea38eace9e9b801b4532c36ac332e1e99a76c9d8796b73f",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "9a3934249003f73eaddda6ea842ba4af44decd8ee37892b4681034cf1fc91cd5",
+      "line": "c6769ca4f4fc6d5bd31a4a02feac90cf8786f820a149af3901923febd9a6a62b",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "9c442fde7de233072fd7d3005f2b47de225e6705fe65ac353164dba154c3cc16",
+      "line": "9c442fde7de233072fd7d3005f2b47de225e6705fe65ac353164dba154c3cc16",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "a4c62da40826120ecf57177b059aea4cc3e13f0d6b566742e6c0429cc33a53ec",
+      "line": "a4c62da40826120ecf57177b059aea4cc3e13f0d6b566742e6c0429cc33a53ec",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "a51647dd98b71375877110baeb5ae63c5641d258d3420ba19d2e841482b2551b",
+      "line": "a51647dd98b71375877110baeb5ae63c5641d258d3420ba19d2e841482b2551b",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "a762dabe90c4ff91b15104ffc07bf87c8a4549be6352fbd475e2deb232e270d1",
+      "line": "5f53d24a76eb22d781556ab5e0f04ea1fd28d29542265a95b398fe804ea4313d",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "ad5a73a6c51c68aa4c4cae46d9798595ddfeff982dab2099dedfb556a0d3cdcf",
+      "line": "ad5a73a6c51c68aa4c4cae46d9798595ddfeff982dab2099dedfb556a0d3cdcf",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "b41bca4ee6cc18254fb7f455602fa5b5ee70f2e5dadec3c5378f4e73aea3c703",
+      "line": "57f5e5c4b37c9103e9373c2debcc99dbd77d58362364a2d1ce230e97a2ba648c",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "bb046cd467b6f45db461759bfa9b79eeb14c2ad702b9237586232abfb2d8f7ec",
+      "line": "bb046cd467b6f45db461759bfa9b79eeb14c2ad702b9237586232abfb2d8f7ec",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "bb51e59592b9c82aea8853fdef84a7a4abe948230a7fb450976c16846428b4e9",
+      "line": "bb51e59592b9c82aea8853fdef84a7a4abe948230a7fb450976c16846428b4e9",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "bb71e1284ff87e0b06cb9cde559ae81dd4d34243d72db2a195b91f120fd81ad6",
+      "line": "bb71e1284ff87e0b06cb9cde559ae81dd4d34243d72db2a195b91f120fd81ad6",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "bc35fd7dfe36c425c9af3135d4b5b61f20a0dbcd82576b8a73447c6c44ad78eb",
+      "line": "bc35fd7dfe36c425c9af3135d4b5b61f20a0dbcd82576b8a73447c6c44ad78eb",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "c2600087c1f2866bad26fda0ca899bef95d97e4124f8603fe34aab305d94996f",
+      "line": "c2600087c1f2866bad26fda0ca899bef95d97e4124f8603fe34aab305d94996f",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "c669d9b9b1b5a2b7b8a31e1ad2e1783c6c1c7753dcf2bedb6f3fd1a48f83bac8",
+      "line": "729bcd304566d3625f9ce608eea7d06cb0fbbf22b73b42dc612afc195850b826",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "d3a71013beacc738b94b336e67537a583b069a728d17ffeac358ec57d622571d",
+      "line": "d3a71013beacc738b94b336e67537a583b069a728d17ffeac358ec57d622571d",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "d82449a5d1832804a9f571f9d98caf0fdfd4f966b3041a8002811430c3616efc",
+      "line": "aee4f3aac2f0c4388754ce5c48e353d9732f044170e130dedbae11d299efe09d",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "de7d4e2fcc55c7044724258049b97b2c0339db144f8aea0262b726baca2b86c0",
+      "line": "de7d4e2fcc55c7044724258049b97b2c0339db144f8aea0262b726baca2b86c0",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "eafe218325a3f2f4bcffde18881183399936f3253771ba7b613a8aaf8cdc4ab6",
+      "line": "44334fa11a231ec758cc0721449d83832565174bf691bb7fb4331b20adbb9565",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "f6ef66883011392bf893f24f60558e64277122fdb3598d732991ec0735f294f9",
+      "line": "f6ef66883011392bf893f24f60558e64277122fdb3598d732991ec0735f294f9",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "f7b1b3007f2a30bab241cf9c02740c20c33fca5a0541553f0063df24332e196f",
+      "line": "f7b1b3007f2a30bab241cf9c02740c20c33fca5a0541553f0063df24332e196f",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-sign-wiring-test.sh",
+      "form": "a download",
+      "key": "f8ae312768df5019f41992ab6bc77f6dc4163b39128f0f723df2c72ff905f019",
+      "line": "f8ae312768df5019f41992ab6bc77f6dc4163b39128f0f723df2c72ff905f019",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "count": 2,
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/chain-verify-test.sh",
+      "form": "a download",
+      "key": "50f6cee9d895f7fa6d49d0bfce0f35cd5efa03f331fd7b4363530d2d8f5caee5",
+      "line": "4414446f1361f486b5628f3ee9685879aa289fe1ff9fa5529fe2ae8a54968000",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/go-bump-open-pr-test.sh",
+      "form": "a download",
+      "key": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
+      "line": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/inspector-reuse-test.sh",
+      "form": "a download",
+      "key": "7b4939d8409566256dee796de1a01cb79a091bb9d11b3cfa2522a1127e5fd79a",
+      "line": "7b4939d8409566256dee796de1a01cb79a091bb9d11b3cfa2522a1127e5fd79a",
+      "ruling": "text, not a command: a package name and version (curl@8.0) in a plain variable assignment, passed to the SBOM fixture builder; nothing downloads it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/verify-release-guide-test.sh",
+      "form": "a download",
+      "key": "1d4201dd0e97d54dd3414098c5d0defc7addd29b7ac21092a7bd1699e280cbfd",
+      "line": "31bc86620b526dd7ec73f3bba99e5d05cc770eab1a4d495c070af507486d3c99",
+      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/verify-release-guide-test.sh",
+      "form": "a download",
+      "key": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
+      "line": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/verify-release-guide-test.sh",
+      "form": "a gh release or extension download",
+      "key": "74c0cff3c281130a2f038e62c1241e0f4f4a45aa9d5a43a8f6530d104574911f",
+      "line": "74c0cff3c281130a2f038e62c1241e0f4f4a45aa9d5a43a8f6530d104574911f",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/verify-release-guide-test.sh",
+      "form": "a gh release or extension download",
+      "key": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
+      "line": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
+      "ruling": "text, not a command: `gh release download` appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a system package install",
+      "key": "44c2455a5919392120f5472d403267dd976a354697a62eef398794bdd05301ca",
+      "line": "44c2455a5919392120f5472d403267dd976a354697a62eef398794bdd05301ca",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "11b71eb0582aa2c0b7885af29cedf940d574d14c64caad686b41293669b5e042",
+      "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
+      "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a system package install",
+      "key": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    }
+  ],
+  "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
+  "file_pins": [
+    {
+        "file": ".github/policy/gradle-wrapper-jar-sha256.txt",
+        "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+        "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256",
+        "version": "9.7.1",
+        "published": "2026-08-19T15:30:28Z"
     }
   ]
 }

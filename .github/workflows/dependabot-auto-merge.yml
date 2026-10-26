@@ -238,5 +238,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        # Bound to the head this run screened: an older run (an older body) cannot arm a newer head.
-        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
+        # Bound to the head this run screened: an older run (an older body) cannot arm a newer head. The hold below reads the PR's files at that same head.
+        run: |
+          set -euo pipefail
+          # held out of auto-merge and handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): the pinned tool module (go.mod and go.sum under
+          # tools/govulncheck/), whose version is also written by hand in ci.yml, which Dependabot cannot change; and any PR whose file list is at the API's cap of 100 (it
+          # may be cut, so it cannot be judged). The hourly reviewer turns off an arm made earlier.
+          # one read gives the file list and the head they belong to; the arm below is bound to the head this run screened (HEAD_SHA), so a push between the screen and the arm is not armed
+          snap=$(gh pr view "$PR_URL" --json files,headRefOid)
+          head=$(printf '%s' "$snap" | jq -r '.headRefOid')
+          held=$(printf '%s' "$snap" | jq '[.files[].path | select(startswith("tools/govulncheck/"))] | length')
+          total=$(printf '%s' "$snap" | jq '.files | length')
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the PR's head" >&2; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the head this run screened" >&2; exit 1; }
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "### Not armed: the PR has a newer head than the one this run screened" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$held" != 0 ] || [ "$total" -ge 100 ]; then
+            echo "### Held out of auto-merge" >> "$GITHUB_STEP_SUMMARY"
+            echo "This PR touches tools/govulncheck/ (the pinned tool's version is also written in ci.yml) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal lane PR." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
