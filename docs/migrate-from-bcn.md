@@ -133,7 +133,7 @@ FosterStack Cache adds (all in the free MIT core — nothing here is paywalled):
   (see [Maven setup](maven.md))
 
 Paid tiers (Team/Business/Compliance) add SSO, HA/replication, a
-documented 24–48h CVE response SLA, and compliance support on top of the
+48-hour CVE response target, and compliance support on top of the
 same core — see the pricing page. Security patches are never withheld
 from the free tier.
 
@@ -143,7 +143,7 @@ certificate number ship with every release and are verifiable by anyone, with
 no account and no purchase. The FIPS-mode image is publicly pullable too. What
 the Compliance tier sells is the authored analysis — a FIPS applicability
 statement mapping the validated module boundary onto this product — plus
-per-release attestation letters signed by FosterStack LLC, and time on your
+a monthly attestation letter signed by FosterStack LLC, and time on your
 security questionnaires.
 
 FosterStack Cache is not "FedRAMP compliant" or "CMMC compliant". Those attach
