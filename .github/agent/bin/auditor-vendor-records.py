@@ -3,7 +3,7 @@
 tree and provenance records its go.mod and go.sum change calls for, as ONE signed commit by the App
 (auditorlib.vendor_records).
 
-  vendor-records.py --repo OWNER/NAME --workspace DIR [--dry-run] [--branch B ...]
+  auditor-vendor-records.py --repo OWNER/NAME --workspace DIR [--dry-run] [--branch B ...]
 
 --workspace: a full clone of main whose bin/ holds the provenance scripts; the bump branches are fetched into it as
 data and never run. --branch: only these branches (a manual run); default every dependabot/go_modules/* and
@@ -18,7 +18,7 @@ from auditorlib import signed_commit, vendor_records
 
 
 def main(argv=None, run=None, regenerate=None):
-    ap = argparse.ArgumentParser(prog="vendor-records", description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="auditor-vendor-records", description=__doc__.split("\n")[0])
     ap.add_argument("--repo", required=True)
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--branch", action="append")

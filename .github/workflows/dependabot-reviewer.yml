@@ -36,7 +36,7 @@ name: Dependabot reviewer
 # adds ONE App-signed commit holding only those (vendor/, dependency-provenance.json, the reviewed licences). It runs
 # here for the same reason as the review: a run Dependabot's own push starts holds no secrets, so a scheduled sweep
 # from main's copy is the only way to hold the App key. Branches are fetched as data and never run
-# (.github/agent/bin/vendor-records.py).
+# (.github/agent/bin/auditor-vendor-records.py).
 #
 # `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on majors and flagged updates, and a
 # required check would block every human PR.
@@ -510,7 +510,7 @@ jobs:
           if-no-files-found: ignore
 
   vendor-records:
-    name: vendor records
+    name: records sweep
     # The `agent` environment is limited to branch main, so a run from any other ref fails before the App key exists:
     # the environment is the boundary here, not a condition inside this file (a hostile ref would just omit it).
     runs-on: ubuntu-latest
@@ -542,5 +542,5 @@ jobs:
           GH_TOKEN: ${{ steps.app-records.outputs.token }}
           DRY_RUN: ${{ inputs.records_dry_run && '--dry-run' || '' }}
         run: |
-          python3 -I .github/agent/bin/vendor-records.py --repo "$GITHUB_REPOSITORY" \
+          python3 -I .github/agent/bin/auditor-vendor-records.py --repo "$GITHUB_REPOSITORY" \
             --workspace "$GITHUB_WORKSPACE" $DRY_RUN

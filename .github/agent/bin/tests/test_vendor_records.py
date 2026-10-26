@@ -23,7 +23,7 @@ LIC = json.dumps({"example.com/m@v1.0.0": "MIT"}, indent=1, sort_keys=True) + "\
 
 def git(cwd, *args, check=True):
     r = subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", *args], cwd=cwd,
-        env=GIT_ENV, capture_output=True, text=True)
+        env=GIT_ENV, capture_output=True, text=True, errors="replace")
     if check and r.returncode != 0:
         raise AssertionError("git %s: %s" % (args, r.stderr))
     return r.stdout.strip()
@@ -282,6 +282,23 @@ class Sweep(unittest.TestCase):
         git(self.seed, "push", "-q", "-f", self.origin, BR)
         status, api = self.sweep()
         self.assertEqual(status, "skipped: vendor/sub is a link or a submodule")
+
+    def odd_path(self, branch):
+        """commit a vendored path that is not valid UTF-8 on `branch`, by git plumbing"""
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.seed, input=b"x", capture_output=True,
+                              env=GIT_ENV).stdout.decode().strip()
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo", b"100644," + blob.encode() + b",vendor/\xff"],
+                       cwd=self.seed, env=GIT_ENV, check=True)
+        git(self.seed, "commit", "-qm", "odd"); git(self.seed, "push", "-q", "-f", self.origin, branch)
+
+    def test_a_path_that_is_not_valid_utf8_is_a_skip_in_the_diff_and_in_the_export(self):
+        self.commit_files({})
+        self.odd_path(BR)
+        status, api = self.sweep()                                      # the diff of the branch meets it first
+        self.assertEqual(status, "skipped: " + V.NOT_UTF8); self.assertEqual(api.made, [])
+        with self.assertRaises(V.Skip) as ctx:                          # and a tree that holds it (the base, say) never exports
+            V._export(self.ws, self.head(), os.path.join(self.tmp, "out"))
+        self.assertEqual(str(ctx.exception), V.NOT_UTF8)
 
     def test_a_failing_blob_read_is_a_failed_line(self):
         real = subprocess.run

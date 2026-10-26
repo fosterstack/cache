@@ -50,7 +50,7 @@ EXEMPT = {n: _RUN_INTERNAL for n in (
     "votes.json", "verdict.json", "triggers.json", "syft.json", "stop.json", "still-present.json", "still-active.json", "scanner-calls.json", "run-state.json", "rule0.json",
     "result.json", "refusal-log.json", "probe.json", "pr.json", "plan.json", "parity.json", "package.json", "note.json", "leak.json", "govulncheck.json", "consumed.json",
     "budget.json", "adjudication.json", "accepted-item.json", ".status.json", ".json", "*.json")}
-_SWEEP_FILE = ("a file of the records sweep (vendor-records.py): made and read by "
+_SWEEP_FILE = ("a file of the records sweep (auditor-vendor-records.py): made and read by "
     "bin/vendor-provenance*.py inside one sweep run, not an input of the "
     "auditor")
 for _n in ("dependency-provenance.json", "licenses.json", "origins.json", "provenance.json", "sumdb.json"):

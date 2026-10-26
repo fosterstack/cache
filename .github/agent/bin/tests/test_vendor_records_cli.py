@@ -1,6 +1,6 @@
 # (no AC is registered for the sweep yet: the ACs REQ-VEND-001-AC16.. are drafted for the owner's ratification, see the
 # PR)
-"""vendor-records.py: which branches the sweep visits and what its exit code says. The per-branch work is
+"""auditor-vendor-records.py: which branches the sweep visits and what its exit code says. The per-branch work is
 auditorlib.vendor_records (its own tests)."""
 import importlib.util, io, os, subprocess, sys, unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -10,7 +10,7 @@ BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
 from auditorlib import vendor_records as V  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("vendor_records_cli", os.path.join(BIN, "vendor-records.py"))
+spec = importlib.util.spec_from_file_location("vendor_records_cli", os.path.join(BIN, "auditor-vendor-records.py"))
 CLI = importlib.util.module_from_spec(spec); spec.loader.exec_module(CLI)
 
 
@@ -72,7 +72,7 @@ class Cli(unittest.TestCase):
         mk.assert_called_once_with("/ws"); self.assertEqual(pb.call_args.args[4], "regen")
 
     def test_run_as_a_script_it_exits_with_the_argument_parsers_status(self):
-        r = subprocess.run([sys.executable, os.path.join(BIN, "vendor-records.py")], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, os.path.join(BIN, "auditor-vendor-records.py")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 2); self.assertIn("--repo", r.stderr)
 
 

@@ -26,6 +26,7 @@ from . import signed_commit
 
 BUMP_FILES = ("go.mod", "go.sum")
 LICENCES = "test-evidence/dependency-licenses.yaml"
+NOT_UTF8 = "the tree holds a path that is not valid UTF-8"
 _GO_MOD_DIRECTIVES = ("replace", "toolchain", "godebug")
 # the pinned toolchain at its fixed install path (bin/install-scanner.sh go), never a go found by name
 GO = "/usr/local/bin/fscache-go/bin/go"
@@ -127,7 +128,10 @@ def _export(ws, head, dest):
     files = {}
     for entry in _git(ws, "ls-tree", "-r", "-z", head).split(b"\0"):
         if entry:
-            meta, path = entry.decode("utf-8", "replace").split("\t", 1)
+            try:
+                meta, path = entry.decode("utf-8").split("\t", 1)
+            except UnicodeDecodeError:
+                raise Skip(NOT_UTF8)
             mode, _, sha = meta.split(" ")
             if mode not in ("100644", "100755"):
                 raise Skip("%s is a link or a submodule" % path)
@@ -204,6 +208,8 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
         return "committed " + signed_commit.commit_on_branch(repo, branch, head, subject(branch), changes, run=run)
     except Skip as e:
         return "skipped: %s" % e
+    except UnicodeDecodeError:
+        return "skipped: " + NOT_UTF8
     except (signed_commit.CommitError, RuntimeError, OSError, ValueError) as e:
         return "failed: %s" % e
 
