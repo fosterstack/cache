@@ -1378,7 +1378,9 @@ class FixPR(Base):
         base = {**self.REUSE, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0, "false\n", ""),
                 ("gh", "pr", "view", u, "--json", "isDraft"): (0, "false\n", "")}
         for rules, word in (({**base, ("gh", "pr", "ready", "--undo"): (1, "", "HTTP 500")}, "draft"),
-                            ({**base, ("gh", "pr", "view", u, "--json", "isDraft"): (1, "", "HTTP 500")}, "isDraft")):
+                            ({**base, ("gh", "pr", "view", u, "--json", "isDraft"): (1, "", "HTTP 500")}, "isDraft"),
+                            ({**base, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0, "true\n", ""),
+                              ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, "disable auto-merge")):
             res, fr = self.real(rules, automerge=True, row=self.MAJOR, api=look)
             self.assertEqual((res[0], res[2]), (None, "error")); self.assertIn(word, res[1])
             self.assertFalse(any(a[:3] == ["gh", "pr", "edit"] for a in fr.argvs()))
