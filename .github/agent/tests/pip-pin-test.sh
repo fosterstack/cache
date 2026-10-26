@@ -80,6 +80,13 @@ def logical_lines(run):
 SEP = {";", "&&", "||", "|", "&", "(", ")"}
 def commands(line):
     """-> [(tokens, previous separator, next separator)]"""
+    # every mutant re-reads the same run scripts and shlex is the slow part: split each line once, hand out copies
+    if line not in split_cache:
+        split_cache[line] = split_commands(line)
+    return [(list(c), p, n) for c, p, n in split_cache[line]]
+
+split_cache = {}
+def split_commands(line):
     try:
         lx = shlex.shlex(line, posix=True, punctuation_chars=True); lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
