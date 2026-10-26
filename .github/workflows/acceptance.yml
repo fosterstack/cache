@@ -3,21 +3,14 @@ name: Acceptance
 # The client acceptance suites (workflow consolidation 4 of 4, owner RATIFIED Oct 2): acceptance-gradle.yml and
 # acceptance-maven.yml merged, unchanged. Each job keeps its required check name (acceptance-gradle; acceptance-maven
 # (1.2.0) and (1.2.3) from its matrix), its permissions and its results output. Push to main and pull requests run
-# them from source. The release chain no longer calls this file (REQ-CHAIN-006-AC10; Check runs the suites through
-# bin/check-acceptance.sh); a caller that passes image-ref gets the release-chain mode, which refuses a reference
-# that is not pinned by digest (REQ-SUP-001-AC29).
+# them from source. The release chain does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through
+# bin/check-acceptance.sh, and this file starts no container image (REQ-SUP-001-AC29).
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_call:
-    inputs:
-      image-ref:
-        description: 'candidate image reference (@sha256) to run the server from; empty = build from source'
-        required: false
-        type: string
-        default: ''
     outputs:
       gradle-results:
         description: 'JSON list of the AC IDs the Gradle suite asserted, with results'
@@ -26,6 +19,13 @@ on:
         description: 'JSON list of the AC IDs the Maven suite asserted, with results'
         value: ${{ jobs.acceptance-maven.outputs.results }}
 
+# A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
+# its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
+# nothing. The prefix is a literal, not github.workflow, so no workflow name can collide with another's group.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('acceptance-pr-{0}', github.event.pull_request.number) || format('acceptance-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -33,13 +33,8 @@ jobs:
   acceptance-gradle:
     name: acceptance-gradle
     runs-on: ubuntu-latest
-    # F05: release mode pulls the deliberately private candidates package;
-    # a called workflow's unspecified permissions become NONE regardless
-    # of the caller's ceiling, so the job must ask for packages: read
-    # itself. Harmless in PR mode (unused; downgraded on forks).
     permissions:
       contents: read
-      packages: read
     outputs:
       results: ${{ steps.results.outputs.results }}
     steps:
@@ -56,11 +51,9 @@ jobs:
           java-version: '21'
 
       - name: build fscache from source
-        if: inputs.image-ref == ''
         run: CGO_ENABLED=0 go build -o /tmp/fscache-bench ./cmd/fscache
 
       - name: start fscache
-        if: inputs.image-ref == ''
         run: |
           FSCACHE_ADDR=:18095 FSCACHE_DATA_DIR=/tmp/fscache-bench-data /tmp/fscache-bench &
           echo $! > /tmp/fscache-bench.pid
@@ -69,40 +62,6 @@ jobs:
             sleep 0.5
           done
           echo "fscache never became healthy" >&2
-          exit 1
-
-      - name: refuse an image-ref that is not pinned by digest
-        if: inputs.image-ref != ''
-        env:
-          IMAGE_REF: ${{ inputs.image-ref }}
-        run: |
-          set -euo pipefail
-          # the reference grammar: [host[:port]/]path[/path]...[:tag]@sha256:<64 hex>; path parts are lowercase
-          label='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
-          host="${label}(\.${label})*(:[0-9]+)?"
-          part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
-          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
-          pin_re="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
-          export LC_ALL=C   # ASCII classes only
-          if ! [[ "${IMAGE_REF}" =~ $pin_re ]]; then
-            printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
-            exit 1
-          fi
-
-      - name: start the exact candidate image (release-chain mode)
-        if: inputs.image-ref != ''
-        env:
-          IMAGE_REF: ${{ inputs.image-ref }}
-        run: |
-          set -euo pipefail
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
-          docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 "${IMAGE_REF}"
-          for _ in $(seq 1 20); do
-            curl -sf http://localhost:18095/healthz && exit 0
-            sleep 0.5
-          done
-          echo "candidate image never became healthy" >&2
-          docker logs fscache-acc >&2 || true
           exit 1
 
       - name: the Gradle suite (bin/acceptance-gradle.sh, REQ-GRADLE-001-AC1..AC4)
@@ -115,7 +74,6 @@ jobs:
       # still round-trip. The cap (48 KiB) sits between the compiled-class
       # entries (KBs) and the 64 KiB resource injected below.
       - name: start a capped server (source mode)
-        if: inputs.image-ref == ''
         run: |
           set -euo pipefail
           FSCACHE_ADDR=:18096 FSCACHE_DATA_DIR=/tmp/fscache-capped-data \
@@ -124,21 +82,6 @@ jobs:
             curl -sf http://localhost:18096/healthz && exit 0; sleep 0.5
           done
           echo "capped server never became healthy" >&2; exit 1
-
-      - name: start a capped candidate (release-chain mode)
-        if: inputs.image-ref != ''
-        env:
-          IMAGE_REF: ${{ inputs.image-ref }}
-        run: |
-          set -euo pipefail
-          docker run -d --name fscache-capped -e FSCACHE_MAX_BYTES=49152 \
-            -p 127.0.0.1:18096:8080 "${IMAGE_REF}"
-          for _ in $(seq 1 20); do
-            curl -sf http://localhost:18096/healthz && exit 0; sleep 0.5
-          done
-          echo "capped candidate never became healthy" >&2
-          docker logs fscache-capped >&2 || true
-          exit 1
 
       - name: the Gradle capped-server suite and its results (bin/acceptance-gradle-capped.sh, REQ-EVICT-002-AC3)
         id: results
@@ -161,13 +104,8 @@ jobs:
       COLD_UPLOADS: "5"   # buildinfo + artifacts across both modules
       MODULES: "2"
     runs-on: ubuntu-latest
-    # F05: release mode pulls the deliberately private candidates package;
-    # a called workflow's unspecified permissions become NONE regardless
-    # of the caller's ceiling, so the job must ask for packages: read
-    # itself. Harmless in PR mode (unused; downgraded on forks).
     permissions:
       contents: read
-      packages: read
     outputs:
       results: ${{ steps.results.outputs.results }}
     strategy:
@@ -195,7 +133,6 @@ jobs:
           grep version bench/maven-sample/.mvn/extensions.xml
 
       - name: build fscache and start it WITH Basic Auth
-        if: inputs.image-ref == ''
         run: |
           CGO_ENABLED=0 go build -o /tmp/fscache-mvn ./cmd/fscache
           FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
@@ -206,41 +143,6 @@ jobs:
           done
           echo "server never became healthy" >&2; exit 1
 
-      - name: refuse an image-ref that is not pinned by digest
-        if: inputs.image-ref != ''
-        env:
-          IMAGE_REF: ${{ inputs.image-ref }}
-        run: |
-          set -euo pipefail
-          # the reference grammar: [host[:port]/]path[/path]...[:tag]@sha256:<64 hex>; path parts are lowercase
-          label='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
-          host="${label}(\.${label})*(:[0-9]+)?"
-          part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
-          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
-          pin_re="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
-          export LC_ALL=C   # ASCII classes only
-          if ! [[ "${IMAGE_REF}" =~ $pin_re ]]; then
-            printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
-            exit 1
-          fi
-
-      - name: start the exact candidate image WITH Basic Auth (release-chain mode)
-        if: inputs.image-ref != ''
-        env:
-          IMAGE_REF: ${{ inputs.image-ref }}
-        run: |
-          set -euo pipefail
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
-          docker run -d --name fscache-mvn-acc -p 127.0.0.1:18098:8080 \
-            -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \
-            "${IMAGE_REF}"
-          for _ in $(seq 1 20); do
-            curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
-          done
-          echo "candidate image never became healthy" >&2
-          docker logs fscache-mvn-acc >&2 || true
-          exit 1
-
       - name: the Maven suite (bin/acceptance-maven.sh, REQ-MAVEN-001-AC1, AC2)
         run: bash bin/acceptance-maven.sh
 
@@ -249,7 +151,6 @@ jobs:
       # than the cap; the build completes twice, the oversized archive is
       # 413'd with the documented header, the small module still caches.
       - name: start a capped server (source mode)
-        if: inputs.image-ref == ''
         run: |
           set -euo pipefail
           FSCACHE_ADDR=:18099 FSCACHE_DATA_DIR=/tmp/fscache-mvn-capped \
@@ -259,22 +160,6 @@ jobs:
             curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
           done
           echo "capped server never became healthy" >&2; exit 1
-
-      - name: start a capped candidate (release-chain mode)
-        if: inputs.image-ref != ''
-        env:
-          IMAGE_REF: ${{ inputs.image-ref }}
-        run: |
-          set -euo pipefail
-          docker run -d --name fscache-mvn-capped -e FSCACHE_MAX_BYTES=262144 \
-            -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \
-            -p 127.0.0.1:18099:8080 "${IMAGE_REF}"
-          for _ in $(seq 1 20); do
-            curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
-          done
-          echo "capped candidate never became healthy" >&2
-          docker logs fscache-mvn-capped >&2 || true
-          exit 1
 
       - name: the Maven capped-server suite and its results (bin/acceptance-maven-capped.sh, REQ-EVICT-002-AC4)
         id: results

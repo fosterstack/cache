@@ -33,7 +33,7 @@ the artifact, nothing more.
 # The public image signature is made by the promotion workflow; pin it
 # and the release tag rather than "any workflow in this repo".
 cosign verify ghcr.io/fosterstack/cache:${VER} \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
@@ -123,7 +123,7 @@ it on the image (anonymous, no token):
 ```sh
 cosign verify-attestation \
   --type https://fosterstack.com/attestations/release-manifest/v1 \
-  --certificate-identity-regexp "^https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v${VER}$" \
+  --certificate-identity "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/fosterstack/cache:${VER} > manifest-att.json
 ```
@@ -328,7 +328,7 @@ bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 

@@ -66,8 +66,17 @@ if isinstance(d, dict):
             if isinstance(_st_, dict) and isinstance(_st_.get("run"), str):
                 _st_["run"] = "\n".join(_unwrap_(l) for l in _st_["run"].split("\n"))
 bad = []
-for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
+for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
     bad.append(f"the workflow sets `{k}`")
+# the one reviewed concurrency block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt of a head shares a group with the pull request's other first attempts, so a newer
+# push cancels its older run; every other run (a re-run of any head, a push to main, a merge_group) gets a group of its own per run and attempt, so ci.yml itself never cancels it nor
+# replaces it as a pending run, and a re-run of an old head cancels nothing. Anything else is refused: a shared group or cancel-in-progress on other events could cancel a required check.
+# Concurrency groups are repository-wide: another workflow that picks a colliding group is not checked here (a computed group defeats a prefix check, and a cancel fails closed:
+# a cancelled check is not a success).
+if "concurrency" in d and d["concurrency"] != {
+        "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
+    bad.append("the workflow's concurrency is not the reviewed block")
 if d.get("permissions") != {"contents": "read"}:
     bad.append("the workflow permissions are not exactly {contents: read}")
 on = d.get("on", {})
@@ -81,6 +90,15 @@ if not isinstance(push, dict) or push.get("branches") != ["main"]:
     bad.append("not triggered on push to main")
 elif set(push) != {"branches"}:
     bad.append("push is filtered: " + ", ".join(sorted(set(push) - {"branches"})))
+# the only triggers ci.yml may have: push (main), pull_request and merge_group (the merge queue). workflow_call and workflow_dispatch are refused: a called or dispatched run
+# would carry another context into the reviewed concurrency group.
+if isinstance(on, dict) and sorted(set(on) - {"push", "pull_request", "merge_group"}):
+    bad.append("ci.yml has triggers beyond push, pull_request and merge_group: " + ", ".join(sorted(set(on) - {"push", "pull_request", "merge_group"})))
+# no job of ci.yml may carry a concurrency setting: a job group competes with its parent workflow's group and can cancel the whole run
+for _jid, _j in (d.get("jobs") or {}).items():
+    # the one exception: the live test's one-at-a-time group (REQ-SCAN-012). It never cancels a run in progress and its group is shared with no workflow-level group.
+    if isinstance(_j, dict) and "concurrency" in _j and not (_jid == "live-test" and _j["concurrency"] == {"group": "vex-live-test", "cancel-in-progress": "false"}):
+        bad.append(f"the job {_jid} has `concurrency`")
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
@@ -91,7 +109,8 @@ for k in sorted(set(job) - {"name", "runs-on", "steps"}):
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
-        "bash .github/agent/tests/pin-wiring-test.sh"}  # this test's own step, too
+        "bash .github/agent/tests/pin-wiring-test.sh",  # this test's own step, too
+        "bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"}  # REQ-CI-005: their counting steps, split out of the parser-tests block (cache#705 round 1)
 seen = set()
 for st in job.get("steps", []):
     run = (st.get("run") or "").strip()
@@ -100,6 +119,9 @@ for st in job.get("steps", []):
         for k in ("if", "continue-on-error", "shell", "working-directory") + (("env",) if run == "bash .github/agent/tests/check-action-pins-test.sh" else ()):   # env on the cases step: the PINS_* controls (shard, dry, serial, self, jobs) are never set from the workflow
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
+        if run in ("bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"):     # REQ-CI-005: a counting step is trusted only with no key but name and run, so any other key makes `all` run the suite again
+            for k in sorted(set(st) - {"name", "run"}):
+                bad.append(f"the counting step `{run}` has `{k}` (a counting step has no key but name and run)")
 # nothing may redirect how those steps execute (step 8 r3, residual 2): a shell startup file, an
 # environment or PATH written for later steps, interpreter search paths, or a checkout of another tree
 import json
@@ -191,14 +213,14 @@ for w in sorted(want - seen):
 # exactly this name and this run line and nothing else (no if, continue-on-error, env, shell, working-directory, timeout-minutes), so a
 # pull request cannot remove, skip, rename, weaken or move them
 CHAIN_STEPS = {
-    "suite guard (no tracked test file is empty; the guard's own regressions)": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh",
+    "suite guard (no tracked test file is empty; the guard's own regressions)": "bash bin/suite-guard.sh files",
+    "the suite guard's own regressions (REQ-CI-005, a counting step)": "bash bin/suite-guard-test.sh",
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
     "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
-    "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)": "bash bin/vex-index-test.sh </dev/null",
     "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)": "bash bin/chain-build-admit-test.sh",
     "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)": "bash bin/chain-bind-test.sh",
     "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)": "bash bin/chain-rebuild-test.sh",
@@ -364,12 +386,20 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/inspector-gate-test.sh"
   },
   {
+   "name": "install the pinned grype for the VEX product-scope regressions and the suites after them (shard 4 keeps it with its consumers)",
+   "run": "./bin/install-scanner.sh grype"
+  },
+  {
    "name": "VEX product-scope regressions (audit R01 \u2014 exception bound to the FosterStack product)",
-   "run": "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh\n"
+   "run": "bash bin/vex-scope-test.sh"
   },
   {
    "name": "VEX applied by both gate scanners (REQ-REL-004-AC1 \u2014 covered suppressed, uncovered blocks, zero packages fails)",
    "run": "bash bin/vex-both-scanners-test.sh"
+  },
+  {
+   "name": "the candidate's OCI layout turned into a scan tar, digests checked (REQ-REL-004-AC1)",
+   "run": "bash bin/layout-archive-test.sh"
   },
   {
    "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
@@ -389,7 +419,11 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "name": "suite guard (no tracked test file is empty; the guard's own regressions)",
-   "run": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh"
+   "run": "bash bin/suite-guard.sh files"
+  },
+  {
+   "name": "the suite guard's own regressions (REQ-CI-005, a counting step)",
+   "run": "bash bin/suite-guard-test.sh"
   },
   {
    "env": {
@@ -422,10 +456,6 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)",
    "run": "bash bin/chain-build-wiring-test.sh"
-  },
-  {
-   "name": "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
-   "run": "bash bin/vex-index-test.sh </dev/null"
   },
   {
    "name": "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)",
@@ -593,6 +623,10 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)",
    "run": "bash bin/patch-decide-test.sh"
+  },
+  {
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "run": "bash bin/audit-record-test.sh"
   },
   {
    "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
@@ -891,6 +925,16 @@ case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
 case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash .github/agent/tests/check-action-pins-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh')]"
+# the matrix and label suites (REQ-CI-005, cache#705): each is its own step of the allowlist job and cannot be removed, skipped, made non-blocking or given a shell
+for sfx in matrix labels; do
+  sel="[s for s in $steps if 'auditor-$sfx-test.sh' in (s.get('run') or '')][0]"
+  case_ "auditor-$sfx-removed"  bad "$steps[:] = [s for s in $steps if 'auditor-$sfx-test.sh' not in (s.get('run') or '')]"
+  case_ "auditor-$sfx-if"       bad "$sel['if'] = 'false'"
+  case_ "auditor-$sfx-continue" bad "$sel['continue-on-error'] = 'true'"
+  case_ "auditor-$sfx-shell"    bad "$sel['shell'] = \"bash -c 'true' {0}\""
+  case_ "auditor-$sfx-env"      bad "$sel['env'] = {'A': 'b'}"
+  case_ "auditor-$sfx-timeout"  bad "$sel['timeout-minutes'] = '5'"
+done
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -964,7 +1008,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
@@ -1140,10 +1184,10 @@ case_ chain-split-shard-name      bad "${SC}${S1}['name'] = 'allowlist-chain'"
 case_ chain-split-impersonate     bad "${SC}d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 # exactly once across the whole workflow (seat A of cache#608, round 1): a copy of a chain suite kept in another job is refused
 case_ chain-split-copy-in-allowlist bad "${SC}d['jobs']['allowlist']['steps'].append(copy.deepcopy(${S1}['steps'][-1]))"
+# a copy of the VEX-index suite in a shard of the chain job is refused: the suite runs once, in the pins-auditor job (REQ-CI-005; the name of the file is built from two parts, a scope test reads this file line by line)
+case_ chain-split-vex-copy-in-chain bad "${SC}d['jobs']['allowlist-chain-4']['steps'].append({'name': 'x', 'run': 'bash bin/vex-' + 'index-test.sh </dev/null'})"
 case_ chain-split-copy-in-pa        bad "${SC}d['jobs']['allowlist-pins-auditor']['steps'].append({'name': 'x', 'run': 'bash bin/assemble-image-test.sh'})"
 case_ chain-split-original-kept     bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/assemble-image-test.sh'}]}"
-# (the name of this suite, which the pins-auditor job also runs, is built from two parts: a scope test of the vex tool reads this file line by line for its name)
-case_ chain-split-suite-thrice      bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/vex-' + 'index-test.sh </dev/null'}]}"
 # installed state does not cross jobs: every shard that runs a consumer of the installed grype (vex-both-scanners-test, the suite-floor re-run) must also run the installer step
 # and run it BEFORE the consumer. Checked on the split form the helper builds from the real ci.yml (independent of the judge's groups).
 if python3 - "$here/.github/workflows/ci.yml" "$work/split.py" > "$work/dep.out" 2>&1 <<'PYD'
@@ -1159,8 +1203,8 @@ for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowl
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PYD
 then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers → ok"; else failn=$((failn+1)); echo "FAIL chain-split-grype-installer-with-consumers → $(cat "$work/dep.out")"; fi
-# the judge keeps refusing the old shape with a leftover shard (a half-done split)
-case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
+# a half-done split: one shard job is gone, so a suite would run in no shard (the old case here replaced a shard with a copy of the aggregate and failed on the YAML alias it created, not on the split)
+case_ chain-shard-missing         bad "del d['jobs']['allowlist-chain-4']"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
 PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
@@ -1188,7 +1232,27 @@ case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-concurrency-test       bad "d['jobs']['test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+# the live test's one-at-a-time group (REQ-SCAN-012, ratified): live-test alone may carry exactly this block (take 30, advisor)
+case_ live-test-concurrency-reviewed   ok  "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ live-test-concurrency-cancels    bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'true'}"
+case_ live-test-concurrency-group      bad "d['jobs']['live-test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_ live-test-concurrency-extra-key  bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false', 'other': 'x'}"
+case_ live-test-concurrency-string     bad "d['jobs']['live-test']['concurrency'] = 'vex-live-test'"
+case_ live-test-concurrency-no-cancel-key bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test'}"
+case_ other-job-live-test-block        bad "d['jobs']['test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ allowlist-live-test-block        bad "d['jobs']['allowlist']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ job-concurrency-lint-same  bad "d['jobs']['lint']['concurrency'] = d['concurrency'] if 'concurrency' in d else {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ on-workflow-call           bad "d['on']['workflow_call'] = {}"
+case_ on-workflow-dispatch       bad "d['on']['workflow_dispatch'] = {}"
+case_ on-merge-group             ok  "d['on']['merge_group'] = {'types': ['checks_requested']}"
+case_ on-schedule                bad "d['on']['schedule'] = [{'cron': '0 0 * * *'}]"
 case_ wf-concurrency             bad "d['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-reviewed    ok  "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-cancel-all  bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github.workflow }}-\${{ github.ref }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"

@@ -705,7 +705,7 @@ def der_rsa_public(b):
     k = _children(inner, s2, e2)
     if t2 != 0x30 or e2 != len(inner) or len(k) != 2 or any(c[0] != 0x02 for c in k): raise ValueError("not RSAPublicKey (two INTEGERs) spanning the bit string")
 d = sys.argv[1]; bad = []
-PLACEHOLDER_SHA = "b648f51442289101a7f294c8c1e528ee79337927f65f43c041d2f6621d28ca3b"   # the committed placeholder; committing the real release public key edits this line and the placeholder test
+PLACEHOLDER_SHA = "4c1b4fee97806b9659f4c0dbd84f4bd97d46d08df1b3df2c3f774442ebac3673"   # the committed placeholder; committing the real release public key edits this line and the placeholder test
 B64 = re.compile(rb"[A-Za-z0-9+/]{1,76}={0,2}")
 HEADER = re.compile(rb"NON-SECRET assembly key[ -~]{0,160}")
 FILES = {"assembly.rsa": b"RSA PRIVATE KEY", "assembly.rsa.pub": b"PUBLIC KEY", "release.rsa.pub": None}
@@ -1412,17 +1412,19 @@ t "AC9" "release-sign-apks.sh: it completes exactly as the unrestricted control:
 python3 - "$work/rs-copy.sh" "$rpm" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
-MS = '"$melange_bin" sign'
+MS = '"$MELANGE" sign'
 M = {
  "rs-melange":  [(MS, 'melange sign')],
  "rs-python3":  [('sg=$("$PY3" -I -B bin/apk-tool.py signer', 'sg=$(python3 -I -B bin/apk-tool.py signer')],
  "rs-python3-derive": [('"$PY3" -I -B - "$1" "$OPENSSL" <<', 'python3 -I -B - "$1" "$OPENSSL" <<')],
- "rs-openssl":  [('relpub=$("$OPENSSL" rsa -pubin -in "$keysdir/release.rsa.pub" -pubout 2>/dev/null)', 'relpub=$(openssl rsa -pubin -in "$keysdir/release.rsa.pub" -pubout)')],
- "rs-openssl2": [('asmpub2=$("$OPENSSL" rsa -pubin -in "$keysdir/assembly.rsa.pub" -pubout 2>/dev/null)', 'asmpub2=$(openssl rsa -pubin -in "$keysdir/assembly.rsa.pub" -pubout)')],
+ "rs-openssl":  [('relpub=$("$OPENSSL" rsa -pubin -in "$KEYS_DIR/release.rsa.pub" -pubout 2>/dev/null)',
+                  'relpub=$(openssl rsa -pubin -in "$KEYS_DIR/release.rsa.pub" -pubout)')],
+ "rs-openssl2": [('asmpub2=$("$OPENSSL" rsa -pubin -in "$KEYS_DIR/assembly.rsa.pub" -pubout 2>/dev/null)',
+                  'asmpub2=$(openssl rsa -pubin -in "$KEYS_DIR/assembly.rsa.pub" -pubout)')],
  "rs-brace":    [(MS, 'mela{n..n}ge sign')],
  "rs-quote":    [(MS, 'm\'elang\'e sign')],
  "rs-printf":   [(MS, '"$(printf mela)nge" sign')],
- "rs-append":   [('melange_bin=$MELANGE;', 'melange_bin=$MELANGE; m=mela; m+=nge;'), (MS, '"$m" sign')],
+ "rs-append":   [('[ -x "$MELANGE" ]', 'm=mela; m+=nge; [ -x "$MELANGE" ]'), (MS, '"$m" sign')],
  "rs-git":      [('tmp=$(mktemp -d)\n', 'git --version >/dev/null\ntmp=$(mktemp -d)\n')],   # inserted calls: the script has no git, sha256sum, sudo or env site of its own
  "rs-sha256sum": [('tmp=$(mktemp -d)\n', 'sha256sum /dev/null >/dev/null\ntmp=$(mktemp -d)\n')],
 }

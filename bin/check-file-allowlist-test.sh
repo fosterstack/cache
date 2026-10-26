@@ -58,11 +58,15 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 53 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 54 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
-  loaded="$(bash -c 'eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"; echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]})); printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"' _ "$f" 2>&1)"
+  loaded="$(bash -c '
+    eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"
+    echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]}))
+    printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"
+  ' _ "$f" </dev/null 2>&1)"
   python3 - "$f" "$loaded" <<'PYEOF'
 import re, sys, itertools
 path = sys.argv[1]
@@ -85,7 +89,7 @@ for _n, _bl in enumerate(_rawlines, 1):
 # PR each declared path belongs to is named in the comments
 DECLARED = set("""
 dependency-provenance.json
-bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
+bin/vendor-check.sh bin/vendor-provenance.py bin/vendor-provenance-records.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
@@ -102,8 +106,9 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
+bin/layout-archive.sh bin/layout-archive-test.sh
 """.split())
-if len(DECLARED) != 53: errs.append("declared list is not 53 paths: %d" % len(DECLARED))
+if len(DECLARED) != 56: errs.append("declared list is not 56 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -113,7 +118,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 200, 6   # 200 (+ ^bin/check-records-digests\.sh$, REQ-REL-011-AC1, cache#606); 199 (199 (+ ^bin/(un)?pack-govulncheck\.sh$, REQ-REL-011-AC1, F9, taken from chain-v030); 198 (+ ^bin/rebuild-records-digests\.sh$, the list of the records Rebuild's assemble job made); 197 (+ ^bin/witness-sign-staged\.sh$, Sign's signing step for the building jobs' records); 196 (+ ^bin/witnessed-local\.sh$, the Witness wrapper of the building steps, owner Oct 22); 195 (main's + ^bin/job-isolation-test\.sh$, REQ-REL-011, and + ^bin/release-layout\.py$, handoff 0521, taken into the chain); 193 (+ ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$, REQ-REFRESH-001-AC35); 191 (- main's two suppression/set-01 fixture patterns .snyk and osv-scanner.toml, PR 2b-2c); 193 (+ ^bin/scout-older-versions(\.sh|-test\.sh)$, main's advisor 0520); 192 (+ bin/chain-sign-wiring-fixtures.txt, cache#433); 191 (+ ^bin/loopback-get\.sh$ and its test, REQ-SUP-001-AC24); 189 (the merge of main's 152 and the chain's 181 over their common base; main's additions: build/archive.json, the persona-uat patterns, vendor-provenance-test, the vendor subtree); 181 (the live-test orchestrator is admitted as ^bin/vex-live-run\.sh$, not under the -test.sh name that the action-pin checker exempts as a harness; same count): 177 + ^bin/vex-guide-test\.sh$ and ^bin/vex-live-test\.py$, ^bin/vex-live-test\.sh$, ^bin/vex-live-test-test\.sh$ (REQ-SCAN-011, REQ-SCAN-012: the VEX customer guide test and the live test, admitted ahead of the PRs that carry them); 177: 175 + ^bin/inspector-reuse\.py$ and ^bin/inspector-reuse-test\.sh$ (REQ-REL-004-AC8, Inspector same-day reuse); 175: 174 + ^vendor/ (the vendored subtree, REQ-VEND-001, cache#342); 174: 173 + ^bin/marker-(pr-gate\.py|gate-test\.sh)$ (the marker-only gate, PR 4b-6); 173: 171 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS, cache#331); 172 (before that take): 170 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
+# 201 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 201, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -160,7 +166,8 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "becf9d6b1130cb1af3a29d041bd162f665d9d730749b3279013734ea1c3a3446"   # cache#597: ^bin/chain-check-scripts-fixtures\.txt$ joins the sign-wiring fixtures pattern (one data file, never run; REQ-CHAIN-006-AC18); cache#606: + ^bin/check-records-digests\.sh$ in the Check block (REQ-REL-011-AC1); F9 merge: + the pack-govulncheck pattern from chain-v030; + the bin/rebuild-records-digests.sh pattern (row-78 pass R2, cache#586); + the bin/witness-sign-staged.sh pattern (round-1 audit F3, cache#586); + the bin/witnessed-local.sh pattern (owner Oct 22 Witness move); take 27 refresh: main's job-isolation-test and release-layout.py patterns merged with the compare alternations; compare job: bin/release-compare.sh and bin/release-compare.py join the existing Release script alternations (no new pattern line); take 25: - main's two suppression/set-01 fixture patterns (.snyk and osv-scanner.toml, PR 2b-2c), the only script change against chain-v030; take 20: + main's ^bin/scout-older-versions(\.sh|-test\.sh)$ pattern (advisor 0520), the only script change outside the region; before: the merge of main and chain-v030 (+ the two loopback-get patterns, REQ-SUP-001-AC24): the script text outside the region is the union of both sides' changes (take 12)
+# the script text outside the v0.3.0 region; history is in git
+PINNED_SHA256 = "29dca616e04821cb99a5c6f1add6c130e012852eb31c2a9c323367d00388a02d"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -245,6 +252,19 @@ mutins "unset an element"                   2 "unset 'ALLOW_PATTERNS[3]'"
 mutins "declare -n alias then append"       2 "declare -n alias=ALLOW_PATTERNS; alias+=('^evil/.*\$')"
 mutins "printf -v element"                  2 "printf -v 'ALLOW_PATTERNS[200]' '%s' '^evil/.*\$'"
 mutins "re-assignment with a new element"   2 "ALLOW_PATTERNS=(\"\${ALLOW_PATTERNS[@]}\" '^evil/.*\$')"
+# The Oct 24 hang: the mutant above opens an ALLOW_PATTERNS=( that never closes, so the extraction in struct_check also
+# prints the rest of the real script, whose read loop then read the CALLER's stdin. With an open pipe on stdin the whole
+# suite stopped here for hours. struct_check must not read its caller's stdin.
+_open_array='ALLOW_PATTERNS=("${ALLOW_PATTERNS[@]}" '"'"'^evil/.*$'"'"')'
+awk -v t="$_open_array" '{print} /^\)$/{c++; if(c==2) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+( struct_check "$_mut_dir/m.sh" >/dev/null 2>&1 ) < <(sleep 25) & _sp=$!
+for _i in $(seq 1 40); do kill -0 "$_sp" 2>/dev/null || break; sleep 0.25; done
+if kill -0 "$_sp" 2>/dev/null; then
+  kill "$_sp" 2>/dev/null
+  gf "struct_check read the caller's stdin" "still running 10 s after it was started with an open stdin"
+else
+  gp "struct_check does not read the caller's stdin (an open pipe on stdin does not stop it)"
+fi
 awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
 if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
 # a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)

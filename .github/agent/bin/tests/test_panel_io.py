@@ -177,6 +177,81 @@ class Image(Tmp):
         self.assertIn("no evidence from image debug-amd64", err.getvalue())
 
 
+APK_DB = (b"C:Q1abc=\nP:baselayout\nV:20240315-r2\nA:aarch64\no:baselayout\nL:GPL-2.0-only\n\n"
+          b"C:Q1def=\nP:libssl3\nV:3.3.2-r0\nA:aarch64\no:openssl\nL:Apache-2.0\n\n")
+
+
+class ApkDatabase(Tmp):
+    """rc-5b fix 3 (ruling A1): an apko-built image keeps its packages in the apk installed database. The evidence reads
+    it, says which package databases were read, and absence is proof only for a kind that was read
+    (REQ-SCAN-008-AC1: real only if the audit confirms from the image itself; AC2: each audit cites evidence)."""
+
+    def image(self, files, name="apk"):
+        oci_archive(os.path.join(self.d, name), [tar_bytes(files)])
+        return P.read_image(os.path.join(self.d, name), "arm64")
+
+    def finding(self, package, purl_kind, version="20240315-r2"):
+        return {"image": "fips-arm64", "package": package, "version": version, "seen_by": ["scout"],
+                "purls": ["pkg:%s/%s@%s" % (purl_kind, package, version)]}
+
+    def test_an_installed_apk_package_is_recorded_not_declared_absent(self):
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644)])
+        f = self.finding("baselayout", "apk")
+        b = P.bundle_text(facts, {}, f)
+        self.assertIn("Package: baselayout\nVersion: 20240315-r2", b)
+        self.assertNotIn("no record names baselayout", b)
+        self.assertEqual(P.installed_versions(b, f), {"20240315-r2"})
+        verdict = {"verdict": "false", "evidence": ["package database: no record names baselayout"]}
+        self.assertIsNone(P.validated(verdict, b, f)[0])        # no manufactured absence, so no not_affected VEX
+        real = {"verdict": "real", "evidence": ["Package: baselayout\nVersion: 20240315-r2"]}
+        self.assertEqual(P.validated(real, b, f)[0], "real")    # a verdict quoting the apk record is accepted
+
+    def test_a_package_the_read_apk_database_lacks_is_absent(self):
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644)])
+        f = self.finding("curl", "apk", "8.9.0-r0")
+        b = P.bundle_text(facts, {}, f)
+        self.assertIn("package databases read: apk", b)
+        self.assertIn("package database: no record names curl", b)
+        self.assertEqual(P.installed_versions(b, f), set())
+        self.assertTrue(P.absence_is_complete(b, f))
+        verdict = {"verdict": "false", "evidence": ["package database: no record names curl"]}
+        self.assertEqual(P.validated(verdict, b, f)[0], "false")
+
+    def test_absence_is_never_proven_from_a_database_kind_that_was_not_read(self):
+        dpkg_only = self.image([("var/lib/dpkg/status", b"Package: netbase\nVersion: 6.4\n", 0o644)], "dpkg")
+        f = self.finding("baselayout", "apk")
+        b = P.bundle_text(dpkg_only, {}, f)
+        self.assertIn("package databases read: dpkg", b)
+        self.assertFalse(P.absence_is_complete(b, f))
+        verdict = {"verdict": "false", "evidence": ["files: no path in the image mentions baselayout"]}
+        self.assertIsNone(P.validated(verdict, b, f)[0])
+        nothing = self.image([("etc/os-release", b"ID=x\n", 0o644)], "none")
+        b = P.bundle_text(nothing, {}, f)
+        self.assertIn("package databases read: none", b)
+        self.assertFalse(P.absence_is_complete(b, f))
+        self.assertFalse(P.absence_is_complete(b, self.finding("netbase", "deb", "6.4")))
+
+    def test_an_rpm_finding_is_never_shown_absent(self):
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644),
+                            ("var/lib/dpkg/status", b"Package: x\n", 0o644)], "both")
+        b = P.bundle_text(facts, {}, self.finding("zlib", "rpm", "1.3"))
+        self.assertIn("package databases read: apk, dpkg", b)
+        self.assertFalse(P.absence_is_complete(b, self.finding("zlib", "rpm", "1.3")))
+
+    def test_a_later_layer_that_removes_the_apk_database_removes_its_records(self):
+        oci_archive(os.path.join(self.d, "wh"), [tar_bytes([("lib/apk/db/installed", APK_DB, 0o644)]),
+                                                 tar_bytes([("lib/apk/db/.wh.installed", b"", 0o644)])])
+        facts = P.read_image(os.path.join(self.d, "wh"), "arm64")
+        b = P.bundle_text(facts, {}, self.finding("baselayout", "apk"))
+        self.assertIn("package databases read: none", b)
+        self.assertNotIn("Package: baselayout", b)
+
+    def test_an_apk_record_without_a_version_is_not_an_installed_version(self):
+        facts = self.image([("lib/apk/db/installed", b"P:odd\nA:aarch64\n\nV:1.0\n\n", 0o644)])
+        b = P.bundle_text(facts, {}, self.finding("odd", "apk", "1.0"))
+        self.assertEqual(P.installed_versions(b, self.finding("odd", "apk", "1.0")), set())
+
+
 class Prompts(unittest.TestCase):
     def test_sections_and_rendering(self):
         req = {"mode": "case", "finding": {"id": "CVE-1"}, "bundle": "BUNDLE-TEXT", "own_case": None,
@@ -401,6 +476,42 @@ class Judge(Tmp):
         self.assertIn("nothing was judged", err.getvalue())
         self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
 
+    def test_a_damaged_state_or_profiles_file_is_a_stop_not_a_fresh_start(self):
+        # rc-5b fix 13 (cache#701 ruling, row 5): a PRESENT panel-state.json or scanner-profiles.json without its required content is
+        # refused (exit 3, nothing judged, nothing written); an absent state is the first run, an absent profiles file (checked-in policy) is a stop
+        good_state = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        cases = []
+        for bad in ({}, [], None, 0, {"version": 1}, dict(good_state, seat="C"), dict(good_state, scores={"A": 0}), dict(good_state, debates={})):
+            cases.append(("state", bad))
+        for bad in ({}, [], None, {"entries": None}, {"entries": {}}, {"entries": [{}]}, {"entries": [3]}, {"entries": [{"scanner": "grype", "kind": "sees_alone", "match": ["x"], "behavior": "b", "finding": "f", "evidence": "e"}]},
+                    {"entries": [{"scanner": "grype", "kind": "sees_alone", "match": {"package": 5}, "behavior": "b", "finding": "f", "evidence": "e"}]}):
+            cases.append(("profiles", bad))
+        for which, bad in cases:
+            p = os.path.join(self.d, which + ".json")
+            json.dump(bad, open(p, "w"))
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_judge(self.a(**{which: p}), bundles=lambda f: BUNDLE)
+            self.assertEqual(rc, 3, (which, bad))
+            self.assertIn("nothing was judged", err.getvalue())
+            self.assertIn(which if which == "state" else "profiles", err.getvalue().lower())
+            self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")), (which, bad))
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:                            # the checked-in policy file is absent: the tree is wrong
+            rc = P.cmd_judge(self.a(profiles=os.path.join(self.d, "no-such-profiles.json")), bundles=lambda f: BUNDLE)
+        self.assertEqual(rc, 3)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
+        sp = os.path.join(self.d, "state.json"); json.dump(good_state, open(sp, "w"))      # a good state and the real profiles judge as before
+        self.judged(state=sp)
+
+    def test_the_state_the_judge_writes_is_read_back_the_next_day_including_negative_scores(self):
+        # cache#707 first look (seat C): rule 13 scores +1 / -2, so a state the panel itself wrote can carry negative scores; it must pass the reader on day two
+        self.judged()
+        written = os.path.join(self.d, "out", "state.json")
+        st = json.load(open(written))
+        self.judged(state=written)                                           # the first day's state, as written
+        st["scores"] = {"A": -4, "B": 3}; st["seat"] = "B"
+        sp = os.path.join(self.d, "negative-state.json"); json.dump(st, open(sp, "w"))
+        self.judged(state=sp)
+
     def test_a_verdict_that_is_not_json_is_refused_with_the_same_diagnostic(self):
         # cache#466 round 4: empty or truncated JSON returns 2 'nothing was judged', not a traceback
         for text in ("", "{not json", "[1, 2"):
@@ -481,7 +592,7 @@ class Judge(Tmp):
         bad = os.path.join(self.d, "p.json")
         json.dump({"entries": [{"scanner": "nope"}]}, open(bad, "w"))
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
-            self.assertEqual(P.cmd_judge(self.a(profiles=bad)), 2)
+            self.assertEqual(P.cmd_judge(self.a(profiles=bad)), 3)
         self.assertIn("scanner profiles", err.getvalue())
 
     def test_no_auditor_errors_are_reported_and_false_by_default(self):
@@ -529,6 +640,102 @@ class Judge(Tmp):
         self.assertEqual(day["profiles"][0]["behavior"], "reads status.d")
 
 
+class StateMembers(Tmp):
+    """cache#707 first look B4 (Fable ruling): the members of the state's lists are checked BEFORE any seat is called; extra metadata is allowed."""
+    a = Judge.a
+    judged = Judge.judged
+    GOOD_ENTRY = {"image": "fips-amd64", "id": "CVE-2099-1", "package": "tzdata", "version": "1", "seen_by": ["grype"], "since": "2026-10-01", "last_seen": "2026-10-02", "vex": False, "purls": ["pkg:deb/debian/tzdata@1"], "extra": 5}
+    GOOD_DEBATE = {"image": "fips-amd64", "id": "CVE-2099-2", "package": "libx", "version": "2", "on": "2026-10-01", "settled": None, "installed_then": True,
+                   "sides": {"A": "real", "B": "false"}, "outcome": "split", "prevailing": None, "extra": [1]}
+
+    def state(self, **kw):
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        st.update(kw)
+        return st
+
+    def test_validate_state_accepts_what_the_panel_writes_and_names_what_it_would_choke_on(self):
+        self.assertEqual(P.validate_state(self.state(false=[self.GOOD_ENTRY], real=[self.GOOD_ENTRY], debates=[self.GOOD_DEBATE])), [])
+        settled = dict(self.GOOD_DEBATE, settled={"truth": "real", "by": "corroborated", "on": "2026-10-02"}, outcome="agreed-false", prevailing="A")
+        self.assertEqual(P.validate_state(self.state(debates=[settled])), [])
+        bad_entries = [{}, dict(self.GOOD_ENTRY, id=""), dict(self.GOOD_ENTRY, package=None), dict(self.GOOD_ENTRY, version=1), dict(self.GOOD_ENTRY, image=3),
+                       dict(self.GOOD_ENTRY, seen_by="grype"), dict(self.GOOD_ENTRY, seen_by=[1]), dict(self.GOOD_ENTRY, purls="x"), dict(self.GOOD_ENTRY, vex="no")]
+        for bad in bad_entries:
+            for key in ("false", "real"):
+                self.assertTrue(P.validate_state(self.state(**{key: [bad]})), (key, bad))
+        bad_debates = [{}, {"settled": {"truth": "real"}}, dict(self.GOOD_DEBATE, sides=None), dict(self.GOOD_DEBATE, sides=[]), dict(self.GOOD_DEBATE, sides={"A": 1}),
+                       dict(self.GOOD_DEBATE, settled={"truth": "maybe"}), dict(self.GOOD_DEBATE, settled={}), dict(self.GOOD_DEBATE, settled="yes"),
+                       dict(self.GOOD_DEBATE, prevailing="C"), dict(self.GOOD_DEBATE, outcome=5), dict(self.GOOD_DEBATE, installed_then="yes"), dict(self.GOOD_DEBATE, version=None)]
+        for bad in bad_debates:
+            self.assertTrue(P.validate_state(self.state(debates=[bad])), bad)
+
+    def test_the_state_the_panel_wrote_for_an_unknown_version_is_valid_and_flags_are_real_booleans(self):
+        # cache#707 round 2 (A F1, B B2, C B1; A F6, B B5): the scanner parser writes "" for an unknown version, and the panel must read its own state back
+        self.assertEqual(P.validate_state(self.state(false=[dict(self.GOOD_ENTRY, version="")], real=[dict(self.GOOD_ENTRY, version="")],
+                                                       debates=[dict(self.GOOD_DEBATE, version="")])), [])
+        for bad in (1, 0, 1.0, 0.0, "yes", [True]):
+            self.assertTrue(P.validate_state(self.state(debates=[dict(self.GOOD_DEBATE, installed_then=bad)])), bad)
+        for good in (True, False, None):
+            self.assertEqual(P.validate_state(self.state(debates=[dict(self.GOOD_DEBATE, installed_then=good)])), [], good)
+        for bad in (1, 0, "no"):
+            self.assertTrue(P.validate_state(self.state(false=[dict(self.GOOD_ENTRY, vex=bad)])), bad)
+
+    def test_a_finding_with_an_unknown_version_is_judged_and_its_state_read_back_the_next_day(self):
+        unknown = dict(UNIQUE, version="")
+        self.judged(verdict=verdict_file(self.d, [unknown]))
+        written = os.path.join(self.d, "out", "state.json")
+        self.judged(state=written, verdict=verdict_file(self.d, [unknown]))
+
+    def test_every_validator_and_loader_branch_names_what_it_refuses(self):
+        # the shapes validate_state / validate_vex / validate_day / the text loaders refuse: each branch is a named error, not an exception (cache#707 round 3, coverage)
+        self.assertTrue(P.validate_state({"false": {"a": 1}}))
+        self.assertTrue(P.validate_state({"real": ["x"]}))
+        self.assertTrue(P.validate_vex({"statements": ["x"]}))
+        day = {"issue": "", "vex": [], "profiles": [], "owner": [], "misses": [], "log": []}
+        self.assertEqual(P.validate_day(day), [])
+        self.assertEqual(P.validate_day({k: day[k] for k in ("issue", "vex", "profiles", "owner")}), [])     # misses and log are the report's, not the delivery's
+        self.assertTrue(P.validate_day(dict(day, vex=[3])))
+        self.assertTrue(P.validate_day(dict(day, vex=[{"id": "CVE-1", "impact_statement": "x", "status": "affected", "purls": "p"}])))
+        self.assertTrue(P.validate_day(dict(day, misses={})))
+        for text in ("{bad", "[]", json.dumps(self.state(real=[{}]))):
+            with self.assertRaises(P.reviewed.ReviewedInputInvalid, msg=text):
+                P._checked_state_text(text, "a branch")
+        self.assertEqual(P._checked_state_text(json.dumps(self.state()), "a branch"), json.dumps(self.state()))
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P._checked_doc("[]", P.VEX, "a branch", P.VEX)
+        repo = os.path.join(self.d, "repo"); os.makedirs(os.path.join(repo, ".auditor"))
+        json.dump(self.state(real=[{}]), open(os.path.join(repo, P.STATE), "w"))
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P._main_state_text(repo)
+
+    def test_the_carried_documents_preflight_covers_its_branches(self):
+        repo = os.path.join(self.d, "repo2"); os.makedirs(repo)
+        plan = []
+        self.assertIsNone(P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX], plan, False, None))        # a plan-only run reads nothing
+        absent = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        self.assertIsNone(P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX, P.STATE], [], True, absent))   # the PR does not hold the file / a file the panel does not merge
+        good = json.dumps({"statements": [], "version": 1, "timestamp": "t"})
+
+        def holds(cmd, **kw):
+            if cmd[3:4] == ["ls-tree"]:
+                return types.SimpleNamespace(returncode=0, stdout="100644 blob x\t.vex/x", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=good if cmd[-1].startswith("FETCH_HEAD") else good.replace("1", "2"), stderr="")
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid) as e:       # the PR changes it but the checkout has no such file
+            P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX], [], True, holds)
+        self.assertIn("does not exist in the checkout", str(e.exception))
+
+    def test_a_malformed_member_stops_the_judge_before_any_seat_is_asked(self):
+        calls = []
+        seat = lambda *a, **k: calls.append(1) or {}
+        for lst, bad in (("false", {}), ("real", {}), ("debates", {}), ("debates", {"settled": {"truth": "real"}}), ("false", {"image": "x"})):
+            p = os.path.join(self.d, "state.json"); json.dump(self.state(**{lst: [bad]}), open(p, "w"))
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_judge(self.a(state=p, seats="real"), seats={"A": seat, "B": seat}, bundles=lambda f: BUNDLE)
+            self.assertEqual(rc, 3, (lst, bad))
+            self.assertIn("nothing was judged", err.getvalue())
+            self.assertEqual(calls, [], (lst, bad))
+            self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
+
+
 class Deliver(Tmp):
     def setUp(self):
         super().setUp()
@@ -571,6 +778,63 @@ class Deliver(Tmp):
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         run.stdins = []
         return calls, run
+
+    def test_damaged_checkout_inputs_stop_the_delivery_before_any_call_or_write(self):
+        # cache#707 first look B2 (Fable ruling): the checkout's state, VEX and profiles are validated BEFORE the tip check, the disarm and checkout -B
+        def attempt(files, vex=(), profiles=()):
+            for rel, doc in files.items():
+                path = os.path.join(self.repo, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if doc is None:
+                    if os.path.exists(path): os.remove(path)
+                else:
+                    json.dump(doc, open(path, "w"))
+            self.day(vex=list(vex), profiles=list(profiles))
+            calls, run = self.fake()
+            with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}), mock.patch("sys.stdout", new=io.StringIO()), \
+                    mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_deliver(self.a(), run=run)
+            return rc, calls, err.getvalue()
+        proposal = [{"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1", "status": "not_affected",
+                     "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}]
+        entry = [{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}]
+        good_vex = {"@id": "https://x/vex", "version": 3, "timestamp": "t", "statements": []}
+        for label, files, kw in (("state {}", {P.STATE: {}}, {}), ("state keyless", {P.STATE: {"version": 1}}, {}), ("state []", {P.STATE: []}, {}),
+                                 ("profiles {}", {P.PROFILES: {}}, {"profiles": entry}), ("profiles absent", {P.PROFILES: None}, {"profiles": entry}),
+                                 ("profiles absent, no proposal", {P.PROFILES: None}, {}),
+                                 ("vex {}", {P.VEX: {}}, {"vex": proposal}), ("vex absent with a proposal", {P.VEX: None}, {"vex": proposal}), ("vex {} without a proposal", {P.VEX: {}}, {})):
+            files = dict({P.VEX: good_vex, P.PROFILES: {"entries": []}, P.STATE: None}, **files)
+            rc, calls, err = attempt(files, **kw)
+            self.assertEqual(rc, 3, label)
+            self.assertEqual(calls, [], label)                                                   # not even a read: nothing was asked of gh or git
+            self.assertIn("::error::", err, label)
+        for label, files, kw in (("vex version {}", {P.VEX: dict(good_vex, version={})}, {"vex": proposal}), ("vex @id a list", {P.VEX: dict(good_vex, statements=[{"@id": ["bad"]}])}, {"vex": proposal}),
+                                 ("vex timestamp 5", {P.VEX: dict(good_vex, timestamp=5)}, {"vex": proposal}), ("vex statement a string", {P.VEX: dict(good_vex, statements=["x"])}, {}),
+                                 ("profiles entry {}", {P.PROFILES: {"entries": [{}]}}, {}), ("profiles match a list", {P.PROFILES: {"entries": [dict(entry[0], match=["x"])]}}, {})):
+            files = dict({P.VEX: good_vex, P.PROFILES: {"entries": []}, P.STATE: None}, **files)
+            rc, calls, err = attempt(files, **kw)
+            self.assertEqual((rc, calls), (3, []), label)
+        rc, calls, err = attempt({P.VEX: None, P.PROFILES: {"entries": []}, P.STATE: None})        # an absent VEX with no VEX proposal, an absent state: a first delivery
+        self.assertEqual(rc, 0, err)
+
+    def test_the_run_written_documents_are_validated_before_any_call(self):
+        # cache#707 round 2 (A F3, ruled yes): out/state.json and out/day.json are checked with the panel's rules before anything is fetched, checked out, written or published
+        self.day()
+        good_state = json.load(open(os.path.join(self.out, "state.json"))); good_day = json.load(open(os.path.join(self.out, "day.json")))
+        cases = [("state {}", "state.json", {}), ("state []", "state.json", []), ("state keyless", "state.json", {"version": 1}),
+                 ("state bad member", "state.json", dict(good_state, real=[{}])),
+                 ("day {}", "day.json", {}), ("day vex not a list", "day.json", dict(good_day, vex={})), ("day vex entry {}", "day.json", dict(good_day, vex=[{}])),
+                 ("day owner a string", "day.json", dict(good_day, owner="x")), ("day issue a list", "day.json", dict(good_day, issue=[])),
+                 ("day profiles entry {}", "day.json", dict(good_day, profiles=[{}]))]
+        for label, name, doc in cases:
+            json.dump(good_state, open(os.path.join(self.out, "state.json"), "w")); json.dump(good_day, open(os.path.join(self.out, "day.json"), "w"))
+            json.dump(doc, open(os.path.join(self.out, name), "w"))
+            calls, run = self.fake()
+            with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}), mock.patch("sys.stdout", new=io.StringIO()), \
+                    mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_deliver(self.a(), run=run)
+            self.assertEqual((rc, calls), (3, []), label)
+            self.assertIn("::error::", err.getvalue(), label)
 
     def test_nothing_to_deliver(self):
         with mock.patch("sys.stderr", new=io.StringIO()):
@@ -1094,6 +1358,79 @@ class RebuildReal(Tmp):
             self.deliver()
         self.assertIn("conflict", str(e.exception).lower())
 
+    def test_a_damaged_document_on_the_pr_branch_stops_the_carry_before_any_write(self):
+        # cache#707 B2: the open PR's own VEX / profiles are checked with the shared rules before they are merged into main's files
+        for rel, bad in ((P.VEX, {}), (P.VEX, {"statements": None}), (P.PROFILES, {}), (P.PROFILES, {"entries": {}})):
+            self.git("checkout", "-q", "-f", "auditor/panel")
+            self.write(rel, bad); self.git("add", "-A"); self.git("commit", "-q", "-m", "damaged"); self.git("push", "-q", "-f", "origin", "auditor/panel")
+            self.git("checkout", "-q", "-f", "main")
+            before = {p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES)}
+            rc, calls = self.deliver()
+            self.assertEqual(rc, 3, (rel, bad))
+            self.assertFalse([c for c in calls if c[:3] in (["gh", "api", "graphql"], ["gh", "pr", "create"], ["gh", "pr", "edit"]) or c[:3] == ["gh", "pr", "merge"]], (rel, bad))
+            self.assertEqual({p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES)}, before, (rel, bad))      # main's files were not touched
+            self.git("checkout", "-q", "-f", "main")
+
+    def test_the_pr_branch_documents_are_all_validated_before_the_checkout_moves_anything(self):
+        # cache#707 round 2 (A F2/F4/F5, B B1/B3/B4, C B2): every PR-branch document is checked after the tip guard and BEFORE checkout -B: no git checkout, no ref change, nothing written
+        stmt_bad = {"statements": [{"@id": ["bad"]}], "version": 2, "timestamp": "t"}
+        for label, rel, bad in (("vex {}", P.VEX, {}), ("profiles member {}", P.PROFILES, {"entries": [{}]}), ("profiles match a list", P.PROFILES, {"entries": [dict(self.entry, match=["x"])]}),
+                                ("vex @id a list", P.VEX, stmt_bad), ("vex version {}", P.VEX, {"statements": [], "version": {}}), ("vex zero bytes", P.VEX, ""), ("profiles zero bytes", P.PROFILES, "")):
+            self.git("checkout", "-q", "-f", "auditor/panel")
+            good_profiles = {"entries": [self.entry]}
+            if rel == P.VEX:
+                self.write(P.PROFILES, good_profiles)
+            path = os.path.join(self.work, rel)
+            if bad == "":
+                open(path, "w").close()
+            else:
+                self.write(rel, bad)
+            self.git("add", "-A"); self.git("commit", "-q", "-m", "damaged: " + label); self.git("push", "-q", "-f", "origin", "auditor/panel")
+            self.git("checkout", "-q", "-f", "main")
+            ref = lambda: subprocess.run(["git", "-C", self.work, "rev-parse", "--verify", "-q", "refs/heads/auditor/panel"], capture_output=True, text=True).stdout.strip()
+            ref_before = ref()
+            files_before = {p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES, P.STATE)}
+            rc, calls = self.deliver()
+            self.assertEqual(rc, 3, label)
+            self.assertFalse([c for c in calls if c[:2] == ["git", "checkout"] or (c[0] == "git" and "checkout" in c)], label)
+            self.assertFalse([c for c in calls if c[:3] in (["gh", "api", "graphql"], ["gh", "pr", "create"], ["gh", "pr", "edit"], ["gh", "pr", "merge"])], label)
+            self.assertEqual(ref(), ref_before, label)
+            self.assertEqual({p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES, P.STATE)}, files_before, label)
+
+    def test_state_source_reads_through_the_shared_reader(self):
+        # cache#707 B3: no os.path.exists: a dangling link or a damaged state (main's or the PR branch's) is a stop, never "no state"
+        out = os.path.join(self.d, "st.json"); shaf = os.path.join(self.d, "sha2")
+        a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
+
+        def nopr(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        path = os.path.join(self.work, P.STATE)
+        saved = open(path).read()
+        os.remove(path); os.symlink(os.path.join(self.d, "nowhere"), path)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err, mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_state_source(a, run=nopr), 3)
+        self.assertIn("::error::", err.getvalue()); self.assertFalse(os.path.exists(shaf))
+        os.remove(path)
+        for bad in ({}, {"version": 1}, []):
+            json.dump(bad, open(path, "w"))
+            with mock.patch("sys.stderr", new=io.StringIO()), mock.patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(P.cmd_state_source(a, run=nopr), 3, bad)
+        open(path, "w").write(saved)
+        self.git("checkout", "-q", "-f", "auditor/panel"); self.write(P.STATE, {"version": 1}); self.git("add", "-A"); self.git("commit", "-q", "-m", "bad state"); self.git("push", "-q", "-f", "origin", "auditor/panel")
+        self.git("checkout", "-q", "-f", "main")
+
+        def withpr(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            o = {("gh", "pr", "list"): "17\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                o = self.guard
+            return types.SimpleNamespace(returncode=0, stdout=o, stderr="")
+        with mock.patch("sys.stderr", new=io.StringIO()), mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_state_source(a, run=withpr), 3)                       # the PR branch's own state is damaged
+
     def test_a_tip_that_did_not_pass_the_reserved_branch_guard_is_never_carried(self):      # reviewer r2 blocker: a human's push must not be laundered
         for verdict in ("failure", "", "success,failure", "cancelled"):
             self.guard = verdict
@@ -1188,7 +1525,7 @@ class RebuildReal(Tmp):
         out = os.path.join(self.d, "state.json"); shaf = os.path.join(self.d, "sha")
         a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
         self.git("checkout", "-q", "main")
-        self.write(P.STATE, {"version": 1, "false": [], "real": [{"id": "NEWER-ON-MAIN"}], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
+        self.write(P.STATE, {"version": 1, "false": [], "real": [{"image": "fips-amd64", "id": "NEWER-ON-MAIN", "package": "p", "version": "1"}], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
         self.git("add", "-A"); self.git("commit", "-q", "-m", "main's state moved"); self.git("push", "-q", "origin", "main")
 
         def run(cmd, **kw):
@@ -1272,7 +1609,7 @@ class CarryForward(Tmp):
         self.assertEqual(self.go([P.VEX]), [])
 
     def test_duplicate_profile_keys_are_ambiguous_and_refused(self):                               # review r8 B2
-        a = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "A"}
+        a = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^a$"}, "behavior": "b", "finding": "A", "evidence": "e"}
         b = dict(a, finding="B")                                                                    # same scanner/kind/package, different content
         self.put("BASE", P.PROFILES, {"entries": [a, b]}); self.put("PR", P.PROFILES, {"entries": [a, b, dict(a, match={"package": "^c$"})]})
         self.cur(P.PROFILES, {"entries": [dict(a, finding="A-prime"), b]})
@@ -1337,8 +1674,8 @@ class CarryForward(Tmp):
         self.assertEqual(len(doc["statements"]), len(base["statements"]) + 1)
 
     def test_profile_entries_are_carried_once_and_conflicts_are_loud(self):                       # review r7 B2
-        e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "f1"}
-        e2 = {"scanner": "scout", "kind": "k", "match": {"package": "^b$"}, "finding": "f2"}
+        e1 = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^a$"}, "behavior": "b", "finding": "f1", "evidence": "e"}
+        e2 = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^b$"}, "behavior": "b", "finding": "f2", "evidence": "e"}
         self.put("BASE", P.PROFILES, {"entries": [e1]}); self.put("PR", P.PROFILES, {"entries": [e1, e2]})
         self.cur(P.PROFILES, {"entries": [e1]})
         self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
@@ -1556,10 +1893,11 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertNotIn("Schedule runs are always real and never dry", text)
         self.assertIn("AUDITOR_SCHEDULE_MODE", text.split("on:")[0])
 
-    def test_the_skopeo_install_line_is_grouped(self):
+    def test_skopeo_is_checked_not_installed(self):      # REQ-REL-004-AC10: the runner's skopeo, no install
         run = self.steps[self.step("auditor-manifest.py")]["run"]
-        self.assertIn("command -v skopeo >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; } || true", run)
-
+        check = 'command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }'
+        self.assertIn(check, run)
+        self.assertNotIn("apt", run)
     def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # review r1 R3; advisor 0186: through the tested command, bound to the delivery
         run = self.steps[self.step("auditor-panel.py judge")]["run"]
         self.assertIn("auditor-panel.py state-source", run)

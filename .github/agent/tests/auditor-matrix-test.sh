@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3
+# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC6
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
 # (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
 # pass. Fixtures are inputs only, in neutral files with no prose; the mapping from
@@ -918,10 +918,10 @@ u = by.get("Upload the no-change state"); t = by.get("Upload the full audit trai
 run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
 bad = []
 r = (f or {}).get("run", "")
-for need in ("--workflow auditor.yml", "--branch main", "--status success", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
+for need in ("--workflow auditor.yml", "--branch main", "--status completed", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
     if need not in r: bad.append("fetch lacks " + need)
-if r.count("--branch main") < 3 or r.count("--status success") < 2 or r.count("--workflow auditor.yml") < 2:
-    bad.append("each auditor-state run listing must be limited to this workflow, branch main and success")
+if r.count("--branch main") < 3 or r.count("--status completed") < 2 or r.count("--workflow auditor.yml") < 2:
+    bad.append("each auditor-state run listing must be limited to this workflow, branch main and completed runs")
 if "pull_request" in r: bad.append("fetch names pull_request")
 if (f or {}).get("env", {}).get("GH_TOKEN") != "${{ github.token }}": bad.append("fetch token is not the job token")
 if "--prev-state" in run["run"]: bad.append("the run step's text changed (its sha256 is bound by the pin checker's download exception)")
@@ -1414,6 +1414,7 @@ EOF
 cat > "$fb/git" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$gitlog"
+if [ "\$1" = "show" ]; then case "\$2" in *:*) echo "fatal: path '\${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
 if [ "\$1" = "status" ]; then printf ' M .vex/fosterstack-cache.openvex.json\\0'; fi
 if [ "\$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
@@ -1537,13 +1538,10 @@ charged="$("$PY" -c '
 import sys,importlib.util,tempfile,os
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":100001})+\"\\n\")\n    sys.stdout.flush()\n")
-st={"tokens":0,"iters":0}
+st={"tokens":0}
 R.adjudicate(fa,{"finding_id":"CVE-X"},st)
-R.policy.MAX_ITERATIONS=1   # the iteration stop: only 3 attempts exist, below the real limit of 5, so lower the limit to make the guard decide
-st2={"tokens":0,"iters":0}
-R.adjudicate(fa,{"finding_id":"CVE-X"},st2)
-print(st["tokens"], st.get("calls"), st.get("stops"), st2.get("calls"), st2.get("stops"))' 2>/dev/null)"
-{ [ "$charged" = "200002 2 1 1 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops, then calls stops with the iteration limit at 1 =$charged"
+print(st["tokens"], st.get("calls"), st.get("stops"))' 2>/dev/null)"
+{ [ "$charged" = "200002 2 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops =$charged"
 
 begin "ol2-3-high-outlier-excluded-quorum-holds" "one over-counting scanner is excluded as an outlier; the three agreeing scanners still form the quorum -> AUDIT COMPLETE, osv named excluded not did-not-run"
 o="$WORK/ol23"; rm -rf "$o"; : > "$LEDGER"
@@ -1573,6 +1571,8 @@ exit 0
 EOF
 cat > "$fb/git" <<'EOF'
 #!/usr/bin/env bash
+if [ "$1" = "show" ]; then case "$2" in *:*) echo "fatal: path '${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
+if [ "$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
 EOF
 chmod +x "$fb/gh" "$fb/git"
@@ -1840,7 +1840,7 @@ sc8="$("$PY" -c '
 import json,sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=sys.argv[2]
-env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-8802","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["GO-2099-8802","CVE-2099-8802"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
 row,_=R._dispose("CVE-2099-8802",[f],["CVE-2099-8802","GO-2099-8802"],env,[])
@@ -1930,6 +1930,8 @@ sys.path.insert(0,".github/agent/bin")
 from unittest.mock import patch
 tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
 def fake(cmd,*a,**kw):
+    if cmd[:2]==["git","show"]: return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:3]==["git","rev-parse","origin/main"]: return subprocess.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
@@ -1939,6 +1941,8 @@ def fake(cmd,*a,**kw):
     return R.subprocess.run.__wrapped__(cmd,*a,**kw) if hasattr(R.subprocess.run,"__wrapped__") else __import__("subprocess").run(cmd,*a,**kw)
 import subprocess as _sp
 def fake2(cmd,*a,**kw):
+    if cmd[:2]==["git","show"]: return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:3]==["git","rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
@@ -2036,7 +2040,7 @@ a5="$("$PY" -c '
 import json,sys,glob,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 gv,out=sys.argv[1],sys.argv[2]
-env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 # two Go findings share the CVE: v1.0.0 (has the trace) and v2.0.0 (no trace)
 f1={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-0005","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["GO-2099-0005","CVE-2099-0005"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
@@ -2065,6 +2069,11 @@ tmp=tempfile.mkdtemp(); ws=os.path.join(tmp,"ws"); os.makedirs(os.path.join(ws,"
 c="CVE-2099-9200"   # the finding in manifest-mediumnofix
 mp=os.environ["FXRUN"]+"/manifest-mediumnofix.json"
 def fake(cmd,*a,**kw):
+    if cmd[:2]==["git","show"]:           # origin/main is the workspace here: each run merge writes into it and the next run delivers against what it holds
+        _p=os.path.join(ws,cmd[2].split(":",1)[1])
+        if os.path.isfile(_p): return subprocess.CompletedProcess(cmd,0,open(_p,"rb").read(),b"")
+        return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:3]==["git","rev-parse","origin/main"]: return subprocess.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd and cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
@@ -2144,7 +2153,7 @@ r3="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 gv,out=sys.argv[1],sys.argv[2]
-env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def gm(v,sc): return {"scanner":sc,"finding_id":"GO-2099-1302","purl":"pkg:golang/example.org/lib@"+v,"aliases":["GO-2099-1302","CVE-2099-1302"],"package":"example.org/lib","fixed_version":None,"severity":"Critical","extra":{}}
 # two scanner lineages per version so a no-fix version routes to POA&M without a model call
@@ -2160,7 +2169,7 @@ spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.p
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 import os,shutil,tempfile
 purl="pkg:deb/debian/lib@1"; sc=((policy.VEX_PRODUCT,),(purl,))
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(tempfile.mkdtemp(),"out"),"ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{("CVE-2099-1303",sc):"2026-09-23"},"today":"2026-09-23"}
 f={"scanner":"grype","finding_id":"CVE-2099-1303","purl":purl,"aliases":["CVE-2099-1303"],"package":"lib","fixed_version":None,"severity":"Medium","extra":{}}
@@ -2211,7 +2220,7 @@ r23="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=sys.argv[1]
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def gm(pkg,purl,fixed,sc):
     return {"scanner":sc,"finding_id":"CVE-2099-2003","purl":purl,"aliases":["CVE-2099-2003"],"package":pkg,"fixed_version":fixed,"severity":("Critical" if fixed is None else "Medium"),"extra":{}}
@@ -2283,7 +2292,7 @@ notclean="$(printf '%s' "$first" | grep -qi 'not clean' && echo yes || echo no)"
 echo "=== REQ-AUD-13 refactor boundary regressions (round 3) ==="
 # shared env builder for direct _dispose/_dispose_split cases
 r3env() { cat <<PYENV
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"$1","ts":"2026-09-24T00:00:00Z","dry":True,"digest":"x","carried_expiry":$2,"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"$1","ts":"2026-09-24T00:00:00Z","dry":True,"digest":"x","carried_expiry":$2,"today":"2026-09-24"}
 PYENV
 }
 
@@ -2293,7 +2302,7 @@ res="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
 def mk(v,fx,sc): return {"scanner":sc,"finding_id":"CVE-2099-1703","purl":"pkg:golang/example.org/lib@"+v,"aliases":["CVE-2099-1703"],"package":"example.org/lib","fixed_version":fx,"severity":("Critical" if fx is None else "Medium"),"extra":{}}
 fs=[mk("v8.0.0",None,"grype"),mk("v8.0.0",None,"osv-scanner-gomod"),mk("v1.0.0","1.0.1","grype"),mk("v1.0.0","1.0.1","osv-scanner-gomod")]
 rows,_=R._dispose_split("CVE-2099-1703",fs,["CVE-2099-1703"],env,[])
@@ -2309,7 +2318,7 @@ res="$("$PY" -c '
 import importlib.util,glob,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
 def mk(pkg,sc): return {"scanner":sc,"finding_id":"CVE-2099-1802","purl":"pkg:golang/"+pkg+"@v1.0.0","aliases":["CVE-2099-1802"],"package":pkg,"fixed_version":None,"severity":"High","extra":{}}
 fs=[mk("example.org/a/b","grype"),mk("example.org/a/b","osv-scanner-gomod"),mk("example.org/a_b","grype"),mk("example.org/a_b","osv-scanner-gomod")]
 R._dispose_split("CVE-2099-1802",fs,["CVE-2099-1802"],env,[])
@@ -2323,7 +2332,7 @@ res="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
 bbb=[{"scanner":"grype","finding_id":"CVE-2099-1806","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-1806"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}},
      {"scanner":"osv-scanner","finding_id":"CVE-2099-1806","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-1806"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}}]
 lin={"scanner":"osv-scanner","finding_id":"GO-2099-1805","purl":"pkg:golang/example.org/aaa@v1","aliases":["CVE-2099-1806"],"package":"example.org/aaa","fixed_version":None,"severity":"Low","extra":{},"_lineage_only":True}
@@ -2338,7 +2347,7 @@ import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 import os,tempfile; OUT3=os.path.join(tempfile.mkdtemp(),"out")
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":OUT3,"ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":OUT3,"ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
 f={"scanner":"grype","finding_id":"CVE-2099-1801","purl":purl,"aliases":["CVE-2099-1801"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 row,_=R._dispose("CVE-2099-1801",[f],["CVE-2099-1801"],env,[])
 print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row["section"])' 2>/dev/null | tail -1)"
@@ -2380,7 +2389,7 @@ r3="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
 lin=[{"scanner":"osv-scanner","finding_id":"GO-1","purl":"pkg:golang/adv/lib@v1","aliases":["CVE-2099-3001"],"package":"adv/lib","fixed_version":None,"severity":"High","extra":{},"_lineage_only":True}]
 rows,_=R._dispose_split("CVE-2099-3001",lin,["CVE-2099-3001"],env,[])
 import glob
@@ -2394,7 +2403,7 @@ r5="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
 bbb=[{"scanner":"grype","finding_id":"CVE-2099-3002","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-3002"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}}]
 lin={"scanner":"osv-scanner","finding_id":"GO-2","purl":"pkg:golang/adv@v1","aliases":["CVE-2099-3002"],"package":"adv","fixed_version":None,"severity":"Low","extra":{},"_lineage_only":True}
 rows,_=R._dispose_split("CVE-2099-3002",bbb+[lin],["CVE-2099-3002"],env,[])
@@ -2413,7 +2422,7 @@ open(gv,"w").write("\n".join([
   "{\"finding\":{\"osv\":\"GO-2099-3004\",\"trace\":[{\"module\":\"example.org/lib\",\"version\":\"v1.0.0\",\"package\":\"example.org/lib/x\"}]}}"]))
 def env(cs):
     shutil.rmtree(os.path.join(T4,"out"),ignore_errors=True)
-    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(T4,"out"),"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
+    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(T4,"out"),"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-3004","purl":purl,"aliases":["GO-2099-3004","CVE-2099-3004"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 carried,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env({("CVE-2099-3004",sc)}),[])
 fresh,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env(set()),[])
@@ -2467,7 +2476,7 @@ CARRIERS=[{"component":"openssl","component_purl":OSPURL,"component_version":"1.
 def mkenv(out,**kw):
     shutil.rmtree(out,ignore_errors=True)
     e={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":STUB,
-       "state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-25","out":out,
+       "state":{"tokens":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-25","out":out,
        "ts":"2026-09-25T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-25",
        "carried_scopes":set(),"carried_status":{},"carriers":CARRIERS,"base":{},"base_policy_held":False}
     e.update(kw); return e
@@ -2519,7 +2528,9 @@ R._dispose('CVE-2099-CARRIED',[mkf('CVE-2099-CARRIED')],['CVE-2099-CARRIED'],env
 R.cli.close_adjudicators()
 side=json.load(open(glob.glob('$WORK/req14-3/evidence/*.json')[0]))
 doc=json.load(open(glob.glob('$WORK/req14-3/vex/*.json')[0]))
-good=(doc['statements'][0]['status']=='affected' and side.get('target_date') and 'nodejs >= 20.11.0' in (side.get('lift_trigger') or '') and side.get('evidence'))
+good=(doc['statements'][0]['status']=='affected' and side.get('target_date')
+      and side.get('lift_trigger')=={'carrier':'nodejs','min_version':'20.11.0','component':'openssl',
+                                     'component_min_version':'3.0.13'} and side.get('evidence'))
 print('OK' if good else 'BAD trig=%r td=%r'%(side.get('lift_trigger'),side.get('target_date')))" 2>/dev/null | tail -1)"
 { eq "$a3" "OK"; } && ok || no "VEX affected + time box + lift trigger" "$a3"
 
@@ -2550,7 +2561,9 @@ pc="$("$PY" -c "
 import importlib.util,os
 os.environ['AUDITOR_MODEL_PRIMARY']='m'
 spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-class B: text='Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", \"lift_trigger\": \"nodejs >= 20.11.0 embeds openssl >= 3.0.13\", \"candidate_release\": null}'
+class B: text=('Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", '
+    '\"lift_trigger\": {\"carrier\": \"nodejs\", \"min_version\": \"20.11.0\", \"component\": \"openssl\", '
+    '\"component_min_version\": \"3.0.13\"}, \"candidate_release\": null}')
 class Msg: content=[B()]; usage=None
 class _M:
     @staticmethod
@@ -2558,7 +2571,8 @@ class _M:
 class Client: messages=_M()
 req={'kind':'pullability','finding_id':'CVE-X','component':'openssl','component_fixed':'3.0.13','carrier':{'carrier':'nodejs','carrier_version':'18.19.0'}}
 ans=C._handle(req,Client())
-good=ans.get('pullable') is False and ans.get('hold')=='upstream-held' and 'nodejs' in (ans.get('lift_trigger') or '')
+good=(ans.get('pullable') is False and ans.get('hold')=='upstream-held'
+      and (ans.get('lift_trigger') or {}).get('carrier')=='nodejs')
 print('OK' if good else 'BAD:%r'%ans)" 2>/dev/null | tail -1)"
 { eq "$pc" "OK"; } && ok || no "production client answers pullability" "$pc"
 
@@ -2648,10 +2662,14 @@ print('OK' if good else 'BAD sec=%s disp=%s'%(row['section'],row.get('dispositio
 begin "req14-deferred-recheck-keeps-threshold-and-trigger" "a deferred recheck of a carried §2B finding recomputes and PRESERVES the policy threshold + owner-decision requirement (never silently downgrades a Critical to below) and keeps the CONCRETE lift trigger (Codex round-2 P1 + P2)"
 dt="$("$PY" -c "$(_req14_env)
 purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
-env=mkenv('$WORK/req14-defthr',carriers=[],carried_scopes={('CVE-2099-CRIT',sc)},carried_status={('CVE-2099-CRIT',sc):'affected'},carried_not_pullable={('CVE-2099-CRIT',sc)},carried_lift_trigger={('CVE-2099-CRIT',sc):'nodejs >= 20.11.0 embeds openssl >= 3.0.13'})
+trig={'carrier':'nodejs','min_version':'20.11.0','component':'openssl','component_min_version':'3.0.13'}
+env=mkenv('$WORK/req14-defthr',carriers=[],carried_scopes={('CVE-2099-CRIT',sc)},
+          carried_status={('CVE-2099-CRIT',sc):'affected'},carried_not_pullable={('CVE-2099-CRIT',sc)},
+          carried_lift_trigger={('CVE-2099-CRIT',sc):trig})
 row,_=R._dispose('CVE-2099-CRIT',[mkf('CVE-2099-CRIT',sev='Critical')],['CVE-2099-CRIT'],env,[])
 R.cli.close_adjudicators()
-good=row['section']==2 and row.get('threshold')=='at_or_above' and bool(row.get('owner_issue_intent')) and 'nodejs >= 20.11.0' in (row.get('lift_trigger') or '')
+good=(row['section']==2 and row.get('threshold')=='at_or_above' and bool(row.get('owner_issue_intent'))
+      and (row.get('lift_trigger') or {}).get('carrier')=='nodejs')
 print('OK' if good else 'BAD thr=%s oi=%s trig=%r'%(row.get('threshold'),bool(row.get('owner_issue_intent')),row.get('lift_trigger')))" 2>/dev/null | tail -1)"
 { eq "$dt" "OK"; } && ok || no "deferred recheck keeps threshold + owner + concrete trigger" "$dt"
 
@@ -3056,7 +3074,7 @@ import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
-env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-7701",sc)},
      "carried_status":{("CVE-2099-7701",sc):"not_affected"}}
@@ -3117,7 +3135,7 @@ begin "req15-poam-row-names-real-ignores" "a §2 POA&M row names the exception i
 pir="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[1],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def f(sc): return {"scanner":sc,"finding_id":"CVE-2099-4141","purl":"pkg:deb/debian/lib@1","aliases":["CVE-2099-4141"],"package":"lib","fixed_version":None,"severity":"Critical","extra":{}}
 row,_=R._dispose("CVE-2099-4141",[f("grype"),f("google")],["CVE-2099-4141"],env,[])
@@ -3135,7 +3153,7 @@ import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
-env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-6601",sc)},"carried_status":{("CVE-2099-6601",sc):"affected"}}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-6601","purl":purl,"aliases":["GO-2099-6601","CVE-2099-6601"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
@@ -3402,13 +3420,13 @@ src=open(".github/workflows/agent-review-gate.yml").read()
 tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh","bin/scan-no-workflow-call-test.sh")
 code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
-    and all(code.count(t)==2 for t in tools) and "reviews/" not in src)
+    and all(code.count(t)==2 for t in tools) and code.count("bin/audit-record-judge.sh")==3 and "reviews/" not in src)    # the audit-record judge: the verdict job, the sweep and the record writer's last step
 print("OK" if ok else "BAD")
 NR
 )"
-eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the four checks in judge and sweep" "state=$nr"
+eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the five checks in judge and sweep" "state=$nr"
 
-begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the four checks, publish success only when the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard ALL exit 0, call each check, and fail when any one fails"
+begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the five checks, publish success only when the pin checker, the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record judge ALL exit 0, call each check, and fail when any one fails"
 vp="$(python3 - <<'VP'
 import sys, os, subprocess, tempfile, itertools, shutil
 sys.path.insert(0, ".github/agent/fixtures/testlib")
@@ -3439,6 +3457,7 @@ try:
         "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\nexit \"$STUB_ALLOW\"\n",
         ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\nexit \"$STUB_WIRING\"\n",
         "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\nexit \"$STUB_SCAN\"\n",
+        "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
     }.items():
         f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True); open(f, "w").write(body)
     os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
@@ -3453,8 +3472,8 @@ try:
         'esac\n' % (sha, sha))
     os.chmod(gh, 0o755)
     bad = []
-    for pins, allow, wiring, scan in itertools.product((0, 1), repeat=4):
-        allpass = (pins, allow, wiring, scan) == (0, 0, 0, 0)
+    for pins, allow, wiring, scan, audit in itertools.product((0, 1), repeat=5):
+        allpass = (pins, allow, wiring, scan, audit) == (0, 0, 0, 0, 0)
         for which, run in (("judge", judge_run), ("sweep", sweep_run)):
             calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
             for f in (calls, out): open(f, "w").close()
@@ -3462,20 +3481,20 @@ try:
             env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, HEAD_SHA=sha,
                        GITHUB_HEAD_REF="feature", GITHUB_BASE_REF="main", GITHUB_HEAD_REPO="owner/repo",
                        GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan),
+                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
                        PATH=stubbin + ":" + os.environ["PATH"])
             r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
             c = open(calls).read().split()
-            tag = "%s pins=%d allow=%d wiring=%d scan=%d" % (which, pins, allow, wiring, scan)
+            tag = "%s pins=%d allow=%d wiring=%d scan=%d audit=%d" % (which, pins, allow, wiring, scan, audit)
             if which == "judge":
                 v = open(out).read().strip()
-                if sorted(c) != ["allow", "pins", "scan", "wiring"]: bad.append(tag + " calls=%s" % c)
+                if sorted(c) != ["allow", "audit", "pins", "scan", "wiring"]: bad.append(tag + " calls=%s" % c)
                 if v != ("verdict=success" if allpass else "verdict=failure"): bad.append(tag + " out=%s" % v)
                 if (r.returncode == 0) != allpass: bad.append(tag + " rc=%d" % r.returncode)
             else:
                 pub = [x for x in c if x.startswith("conclusion=")]
                 if pub != ["conclusion=success" if allpass else "conclusion=failure"]: bad.append(tag + " published=%s" % pub)
-                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "pins", "scan", "wiring"]):
+                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "audit", "pins", "scan", "wiring"]):
                     bad.append(tag + " calls=%s" % c)
                 if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
     print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
@@ -3483,7 +3502,7 @@ finally:
     shutil.rmtree(root, ignore_errors=True)
 VP
 )"
-eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all four checks exit 0" "$vp"
+eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all five checks exit 0" "$vp"
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
@@ -3500,7 +3519,7 @@ tok=lambda job: [x for x in job.get("steps",[]) if str(x.get("uses","")).startsw
 main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
 def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.startswith("permission-")}=={"permission-checks"} and t[0]["with"]["permission-checks"]=="write"
 ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited" in on["pull_request_target"]["types"]
-    and d.get("permissions")=={} and set(J)=={"judge","publish","sweep"}
+    and d.get("permissions")=={} and set(J)=={"judge","publish","record","sweep"}
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
     and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
@@ -3530,6 +3549,94 @@ WG
 # (the required-checks.json entry lands in a follow-up PR once the gate is proven on main:
 #  pull_request_target always runs the DEFAULT branch's workflow, so it cannot be proven earlier)
 eq "$wg" "OK" && ok || no "protected judge/publish/sweep gate; auditor token without checks" "workflow=$wg"
+
+begin "req-rel-012-record-writer-job-shape-and-sweep-stale-path" "the passed-audit record writer (REQ-REL-012) is a dispatch-only job of the review gate: agent environment, a contents-only App token, the two inputs only through env, the prepare script then the committed signed-commit CLI on audit/<head> then the judge; the sweep does not run on a record dispatch; and the sweep re-judges an OLD failure when the head has a record branch and skips it when it has none"
+rw="$(python3 - <<'RW'
+import copy, itertools, os, shutil, subprocess, sys, tempfile
+sys.path.insert(0, ".github/agent/fixtures/testlib")
+import pyyaml as yaml
+src = open(".github/workflows/agent-review-gate.yml").read(); d = yaml.safe_load(src)
+def problems(d):
+    bad = []
+    on = d.get("on") or d.get(True) or {}
+    inp = (on.get("workflow_dispatch") or {}).get("inputs") or {}
+    if set(inp) != {"audit_pr", "audit_head"} or any(v.get("default") != "" or v.get("type") != "string" for v in inp.values()):
+        bad.append("dispatch inputs")
+    r = (d.get("jobs") or {}).get("record")
+    if not isinstance(r, dict):
+        return bad + ["no record job"]
+    if r.get("if") != "github.event_name == 'workflow_dispatch' && inputs.audit_head != ''": bad.append("record if")
+    if r.get("environment") != "agent" or r.get("permissions") != {"contents": "read"}: bad.append("record environment or permissions")
+    if set(r) - {"name", "if", "runs-on", "timeout-minutes", "environment", "permissions", "steps"}: bad.append("record keys")
+    st = r.get("steps") or []
+    if len(st) != 5: return bad + ["record steps"]
+    co, mint, prep, sign, judge = st
+    if not str(co.get("uses", "")).startswith("actions/checkout@") or co.get("with") != {"persist-credentials": False}: bad.append("checkout")
+    if not str(mint.get("uses", "")).startswith("actions/create-github-app-token@") or mint.get("id") != "app" or mint.get("with") != {
+            "app-id": "${{ secrets.AUDITOR_APP_ID }}", "private-key": "${{ secrets.AUDITOR_APP_PRIVATE_KEY }}", "repositories": "cache", "permission-contents": "write", "permission-pull-requests": "read"}: bad.append("the token must be contents write and pull-requests read, nothing else")
+    envs = {"GH_TOKEN": "${{ steps.app.outputs.token }}", "AUDIT_PR": "${{ inputs.audit_pr }}", "AUDIT_HEAD": "${{ inputs.audit_head }}"}
+    if prep.get("env") != dict(envs, AUDIT_ACTOR="${{ github.triggering_actor }}") or prep.get("id") != "prep" or "bash bin/audit-record-prepare.sh \"$AUDIT_PR\" \"$AUDIT_HEAD\"" not in prep.get("run", "") or "set -euo pipefail" not in prep.get("run", ""): bad.append("prepare step")
+    if sign.get("if") != "steps.prep.outputs.state == 'proceed'" or sign.get("env") != {"GH_TOKEN": envs["GH_TOKEN"], "AUDIT_HEAD": envs["AUDIT_HEAD"]} or sign.get("run") != 'python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "audit/${AUDIT_HEAD}" --base "$AUDIT_HEAD" --prefix audit/ --message "audit record" --path audit-record': bad.append("sign step")
+    if judge.get("if") != "steps.prep.outputs.state == 'proceed'" or judge.get("env") != {"GH_TOKEN": envs["GH_TOKEN"], "AUDIT_HEAD": envs["AUDIT_HEAD"]} or judge.get("run") != 'bash bin/audit-record-judge.sh "$AUDIT_HEAD" main': bad.append("judge step")
+    if any("${{" in x.get("run", "") for x in st) or any(k in x for x in st for k in ("continue-on-error",)): bad.append("an expression inside a run, or continue-on-error")
+    sw = d["jobs"]["sweep"]
+    if sw.get("if") != "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.audit_head == '')": bad.append("the sweep must not run on a record dispatch")
+    if "format('record-{0}', inputs.audit_pr)" not in str((d.get("concurrency") or {}).get("group")): bad.append("a record dispatch needs its own concurrency group")
+    return bad
+ok = problems(d) == []
+for name, fn in (("token widened", lambda x: x["jobs"]["record"]["steps"][1]["with"].update({"permission-pull-requests": "write"})),
+                 ("input inline in a run", lambda x: x["jobs"]["record"]["steps"][2].update({"run": x["jobs"]["record"]["steps"][2]["run"].replace('"$AUDIT_PR"', "${{ inputs.audit_pr }}")})),
+                 ("another prefix", lambda x: x["jobs"]["record"]["steps"][3].update({"run": x["jobs"]["record"]["steps"][3]["run"].replace("--prefix audit/", "--prefix auditor/")})),
+                 ("another base", lambda x: x["jobs"]["record"]["steps"][3].update({"run": x["jobs"]["record"]["steps"][3]["run"].replace('--base "$AUDIT_HEAD"', "--base main")})),
+                 ("no environment", lambda x: x["jobs"]["record"].pop("environment")),
+                 ("sweep runs on record dispatch", lambda x: x["jobs"]["sweep"].update({"if": "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"})),
+                 ("sign always", lambda x: x["jobs"]["record"]["steps"][3].pop("if"))):
+    m = copy.deepcopy(d); fn(m)
+    ok = ok and problems(m) != []
+# the sweep's stale path: run the step as written with stand-ins
+sweep_run = [x for x in d["jobs"]["sweep"]["steps"] if "judge and publish every open PR" in x.get("name", "")][0]["run"]
+def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
+gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+root = tempfile.mkdtemp(prefix="stale-")
+try:
+    srcd = os.path.join(root, "src"); fx = os.path.join(root, "fx"); os.makedirs(srcd)
+    sh("git", "-C", srcd, "init", "-q"); open(os.path.join(srcd, "f"), "w").write("x")
+    subprocess.run(["git", "-C", srcd, "add", "-A"], check=True, env=gitenv)
+    subprocess.run(["git", "-C", srcd, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=gitenv, capture_output=True)
+    sha = sh("git", "-C", srcd, "rev-parse", "HEAD"); sh("git", "-C", srcd, "update-ref", "refs/pull/7/head", sha); sh("git", "clone", "-q", srcd, fx)
+    for rel in (".github/agent/bin/check-action-pins.py", "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh", "bin/scan-no-workflow-call-test.sh", "bin/audit-record-judge.sh"):
+        f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "w").write("import sys\nopen(__import__('os').environ['CALLS'],'a').write('judged\\n')\n" if rel.endswith(".py") else "cat >/dev/null 2>&1\necho judged >> \"$CALLS\"\n")
+    os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
+    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
+    gh = os.path.join(stubbin, "gh")
+    open(gh, "w").write('#!/bin/sh\n'
+        'case "$1 $2" in\n'
+        '"pr list") echo "7 %s feature owner/repo" ;;\n'
+        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo "$STUB_LAST" ;;\n'
+        '"api repos/o/r/git/ref/heads/audit/%s") [ "$STUB_REC" = 1 ] || exit 1 ;;\n'
+        '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
+        '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
+        'esac\n' % (sha, sha, sha))
+    os.chmod(gh, 0o755)
+    def run(last, rec):
+        calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
+        for f in (calls, out): open(f, "w").close()
+        os.makedirs(tmp, exist_ok=True)
+        env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
+                   STUB_LAST=last, STUB_REC=str(rec), PATH=stubbin + ":" + os.environ["PATH"])
+        subprocess.run(["bash", "-c", sweep_run], cwd=fx, env=env, capture_output=True, text=True)
+        return open(calls).read().split()
+    c = run("stale", 1); ok = ok and c.count("judged") == 5 and "conclusion=success" in c           # old failure + a record branch -> judged again, published
+    c = run("stale", 0); ok = ok and c == []                                                          # old failure, no record -> skipped, nothing called
+    c = run("success", 1); ok = ok and c == []                                                        # already green -> nothing
+    c = run("failure", 0); ok = ok and c.count("judged") == 5                                         # a recent failure is judged as before
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+print("OK" if ok else "BAD")
+RW
+)"
+eq "$rw" "OK" && ok || no "record writer job shape, mutants refused, sweep stale path" "$rw"
 
 echo "=== report: one line per thing, render-safe (owner's test Sep 27, handoff 0004) ==="
 rpt="$WORK/rpt"; rm -rf "$rpt"; mkdir -p "$rpt"
@@ -3837,11 +3944,12 @@ try:
     P.parse_panel(bad, "grype"); err = "none"
 except P.ParseError:
     err = "ParseError"
-print("grype=%d inspector=%d scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
-  len(g), len(i), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
+carried = [x for x in i if (x.get("extra") or {}).get("carried")]       # the tally's vex_covered entry for Inspector rides along flagged carried (rc-5b fix 5)
+print("grype=%d inspector=%d(+%d carried) scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
+  len(g), len(i) - len(carried), len(carried), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
 PYEOF
 )"
-{ eq "$r" "grype=2 inspector=3 scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
+{ eq "$r" "grype=2 inspector=3(+1 carried) scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
 
 begin "panel-2-panel-inventory-records-a-scanner-that-missed-an-image-as-did-not-run" "from the verdict, a scanner counts as ran only if it ran on EVERY image it was expected on; one image where it did not run makes it 'did not run' (never clean), named with the image; the report path is null for it and the verdict path for the rest; the quorum rule is not recomputed here (the panel owns it)"
 r="$(MF="$pv" "$PY" - <<'PYEOF'
@@ -4119,9 +4227,39 @@ rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/m
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
-# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue
-# (stable title, the count in the body; a budget stop opens none), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
-begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, an iteration stop opens exactly ONE owner issue for all stopped findings with a stable title, a budget stop opens none, a failed delivery marks the run incomplete, the lists show their full counts, and the header fields are escaped"
+echo "=== rc-5b item 11 (R1): the lift trigger is {carrier, min_version, component, component_min_version}," \
+     "checked by shape and compared on the daily recheck ==="
+begin "rc5b11-trigger-tests-pass-and-each-cut-of-the-new-code-is-caught" \
+  "the LiftTrigger unit tests pass on the driver, and fail on a copy with the shape check, the unmet skip or the \
+version comparison cut out"
+t11_ok=yes; t11_detail=""
+mr="$WORK/rc5b11-mr-control"; rm -rf "$mr"; mkdir -p "$mr/.github"
+cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
+( cd "$mr/.github/agent/bin/tests" && "$PY" -m unittest test_cov_run.LiftTrigger >/dev/null 2>&1 ) \
+  || { t11_ok=no; t11_detail=" [the uncut copy fails the unit tests]"; }
+SHAPE_OLD='    if not isinstance(t, dict) or set(t) != _LIFT_KEYS or not all(isinstance(v, str) for v in t.values()):'
+CMP_OLD='    return (pad(x[0]), x[1]) >= (pad(y[0]), y[1])'
+for m in "shape|$SHAPE_OLD|    if False:" "unmet-skip|and not trig_unmet:|:" "compare|$CMP_OLD|${CMP_OLD/>=/>}"; do
+  IFS='|' read -r name old new <<<"$m"
+  mr="$WORK/rc5b11-mr-$name"; rm -rf "$mr"; mkdir -p "$mr/.github"
+  cp -R .github/agent "$mr/.github/agent"; cp -R bin "$mr/bin"
+  if ! "$PY" - "$mr/.github/agent/bin/auditor-run.py" "$old" "$new" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+if src.count(sys.argv[2]) != 1:
+    sys.exit(1)
+open(sys.argv[1], "w").write(src.replace(sys.argv[2], sys.argv[3]))
+PY
+  then t11_ok=no; t11_detail="$t11_detail [$name: mutation site not found exactly once]"; continue; fi
+  if ( cd "$mr/.github/agent/bin/tests" && "$PY" -m unittest test_cov_run.LiftTrigger >/dev/null 2>&1 ); then
+    t11_ok=no; t11_detail="$t11_detail [$name: the unit tests still pass]"
+  fi
+done
+eq "$t11_ok" "yes" && ok || no "unit tests pass uncut and fail on every cut" "$t11_detail"
+
+# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a token-budget stop is listed and opens
+# no owner issue (the repeated-unsettled case is rc5b-15's), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
+begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, a token-budget stop opens no owner issue (the in-run iteration stop is gone: it could never fire, so the repeated-unsettled case is the run counter's), the lists show their full counts, and the header fields are escaped"
 r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
 import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
 FX=sys.argv[1]; tmp=tempfile.mkdtemp()
@@ -4144,31 +4282,27 @@ def manifest(nfind, name, ver="v1.2.3"):
     for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
     m["scanner_status"]["grype"]["version"]=ver; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
     json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
-def run(mp, fa, dry=True, limit=None, shim=None, fail=False):
+def run(mp, fa, dry=True, shim=None, fail=False):
     ws=tmp+"/ws"; os.makedirs(ws, exist_ok=True); os.environ["GITHUB_WORKSPACE"]=ws
     if shim: os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
     else: os.environ.pop("AUDITOR_GIT_SHIM_LOG",None)
     if fail: os.environ["AUDITOR_SHIM_ISSUE_FAIL"]="1"
     else: os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL",None)
-    keep=R.policy.MAX_ITERATIONS
-    if limit: R.policy.MAX_ITERATIONS=limit
     out=tempfile.mkdtemp(dir=tmp)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
-    finally: R.policy.MAX_ITERATIONS=keep
+    with contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
     return open(out+"/report.md").read()
 bad=[]
 def line(rep,start): return [l for l in rep.split("\n") if l.startswith(start)]
 name_re=re.compile(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",re.I)
-# 1: two findings stopped by the iteration limit: one issue naming both, no per-finding issue, refusals and stops with counts and roles, versions
-rep=run(manifest(2,"two"), adj(1), limit=1)
-iss=[l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]
-refs=line(rep,"**Model refusals:**"); stops=line(rep,"**Model stops:**"); vers=line(rep,"**Scanner versions:**")
-if not (len(iss)==1 and "2 finding(s)" in iss[0]): bad.append("stop issue %r"%iss)
-if [l for l in rep.split("\n") if "unassessed-after-fallback" in l or "escalation pending" in l]: bad.append("per-finding path also taken")
-if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 3: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
-if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(iterations)" in stops[0]): bad.append("stops %r"%stops)
+# 1: refusals and stops are listed with counts and roles, and the scanner versions are printed
+rep=run(manifest(2,"two"), adj(1))
+refs=line(rep,"**Model refusals:**"); vers=line(rep,"**Scanner versions:**")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 7: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
+if line(rep,"**Model stops:**"): bad.append("a stop listed without one")
+rep=run(manifest(2,"two-stopped"), adj(R.policy.TOKEN_BUDGET+1))
+stops=line(rep,"**Model stops:**")
+if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(token budget)" in stops[0]): bad.append("stops %r"%stops)
 if not (len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0]): bad.append("vers %r"%vers)
 if "none called" in rep: bad.append("role header says none called after refused calls")
 if name_re.search(rep): bad.append("a model/vendor name in the report")
@@ -4176,32 +4310,23 @@ if name_re.search(rep): bad.append("a model/vendor name in the report")
 rep=run(manifest(2,"budget"), adj(R.policy.TOKEN_BUDGET+1))
 if [l for l in rep.split("\n") if "owner-decision issue" in l]: bad.append("budget stop opened an issue")
 if not any("(token budget)" in l for l in line(rep,"**Model stops:**")): bad.append("budget stop not listed")
-# 2b: an adjudicator that ERRORS (does not refuse) and meets the stop is an outage, not a stop: one adjudicator-unavailable issue, no stop issue, no stop recorded, the run incomplete
+# 2b: an adjudicator that ERRORS (does not refuse) is an outage, not a stop: one adjudicator-unavailable issue, no stop recorded, the run incomplete
 fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nfor line in sys.stdin:\n    sys.exit(3)\n")
-rep=run(manifest(2,"errored"), fe, limit=1)
-if [l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]: bad.append("an errored finding opened a stop issue")
+rep=run(manifest(2,"errored"), fe)
 if line(rep,"**Model stops:**"): bad.append("an errored finding was reported as a stop %r"%line(rep,"**Model stops:**"))
 if len([l for l in rep.split("\n") if l.startswith("- would open") and "owner-decision issue" in l and "adjudicator unavailable" in l])!=1: bad.append("no single adjudicator-unavailable issue %r"%[l[:160] for l in rep.split("\n") if "owner-decision" in l or "navailable" in l][:6])
 if "AUDIT INCOMPLETE" not in rep: bad.append("an adjudicator outage left the run complete")
-# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64)
+# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64); stops show the full count
 rep=run(manifest(21,"many"), adj(1))
 refs=line(rep,"**Model refusals:**")
 if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 64: ") and refs[0].endswith("; ...")): bad.append("refs cap %r"%[r[:60] for r in refs])
-rep=run(manifest(21,"manystop"), adj(1), limit=1)
+rep=run(manifest(21,"manystop"), adj(R.policy.TOKEN_BUDGET+1))
 st=line(rep,"**Model stops:**")
 if not (len(st)==1 and st[0].startswith("**Model stops:** 21: ")): bad.append("stops count %r"%[x[:60] for x in st])
-# 4: the stop issue has a stable title across runs with a different count (one create, then an update), and the adjudicator-unavailable title is stable too
-shim=tmp+"/shim.log"
-run(manifest(1,"d1"), adj(1), dry=False, limit=1, shim=shim); run(manifest(3,"d3"), adj(1), dry=False, limit=1, shim=shim)
-log=open(shim).read()
-c=len([l for l in log.split("\n") if l.startswith("gh issue create") and "iteration stop" in l]); u=len([l for l in log.split("\n") if l.startswith("gh issue comment") and "iteration stop" in l])
-if (c,u)!=(1,1): bad.append("stop issue create/update %r"%((c,u),))
+# 4: the adjudicator-unavailable title is stable (no count in it)
 t1=R.policy.subject("owner-decision: adjudicator unavailable — findings unassessed")
 src=open(".github/agent/bin/auditor-run.py").read()
 if "adjudicator unavailable — %d findings" in src: bad.append("count in the unavailable title")
-# 5: a failed delivery of the stop issue marks the run incomplete
-rep=run(manifest(1,"f1"), adj(1), dry=False, limit=1, shim=tmp+"/shim2.log", fail=True)
-if "AUDIT COMPLETE" in rep or "failed to open" not in rep: bad.append("failed stop-issue delivery not incomplete")
 # 6: a pullability refusal is logged with its role and billed
 st={"tokens":0}
 R._pullability(adj(5),{"finding_id":"CVE-P"},st)
@@ -4211,15 +4336,149 @@ st={"tokens":0}
 R._conclusion(adj(7),{n:[] for n in range(1,8)},json.load(open(manifest(1,"n"))),st)
 if not (st.get("tokens")==7 and st.get("refusals")==[{"finding_id":"CONCLUSION","attempt":"narrative","role":"primary"}]): bad.append("narrative refusal %r"%st)
 # 8: scanner version text is escaped in the header
-rep=run(manifest(1,"esc","v`x`|[1]"), adj(1), limit=1)
+rep=run(manifest(1,"esc","v`x`|[1]"), adj(1))
 vers=line(rep,"**Scanner versions:**")
 if not (len(vers)==1 and "v\\`x\\`\\|\\[1\\]" in vers[0]): bad.append("unescaped version %r"%vers)
 print("OK" if not bad else "BAD "+"; ".join(bad))
 PP
 )"
 eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged and billed, one stop issue with a stable title, budget stop silent, full counts, failed delivery incomplete, header escaped" "$r14"
+# rc-5b fix 15 (REQ-AUD-9 AC3, "a five-iteration stop"; register row 38 and the Sep 16 continuous-scanning rule "a five-iteration loop"; advisor reading, Oct 24): five CONSECUTIVE
+# auditor runs in which the same finding is still unsettled open ONE owner-decision issue (stable title, counts in the body). The counts ride in the auditor state (the no-change day's
+# artifact), a missing state is reported "counter state missing, counts restart", a corrupt state stops the run (exit 3, nothing written).
+begin "rc5b-15-five-consecutive-unsettled-runs-open-one-issue" "(a finding the model refused is in its own issue and not named twice; a count dated after today stops the run before any call) a finding the model leaves unsettled in five consecutive runs is named in ONE owner-decision issue on the fifth (never the fourth), a settled finding restarts at one, a second run on the same day does not count twice, a missing state is said in the run's output, a corrupt state stops the run"
+r15="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
+FX=sys.argv[1]; tmp=tempfile.mkdtemp()
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+fr=tempfile.mktemp(suffix=".py"); open(fr,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"category\":\"under_investigation\",\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+v0=json.load(open(FX+"/panel-mediumnofix/verdict.json"))
+def manifest(nfind, name):
+    d=tmp+"/"+name; os.makedirs(d, exist_ok=True)
+    v=copy.deepcopy(v0); f0=v["findings"][0]; fs=[]
+    for i in range(nfind):
+        f=copy.deepcopy(f0); f["id"]="CVE-2099-93%02d"%i; f["package"]="libuns%d"%i
+        f["purls"]=["pkg:deb/debian/libuns%d@1?arch=amd64&distro=debian-12.0"%i]; f["details"]["grype"]["purl"]=f["purls"][0]; fs.append(f)
+    v["findings"]=fs; v["unique"]=fs
+    json.dump(v,open(d+"/verdict.json","w"))
+    m=json.load(open(FX+"/manifest-mediumnofix.json"))
+    for s in m["scanner_reports"]: m["scanner_reports"][s]=d+"/verdict.json"
+    m["panel"]["verdict"]=d+"/verdict.json"
+    for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
+    json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
+shim=tmp+"/shim.log"; ws=tmp+"/ws"; os.makedirs(ws); os.environ["GITHUB_WORKSPACE"]=ws; os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
+bad=[]
+def day(n, mp, prev, adj=None):
+    out=tempfile.mkdtemp(dir=tmp)
+    if prev: os.environ["AUDITOR_PREV_STATE"]=prev
+    else: os.environ.pop("AUDITOR_PREV_STATE",None)
+    buf=io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        R.run(mp,False,out,"2026-10-%02d"%n,adjudicator=adj or fa)
+    rep=open(out+"/report.md").read(); st=json.load(open(out+"/.auditor/auditor-state.json"))
+    return out+"/.auditor/auditor-state.json", rep, buf.getvalue(), st
+def log_count(kind):
+    t=open(shim).read() if os.path.exists(shim) else ""
+    return len([l for l in t.split("\n") if l.startswith("gh issue "+kind) and "unsettled for" in l])
+two=manifest(2,"two"); one=manifest(1,"one")
+prev=None; marks=[]
+for n in range(1,6):
+    prev, rep, out, st = day(n, two, prev)
+    miss=("counter state missing, counts restart" in rep, "counter state missing, counts restart" in out)
+    if n==1 and miss!=(True,True): bad.append("day1 missing not reported in report and output %r"%(miss,))
+    if n>1 and any(miss): bad.append("day%d reported missing"%n)
+    marks.append((n, log_count("create")))
+    ul=[l for l in rep.split("\n") if l.startswith("**Unsettled-run counts:**")]
+    if (n==5) != bool(ul and "owner-decision issue: " in ul[0]): bad.append("day%d: the aggregate issue reference on the report line %r"%(n,ul))
+    if (n==5) != ("unsettled for 5 consecutive runs" in rep.split("## 1")[0]): bad.append("day%d: the aggregate issue in the report's section 0"%n)
+    if st["unsettled"].get("CVE-2099-9300",{}).get("runs")!=n: bad.append("day%d count %r"%(n,st["unsettled"]))
+    if st["verdicts"] or st["pullability"] or st["narrative"] is not None: bad.append("day%d: an incomplete run left something reusable besides the counts (#684's rule) %r"%(n,{k:st[k] for k in ("verdicts","pullability","narrative")}))
+if [m for m in marks if m[0]<5 and m[1]]: bad.append("issue before the fifth run %r"%marks)
+if marks[-1]!=(5,1): bad.append("no single issue on the fifth run %r"%marks)
+body=[l for l in open(shim).read().split("\n") if l.startswith("gh issue create") and "unsettled for" in l]
+if not (len(body)==1 and "CVE-2099-9300" in body[0] and "CVE-2099-9301" in body[0] and "5" in body[0]): bad.append("issue body %r"%[b[:200] for b in body])
+# the same day twice does not count twice
+p5=prev
+_, rep, out, st = day(5, two, p5)
+if st["unsettled"]["CVE-2099-9300"]["runs"]!=5: bad.append("same day counted twice %r"%st["unsettled"])
+# day six: the count is six, the SAME issue is updated (stable title): still one create; the comments are the same-day rerun and day six
+prev, rep, out, st = day(6, two, p5)
+if st["unsettled"]["CVE-2099-9300"]["runs"]!=6: bad.append("day6 count")
+if (log_count("create"), log_count("comment"))!=(1,2): bad.append("title not stable: create/comment %r"%((log_count("create"),log_count("comment")),))
+# a finding that is gone (settled) restarts at one when it comes back
+prev, rep, out, st = day(7, one, prev)
+if "CVE-2099-9301" in st["unsettled"]: bad.append("settled finding kept its count")
+prev, rep, out, st = day(8, two, prev)
+if st["unsettled"]["CVE-2099-9301"]["runs"]!=1 or st["unsettled"]["CVE-2099-9300"]["runs"]!=8: bad.append("restart %r"%st["unsettled"])
+# a state that IS an auditor state with untrustworthy counts stops the run: exit 3, no report written (a file that is not an auditor state at all is the missing case: REQ-AUD-3 AC3 ignores it)
+good_doc=json.load(open(prev))
+good_doc["unsettled"]={"CVE-2099-9300":{"runs":0,"last":"2026-10-04"}}      # an auditor state whose counts cannot be trusted
+cs=tmp+"/corrupt.json"; json.dump(good_doc,open(cs,"w"))
+co=tmp+"/corrupt-out"
+r=subprocess.run([sys.executable,".github/agent/bin/auditor-run.py","--dry-run","true","--manifest",one,"--adjudicator",fa,"--out",co,"--today","2026-10-09","--prev-state",cs],capture_output=True,text=True)
+if r.returncode!=3 or os.path.exists(co+"/report.md"): bad.append("corrupt state: rc=%r report=%r"%(r.returncode,os.path.exists(co+"/report.md")))
+# a finding the model REFUSED is already in its own owner-decision issue ("could not be assessed"): the counts advance, but the aggregate names only findings in no issue this run
+prev=None; n_before=(log_count("create"), log_count("comment"))
+for n in range(11,16):
+    prev, rep, out, st = day(n, one, prev, fr)
+if st["unsettled"].get("CVE-2099-9300",{}).get("runs")!=5: bad.append("refusal: the count stopped advancing %r"%st["unsettled"])
+if (log_count("create"), log_count("comment"))!=n_before: bad.append("refusal: the aggregate issue names a finding already in an owner issue")
+# a previous count dated after today stops the run before any model call or mutating call: exit 3, nothing written, the mutation ledger unchanged
+fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nsys.exit(1)\n")
+fut=json.load(open(prev)); fut["unsettled"]={"CVE-2099-9300":{"runs":1,"last":"2099-01-01"}}
+fs=tmp+"/future.json"; json.dump(fut,open(fs,"w"))
+led=open(shim).read(); fo=tmp+"/future-out"
+r=subprocess.run([sys.executable,".github/agent/bin/auditor-run.py","--manifest",one,"--adjudicator",fe,"--out",fo,"--today","2026-10-23","--prev-state",fs],capture_output=True,text=True)
+if r.returncode!=3 or os.path.exists(fo+"/report.md") or open(shim).read()!=led: bad.append("future-dated count: rc=%r report=%r ledger-changed=%r"%(r.returncode,os.path.exists(fo+"/report.md"),open(shim).read()!=led))
+print("OK" if not bad else "BAD "+"; ".join(bad))
+PP
+)"
+eq "$r15" "OK" && ok || no "rc-5b fix 15: five consecutive unsettled runs open one stable-titled issue, restart on settle, say a missing state, stop on a corrupt one" "$r15"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+# rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
+# listed in the report as "not re-checkable (hidden from all scanners)", never silently kept. A vex_covered entry no carried statement matches is dropped.
+r5="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import json,os,sys,io,contextlib,importlib.util,glob,tempfile,subprocess as _sp
+FX=sys.argv[1]; W=tempfile.mkdtemp(); ws=W+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex, parsers
+from unittest.mock import patch
+mp=FX+"/manifest-mediumnofix.json"; m=json.load(open(mp)); d=json.load(open(m["panel"]["verdict"]))
+c="CVE-2099-9400"; purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+json.dump(vex.doc(c,"not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]),open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+_real_run=_sp.run                                  # saved BEFORE R.subprocess.run is patched (same module object): the fake must call the saved one, never itself
+def run(cov,tag):
+    d2=json.loads(json.dumps(d)); d2["vex_covered"]=cov
+    vp2=W+"/verdict-"+tag+".json"; json.dump(d2,open(vp2,"w"))
+    m2=json.loads(json.dumps(m)); m2["panel"]["verdict"]=vp2; mp2=W+"/m-"+tag+".json"; json.dump(m2,open(mp2,"w"))
+    def fake2(cmd,*a,**kw):
+        if cmd and cmd[0] in ("git","gh"): return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+        return _real_run(cmd,*a,**kw)
+    out=W+"/out-"+tag
+    with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp2,True,out,"2026-09-24",adjudicator="offline-probe")
+    rep=open(out+"/report.md").read()
+    if "consistency check did not complete" in rep: raise SystemExit("the run's consistency check did not complete")
+    return os.path.exists(out+"/vex/%s.openvex.json"%c), [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
+cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1"}]
+rejudged,hid,vp=run(cov,"a")
+recs=[r for r in parsers.parse_panel(vp,"inspector") if r["finding_id"]==c]
+parsed_ok = len(recs)==1 and recs[0]["extra"].get("carried") is True and recs[0]["extra"]["images"]==["production-amd64"] and not [r for r in parsers.parse_panel(vp,"google") if r["finding_id"]==c]
+rej_b,hid_b,_=run([],"b")
+rej_c,hid_c,_=run([dict(cov[0],package="otherpkg")],"c")
+# aliases: the carried statement is named by a GHSA id that lists the CVE the scanner reports as its alias (the panel's coverage predicate indexes both); it must resolve and not be called hidden
+st2=vex.doc("GHSA-aaaa-bbbb-cccc","not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]); st2["statements"][0]["vulnerability"]["aliases"]=[c]
+json.dump(st2,open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+rej_d,hid_d,_=run(cov,"d")
+print("OK" if (rejudged and not hid and parsed_ok and not rej_b and len(hid_b)==1 and c in hid_b[0] and not rej_c and len(hid_c)==1 and c in hid_c[0] and not hid_d) else "BAD rejudged=%s hid=%s parsed=%s b=%s/%s c=%s/%s d=%s/%s"%(rejudged,hid,parsed_ok,rej_b,hid_b,rej_c,hid_c,rej_d,hid_d))
+PP
+)"
+eq "$r5" "OK" && ok || no "rc-5b fix 5: a carried statement hidden by our VEX from Inspector is re-judged (flagged carried by the parser, resolved to its scope), one no scanner reports is listed 'not re-checkable', an unmatched entry is dropped" "$r5"
 # rc-5b fix 12 (R4 + R5): the production client reads the category and the refusal from the JSON answer's own keys (exact), and the driver refuses a model proposal by shape and by
 # vendor/model name (the proposal, not the run).
 begin "rc5b-12-client-category-is-exact-json" "the adjudicator client takes the category and the refusal from the JSON keys, exact match: 'not a false_positive' in prose is not false_positive, a word 'cannot' in prose is not a refusal, no JSON is under_investigation"
@@ -4273,6 +4532,16 @@ eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and re
 # rc-5b fix 13 (R6, Fable): a reviewed file on main that is PRESENT but unreadable or malformed is a stop (main() returns 3), never a guess: an unreadable VEX must not become "no
 # statements" (the PR would delete every statement) and an unreadable accepted-items file must not renew every time box. A missing file is the first run and stays allowed.
 # Every case drives main() and records every git/gh call: a stop makes NO mutating call (no issue, no PR, no git beyond reads).
+cat > "$WORK/mutclass.py" <<'PP'
+"""The one classifier of the matrix, in ALLOWLIST form (cache#708 ruling): a git or gh call counts as mutating unless it is listed read-only here; any other program (go, python) is not counted."""
+READ_GIT = {"fetch", "show", "rev-parse", "status", "diff", "log", "ls-files", "cat-file", "merge-base", "rev-list"}
+READ_GH = {("issue", "list"), ("issue", "view"), ("pr", "list"), ("pr", "view"), ("pr", "status"), ("pr", "checks"), ("label", "list"), ("auth", "status"), ("repo", "view")}
+def mutating(cmd):
+    if not cmd: return False
+    if cmd[0] == "git": return not (len(cmd) > 1 and cmd[1] in READ_GIT)
+    if cmd[0] == "gh": return not (len(cmd) > 2 and (cmd[1], cmd[2]) in READ_GH)
+    return False
+PP
 cat > "$WORK/r6main.py" <<'PP'
 import json,os,sys,io,contextlib,importlib.util,tempfile,subprocess as _sp
 FX,variant=sys.argv[1],sys.argv[2]
@@ -4309,6 +4578,8 @@ elif variant=="vex-bad-vulnerability": json.dump(dict(old,statements=[dict(old["
 elif variant=="vex-dir": os.remove(vp); os.mkdir(vp)
 elif variant=="items-dir": os.remove(ap); os.mkdir(ap)
 elif variant=="items-bad-at-delivery": corrupt_at="delivery"
+elif variant=="delivery-base-vex-empty": corrupt_at="delivery-vex"
+elif variant=="delivery-base-items-keyless": corrupt_at="delivery-items"
 elif variant=="missing": os.remove(vp); os.remove(ap)
 elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
 elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
@@ -4318,9 +4589,19 @@ calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
-        if corrupt_at=="delivery" and cmd[1:2]==["checkout"]: open(ap,"w").write("{bad")
-        if corrupt_at=="reopened" and cmd[1:2]==["checkout"]:
-            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write(reopened_body)
+        _led=tmp+"/out/.auditor/reopened-expired.json"
+        if corrupt_at=="reopened" and os.path.exists(_led) and open(_led).read()!=reopened_body:      # the first git call after the run wrote its ledger: the file is damaged now (the base check ran before it existed)
+            open(_led,"w").write(reopened_body)
+        if cmd[1:2]==["fetch"]:      # the delivery base turns bad / the run's own ledger is damaged AFTER the run wrote it, before any checkout (the first moment the delivery looks)
+            if corrupt_at=="delivery": open(ap,"w").write("{bad")
+            if corrupt_at=="delivery-vex": open(vp,"w").write("{}")
+            if corrupt_at=="delivery-items": open(ap,"w").write('{"other": []}')
+            pass
+        if cmd[1:3]==["rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
+        if cmd[1:2]==["show"] and len(cmd)>2 and (cmd[2].startswith("origin/main:") or cmd[2].startswith("a"*40+":")):      # origin/main is the workspace's own reviewed files here
+            _rel=cmd[2].split(":",1)[1]; _p=ws+"/"+_rel
+            if os.path.isfile(_p): return _sp.CompletedProcess(cmd,0,open(_p).read(),"")
+            return _sp.CompletedProcess(cmd,128,"","fatal: path '%s' does not exist in 'origin/main'"%_rel)
         return _sp.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
     return _sp.run(cmd,*a,**kw)
@@ -4336,8 +4617,52 @@ with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),
     except Exception as e: rc="EXC %s"%type(e).__name__
 try: os.chmod(ws+"/.vex",0o755)
 except OSError: pass
-mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","pr","create"]) or x[:2] in (["git","push"],["git","commit"]) or x[:2]==["gh","api"]]
+import mutclass; mut=[x for x in calls if mutclass.mutating(x)]   # the shared allowlist-form classifier
 print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=="delivery" else ""))
+PP
+cat > "$WORK/r7main.py" <<'PP'
+# an owner-escalating finding whose per-finding VEX the run wrote damaged: the stop (exit 3) must come before the owner-decision issue is created (cache#701 ruling F3/B3)
+import json,os,sys,io,contextlib,importlib.util,tempfile,subprocess as _sp
+FX,variant=sys.argv[1],sys.argv[2]
+tmp=tempfile.mkdtemp(); ws=tmp+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex
+from unittest.mock import patch
+_orig=vex.write
+def dmg_write(*a,**kw):
+    p=_orig(*a,**kw)
+    if variant=="finding-vex-empty-object": open(p,"w").write("{}")
+    elif variant=="finding-vex-invalid-statement": json.dump({"statements":[{}]},open(p,"w"))
+    return p
+fetches=[0]; revfail=[0]
+calls=[]
+def fake(cmd,*a,**kw):
+    calls.append(list(cmd))
+    if cmd and cmd[0]=="git":
+        if cmd[1:2]==["fetch"]:
+            fetches[0]+=1
+            if variant=="fetch-fails-then-bad-base" and fetches[0]==1: return _sp.CompletedProcess(cmd,1,"","network error")
+        if cmd[1:3]==["rev-parse","origin/main"]:
+            if variant=="revparse-fails-then-bad-base" and not revfail[0]:
+                revfail[0]=1; return _sp.CompletedProcess(cmd,1,"","bad ref")
+            return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
+        if cmd[1:2]==["show"]:
+            _rel=cmd[2].split(":",1)[1]
+            if variant.endswith("-then-bad-base") and _rel.startswith(".vex/"): return _sp.CompletedProcess(cmd,0,"{}","")        # a damaged base, visible only to a SECOND acquisition
+            if variant=="base-vex-empty" and _rel.startswith(".vex/"): return _sp.CompletedProcess(cmd,0,"{}","")
+            if variant=="base-items-keyless" and _rel.startswith(".auditor/"): return _sp.CompletedProcess(cmd,0,'{"other": []}',"")
+            return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")
+        return _sp.CompletedProcess(cmd,0,"","")
+    if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+    return _sp.run(cmd,*a,**kw)
+R.cli.ARGS[:]=["--manifest",FX+"/manifest-ownerissue.json","--out",tmp+"/out","--dry-run","false","--today","2026-09-24","--adjudicator","offline-probe"]
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(vex,"write",dmg_write),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    try: rc=R.main()
+    except Exception as e: rc="EXC %s"%type(e).__name__
+issues=[x for x in calls if x[:3]==["gh","issue","create"]]
+import mutclass; mut=[x for x in calls if mutclass.mutating(x)]   # the shared allowlist-form classifier
+print("rc=%s fetches=%d"%(rc,fetches[0]) if variant.endswith("-then-bad-base") else "rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
@@ -4374,6 +4699,57 @@ for variant in vex-empty-list items-empty-list; do   # an empty list is a valid 
 done
 r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
 case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
+for variant in delivery-base-vex-empty delivery-base-items-keyless; do
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "a delivery base whose reviewed file is {} or lacks its list ($variant) stops the run (exit 3) BEFORE git checkout: the delivery base is read with git show, the workspace is not touched" "$r6"
+done
+r7="$("$PY" "$WORK/r7main.py" "$FXRUN" control 2>/dev/null | tail -1)"
+case "$r7" in "rc=3 "*|"rc=EXC"*|"") no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; *) ok ;; esac
+for variant in base-vex-empty base-items-keyless; do
+  r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding AND a damaged delivery base ($variant) stops the run (exit 3) before the owner-decision issue: the base is fetched and validated once, before the first issue" "$r7"
+done
+for variant in fetch-fails-then-bad-base revparse-fails-then-bad-base; do
+  r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r7" "rc=1 fetches=1" && ok || no "a base fetch or resolution that fails before the first owner issue is handed to the delivery, which reports it (rc=1) and acquires the base ONCE: no second fetch can find a damaged base after the issue exists ($variant)" "$r7"
+done
+for variant in finding-vex-empty-object finding-vex-invalid-statement; do
+  r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged ($variant) stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
+done
+while read -r want cmdline; do
+  got="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import mutclass; print(int(mutclass.mutating(sys.argv[2:])))' "$WORK" $cmdline)"
+  eq "$got" "$want" && ok || no "the matrix classifier counts '$cmdline' as mutating=$want (allowlist form: read-only commands are listed, everything else counts)" "$got"
+done <<'LIST'
+1 gh issue create --title t
+1 gh issue comment 1 --body b
+1 gh issue close 1
+1 gh issue reopen 1
+1 gh issue edit 1
+1 gh label create x
+1 gh pr create --base main
+1 gh pr merge 1
+1 gh pr comment 1
+1 gh pr edit 1
+1 gh pr close 1
+1 gh pr ready 1
+1 gh api graphql
+1 gh release create v1
+1 git checkout -B b origin/main
+1 git push origin b
+1 git commit -m x
+1 git reset --hard
+1 git add x
+1 git rebase main
+1 git symbolic-ref HEAD refs/heads/x
+0 git fetch origin main
+0 git show origin/main:x
+0 git rev-parse origin/main
+0 git status --porcelain
+0 gh issue list
+0 gh pr list
+0 go get x
+LIST
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
