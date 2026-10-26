@@ -451,6 +451,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose record case runs the sweep step with an old failure, with and without a record branch" }
+  - ac: REQ-REL-012-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+  - ac: REQ-REL-012-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
