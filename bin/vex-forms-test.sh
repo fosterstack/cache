@@ -146,7 +146,7 @@ for kind in ("npm", "pypi", "deb", "golang"):
         V.inspector({"statements": [scoped("CVE-2099-50", "not_affected", [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:%s/foo@1" % kind}]}])]}, IMAGES, "v0.3.0"); got = "accepted"
     except ValueError:
         got = "refused"
-    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic names a package these forms can carry)" % kind, got == "refused", got)
+    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic and a Go module path name a package these forms can carry; foo@1 has neither a namespace nor is generic)" % kind, got == "refused", got)
 # the same CVE in two packages, only one of them not affected: the rule names that package alone
 TWO = {"statements": [scoped("CVE-2099-40", "not_affected", BB), scoped("CVE-2099-40", "affected", TOY)]}
 r2p = V.inspector(TWO, IMAGES, "v0.3.0")["filters"]
@@ -174,7 +174,7 @@ for name, sts in [("whole image affected, package not_affected", [scoped("CVE-20
         ok = True
     check("conflict refused: " + name, ok)
 try:
-    V.inspector({"statements": [scoped("CVE-2099-22", "not_affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&arch=amd64"}])]}, IMAGES, "v0.3.0"); ok = False
+    V.inspector({"statements": [scoped("CVE-2099-22", "not_affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&tag=latest"}])]}, IMAGES, "v0.3.0"); ok = False
 except ValueError:
     ok = True
 check("a product qualifier the forms cannot represent stops generation (fail closed)", ok)
@@ -225,6 +225,7 @@ for gone in ("fips", "production"):
 import re as _re
 GEN = sys.argv[1]
 OPENVEX = os.path.join(root, ".vex/fosterstack-cache.openvex.json")
+BBVEX = os.path.join(root, "test-evidence/vex-scope/busybox.openvex.json")   # the retired busybox statements, kept as a fixture: the generator's busybox scoping still has a document to run on
 FORMS = ("fosterstack-cache-v0.3.0.inspector-filters.json", "fosterstack-cache-v0.3.0.csaf.json")
 SYN = os.path.join(tempfile.mkdtemp(), "synthetic.openvex.json"); json.dump(VEX, open(SYN, "w"))   # every statement on the whole image
 def run_gen(images_text, out, env=None, prelude="", openvex=SYN):
@@ -354,8 +355,8 @@ named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/
 wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
 check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
-check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
-      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"].get("relationships", [])))
+check("the real file's CSAF passes the loader's checks; its one statement stays scoped to the jwt/v4 module",
+      bool(google_validate(rc)) and rc["product_tree"].get("relationships") and all(r["product_reference"] == "component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@" for r in rc["product_tree"].get("relationships", [])))
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -375,14 +376,15 @@ DEBUG = {"production": {"index": "sha256:87887f55ffa41cc63d4aa6f6d9459fd0dbf9194
          "fips": {"index": "sha256:e2e502f44d8bd9e6967cb160aabeb012e8520ebba0faa88e130143fe534f282e",
                   "children": {"linux/amd64": "sha256:fd52446f5bb30b17c7b20e5d4b381722180f63911f678937e75b16b6f080ac5a",
                                "linux/arm64": "sha256:596adb2363f907a62634a24aeea0295e147bf45e4c4a3bb44b1c75963bad5653"}}}
-dc = V.csaf(real, DEBUG, "v0.2.2")
-check("the real file on the published :debug images: each busybox CVE is present", BUSYBOX <= {v["cve"] for v in dc["vulnerabilities"]})
+bbvex = json.load(open(BBVEX))
+dc = V.csaf(bbvex, DEBUG, "v0.2.2")
+check("the busybox fixture on the published :debug images: each busybox CVE is present", BUSYBOX <= {v["cve"] for v in dc["vulnerabilities"]})
 p2d = {b["product"]["product_id"]: b["product"]["product_identification_helper"]["purl"].split("@", 1)[1].split("?")[0]
        for b in dc["product_tree"]["branches"]}
 rels = dc["product_tree"].get("relationships", [])
 check("…every relationship is busybox 1.37.0 on one of those :debug digests",
       rels and all(x["product_reference"] == "component-busybox@1.37.0" and p2d.get(x["relates_to_product_reference"]) in six_of(DEBUG) for x in rels))
-bb = [x for x in V.inspector(real, DEBUG, "v0.2.2")["filters"] if x["filterCriteria"]["vulnerabilityId"][0]["value"] in BUSYBOX]
+bb = [x for x in V.inspector(bbvex, DEBUG, "v0.2.2")["filters"] if x["filterCriteria"]["vulnerabilityId"][0]["value"] in BUSYBOX]
 check("…each busybox Inspector rule carries busybox 1.37.0 and only those digests",
       {x["filterCriteria"]["vulnerabilityId"][0]["value"] for x in bb} == BUSYBOX
       and all(x["filterCriteria"].get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "busybox"},
@@ -461,8 +463,11 @@ for pid in ("pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache#bin/foo" 
     except ValueError:
         ok = True
     check("SEC-165-01 our image's purl with an unrepresentable part stops generation: " + pid, ok)
-check("SEC-165-01 a percent-encoded repository_url without subpath is still our image",
-      V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]) == [([D("1")], None)])
+try:
+    V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]); got = "accepted"
+except ValueError:
+    got = "refused"
+check("SEC-165-01 a percent-encoded repository_url is ours only after decoding, which the other readers do not do: refused, not honoured", got == "refused", got)
 check("SEC-165-01 a fork whose name extends ours is another repository, not ours",
       V._scopes(scoped("CVE-FORK", "affected", [{"@id": "pkg:oci/cache-fork?repository_url=ghcr.io/fosterstack/cache-fork#x"}]), [D("1")]) == [])
 # Codex #165 r3 (SEC-165-01): identity is never discarded — a namespaced package and an identifiers-only product stop
@@ -473,7 +478,7 @@ def refused(prod):
         V._scopes(scoped("CVE-ID", "affected", [prod]), [D("1")]); return False
     except ValueError:
         return True
-for sub in ("pkg:golang/github.com/acme/busybox@1.37.0", "pkg:npm/%40acme/busybox@1.37.0", "pkg:deb/debian/libssl3@3.0.15-1"):
+for sub in ("pkg:generic/acme/busybox@1.37.0", "pkg:npm/%40acme/busybox@1.37.0", "pkg:deb/debian/libssl3@3.0.15-1"):
     check("SEC-165-01 a namespaced subcomponent stops generation: " + sub, refused({"@id": OURS, "subcomponents": [{"@id": sub}]}))
 for name, prod in [("an IRI @id with our purl in identifiers", {"@id": "https://example.com/x", "identifiers": {"purl": OURS}}),
                    ("@id and identifiers.purl that differ", {"@id": OURS, "identifiers": {"purl": "pkg:oci/other?repository_url=ghcr.io/x/other"}}),
@@ -497,6 +502,121 @@ check("SEC-165-01 another repository's image named both ways is still not ours",
       V._scopes(scoped("CVE-OT", "affected", [{"@id": "pkg:oci/x?repository_url=ghcr.io/a/x", "identifiers": {"purl": "pkg:oci/x?repository_url=ghcr.io/a/x"}}]), [D("1")]) == [])
 check("SEC-165-01 a Go module product stays out of image scope",
       V._scopes(scoped("CVE-GO", "affected", [{"@id": "pkg:golang/github.com/fosterstack/cache"}]), [D("1")]) == [])
+# --- rc-5a H (handoff 0666; ruling R2, astra R8): ONE scope grammar across the readers. vex-forms accepts variant=/arch= (variant filters the digest
+#     set, arch maps to the platform digests); the rescan no longer accepts debug; the same table of product forms goes through every reader
+OURS_Q = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def META(images):
+    return {d: (v, plat) for v, plat, d in V._digests(images)}
+ALL6 = {d for _, _, d in V._digests(IMAGES)}
+def digs(pred):
+    return {d for v, plat, d in V._digests(IMAGES) if pred(v, plat)}
+def sc(q, meta=True):
+    st_ = scoped("CVE-H1", "not_affected", [{"@id": OURS_Q + q, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])
+    return V._scopes(st_, sorted(ALL6), META(IMAGES) if meta else None)
+def covered(q):
+    return {d for ds, _ in sc(q) for d in ds}
+check("H no qualifier covers every digest of the release", covered("") == ALL6)
+check("H variant=production covers the index and both children of production only", covered("&variant=production") == digs(lambda v, p: v == "production"))
+check("H variant=fips covers fips only", covered("&variant=fips") == digs(lambda v, p: v == "fips"))
+check("H arch=amd64 covers the amd64 children of both variants (an index has no one architecture)", covered("&arch=amd64") == digs(lambda v, p: p == "linux/amd64"))
+check("H arch=arm64 covers the arm64 children only", covered("&arch=arm64") == digs(lambda v, p: p == "linux/arm64"))
+check("H variant and arch together are the one child", covered("&variant=fips&arch=arm64") == digs(lambda v, p: v == "fips" and p == "linux/arm64") and len(covered("&variant=fips&arch=arm64")) == 1)
+check("H the order of the qualifiers does not matter", covered("&arch=arm64&variant=fips") == covered("&variant=fips&arch=arm64"))
+check("H the package is kept beside the scope", sc("&variant=fips")[0][1] == ("busybox", "1.37.0"))
+try:
+    sc("&variant=fips", meta=False); got = "accepted"
+except ValueError:
+    got = "refused"
+check("H a scoped product with no digest map cannot be placed: refused, never widened", got == "refused", got)
+ir = V.inspector({"statements": [scoped("CVE-H2", "not_affected", [{"@id": OURS_Q + "&variant=production", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")["filters"]
+check("H the Inspector rule of a variant-scoped statement carries the digests of that variant only",
+      len(ir) == 1 and {c["value"] for c in ir[0]["filterCriteria"]["ecrImageHash"]} == digs(lambda v, p: v == "production"), ir)
+cs = V.csaf({"statements": [scoped("CVE-H3", "not_affected", [{"@id": OURS_Q + "&arch=arm64", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")
+rel = cs["product_tree"].get("relationships", [])
+check("H the CSAF relationships of an arch-scoped statement sit on the arm64 children only", len(rel) == 2, rel)
+# the grammar table, through every reader: accepted by all or by none
+import importlib.util as _iu
+def _load(n, f):
+    sp = _iu.spec_from_file_location(n, os.path.join(root, "bin", f)); m = _iu.module_from_spec(sp); sys.path.insert(0, os.path.join(root, "bin")); sp.loader.exec_module(m); return m
+GATE, RESC = _load("gate_h", "inspector-gate.py"), _load("resc_h", "rescan-statement.py")
+PANEL = _load("panel_h", "panel.py")
+def r_gate(pid): return GATE.scope_of(pid) is not None
+def r_resc(pid):
+    try: return RESC._parse_product(pid) not in (None,) and RESC._parse_product(pid)[0] == "oci"
+    except ValueError: return False
+def r_panel(pid): return any(PANEL._covers(pid, i) for imgs in PANEL.EXPECTED.values() for i in imgs)
+def r_forms(pid):
+    try: V._scopes(scoped("CVE-H4", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)); return True
+    except ValueError: return False
+BASE_Q = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+OKQ = ["", "&variant=production", "&variant=fips", "&arch=amd64", "&arch=arm64", "&variant=fips&arch=arm64", "&arch=arm64&variant=production"]
+BADQ = ["&variant=debug", "&arch=riscv64", "&variant=", "&arch", "&arch=amd64&", "&color=red&arch=amd64", "&variant=production&variant=production",
+        "&Variant=production", "&variant=%70roduction", "&arch=%61md64", "&%61rch=amd64", "&variant=production&arch=amd64&arch=arm64", "&ARCH=arm64", "&variant=Production", "#", "&variant=production#"]
+for q in OKQ + BADQ:
+    want = q in OKQ
+    got = {n: f(BASE_Q + q) for n, f in (("gate", r_gate), ("rescan", r_resc), ("panel", r_panel), ("forms", r_forms))}
+    check("H one grammar: %r is %s by every reader" % (q, "accepted" if want else "refused"), set(got.values()) == {want}, got)
+# the shared table, whole product ids (confirmation round, finding 2): none of these is accepted by ANY of the four readers (forms: refused or not a scope)
+def r_forms_scope(pid):
+    try: return bool(V._scopes(scoped("CVE-H7", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)))
+    except ValueError: return False
+def r_gate_full(pid): return GATE.OUR_PRODUCTS.match(pid) is not None and GATE.scope_of(pid) is not None
+for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache&variant=production",
+            "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache", "pkg:oci/ca%63he?repository_url=ghcr.io/fosterstack/cache",
+            "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache#", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production#"):
+    got = {"gate": r_gate_full(pid), "rescan": r_resc(pid), "panel": r_panel(pid) and GATE.OUR_PRODUCTS.match(pid) is not None, "forms": r_forms_scope(pid)}   # the panel hands its statements to vex_index, whose first filter is OUR_PRODUCTS
+    check("H whole-product table: %s is accepted by no reader" % pid, not any(got.values()), got)
+# rc-5a H review (round 1, finding 1/2): a product the gate, panel and rescan ignore must never be honoured by the forms. Three outcomes per form: accept / ignore / refuse.
+OURS_ENC = "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache"
+for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", OURS_ENC + "&variant=production", "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache",
+            "pkg:oci/ca%63he?repository_url=ghcr.io/fosterstack/cache"):
+    try:
+        got = "honoured" if V._scopes(scoped("CVE-H5", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)) else "ignored"
+    except ValueError:
+        got = "refused"
+    check("H the forms never honour a product the other readers ignore: %s is %s" % (pid, got), got != "honoured", got)
+    check("H ...and for %s the gate really ignores it (OUR_PRODUCTS first)" % pid, GATE.OUR_PRODUCTS.match(pid) is None, pid)
+try:
+    V._scopes(scoped("CVE-H6", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache&variant=fips" % sorted(ALL6)[0].replace(":", "%3A"), "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)); got = "accepted"
+except ValueError:
+    got = "refused"
+fips_or_not = META(IMAGES)[sorted(ALL6)[0]][0]
+check("H a pinned digest that its own variant qualifier excludes stops generation (%s digest, variant=fips)" % fips_or_not, (got == "refused") == (fips_or_not != "fips"), got)
+# --- rc-5a G (handoff 0666; ruling R7/R8): the one statement is scoped to the jwt/v4 module, the busybox statements are retired, and a Go
+#     module represents as its FULL module path (Inspector names a Go module by its path; the Codex #165 widening concern was a namespace-less name)
+JWT = "pkg:golang/github.com/golang-jwt/jwt/v4"
+check("G a Go subcomponent is the package named by its full module path",
+      V._scopes(scoped("CVE-G1", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
+check("G a versioned Go subcomponent keeps its version",
+      V._scopes(scoped("CVE-G2", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT + "@v4.5.0"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", "v4.5.0"))])
+for sub in ("pkg:golang/jwt", "pkg:golang/jwt@v4.5.0", JWT + "?goos=linux", JWT + "#sub/dir", "pkg:golang/", "pkg:golang//x"):
+    check("G a Go subcomponent the forms cannot represent stops generation: " + sub, refused({"@id": OURS, "subcomponents": [{"@id": sub}]}))
+check("G a Go module and a generic package of the same last segment stay distinct",
+      V._scopes(scoped("CVE-G3", "affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}, {"@id": "pkg:generic/jwt"}]}]), [D("1")])
+      == [([D("1")], ("github.com/golang-jwt/jwt/v4", "")), ([D("1")], ("jwt", ""))])
+gj = V.inspector({"statements": [scoped("CVE-G4", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"]
+check("G the Inspector rule names the Go module by its full path", [f["filterCriteria"]["vulnerablePackages"] for f in gj] == [[{"name": {"comparison": "EQUALS", "value": "github.com/golang-jwt/jwt/v4"}}]], gj)
+sts = real["statements"]
+check("G the published document holds exactly one statement, CVE-2024-51744", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744"])
+oci = [p_ for s_ in sts for p_ in s_["products"]]
+check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
+      oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
+for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4", "pkg:generic/busybox%401.37.0", "pkg:generic/busybox@1.37.0%2F1", "pkg:golang/github.com/golang-jwt/jwt%40v4"):
+    check("G a subcomponent that is not a Go module path nor a plain generic name stops generation: " + sub_, refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+check("G a double-encoded delimiter is decoded once and stays a literal name (never the Go module it spells after a second decoding)",
+      V._scopes(scoped("CVE-G8", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/github.com%252Fgolang-jwt%252Fjwt%252Fv4"}]}]), [D("1")])
+      == [([D("1")], ("github.com%2Fgolang-jwt%2Fjwt%2Fv4", ""))])
+check("G an encoded dot in the host segment is still a Go module path (decoded once, then judged)",
+      V._scopes(scoped("CVE-G10", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/github%2Ecom/golang-jwt/jwt/v4"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
+check("G an encoded slash in a Go module path (host or later segment) stops generation",
+      all(refused({"@id": OURS, "subcomponents": [{"@id": x}]}) for x in ("pkg:golang/github%2Ecom%2Fgolang-jwt/jwt/v4", "pkg:golang/github.com/golang-jwt%2Fjwt/v4")))
+check("G the empty version leaves no stray space in the published text",
+      "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
+check("G the published document no longer describes a :debug image or busybox",
+      "busybox" not in json.dumps(real).lower() and ":debug" not in json.dumps(real) and "distroless" not in json.dumps(real).lower())
+check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
+check("G the busybox fixture keeps the three retired statements for the generator's tests",
+      sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/acceptance-serve.sh SUITE main|capped|stop   (SUITE: gradle | maven)
-# Starts the candidate image IMAGE_REF the way acceptance.yml's release-chain mode starts it for that suite (same container name, port,
+# Starts the candidate image IMAGE_REF the way the suite's own server step starts it (same container name, port,
 # environment and health wait; no registry login: Check loads the candidate from Build's tarball), or removes every suite container.
 # Used by the Check acceptance wrapper (REQ-CHAIN-006-AC5). The Maven password below is the suite's fixture credential, the one its
 # settings.xml step writes; it protects nothing.
@@ -17,7 +17,22 @@ case "$suite:$what" in
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
 [ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is unset" >&2; exit 2; }
-docker tag "$IMAGE_REF" localhost/fscache-serve-candidate
+# the image is named by content (REQ-SUP-001-AC30): name@sha256:<64 hex> or an image ID sha256:<64 hex>; a tag is refused (ASCII classes only)
+export LC_ALL=C
+# the hex and the classes below are matched exactly, whatever the caller's shell options
+shopt -u nocasematch
+label='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+host="${label}(\\.${label})*(:[0-9]+)?"
+part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+by_name="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
+by_id='^sha256:[0-9a-f]{64}$'
+[[ "$IMAGE_REF" =~ $by_id ]] || [[ "$IMAGE_REF" =~ $by_name ]] || { printf 'acceptance-serve: IMAGE_REF must be content-addressed (name@sha256:<64 hex> or an image ID sha256:<64 hex>), got: %q\n' "$IMAGE_REF" >&2; exit 2; }
+# Only the inspected image ID is tagged to the fixed local name (a fixed name, so no variable image is run); right before the container starts the name must still resolve to exactly that ID
+id=$(docker image inspect --format '{{.Id}}' "$IMAGE_REF") || { echo "acceptance-serve: docker could not inspect $IMAGE_REF" >&2; exit 2; }
+[[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'acceptance-serve: docker named no image ID for %q\n' "$IMAGE_REF" >&2; exit 2; }
+docker tag "$id" localhost/fscache-serve-candidate
+docker image inspect --format '{{.Id}}' localhost/fscache-serve-candidate | grep -qxF "$id" || { echo "acceptance-serve: localhost/fscache-serve-candidate no longer resolves to $id (re-tagged); nothing is started" >&2; exit 1; }
 docker run --pull=never -d --name "$name" --env-file /dev/stdin -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate <<< "$(printf '%s\n' $envs)"   # the suite's environment (space-separated NAME=value words), one per line
 for _ in $(seq 1 20); do
   lg -sf "http://localhost:$port/healthz" && exit 0

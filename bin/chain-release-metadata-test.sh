@@ -198,7 +198,7 @@ REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "require
 def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
 t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
 t19 = ac("REQ-CHAIN-007", 19)["then"]
-check("the command wrapped in timeout -k 20 540 (a kill-after of 20 seconds, so a command that ignores the TERM cannot hold the job past the certificate)" in t4 and "wrapped in timeout 540," not in t4,
+check("the command wrapped in timeout -k 20 540 (a bound on a hung command, with a kill-after of 20 seconds)" in t4 and "wrapped in timeout 540," not in t4,
       "text: REQ-CHAIN-004-AC2 says timeout -k 20 540 (E item A)")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
 check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7
@@ -253,10 +253,24 @@ check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and not os.pa
 t = ck_tree(); os.mkdir(t + "/dist/checksums.txt.part"); r = ck_run(t)
 check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 a directory at checksums.txt.part is a refusal (exit 1), and nothing is written", "rc=%s %s" % (r[0], r[2][:120]))
 t21 = ac("REQ-CHAIN-007", 21)["then"]
-check("bin/release-metadata.py bind-archives" in t21 and "bin/release-metadata.py checksums" in t21 and "no test creates the file it signs" in t21,
-      "text: REQ-CHAIN-007-AC21 names the bind and the checksums command and says no test creates the signed file")
+check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 and "no test creates the file it signs" in t21,
+      "text: REQ-CHAIN-007-AC21 names only the checksums command (it makes the archive check itself) and says no test creates the signed file")
+# rc-2 signing review R6 (wording stale since the Oct 21 rule): the texts, comments and the reason say what the scripts do
+t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
+check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B --key K" in t6 and "release-compare.sh" in t6,
+      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and --key only; the comparison is release-compare.sh's")
+check("release-sign: cosign, git, jq and python3" in t10, "text: REQ-CHAIN-007-AC10 lists git among release-sign's tools")
+b7 = ac("REQ-BUILDAPK-001", 7)["then"]
+check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
+      "text: REQ-BUILDAPK-001-AC7 signs Build's apks only; a --rebuild-dir is an unknown argument; the comparison is release-compare.sh's")
+CS = {r["path"]: r for r in json.load(open(os.path.join(BIN, "..", ".github", "policy", "chain-scripts.json")))["scripts"]}
+check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and "release-compare" in CS["bin/release-apks.sh"]["reason"],
+      "text: chain-scripts.json's release-apks reason does not claim the Build/Rebuild comparison and names release-compare.sh")
+check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read(), "text: melange-apko-lib.sh no longer shows release-sign-apks.sh with --rebuild-dir")
+check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
+check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "100"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "107"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

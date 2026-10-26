@@ -28,7 +28,7 @@ STRACE_SHA256='da189e990a82e3ca3a5a4631012f7ecfd489dab459854d82d8caf6a865c1356a'
 TRACE_BIN=/tmp/fstrace/bin
 TRACE_OUT=/tmp/fstrace/out
 # The candidate image's real entrypoint (what strace execs).
-CANDIDATE_ENTRYPOINT=/usr/local/bin/fscache
+CANDIDATE_ENTRYPOINT=/usr/bin/fscache
 
 fail() { echo "::error::$*" >&2; exit 1; }
 

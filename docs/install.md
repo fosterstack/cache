@@ -105,7 +105,7 @@ curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/
 
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
