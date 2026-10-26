@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Parser unit tests (real fixtures + malformed variants). CI: ci.yml, required 'allowlist' job.
-# Run as the coverage gate's parallel shards (unit-shards.sh, no coverage): unit-shard-sum.py proves every test finished exactly once.
+# Run as the coverage gate's parallel shards (unit-shards.sh, no coverage):
+# unit-shard-sum.py proves every test finished exactly once.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here/../../.."
