@@ -71,7 +71,7 @@ FETCH_SUM = re.compile(r"^      expected-sha256: [0-9a-f]{64}$")
 # every other pipeline line of the recipe (the toolchain fetch steps, the repository set-up, the install directory and the buildinfo check) is data of the template: the
 # lines, in order and with their indentation, must hash to this value in BOTH recipes, so a changed, added or moved line (a shell form the grammar cannot resolve
 # included) is refused and a deliberate template change is a reviewed change to this one constant
-OTHER_SHA256 = "169700dc8e6a76b347bd85aea5a562705c5bf18543019e21d89c28766a01015d"
+OTHER_SHA256 = "1c4661d100260f76fdf27ef98ad51b3f9ab129145356ed748bc5e6f54fcd0ad4"
 
 
 # the recipe lines outside the pipeline and the environment block: the package keys, the licence, the package list (the packages change with every refresh, so they are read by form, not pinned)

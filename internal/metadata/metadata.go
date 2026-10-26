@@ -17,17 +17,13 @@ import (
 
 var bucketName = []byte("entries")
 
-// now returns the current time. It is a package variable so tests can inject
-// a clock: encode's negative-timestamp check inside Touch is otherwise
-// unreachable, because the decoded size is already validated non-negative and
-// the real time.Now never predates the Unix epoch.
-var now = time.Now
-
-// openDB is bbolt.Open behind a package variable so tests can exercise Open's
-// bucket-initialization failure path, which requires a database that opens
-// successfully but rejects writes (e.g. one opened read-only) — a state the
-// exported Open signature cannot otherwise produce.
-var openDB = bbolt.Open
+// now and openDB are seams for tests: a clock that can predate the epoch
+// (encode's negative-timestamp check is otherwise unreachable), and an open
+// that succeeds on a database that then rejects writes.
+var (
+	now    = time.Now
+	openDB = bbolt.Open
+)
 
 // Entry is a snapshot of one key's bookkeeping record.
 type Entry struct {
@@ -123,6 +119,25 @@ func (s *Store) Record(key string, size int64) error {
 	})
 }
 
+// Lookup returns one key's record; ok is false (and err nil) when the key has none.
+func (s *Store) Lookup(key string) (Entry, bool, error) {
+	var e Entry
+	var ok bool
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		v := tx.Bucket(bucketName).Get([]byte(key))
+		if v == nil {
+			return nil
+		}
+		var derr error
+		if e, derr = decode(key, v); derr != nil {
+			return derr
+		}
+		ok = true
+		return nil
+	})
+	return e, ok, err
+}
+
 // Touch updates a key's last-access time to now without changing its
 // recorded size. Call this on every successful Get so LRU eviction reflects
 // read traffic, not just writes. A miss (key not recorded) is not an error
@@ -172,17 +187,7 @@ func (s *Store) TotalSize() (int64, error) {
 // LeastRecentlyUsed returns up to n entries with the oldest last-access
 // time, oldest first — candidates for eviction.
 func (s *Store) LeastRecentlyUsed(n int) ([]Entry, error) {
-	var all []Entry
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
-			e, err := decode(string(k), v)
-			if err != nil {
-				return err
-			}
-			all = append(all, e)
-			return nil
-		})
-	})
+	all, err := s.All()
 	if err != nil {
 		return nil, err
 	}
@@ -203,9 +208,8 @@ func (s *Store) Count() (int, error) {
 	return n, err
 }
 
-// All returns every entry in the index. It exists for startup
-// reconciliation, which must compare the complete index against the
-// complete blob set.
+// All returns every entry in the index (startup reconciliation compares it
+// against the complete blob set).
 func (s *Store) All() ([]Entry, error) {
 	var out []Entry
 	err := s.db.View(func(tx *bbolt.Tx) error {

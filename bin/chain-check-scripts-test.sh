@@ -180,7 +180,9 @@ PYD
 mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
-cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh "$fx/bin/" 2> /dev/null || true
+cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py \
+  "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh \
+  "$root"/bin/layout-archive.sh "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
@@ -233,7 +235,7 @@ if [ "$1" = grype ]; then
 fi
 [ "\${1:-} \${2:-}" != "db update" ] || exit "\$FAKE_DB_RC"
 n=$3; name=$1
-for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,os,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1","purl":(7 if os.environ.get("FAKE_GRYPE_BADPURL") else "pkg:generic/p%d@1" % i)} for i in range(0 if os.environ.get("FAKE_GRYPE_FILES_ONLY") else int(sys.argv[2]))] + [{"type":"file","name":"/usr/lib/f%d" % i} for i in range(int(os.environ.get("FAKE_GRYPE_FILES") or 0))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
+for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,os,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1","purl":(7 if os.environ.get("FAKE_GRYPE_BADPURL") else os.environ["FAKE_GRYPE_STRPURL"] if os.environ.get("FAKE_GRYPE_STRPURL") else "pkg:generic/p%d@1" % i)} for i in range(0 if os.environ.get("FAKE_GRYPE_FILES_ONLY") else int(sys.argv[2]))] + [{"type":"file","name":"/usr/lib/f%d" % i} for i in range(int(os.environ.get("FAKE_GRYPE_FILES") or 0))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
 if [ "\$name" = osv-scanner ]; then
   case " \$* " in *" --offline-vulnerabilities "*) ;; *) echo "online scan refused by the fake: no --offline-vulnerabilities" >&2; exit 99;; esac
   ocfg=""; oprev=""
@@ -299,6 +301,15 @@ want_rc() { # want_rc LABEL RC SCRIPT ARGS...
   local l=$1 r=$2; shift 2; run "$@"; if [ "$rc" = "$r" ]; then ok "$l"; else bad "$l -> rc=$rc, wanted $r: ${out:0:140}"; fi; }
 SCAN=(check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out)
 # ---- REQ-CHAIN-006-AC4: check-scan.sh ---------------------------------------------------------------------------------------
+# one definition of the image archive (Fable on #732): check-scan.sh runs bin/layout-archive.sh and defines no
+# archive or child lookup of its own
+scan="$root/bin/check-scan.sh"
+if ! grep -Fq 'osv_archive()' "$scan" && ! grep -Fq 'child_digest()' "$scan" \
+  && grep -Fq 'bin/layout-archive.sh' "$scan"; then
+  ok "AC4 check-scan.sh builds every image archive with bin/layout-archive.sh, defining no osv_archive or child_digest"
+else
+  bad "AC4 check-scan.sh still defines its own osv_archive or child_digest, or does not run bin/layout-archive.sh"
+fi
 want_ok "AC4 both listed scanners clean with packages: exit 0" "${SCAN[@]}"
 if [ -f "$fx/out/scan-results.json" ] && jq -e '.listed == 2 and .ran == 2 and (.scanners | length == 2) and all(.scanners[]; .verdict == "pass" and (.version | length > 0))' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 results: listed 2, ran 2, every scanner pass with a version"; else bad "AC4 results file shape (listed/ran/scanners/version)"; fi
 if [ -f "$fx/out/scan-results.json" ] && jq -e --argjson want "$(jq -s '[.[] | .amd64.manifest, .arm64.manifest | "sha256:" + .] | sort' "$fx/images/production.map" "$fx/images/fips.map")" '[.scanners[].subjects[] | select(.name | test("^(production|fips)/linux/"))] | (map(.digest) | unique | sort) == $want' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 every image subject carries a child manifest digest of the layout Build recorded (not a tag, not a tarball hash)"; else bad "AC4 subject digests are not the candidate digests"; fi
@@ -397,6 +408,8 @@ want_fail "AC4 zero packages scanned fails (REQ-REL-004-AC1)" packages "${SCAN[@
 mkfake grype 0 120
 FAKE_GRYPE_FILES_ONLY=1 FAKE_GRYPE_FILES=946 want_fail "AC4 rc-5a C: a grype inventory of files only (no component carries a package URL) is zero packages and fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
 FAKE_GRYPE_BADPURL=1 want_fail "AC4 rc-5a C: components whose purl is a number are not packages: zero packages fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
+FAKE_GRYPE_STRPURL=not-a-purl want_fail "AC4 purl gate: components whose purl is a string that is not a package URL (not-a-purl) are not packages: zero packages fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
+FAKE_GRYPE_STRPURL=pkg: want_fail "AC4 purl gate: a purl that is only the scheme (pkg:) names no package: zero packages fails (REQ-REL-004-AC1)" packages "${SCAN[@]}"
 FAKE_GRYPE_FILES=946 want_ok "AC4 rc-5a C: files beside 120 packages do not change the count or the verdict" "${SCAN[@]}"
 mkfake grype 0 120; mkfake osv-scanner 2 80
 want_fail "AC4 a scanner that could not run (exit 2) fails: nothing is judged behind a scanner that did not run" osv-scanner "${SCAN[@]}"
@@ -431,6 +444,56 @@ for v in production fips; do for a in amd64 arm64; do
   if grep -Eq "^grype docker-archive:[^ ]*grype-$v-linux-$a\.tar " "$work/log"; then ok "AC4 S1 grype scanned the $v image's linux/$a child explicitly"; else bad "AC4 S1 no grype call on the archive of the $v image's linux/$a child"; fi
   if grep -Fxq "grype-tag ghcr.io/fosterstack/cache:cand-$v-$a" "$work/log"; then ok "AC4 I the archive of the $v image's linux/$a child carries the name ghcr.io/fosterstack/cache:cand-$v-$a (the VEX statements apply to it)"; else bad "AC4 I the $v/$a archive carries no cand-$v-$a name: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
 done; done
+# REQ-CHAIN-006-AC8 + AC4 (rc-5a I): a check script names no registry, so the repository of the archive name comes from the published VEX itself (the one cache image product
+# pkg:oci/cache?repository_url=REPO); a VEX that names none, or two different ones, cannot be judged: exit 2, nothing scanned under an invented name (AC4: cannot judge = red).
+vexrepo() { # vexrepo PRODUCT... -> a VEX document whose one statement has exactly these products
+  python3 - "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYR'
+import json, sys
+d = json.load(open(sys.argv[1]))
+st = d["statements"][0]; st["products"] = [json.loads(x) if x[:1] in "{\"" else {"@id": x} for x in sys.argv[2:]]; d["statements"] = [st]
+json.dump(d, open(sys.argv[1], "w"))
+PYR
+}
+cp "$work/log" "$work/log.keep"; rm -rf "$work/out.keep"; cp -R "$fx/out" "$work/out.keep"; cp "$fx/.vex/fosterstack-cache.openvex.json" "$work/vex.keep"
+vexrepo "pkg:oci/cache?repository_url=registry.example/team/cache&arch=amd64" "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+mkfake grype 0 120; mkfake osv-scanner 0 80; : > "$work/log"
+want_ok "AC4 I the repository comes from the VEX: a VEX naming registry.example/team/cache is scanned under that name" "${SCAN[@]}"
+if grep -Fxq "grype-tag registry.example/team/cache:cand-production-amd64" "$work/log" && ! grep -q '^grype-tag ghcr.io' "$work/log"; then ok "AC4 I the archive name carries the VEX's repository (its qualifiers dropped), not a fixed one"; else bad "AC4 I the archive name is not the VEX's repository: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"; : > "$work/log"
+want_fail "AC4 I a VEX that names no cache image repository cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
+if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I a VEX with no cache image repository scans nothing under an image name"; else bad "AC4 I no-repository VEX scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "pkg:oci/cache?repository_url=ghcr.io/other/cache"; : > "$work/log"
+want_fail "AC4 I a VEX that names two different cache image repositories cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
+if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I two repositories scan nothing under an image name"; else bad "AC4 I two-repository VEX scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+cp "$work/vex.keep" "$fx/.vex/fosterstack-cache.openvex.json"; mkfake grype 0 120; mkfake osv-scanner 0 80; vexrepo "pkg:oci/cache?arch=amd64&repository_url=registry.example/team/cache#frag"; : > "$work/log"
+want_ok "AC4 I a qualifier before repository_url and a fragment after it still name the repository" "${SCAN[@]}"
+if grep -Fxq "grype-tag registry.example/team/cache:cand-fips-arm64" "$work/log"; then ok "AC4 I the repository is read whatever the qualifier order"; else bad "AC4 I qualifier order: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache?repository_url=registry.example:5000/team/cache#repository_url=note"; : > "$work/log"
+want_ok "AC4 I a repository_url written inside the fragment is not a second parameter, and a registry port is read" "${SCAN[@]}"
+if grep -Fxq "grype-tag registry.example:5000/team/cache:cand-fips-arm64" "$work/log"; then ok "AC4 I the registry port stays in the repository"; else bad "AC4 I port: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache@sha256:$(printf 'a%.0s' $(seq 64))?repository_url=registry.example/team/cache"; : > "$work/log"
+want_ok "AC4 I the digest form of the cache image product names the repository too" "${SCAN[@]}"
+# every identifier of a product counts (grype's reader takes @id and identifiers.* alike), and a cache identifier in any form the check cannot read is not guessed at
+while IFS='|' read -r label p1 p2; do
+  vexrepo "$p1" ${p2:+"$p2"}; : > "$work/log"
+  want_fail "AC4 I $label cannot be judged: the script fails" "names no single cache image repository" "${SCAN[@]}"
+  if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I $label scans nothing under an image name"; else bad "AC4 I $label scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+done <<'CASES'
+a second repository only in identifiers.purl|{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/other/cache"}}|
+a second repository after the qualifier arch|pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache|pkg:oci/cache?arch=amd64&repository_url=ghcr.io/other/cache
+a duplicate repository_url|pkg:oci/cache?repository_url=ghcr.io/a/cache&repository_url=ghcr.io/a/cache|
+an empty repository_url|pkg:oci/cache?repository_url=|
+a trailing slash in the repository|pkg:oci/cache?repository_url=registry.example/team/|
+an empty path segment in the repository|pkg:oci/cache?repository_url=registry.example//team/cache|
+a port with no number|pkg:oci/cache?repository_url=registry.example:/team/cache|
+a repository with no path|pkg:oci/cache?repository_url=registry.example|
+a newline after the repository|{"@id":"pkg:oci/cache?repository_url=registry.example/team/cache\n"}|
+a percent-encoded repository|pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache|
+a path after the image name|pkg:oci/cache/extra?repository_url=ghcr.io/fosterstack/cache|
+a product that is not an object|"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"|
+CASES
+cp "$work/vex.keep" "$fx/.vex/fosterstack-cache.openvex.json"; mkfake grype 0 120; mkfake osv-scanner 0 80
+cp "$work/log.keep" "$work/log"; rm -rf "$fx/out"; cp -R "$work/out.keep" "$fx/out"
 bare_=$(grep -cE '^grype oci-dir:' "$work/log" || true)   # a count, not a pipe into grep -q (pipefail + SIGPIPE)
 if [ "$bare_" != 0 ]; then bad "AC4 S1 a grype image scan read the layout directly (no image name, so no VEX applies)"; else ok "AC4 S1 no grype image scan reads the layout directly"; fi
 for v in production fips; do for a in amd64 arm64; do
@@ -795,8 +858,26 @@ class H(http.server.BaseHTTPRequestHandler):
         self._send(200 if self.path in store else 404, store.get(self.path, b""))
     def do_PUT(self):
         store[self.path] = self.rfile.read(int(self.headers.get("Content-Length", 0))); self._send(200)
+import signal, time
+term_delay = float(os.environ.get("FAKE_TERM_DELAY", "0"))
+die_after = float(os.environ.get("FAKE_DIE_AFTER", "0"))
+if die_after and not kind:   # one of the check's own servers (not a fake container) that exits shortly after it started answering
+    import threading
+    threading.Timer(die_after, lambda: os._exit(1)).start()
+if term_delay and not kind:   # one of the check's own servers (not a fake container) takes a while to die after SIGTERM, listening meanwhile
+    signal.signal(signal.SIGTERM, lambda *a: (time.sleep(term_delay), os._exit(0)))
 addr = os.environ.get("FSCACHE_ADDR", ":8080")
-http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H).serve_forever()
+with open(os.path.join(os.environ.get("FAKE_DIR", "."), "pid-%s" % os.getpid()), "w") as f:   # the test asks afterwards which servers are still alive
+    f.write(str(os.getpid()))
+if not kind:   # one of the check's own servers: the test asks afterwards which address the check gave it
+    with open(os.path.join(os.environ.get("FAKE_DIR", "."), "addr-%s" % os.getpid()), "w") as f:
+        f.write(addr + "\n")
+server = http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H)
+# fscache logs the address it actually bound as JSON on stdout (":0" shows the real port); the check reads the port
+# from that line
+bound = "127.0.0.1:%d" % server.server_address[1]
+print(json.dumps({"level": "INFO", "msg": "fscache: starting", "addr": bound}), flush=True)
+server.serve_forever()
 PYS
 for b in fscache fscache-fips; do { echo '#!/usr/bin/env python3'; cat "$fa/server.py"; } > "$fa/real/$b"; chmod +x "$fa/real/$b"; done
 mkarch() { # mkarch DIR: the four Linux archives, each holding its binary
@@ -861,6 +942,19 @@ afail() { local l=$1 w=$2; shift 2; arun "$@"; if [ "$rc" = 1 ] && grep -Fqi -- 
 aok "ART the amd64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}"
 if [ -f "$fa/out/artifacts-result.json" ] && jq -e '.production.digest and .fips.digest and ([.checks[].ac] | index("REQ-FIPS-002-AC1")) != null and all(.checks[]; .result == "pass")' "$fa/out/artifacts-result.json" > /dev/null 2>&1; then ok "ART the result names both candidate digests and every AC it asserted"; else bad "ART artifacts-result.json missing or incomplete"; fi
 if ! grep -q 5247 "$fa/out/artifacts-result.json" 2> /dev/null; then ok "ART the result does not repeat the certificate number (documented mapping only)"; else bad "ART the certificate number is in the result"; fi
+# the check picks free ports for its servers and waits for them to die (REQ-PLAT-001-AC1): suites running side by side, or a server left on the old fixed ports 19101-19103, never answer for the binary under test
+mkarch "$fa/dist"
+arun FAKE_TERM_DELAY=2 -- "${ART[@]}"
+alive=0; for pf in "$work"/fakedir/pid-*; do [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2> /dev/null && alive=$((alive + 1)); done
+if [ "$rc" = 0 ] && ls "$work"/fakedir/pid-* > /dev/null 2>&1 && [ "$alive" = 0 ]; then ok "ART the check waits for its servers to die: none of its three is alive when it exits"; else bad "ART servers outlived the check (rc=$rc, alive=$alive): $(echo "$out" | tail -3)"; fi
+squats=()
+for port in 19101 19102 19103; do
+  python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(120)' "$port" &
+  squats+=("$!")
+done
+sleep 1
+aok "ART other servers listening on the old fixed ports 19101-19103 do not change the verdict" -- "${ART[@]}"
+for sq in "${squats[@]}"; do kill "$sq" 2> /dev/null || true; wait "$sq" 2> /dev/null || true; done
 if [ "$(grep -c '^docker run -d' "$work/log" 2> /dev/null || echo 0)" = 0 ]; then :; fi
 arun -- "${ART[@]}"; if grep -Fq 'FSCACHE_USERNAME' "$work/log" && ls "$work"/fakedir/srv-* > /dev/null 2>&1; then bad "ART containers were left running"; else ok "ART the containers are removed at the end and the -fips image is started with credentials"; fi
 plant_stray "$fa/images/production"; plant_stray "$fa/images/fips"
@@ -874,10 +968,39 @@ afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${
 mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
 tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
 afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
+# a server that dies before it answers is noticed at once and its own last words are in the failure
+# (before: a silent 10 s wait)
+printf '#!/usr/bin/env bash\necho "fscache: boom cannot bind" >&2\nexit 1\n' > "$fa/bad/fscache-fips"
+chmod +x "$fa/bad/fscache-fips"
+tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
+t0=$(date +%s); arun -- "${ART[@]}"; took=$(( $(date +%s) - t0 ))
+if [ "$rc" = 1 ] && grep -Fq healthz <<< "$out" && grep -Fq "boom cannot bind" <<< "$out" && [ "$took" -le 5 ]; then
+  ok "PLAT-001-AC1 a server that dies before it answers fails within 5 s, naming healthz, with its own last log line"
+else
+  bad "PLAT-001-AC1 a dead server: rc=$rc after ${took}s: ${out:0:200}"
+fi
+mkarch "$fa/dist"
+# the check never guesses a port: each of its three servers is told to listen on port 0 of the loopback and reports
+# the port it got; servers_given lists the addresses the check gave its servers
+servers_given() { cat "$work"/fakedir/addr-* 2> /dev/null | sort | uniq -c | tr -s ' ' | tr '\n' ';'; }
+arun -- "${ART[@]}"
+addrs=$(servers_given)
+if [ "$rc" = 0 ] && [ "$addrs" = " 3 127.0.0.1:0;" ]; then
+  ok "PLAT-001-AC1 the check starts its three servers on 127.0.0.1:0 and reads the bound port from their log"
+else
+  bad "PLAT-001-AC1 the servers were given [$addrs] (rc=$rc): ${out:0:160}"
+fi
 # REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
 if grep -Fq -- '--platform linux/arm64' "$work/log" && [ -f "$fa/out/artifacts-result-arm64.json" ] && jq -e '.arch == "arm64" and .production.digest and .fips.digest' "$fa/out/artifacts-result-arm64.json" > /dev/null 2>&1; then ok "AC17 the arm64 images run with --platform linux/arm64 and the result names the arch and the same candidate digests"; else bad "AC17 arm64 run: no --platform linux/arm64, or artifacts-result-arm64.json incomplete"; fi
+# the arm64 run above: the same start code, the same port 0 (a second flake died waiting on the arm64 -fips server)
+addrs=$(servers_given)
+if [ "$addrs" = " 3 127.0.0.1:0;" ]; then
+  ok "AC17 the arm64 run also starts its three servers on 127.0.0.1:0"
+else
+  bad "AC17 the arm64 servers were given [$addrs]"
+fi
 arun -- "${ART[@]}"; if ! grep -Fq -- '--platform' "$work/log"; then ok "AC17 the default (amd64) run passes no --platform"; else bad "AC17 the amd64 run passed --platform"; fi
 # round 1 F1: the images and archives are the ones Build recorded, bound before anything is loaded or executed
 mkarch "$fa/dist"
@@ -1530,7 +1653,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=534
+EXPECT=577
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

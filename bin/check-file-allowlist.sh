@@ -72,6 +72,8 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
+  # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
+  '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
@@ -101,7 +103,6 @@ ALLOW_PATTERNS=(
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
-  '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
   '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
   '^bin/scout-older-versions(\.sh|-test\.sh)$'
@@ -167,7 +168,7 @@ ALLOW_PATTERNS=(
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
-  # suite), the kind installer, and the Check suites with their shape judge
+  # suite), and the Check suites with their shape judge
   '^bin/loopback-get\.sh$'
   '^bin/loopback-get-test\.sh$'
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
@@ -177,7 +178,6 @@ ALLOW_PATTERNS=(
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
-  '^bin/install-kind\.sh$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
   # Check's source scan of the product module (ruling G, Oct 12): the script, and the committed tool module whose go.sum pins govulncheck (tools/govulncheck).
@@ -259,6 +259,7 @@ ALLOW_PATTERNS=(
   '^dependency-provenance\.json$'
   '^bin/vendor-check\.sh$'
   '^bin/vendor-provenance\.py$'
+  '^bin/vendor-provenance-records\.py$'
   '^bin/vendoring-test\.sh$'
   '^bin/vendor-provenance-test\.sh$'
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
@@ -315,6 +316,7 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.md$'
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
+  '^bin/layout-archive(-test)?\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

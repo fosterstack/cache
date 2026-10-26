@@ -229,27 +229,6 @@
       "ruling": "text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files"
     },
     {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b",
-      "line": "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b",
-      "ruling": "text, not a command: a shell comment heading the test section on url characters, curl flags and caps"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6",
-      "line": "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6",
-      "ruling": "text, not a command: a shell comment describing the fixture for the melange busybox move (a copy of the live melange lock and the new apk in the live archive/curl fixture directory)"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b",
-      "line": "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b",
-      "ruling": "text, not a command: a shell comment heading the review-round-2 test section (its topics include the curl flags)"
-    },
-    {
       "file": ".github/workflows/release.yml",
       "form": "a local reusable workflow call",
       "key": "f4f32af697ab6c09c1ccd6d0a5e9e01b3325add6c5c4c79c5a0d536b1df3f9fd",
@@ -297,13 +276,6 @@
       "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
       "line": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
       "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable; handoff 0432"
-    },
-    {
-      "file": "bin/refresh-inputs.sh",
-      "form": "a download",
-      "key": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
-      "line": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
-      "ruling": "text, not a command: the fetch tool's fixed-path line of the daily input refresh job, a printf -v of a constant path, replaced by a stub in the test copy; the Wolfi live fetch it names is ruled by owner rule 48 (no 7-day hold on Wolfi) and verified per rules 32 and 28; handoff 0429/0432"
     },
     {
       "file": "bin/refresh-inputs.sh",
@@ -1386,15 +1358,6 @@
     {
       "file": "bin/persona-uat-wiring-test.sh",
       "form": "a download",
-      "key": "bbea442a8d754e741a0ad48b46c57ba1ad9faf2348fcd4bbc9aedd12daf803e0",
-      "line": "bbea442a8d754e741a0ad48b46c57ba1ad9faf2348fcd4bbc9aedd12daf803e0",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
       "key": "f52b38b45ca4cad329b9f6baa2c5f0c7cb68c738c529a278a2a1666264d96f8d",
       "line": "f52b38b45ca4cad329b9f6baa2c5f0c7cb68c738c529a278a2a1666264d96f8d",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
@@ -1493,15 +1456,6 @@
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "bfe5916bf894648566d26ae0e28b3240d011695f85bd3b214ca2425caac59612",
-      "line": "bfe5916bf894648566d26ae0e28b3240d011695f85bd3b214ca2425caac59612",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
       "form": "an unpinned package install",
       "key": "82e0da7d32c115f5efede1d9eac9d01acf90d25bf4d610e72e38e6ed9744f1ce",
       "line": "82e0da7d32c115f5efede1d9eac9d01acf90d25bf4d610e72e38e6ed9744f1ce",
@@ -1590,33 +1544,6 @@
       "line": "987bafbc711ea170f3927f4ce7ed570637c12d32c3cb6b6c13f7cb631453d1bb",
       "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
       "context": "assignment"
-    },
-    {
-      "file": "bin/chain-check-wiring-test.sh",
-      "form": "a download",
-      "key": "43923de19e1bf45c27826881fd42196b1460d2858c70a277e7af731eae713318",
-      "line": "48851fcc32d18e1c40dabea9db14e655699070d3fb6d9d36f4fe49227fe5adfe",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/chain-check-wiring-test.sh",
-      "form": "a download",
-      "key": "04f7e813d69eb5d32b6e680452456f750be622cee00228ac3fd9058ca8d5d7a1",
-      "line": "2fba4fadf13fe87a65101b59473f2a58d78d8846cf1c7583fc5111181b00e5cf",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/chain-check-wiring-test.sh",
-      "form": "a download",
-      "key": "684aa03e308780a2567880285dd1aeedbb983170167041f2137b11a3da307c47",
-      "line": "684aa03e308780a2567880285dd1aeedbb983170167041f2137b11a3da307c47",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
     },
     {
       "file": "bin/chain-hostile-test.sh",
@@ -2553,6 +2480,16 @@
       "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
       "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
+    }
+  ],
+  "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
+  "file_pins": [
+    {
+        "file": ".github/policy/gradle-wrapper-jar-sha256.txt",
+        "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+        "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256",
+        "version": "9.7.1",
+        "published": "2026-08-19T15:30:28Z"
     }
   ]
 }

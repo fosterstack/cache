@@ -95,7 +95,7 @@ case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and it gains no concurrency; dependency-review runs only on pull requests (the
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on pull requests (the
 # only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
 # top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
 # (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
@@ -126,9 +126,8 @@ if d.get("permissions") != {"contents": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
 # the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
 LIVE = {"group": "vex-live-test", "cancel-in-progress": "false"}
-if d.get("concurrency") or any(j.get("concurrency") and not (jid == "live-test" and j.get("concurrency") == LIVE)
-                               for jid, j in jobs.items()):
-    bad.append("ci.yml gained a concurrency setting")
+if any(j.get("concurrency") and not (jid == "live-test" and j.get("concurrency") == LIVE) for jid, j in jobs.items()):
+    bad.append("ci.yml gained a job-level concurrency setting")   # the one top-level block is judged by judge_conc
 if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
     bad.append("ci.yml's events changed: %s" % d.get("on"))
 for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
@@ -179,7 +178,6 @@ case_ci guard-widened            bad "d['jobs']['required-check-guard']['permiss
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
-case_ci concurrency-added        bad "d['concurrency'] = {'group': 'ci', 'cancel-in-progress': 'true'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
 case_ci live-test-cancels        bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
@@ -285,9 +283,9 @@ if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.
     bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
 jobs = d.get("jobs") or {}
 g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
-if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read", "packages": "read"}:
+if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read"}:
     bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
-if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read", "packages": "read"} or \
+if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read"} or \
         (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
     bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
 if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
@@ -371,8 +369,10 @@ KEYS = {"build": {"permissions", "uses", "with"}, "rebuild": {"needs", "permissi
 for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
         bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
-# what the job inherits: the workflow's token and shell
-if d.get("permissions") != {"contents": "read"} or set(d) != {"name", "on", "permissions", "jobs"}:
+# what the job inherits: the workflow's token and shell (Codex #162 pin r2, R78-B4/B5)
+if d.get("permissions") != {"contents": "read"} or set(d) - {"concurrency"} != {"name", "on", "permissions", "jobs"}:
+    # fail closed: env (a PATH that fakes jq), defaults, concurrency … — every top-level key is reviewed (Sonnet #162
+    # pin r3, NEW-B6 / R2)
     bad.append("the workflow's inherited settings changed: keys %s, permissions %s" % (sorted(d), d.get("permissions")))
 if (jobs.get("reproducibility") or {}).get("runs-on") != "ubuntu-latest":
     bad.append("reproducibility runs elsewhere than a GitHub-hosted ubuntu runner: %s" % (jobs.get("reproducibility") or {}).get("runs-on"))
@@ -452,7 +452,6 @@ case_scan repro-matrix            bad "d['jobs']['reproducibility']['strategy'] 
 case_scan defaults-shell-true    bad "d['defaults'] = {'run': {'shell': 'true {0}'}}"
 case_scan workflow-token-write   bad "d['permissions']['contents'] = 'write'"
 case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/bin'}"
-case_scan workflow-concurrency   bad "d['concurrency'] = {'group': 'scan', 'cancel-in-progress': 'true'}"
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -490,5 +489,106 @@ case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
 case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR concurrency (advisor, Oct 22: superseded pull-request runs starved the merge train). ci, scan, supply-chain, acceptance and codeql each carry ONE
+# top-level concurrency block: a pull request's FIRST run attempt of a workflow shares a group with that pull request's other first attempts, so a newer push cancels its older
+# run; NOTHING ELSE is ever cancelled or replaced: every other run (a re-run of any head, a push to main, a tag, a schedule, a manual dispatch, a workflow_call, a merge_group)
+# gets a group of its own per run and attempt. The prefix is a literal per workflow (not github.workflow), so no workflow name can collide with another's group. Supply-chain's
+# daily-audit job keeps its own job-level group; no other job has one. A duplicate YAML key anywhere is refused (GitHub rejects it, so a required check would never run).
+judge_conc() {  # $1: a workflow file, $2: its key (ci scan supply-chain acceptance codeql)
+  python3 - "$1" "$2" <<'PY'
+import sys, yaml
+text = open(sys.argv[1]).read()
+key = sys.argv[2]
+bad = []
+dups = []
+def walk(n, path):
+    if isinstance(n, yaml.MappingNode):
+        seen = set()
+        for k, v in n.value:
+            kk = k.value if isinstance(k, yaml.ScalarNode) else None
+            if kk in seen:
+                dups.append(path + "/" + str(kk))
+            seen.add(kk)
+            walk(v, path + "/" + str(kk))
+    elif isinstance(n, yaml.SequenceNode):
+        for i, v in enumerate(n.value):
+            walk(v, path + "/" + str(i))
+walk(yaml.compose(text, Loader=yaml.BaseLoader), "")
+if dups:
+    bad.append("duplicate YAML key(s): " + ", ".join(dups[:5]))
+d = yaml.load(text, Loader=yaml.BaseLoader)
+pfx = key
+grp = "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('%s-pr-{0}', github.event.pull_request.number) || format('%s-{0}-{1}', github.run_id, github.run_attempt) }}" % (pfx, pfx)
+want = {"group": grp, "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}
+if d.get("concurrency") != want:
+    bad.append("%s's top-level concurrency is not the reviewed block: %s" % (key, d.get("concurrency")))
+jobs = d.get("jobs") or {}
+for jid, j in jobs.items():
+    c = j.get("concurrency")
+    if key == "supply-chain" and jid == "daily-audit":
+        if c != {"group": "supply-chain-daily", "cancel-in-progress": "false"}:
+            bad.append("supply-chain daily-audit's own group changed: %s" % c)
+    elif key == "ci" and jid == "live-test":      # the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
+        if c != {"group": "vex-live-test", "cancel-in-progress": "false"}:
+            bad.append("ci's live-test group changed: %s" % c)
+    elif c:
+        bad.append("job %s carries a concurrency setting: %s" % (jid, c))
+if key == "supply-chain" and "daily-audit" not in jobs:
+    bad.append("supply-chain lost its daily-audit job")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_conc() {  # name want key edit   (edit: python on the parsed workflow d; empty = the real file)
+  local k="$3" f="$work/conc-$1.yml"
+  cp "$root/.github/workflows/$k.yml" "$f"
+  if [ -n "$4" ]; then python3 - "$f" "$4" <<'PY' || true   # a mutation that cannot apply leaves the file as it is
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False, width=10000)
+PY
+  fi
+  if out=$(judge_conc "$f" "$k"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS conc:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL conc:$1 → $got, want $2 ($out)"; fi
+}
+case_conc_raw() {  # name want key python-on-the-text (a string edit of the raw file: duplicate keys cannot survive a parse)
+  local k="$3" f="$work/conc-$1.yml"
+  cp "$root/.github/workflows/$k.yml" "$f"
+  python3 - "$f" "$4" <<'PY'
+import sys
+p, edit = sys.argv[1], sys.argv[2]
+t = open(p).read()
+exec(edit)
+open(p, "w").write(t)
+PY
+  if out=$(judge_conc "$f" "$k"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS conc:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL conc:$1 → $got, want $2 ($out)"; fi
+}
+for k in ci scan supply-chain acceptance codeql; do
+  case_conc "$k-real"                 ok  "$k" ""
+  case_conc "$k-missing"              bad "$k" "d.pop('concurrency', None)"
+  case_conc "$k-cancels-every-event"  bad "$k" "d['concurrency']['cancel-in-progress'] = 'true'"
+  case_conc "$k-not-main-only"        bad "$k" "d['concurrency']['cancel-in-progress'] = \"\${{ github.ref != 'refs/heads/main' }}\""
+  case_conc "$k-shared-ref-group"     bad "$k" "d['concurrency']['group'] = '\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}'"
+  case_conc "$k-fixed-group"          bad "$k" "d['concurrency']['group'] = '$k'"
+  case_conc "$k-never-cancels"        bad "$k" "d['concurrency']['cancel-in-progress'] = 'false'"
+  case_conc "$k-rerun-shares-group"   bad "$k" "d['concurrency']['group'] = d['concurrency']['group'].replace(\" && github.run_attempt == '1'\", '')"
+  case_conc "$k-workflow-name-prefix" bad "$k" "d['concurrency']['group'] = d['concurrency']['group'].replace(\"'$k-pr-{0}', \", \"'{0}-pr-{1}', github.workflow, \").replace(\"'$k-{0}-{1}', \", \"'{0}-{1}-{2}', github.workflow, \")"
+  case_conc "$k-other-workflows-prefix" bad "$k" "d['concurrency']['group'] = d['concurrency']['group'].replace('$k-', 'other-')"
+  case_conc "$k-job-level-added"      bad "$k" "list(d['jobs'].values())[0]['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+  case_conc_raw "$k-duplicate-key"    bad "$k" "t = t.replace('\nconcurrency:\n', '\nconcurrency: {group: shared, cancel-in-progress: true}\nconcurrency:\n', 1)"
+done
+case_conc supply-chain-daily-group-dropped bad supply-chain "d['jobs']['daily-audit'].pop('concurrency')"
+case_conc supply-chain-daily-cancels bad supply-chain "d['jobs']['daily-audit']['concurrency']['cancel-in-progress'] = 'true'"
+case_conc ci-live-test-cancels bad ci "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
+case_conc ci-live-test-group-changed bad ci "d['jobs']['live-test']['concurrency']['group'] = 'other'"
+case_conc ci-live-test-group-dropped bad ci "d['jobs']['live-test'].pop('concurrency')"
+
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

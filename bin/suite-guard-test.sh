@@ -232,10 +232,10 @@ ac = next(a for r in yaml.safe_load(open("requirements/requirements.yaml"))["req
 pinned = {n: int(k) for n, k in re.findall(r"([a-z0-9-]+-test\.sh) \((\d) runs?", ac["then"])}
 ci = [l for l in open(".github/workflows/ci.yml").read().splitlines() if not l.lstrip().startswith("#")]
 actual = {n: sum(1 for l in ci if re.search(r"\bbash [./A-Za-z0-9_-]*/%s\b" % re.escape(n), l)) + 1 for n in rest}
-print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 8 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
+print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 3 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
 PY
 )
-if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the eight suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
+if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the three suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
 # (2) two counting steps for one suite: refused
 cwf "" "$CNT a-test.sh bin/a-test.sh" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused (the suite would run twice)"; else bad "duplicate counting step: rc=$rc ${out:0:200}"; fi

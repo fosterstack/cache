@@ -326,6 +326,12 @@ class SourceBinding(Harness):
         self.assertIn("govulncheck did not complete (rc 1)", out)
         self.assertIn("inconsistent vendoring", out)
 
+    def test_a_source_tree_with_no_govulncheck_installed_says_so(self):
+        self.rules([r for r in GOOD_RULES if r.get("tool") != "govulncheck"])
+        out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not run: the tool is not installed", out)
+
     def args_without_source_or_commit(self):
         return self.base_args("--panel-dir", self.panel_dir())
 
