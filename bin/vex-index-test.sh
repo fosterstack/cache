@@ -306,9 +306,39 @@ def hx(d):
     return d.split(":", 1)[1]
 
 
+def ref_scout(vex_obj):
+    """the predicate an attestation carries: the VEX file in the form Docker Scout applies. Scout's own `docker scout attestation add` stores a statement whose products
+    are the vulnerable PACKAGES (the image is the in-toto subject): a product that names the attested image (its purl, as @id or identifiers.purl) and lists subcomponents
+    is replaced by them, in order, once each; every other product stays whole.
+    (Oct 23 2026, rescan run 39978435878: the same document embedded verbatim, product = image purl with the package as a subcomponent, was read by Scout and not applied.)"""
+    o = json.loads(json.dumps(vex_obj))
+    for st in o.get("statements", []):
+        out, seen = [], set()
+        for prod in st.get("products", []):
+            subs = prod.get("subcomponents")
+            names_image = SUBJECT_NAME in (prod.get("@id"), (prod.get("identifiers") or {}).get("purl"))
+            for q in (subs if names_image and isinstance(subs, list) and subs else [prod]):
+                k = cj(q)
+                if k not in seen:
+                    seen.add(k)
+                    out.append(q)
+        st["products"] = out
+    return o
+
+
+def ref_att_verbatim(pdigest, vex_obj):
+    """the attestation as it was before Oct 23 2026: the VEX file embedded as it is (kept for the test that the verifier refuses it)"""
+    saved = ref_scout
+    globals()["ref_scout"] = lambda o: json.loads(json.dumps(o))
+    try:
+        return ref_att(pdigest, vex_obj)
+    finally:
+        globals()["ref_scout"] = saved
+
+
 def ref_att(pdigest, vex_obj):
     stmt = cj({"_type": STMT_TYPE, "predicateType": PRED,
-               "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(pdigest)}}], "predicate": vex_obj})
+               "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(pdigest)}}], "predicate": ref_scout(vex_obj)})
     layer = {"mediaType": "application/vnd.in-toto+json", "digest": dg(stmt), "size": len(stmt),
              "annotations": {"in-toto.io/predicate-type": PRED}}
     cfg = cj({"architecture": "unknown", "created": "1970-01-01T00:00:00Z", "os": "unknown",
@@ -417,7 +447,7 @@ def mk_fx(kind="oci", plats=(("amd64", None), ("arm64", None)), indent=2, no_mt=
     return f
 
 
-VEX_REAL = rd(os.path.join(ROOT, ".vex", "fosterstack-cache.openvex.json")) if os.path.isfile(os.path.join(ROOT, ".vex", "fosterstack-cache.openvex.json")) else None
+VEX_REAL = rd(os.path.join(ROOT, "test-evidence", "vex-scope", "busybox.openvex.json")) if os.path.isfile(os.path.join(ROOT, "test-evidence", "vex-scope", "busybox.openvex.json")) else None
 VEX_MIN = ('{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.test/vex","author":"Example Co",'
            '"timestamp":"2026-01-01T00:00:00Z","version":1,"statements":[{"vulnerability":{"name":"CVE-2000-0001"},'
            '"products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}],"status":"not_affected",'
@@ -426,7 +456,7 @@ VEX_MIN = ('{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.t
 
 def vex_real():
     if VEX_REAL is None:
-        raise Fail("the repository's VEX file .vex/fosterstack-cache.openvex.json is missing")
+        raise Fail("the multi-statement fixture VEX test-evidence/vex-scope/busybox.openvex.json is missing")
     return VEX_REAL
 
 
@@ -1262,6 +1292,18 @@ def _():
     assert_refused(fx.bytes, vb, "VEX naming the built index")
 
 
+@case("AC1", "two statements that name the image in two forms (@id, identifiers.purl) and become the same in Scout's form are refused by compute (verify would refuse the duplicate) and nothing is written (round 1, Opus F1)")
+def _():
+    fx = mk_fx()
+    def twice(o):
+        o["statements"].append(json.loads(json.dumps(o["statements"][0])))
+        prod = o["statements"][1]["products"][0]
+        del prod["@id"]
+        prod["identifiers"] = {"purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}   # the image named by identifiers.purl instead of @id
+    vb = vex_with(twice, base=BASE_VEX)
+    assert_refused(fx.bytes, vb, "statements identical in Scout's form")
+
+
 @param("AC2", "a half-unknown platform (unknown/amd64, linux/unknown) is refused; unknown/unknown is passed through", [("unknown/amd64", ("unknown", "amd64")), ("linux/unknown", ("linux", "unknown")), ("unknown/arm64/v8", ("unknown", "arm64"))])
 def _(osarch):
     fx = mk_fx()
@@ -1449,6 +1491,104 @@ def _():
     ok(v.rc == 0, "verify rejected: " + v.err.strip()[:200])
 
 
+# What `docker scout attestation add` actually produced (rescan run 39945154746, scout-root-cause artifact, Docker Scout 1.26.0): the input was a statement whose product is our published
+# image purl with the package as its subcomponent; the stored attestation's statement has the package as its product. The comparison ignores what Scout rewrites on its own (@id, the
+# in-toto subject name). This is the fixture the derived predicate is held to.
+SCOUT_PKG = "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"
+SCOUT_IN = {"@context": PRED, "@id": "https://openvex.dev/docs/public/vex-scout-root-cause", "author": "FosterStack LLC", "timestamp": "2026-10-03T00:00:00Z", "version": 1,
+            "statements": [{"vulnerability": {"name": "CVE-2023-4911"}, "timestamp": "2026-10-03T00:00:00Z", "status": "not_affected", "justification": "vulnerable_code_not_in_execute_path",
+                            "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": SCOUT_PKG}]}]}]}
+SCOUT_OUT_STATEMENTS = [{"vulnerability": {"name": "CVE-2023-4911"}, "products": [{"@id": SCOUT_PKG}], "status": "not_affected",
+                         "justification": "vulnerable_code_not_in_execute_path", "timestamp": "2026-10-03T00:00:00Z"}]
+
+
+@case("AC3", "the attested predicate is the form Docker Scout itself stores: a product's subcomponents become the statement's products (golden from docker scout attestation add)")
+def _():
+    fx = mk_fx()
+    r = do_compute(fx.bytes, json.dumps(SCOUT_IN).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    n = 0
+    for e in f["manifests"]:
+        if (e.get("annotations") or {}).get("vnd.docker.reference.type") != "attestation-manifest":
+            continue
+        m = json.loads(rd(os.path.join(bdir, hx(e["digest"]))))
+        st = json.loads(rd(os.path.join(bdir, hx(m["layers"][0]["digest"]))))
+        eq(st["predicate"]["statements"], SCOUT_OUT_STATEMENTS, "statements as Scout stored them")
+        eq(sorted(k for k in st["predicate"] if k != "@id"), sorted(k for k in SCOUT_IN if k != "@id"), "document keys other than @id")
+        n += 1
+    ok(n >= 1, "no attestation found")
+
+
+@case("AC3", "a statement whose product has no subcomponents is attested unchanged; the image's product with several subcomponents becomes several products, once each, in order; another product (cache-x) stays whole")
+def _():
+    fx = mk_fx()
+    vex = json.loads(json.dumps(SCOUT_IN))
+    vex["statements"] = [{"vulnerability": {"name": "CVE-2024-1"}, "status": "not_affected", "justification": "vulnerable_code_not_present", "products": [{"@id": "pkg:golang/github.com/fosterstack/cache"}]},
+                         {"vulnerability": {"name": "CVE-2024-2"}, "status": "not_affected", "justification": "vulnerable_code_not_present",
+                          "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": "pkg:generic/b@1"}, {"@id": "pkg:generic/a@2"}]},
+                                       {"@id": "pkg:oci/cache-x?repository_url=ghcr.io/fosterstack/cache-x", "subcomponents": [{"@id": "pkg:generic/b@1"}]}]}]
+    r = do_compute(fx.bytes, json.dumps(vex).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    e = [x for x in f["manifests"] if (x.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"][0]
+    st = json.loads(rd(os.path.join(bdir, hx(json.loads(rd(os.path.join(bdir, hx(e["digest"]))))["layers"][0]["digest"]))))
+    eq([x["products"] for x in st["predicate"]["statements"]],
+       [[{"@id": "pkg:golang/github.com/fosterstack/cache"}],
+        [{"@id": "pkg:generic/b@1"}, {"@id": "pkg:generic/a@2"},
+         {"@id": "pkg:oci/cache-x?repository_url=ghcr.io/fosterstack/cache-x", "subcomponents": [{"@id": "pkg:generic/b@1"}]}]], "products after the derivation")
+
+
+@case("AC3", "only the image's own product is replaced by its subcomponents: another image, a platform digest form and cache-candidates stay whole; an empty list stays; a package in two statements stays in both")
+def _():
+    fx = mk_fx()
+    IMG = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    vex = json.loads(json.dumps(SCOUT_IN))
+    def stmt(name, products):
+        return {"vulnerability": {"name": name}, "status": "not_affected", "justification": "vulnerable_code_not_present", "products": products}
+    A = {"@id": "pkg:generic/a@1"}
+    CAND = {"@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates", "subcomponents": [A]}
+    OTHER = {"@id": "pkg:oci/other", "subcomponents": [A]}
+    DIGEST = {"@id": "pkg:oci/cache@sha256:" + "a" * 64 + "?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [A]}
+    EMPTY = {"@id": IMG, "subcomponents": []}
+    vex["statements"] = [stmt("CVE-2024-1", [CAND]), stmt("CVE-2024-2", [OTHER, DIGEST]), stmt("CVE-2024-3", [EMPTY]),
+                         stmt("CVE-2024-4", [{"@id": IMG, "subcomponents": [A]}]), stmt("CVE-2024-5", [{"@id": IMG, "subcomponents": [A]}])]
+    r = do_compute(fx.bytes, json.dumps(vex).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    e = [x for x in f["manifests"] if (x.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"][0]
+    st = json.loads(rd(os.path.join(bdir, hx(json.loads(rd(os.path.join(bdir, hx(e["digest"]))))["layers"][0]["digest"]))))
+    eq([x["products"] for x in st["predicate"]["statements"]], [[CAND], [OTHER, DIGEST], [EMPTY], [A], [A]], "products after the derivation")
+
+
+@case("AC3", "verify refuses an attestation that carries the VEX file verbatim instead of Scout's applied form")
+def _():
+    fx = mk_fx()
+    vb = json.dumps(SCOUT_IN).encode("utf-8")
+    r = do_compute(fx.bytes, vb)
+    ok(r.rc == 0, "compute failed")
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    ok(verify(rd(os.path.join(r.dir, "index.json")), vb, base=fx.bytes, blobs=os.path.join(r.dir, "blobs")).rc == 0, "the derived final index does not verify")
+    # rebuild every attestation with the verbatim document as its predicate: it must be refused (the old form Scout does not apply)
+    nf, blobs_root = json.loads(json.dumps(f)), os.path.join(TMP, "verbatim-root", "blobs")
+    shutil.rmtree(os.path.dirname(blobs_root), ignore_errors=True)
+    shutil.copytree(os.path.join(r.dir, "blobs"), blobs_root)
+    for i, e in enumerate(nf["manifests"]):
+        if (e.get("annotations") or {}).get("vnd.docker.reference.type") != "attestation-manifest":
+            continue
+        desc, parts = ref_att_verbatim(e["annotations"]["vnd.docker.reference.digest"], SCOUT_IN)
+        nf["manifests"][i] = desc
+        for b in parts.values():
+            with open(os.path.join(blobs_root, "sha256", hx(dg(b))), "wb") as fh:
+                fh.write(b)
+    v = verify(cj(nf), vb, base=fx.bytes, blobs=blobs_root)
+    ok(v.rc != 0 and "predicate" in v.err, "the verbatim form was not refused: rc=%s %s" % (v.rc, v.err.strip()[:160]))
+
+
 @case("AC3", "removing the attestation children from F gives back the built index's entries, field for field")
 def _():
     fx = mk_fx(unknown=True, **EXTRAS)
@@ -1497,7 +1637,7 @@ def _(name):
         eq(st["_type"], STMT_TYPE, "statement _type")
         eq(st["predicateType"], PRED, "predicateType")
         eq(st["subject"], [{"name": SUBJECT_NAME, "digest": {"sha256": hx(pd)}}], "subject is the platform digest")
-        eq(st["predicate"], vex, "predicate is the VEX file's content")
+        eq(st["predicate"], ref_scout(vex), "predicate is the VEX file in Scout's applied form")
         eq(sbts, cj(st), "statement bytes are canonical (sorted keys, compact, raw UTF-8, no trailing newline)")
         ok(not sbts.endswith(b"\n"), "trailing newline")
         seen.add(pd)
@@ -1836,7 +1976,7 @@ def build_custom(fx, vb, edits=None, fedit=None, s=None, extra=None, only=0, fra
         pi += 1
         ctx = {"base": base, "pdigest": e["digest"], "other": [x for x in plat_digests if x != e["digest"]][0] if len(plat_digests) > 1 else "sha256:" + "77" * 32, "vex": vex}
         ap = lambda k, o: ed[k](o, ctx) if k in ed else None
-        stmt = {"_type": STMT_TYPE, "predicateType": PRED, "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(e["digest"])}}], "predicate": json.loads(json.dumps(vex))}
+        stmt = {"_type": STMT_TYPE, "predicateType": PRED, "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(e["digest"])}}], "predicate": ref_scout(vex)}
         ap("stmt", stmt)
         sb_ = ed["stmt_raw"](stmt) if "stmt_raw" in ed else cj(stmt)
         layer = {"mediaType": "application/vnd.in-toto+json", "digest": dg(sb_), "size": len(sb_), "annotations": {"in-toto.io/predicate-type": PRED}}
@@ -2049,6 +2189,18 @@ def set_prop(o, path, key, val):
     return o
 
 
+# In the attested predicate (Scout's applied form) a subcomponent has become a product of its statement, so the sub-level paths of the input document name statements[0].products[0] there.
+PRED_PATHS = dict(PATHS)
+PRED_PATHS.update({"product": lambda o: o["statements"][0]["products"][0], "sub": lambda o: o["statements"][0]["products"][0],
+                   "product.identifiers": lambda o: o["statements"][0]["products"][0]["identifiers"], "sub.identifiers": lambda o: o["statements"][0]["products"][0]["identifiers"],
+                   "product.hashes": lambda o: o["statements"][0]["products"][0]["hashes"], "sub.hashes": lambda o: o["statements"][0]["products"][0]["hashes"]})
+
+
+def set_pred_prop(o, path, key, val):
+    PRED_PATHS[path](o)[key] = val
+    return o
+
+
 def schema_vex(path, key, val):
     return json.dumps(set_prop(base_vex_obj(), path, key, val)).encode()
 
@@ -2096,7 +2248,7 @@ def _(arg):
 
 def schema_edit(arg):
     pa, k, val = arg
-    return {"stmt": lambda o, c: set_prop(o["predicate"], pa, k, json.loads(json.dumps(val)))}
+    return {"stmt": lambda o, c: set_pred_prop(o["predicate"], pa, k, json.loads(json.dumps(val)))}
 
 
 @param("AC3", "verify --blobs rejects an attestation whose predicate has a wrong-typed OpenVEX property or an unknown one, with every digest refreshed", SCHEMA_REHASH_ALL)

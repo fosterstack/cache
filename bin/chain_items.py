@@ -28,7 +28,8 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
 TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
-               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN")
+               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN",
+               "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "APK_RELEASE_SIGNING_KEY")      # rc-2 R4 (Fable): Release's own three credentials, which its six Witness records could carry
 
 
 # ---- the names a record may carry (REQ-CHAIN-004-AC13 and AC15; REQ-CHAIN-005-AC7) ----------------------------------------------------------
@@ -36,7 +37,7 @@ TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
 # certificate, signature or timestamp is looked at, and both early protection against honest confusion and lookalikes: the security boundary is the Build Config URI
 # pin of check_identity (the calling workflow must be release.yml at the tag).
 SNAPSHOT_NAME = re.compile(r"snapshot-[a-z0-9_-]*")                    # exactly this is "a snapshot record"
-RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}      # the collection names a stage reads; other stages' records are not collections
+RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}      # the collection names a stage reads; other stages' records are not collections
 SNAPSHOT_VERSION_FILE = re.compile(r"fscache(-fips)?[-_]0\.0\.0[_-]")           # fscache-0.0.0_rc1-r0.apk, fscache_0.0.0-rc.1_linux_amd64.tar.gz; not 10.0.0 or 0.10.0
 
 
@@ -144,6 +145,11 @@ def cmd_bind(a):
         usage("--step must be one of %s" % ", ".join(BIND_STAGE))
     check_relative(a.dir, a.prefix)
     stage = BIND_STAGE[a.step]
+    # The Witness move (owner Oct 22): the building jobs' own records are made with a throwaway key and are untrusted until Sign re-signs them. They are named
+    # *.local.json, and only --local reads one; without --local such a name is refused, and with --local any other name is, so neither form passes as the other.
+    if a.local != a.record.endswith(".local.json"):
+        refuse(stage, "record: " + ("%s is not a *.local.json (--local binds only the building job's untrusted local record)" % os.path.basename(a.record) if a.local
+                                    else "%s is an unsigned local record, not a trusted record (use bind --local)" % os.path.basename(a.record)))
     name, subjects = read_collection(a.record)
     if name is None:
         refuse(stage, "record: not a DSSE envelope of a Witness collection")
@@ -462,13 +468,17 @@ def check_record_env(stage, envelope, payload):
     """AC8 on an already-read record (REQ-CHAIN-004-AC8): no ACTIONS_ID_TOKEN_REQUEST_* name (the whole prefix), runtime-token name, GH_TOKEN or GITHUB_TOKEN, no compact JWT
     and no GitHub token value anywhere in the envelope or the decoded payload. The verifiers call it for every verified Witness collection, naming the record's own stage."""
     text = json.dumps(envelope) + "\n" + payload.decode("utf-8", "replace")
-    found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
+    found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*|ACTIONS_RUNTIME_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
     if found:
         refuse(stage, "env: the record names " + " ".join(found))
     if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
         refuse(stage, "env: the record holds a compact JWT")
-    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", text):
+    if re.search(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}", text):
         refuse(stage, "env: the record holds a GitHub token")
+    if re.search(r"\bdckr_pat_[A-Za-z0-9_-]{20,}", text):
+        refuse(stage, "env: the record holds a Docker Hub token")
+    if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text.replace("\\n", "\n")):
+        refuse(stage, "env: the record holds a private key block")
 
 
 def cmd_record_env(a):
@@ -542,6 +552,7 @@ def add_parsers(sub):
     b.add_argument("--record", required=True)
     b.add_argument("--dir", required=True)
     b.add_argument("--as", dest="prefix", required=True)
+    b.add_argument("--local", action="store_true")
     i = sub.add_parser("items-apk")
     i.add_argument("--out-dir", required=True)
     i.add_argument("--result", required=True)

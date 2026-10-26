@@ -233,8 +233,9 @@ select_release() {   # the release under test: MODE rc = the release candidate t
       [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::MODE release needs a final tag vX.Y.Z, got '${GITHUB_REF_NAME:-}'" >&2; return 1; }
       tag=$GITHUB_REF_NAME ;;
     main)
-      gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" \
-        --jq '[.[] | {tagName: .tag_name, isDraft: .draft, assets: [.assets[].name]}]' > releases.json
+      # every page of releases, not the first 50: an eligible release further back must be found (paginated, one object per release, slurped into one list)
+      gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+        --jq '.[] | {tagName: .tag_name, isDraft: .draft, assets: [.assets[].name]}' | jq -s . > releases.json
       tag=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" release --releases releases.json)
       if [ -z "$tag" ]; then   # not a passed live test: an announced skip, until a release carries the files (no v0.3 release exists yet)
         echo "::notice::live test skipped: no published release carries the rule-10 files yet (the guide and the VEX files ship with the first v0.3 release)"
