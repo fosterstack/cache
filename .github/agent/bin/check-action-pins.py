@@ -30,9 +30,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   services:  a mapping of plain identifiers (the runner passes the name unquoted to docker); each
              service is an image string or a mapping with an image.
   An action path with a `.`, `..` or empty segment is refused (it could reach another action).
-  container:/service mappings may carry only image, credentials and env (plainly named variables):
-             the runner splices `options`, `ports` and `volumes` unquoted into `docker create` ahead
-             of the image, where any of them can name another image (this repo uses none).
+  container:/service mappings may carry only image, credentials and env (plainly named variables),
+             and a SERVICE may also carry `ports`, each item a plain 127.0.0.1:<host>:<container>
+             string (loopback only, both numbers 1..65535): the runner splices `options`, `ports` and
+             `volumes` unquoted into `docker create` ahead of the image, where any of them can name
+             another image, so every other key, and `ports` on a job container, is refused.
   Every action must be CLASSIFIED (ACTIONS below, or EXECUTOR_ALLOWED): an action we have not
              classified may run an image we hand it through an input, so it fails closed until a
              reviewed change to this file says what it runs.
@@ -123,6 +125,10 @@ Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or c
 --config are refused, and so are DOCKER_HOST, DOCKER_CONTEXT, BUILDKIT_HOST and any DOCKER_CONFIG but a fresh
 $(mktemp -d), in scripts or env blocks; plugin, context, import, system, trust, secret, config and buildx create/use
 are off the reviewed list (refused).
+Inside a container (#593 review): the command `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` runs, and the words after the
+image of `… run [opts] IMAGE CMD…` (led by an --entrypoint program), are read as a command of their own and judged like a top-level
+one: `docker exec C docker pull alpine:latest` is the same finding `docker pull alpine:latest` is. An exec option this check does not
+know is a finding (it cannot tell which word is the container).
 Round 12 (NEW-14/15): every verb of docker/podman/nerdctl, skopeo and crane is either read (run/create/pull/build/
 scout/…), on a reviewed list of verbs that pull or run nothing remote, or refused (podman kube play, skopeo sync, crane
 append/mutate, …). Tool words match by exact case (the scope is ubuntu runners, where `Docker` is not found); PATH
@@ -201,6 +207,7 @@ COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
 ACTIONS = {
     "actions/attest": "node: signs attestations; no image run",
     "actions/attest-build-provenance": "composite over actions/attest; no image run",
+    "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC8); no image run",
     "actions/checkout": "node: git checkout",
     "actions/create-github-app-token": "node: mints a token",
     "actions/dependency-review-action": "node: GitHub API diff review",
@@ -231,11 +238,11 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO for the bootstrap of
-# cache PR #316 (scanner guard): main's gate workflow and #316's; a later change removes main's old one, leaving one
+# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
+# main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d",   # main's gate workflow before #316
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # the gate workflow of cache PR #316
+    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -383,16 +390,26 @@ def walk(node, path, out, bad, where):
 
 # ---------------------------------------------------------------------------- the rules
 
-def container_keys(where, node, bad):
-    """A job container or service mapping: only image, credentials, and env with plain names."""
+LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:[0-9]{1,5}:[0-9]{1,5}")
+
+
+def container_keys(where, node, bad, ports_ok=False):
+    """A job container or service mapping: only image, credentials, and env with plain names. A SERVICE may also publish ports, each a plain
+    127.0.0.1:<host>:<container> string (the runner puts the value into the docker command, so no other form is read)."""
     for k, v in node.value:
         name = k.value if isinstance(k, yaml.ScalarNode) else None
-        if name == "env" and isinstance(v, yaml.MappingNode):
+        if name == "ports" and ports_ok:
+            if not isinstance(v, yaml.SequenceNode):
+                bad.append(f"{where}.ports: not a list")
+            for item in (v.value if isinstance(v, yaml.SequenceNode) else []):
+                if not (isinstance(item, yaml.ScalarNode) and LOOPBACK_PORT.fullmatch(item.value) and all(1 <= int(n) <= 65535 for n in item.value.split(":")[1:])):
+                    bad.append(f"{where}.ports: only 127.0.0.1:<port>:<port> as plain text is read, got {getattr(item, 'value', None)!r}")
+        elif name == "env" and isinstance(v, yaml.MappingNode):
             for kk, _ in v.value:
                 if not (isinstance(kk, yaml.ScalarNode) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", kk.value)):
                     bad.append(f"{where}.env: a variable name that is not plain: {getattr(kk, 'value', None)!r}")
         elif name not in ("image", "credentials"):
-            bad.append(f"{where}.{name}: refused (only image, credentials and env; the runner splices "
+            bad.append(f"{where}.{name}: refused (only image, credentials and env, and ports on a service; the runner splices "
                        f"the rest into the docker command ahead of the image)")
 
 
@@ -590,6 +607,8 @@ RUN_VAL = {"--add-host", "--annotation", "-a", "--attach", "--blkio-weight", "--
 RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--interactive", "--no-healthcheck",
             "--oom-kill-disable", "--privileged", "-P", "--publish-all", "-q", "--quiet", "--read-only", "--rm",
             "--sig-proxy", "-t", "--tty"}
+EXEC_VAL = {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys"}
+EXEC_BOOL = {"-d", "--detach", "-i", "--interactive", "--privileged", "-t", "--tty"}
 PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
@@ -1020,7 +1039,57 @@ def _command_words(toks):
     return words
 
 
-def _commands(script, depth=0):
+def _container_inner(tool, args):
+    """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
+    container, for `… run|create [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
+    container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
+    was a safe verb, so `docker exec C docker pull alpine:latest` was invisible). None when there is no inner command or it cannot be placed
+    (an option this check does not know is a finding elsewhere)."""
+    if tool not in ("docker", "podman", "nerdctl"):
+        return None
+    k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
+    rest = args[k:]
+    if unknown or not rest:
+        return None
+    verb, rest = rest[0], rest[1:]
+    if verb == "container" and rest[:1] in (["exec"], ["run"], ["create"]):
+        verb, rest = rest[0], rest[1:]
+    if verb == "exec":  # INNER-EXEC
+        k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+        return None if unknown or k >= len(rest) else rest[k + 1:]
+    if verb in ("run", "create"):  # INNER-RUN
+        k, unknown = _options(rest, RUN_VAL, RUN_BOOL)
+        if unknown or k >= len(rest):
+            return None
+        entry, j = None, 0
+        while j < k:                       # the same walk _options makes: a value of another option (--label '--entrypoint=x', -il '--entrypoint=x') is not the entrypoint
+            a = rest[j]
+            if a == "--":
+                break
+            if a == "--entrypoint" and j + 1 < k:
+                entry, j = rest[j + 1], j + 2
+            elif a.startswith("--entrypoint="):
+                entry, j = a.split("=", 1)[1], j + 1
+            elif a.startswith("--"):
+                j += 2 if (a in RUN_VAL) else 1
+            else:                          # a short option cluster (or a stray word: one step)
+                step = 1
+                for c, ch in enumerate(a[1:], 1):
+                    o = "-" + ch
+                    if o in RUN_BOOL:
+                        continue
+                    if o in RUN_VAL:
+                        step = 1 if c + 1 < len(a) else 2     # the value is attached, or the next word
+                    break
+                j += step
+        inner = rest[k + 1:]
+        if entry:  # INNER-ENTRYPOINT
+            inner = [entry] + inner
+        return inner
+    return None
+
+
+def _commands(script, depth=0, in_container=False):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
@@ -1077,7 +1146,11 @@ def _commands(script, depth=0):
         if bad_wrap:          # env -S runs a string, env -C moves the working directory (Codex r3, C02)
             out.append(["__wrapper_opt__", bad_wrap])
             continue
-        if words:             # a script this command runs (Codex #164 r2, C02): through wrappers, $( ), -c, eval alike
+        # a script path in the PLAIN inner command of a container names the container's file, never the checkout's: not
+        # bound to a committed file (the bytes are the image's, pinned by digest), as before not read. A `sh -c` / eval
+        # body or $( ) on the line is read by its own _commands call (in_container False) and keeps main's rule (#712
+        # review: a filter on the whole result once dropped the body's script too; `--entrypoint=sh IMG -c 'bash x.sh'`)
+        if words and not in_container:    # a script this command runs (Codex #164 r2, C02): through wrappers, $( ), -c, eval alike
             w = words[-1]
             rest = toks[toks.index(w) + 1:]
             ops = [a for k, a in enumerate(rest) if not a.startswith(("-", "<", ">")) and not re.match(r"^[0-9]+[<>]", a)
@@ -1118,6 +1191,12 @@ def _commands(script, depth=0):
         at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
+            inner = _container_inner(_base(toks[at]), toks[at + 1:])
+            if inner:         # the command run inside the container is a command of its own
+                if depth >= 4:
+                    out.append(["__too_deep__", _base(toks[at])])
+                else:
+                    out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1, True)
     return out
 
 
@@ -1680,6 +1759,11 @@ def script_images(script):
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
                 ev.append(("tag", rest[-2], rest[-1]))      # judged in check_runs: the source must be ours (NEW-21)
+            elif verb == "exec":
+                k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+                if unknown:
+                    ev.append(("finding", "`%s exec` has an option this check does not know (%s): it cannot tell which word is "
+                                          "the container, so the command inside cannot be read" % (cmd, unknown)))
             elif verb in DOCKER_SAFE:
                 pass
             elif verb not in ("build",):
@@ -3077,7 +3161,7 @@ def check_file(tree, rel, pins, bad):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
                         bad.append(f"{sw}: service without an image")
-                    container_keys(sw, v, bad)
+                    container_keys(sw, v, bad, ports_ok=True)
                     for vv in imgs:
                         check_image(f"{sw}.image", vv, bad)
                 else:

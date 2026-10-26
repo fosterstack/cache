@@ -680,6 +680,12 @@ requirements:
         then: the identical bytes return, and store totals reflect the entry
         verification: { method: component, release_blocking: true }
         status: approved
+      - id: REQ-STORE-001-AC2
+        given: a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record
+        when: both have completed
+        then: the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct
+        verification: { method: component, release_blocking: true }
+        status: approved
 
   - id: REQ-STORE-002
     title: Atomic writes
@@ -813,7 +819,9 @@ requirements:
       temporary headroom, not a hard filesystem quota: temporary and
       in-flight disk usage during writes, and concurrent-write headroom,
       are outside this requirement and need requirements of their own
-      before any hard disk ceiling is claimed.
+      before any hard disk ceiling is claimed. That exclusion covers in-flight
+      temporary disk usage only, never the accuracy of the index once the
+      operations have completed (REQ-STORE-001-AC2).
     source: [README.md "Full core", docs/docker-deploy.md "Sizing", internal/cache/cache.go]
     tier: community
     introduced: v0.1.0
@@ -1550,6 +1558,12 @@ requirements:
         then: "it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue'"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-REL-004-AC8
+        given: "the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits"
+        when: "bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it)"
+        then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-005
     title: Every CI action pinned to a commit digest
@@ -1733,6 +1747,12 @@ requirements:
         then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-DEP-001-AC10
+        given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
+        when: the reviewer picks its candidates and gathers its evidence
+        then: it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-002
     title: The required-check guard runs everywhere
@@ -1774,6 +1794,12 @@ requirements:
         given: a Dependabot patch or minor pull request
         when: the auto-merge lane runs
         then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC2
+        given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
+        when: the auto-merge lane runs
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2021,7 +2047,7 @@ requirements:
       - id: REQ-REL-010-AC1
         given: "Build's image layouts and the tag's .vex/ OpenVEX file"
         when: "Build writes digests.json"
-        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content in the form Docker Scout applies: the same OpenVEX document, except that in each statement a product that names the attested image (its purl) and lists subcomponents is replaced by those subcomponents (the vulnerable packages; the image is the in-toto statement's subject), in order and once each, and any other product is unchanged; the in-toto statement holds that document as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index, and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-010-AC2
@@ -2089,6 +2115,67 @@ requirements:
         given: "any workflow job in the repository"
         when: "bin/job-isolation-test.sh judges every workflow file"
         then: "the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-012
+    title: A pull request into the release carries a passed-audit record for its exact head
+    statement: >
+      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
+      process rule 6, owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md:
+      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
+      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
+      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
+      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
+      record no longer applies. The verdict is part of the
+      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
+      cannot edit or skip it, and a retarget re-runs it.
+    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
+    tier: community
+    introduced: v0.3.0
+    origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2
+    confidence: implementation-only
+    notes: >
+      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
+      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
+      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
+      owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
+      something.
+    acceptance_criteria:
+      - id: REQ-REL-012-AC1
+        given: "a pull request whose base is main, and the head sha it has now"
+        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC2
+        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        when: "the judge decides"
+        then: "it fails closed and says why (an API error says it is one); no doubt passes"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC3
+        given: "a pull request whose base is not main"
+        when: "the judge runs"
+        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC4
+        given: "the verdict job and the sweep of agent-review-gate.yml"
+        when: "the auditor matrix runs them as written with stand-ins for the checks"
+        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC5
+        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the lane runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it)"
+        when: "the record job runs"
+        then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit lane guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC6
+        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
+        when: "the scheduled sweep runs"
+        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2754,6 +2841,18 @@ requirements:
         then: "that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC28
+        given: "the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties)"
+        when: "the wrapper downloads its Gradle distribution"
+        then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC29
+        given: "acceptance.yml run with an image-ref (release-chain mode)"
+        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
+        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3171,7 +3270,7 @@ requirements:
       The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code;
       dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin,
       commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
-    source: [bin/vendor-provenance.py, bin/vendor-check.sh, bin/vendoring-test.sh, bin/vendor-provenance-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh, vendor/modules.txt, dependency-provenance.json]
+    source: [bin/vendor-provenance.py, bin/vendor-provenance-records.py, bin/vendor-check.sh, bin/vendoring-test.sh, bin/vendor-provenance-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh, vendor/modules.txt, dependency-provenance.json]
     tier: community
     introduced: v0.3.0
     origin: owner-ratified dependency rules 1-10 (ops/docs/ratify/2026-10-09-v030-rules.md, VEND-1..8, 41, 45); the check coded on the owner's "code it" Oct 14 (ops/docs/ratify/2026-10-14-vendored-dependencies-check.md); ACs accepted by the advisor, step 5, Oct 12 2026, with --date as epoch digits only, one ^vendor/ subtree allowlist pattern, no new write token, evidence records the scan and never judges it; AC14 by advisor ruling Oct 12 (two-module rule-6 record); AC2 amended by advisor ruling Oct 14 (mode 100644; the narrow no-vendor/ pass) under the owner's byte-for-byte words; AC2 amended again by advisor ruling D, Oct 14 (dot files allowed when regenerated byte for byte; the git index and .gitattributes judged), back to the owner's ratified wording "exactly what the official tool produces ... byte for byte"
@@ -3268,6 +3367,12 @@ requirements:
         then: "its origin is taken from test-evidence/dependency-origins.yaml, one entry per such module with module, version, repository URL, commit and the command that produced it; an entry for any other module (one the cache has an Origin for, or one not in the build list), or a commit that does not match the pseudo-version's hash, is refused; no other gap is filled"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-VEND-001-AC15
+        given: "a go.mod, go.sum and vendor/ tree after a dependency bump, the committed reviewed files test-evidence/dependency-licenses.yaml and test-evidence/dependency-origins.yaml, and `bin/vendor-provenance-records.py --vendor-dir vendor --go-sum go.sum --licenses test-evidence/dependency-licenses.yaml [--recorded-origins test-evidence/dependency-origins.yaml] --out-dir DIR` with DIR absent"
+        when: "it runs on a runner with network access"
+        then: "it asks the Go toolchain (`go mod download -json`, at the toolchain's fixed install path, in an empty scratch module, with a closed environment: GOTOOLCHAIN=local, GOENV=off, the checksum database on at its default and no opt-out) for every module of vendor/modules.txt, and writes into DIR only the three files bin/vendor-provenance.py build reads (the checksum-log record, the origins the toolchain verified, the licences copied from the reviewed file); a module the toolchain cannot verify, that it does not report, that appears twice or is not in modules.txt, whose verified hash differs from go.sum, whose origin is not a git https address with the tagged version's tag ref or the pseudo-version's 40-hex commit, that has no origin and no entry in the recorded-origins file, or that has no licence in the reviewed file makes it exit 2 naming the module and write nothing; an existing DIR is refused; it never invents a licence, an origin or a commit and never writes dependency-provenance.json"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-BUILDAPK-001
     title: The apk is built by melange from vendored source, sealed from the network, assembly-signed
     statement: >
@@ -3343,7 +3448,7 @@ requirements:
     title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
     statement: >
       Once a day a job shall re-make the image lock files and re-resolve melange's build tools against live Wolfi; if anything changed it archives the new packages by digest, updates the locks and opens a pull request, never pushing to main; otherwise it does nothing. This job is the only updater of image recipes, apk packages and lock files. If Wolfi's signing key changed the job stops, opens no pull request and flags it for a human. If an old upstream version disappears the job notes it and does not fail. New Wolfi packages get no waiting period; signature and checksum checks and archiving still apply. The job's pull requests go through all normal checks and the rebuild-from-archive test. In the same daily run it shall also read Go's own certified-module file and, when a newer Go Cryptographic Module is certified, open a pull request that moves the FIPS build to it. The archive's package index shall be kept as the original Wolfi-signed file, versioned by its sha256, verified against the archived key, and an existing file under a digest name must hash to that name or the run fails closed.
-    source: [bin/refresh-inputs.sh, .github/workflows/go-freshness.yml, .github/dependabot.yml]
+    source: [bin/refresh-inputs.sh, build/host-tools.yaml, build/locks/host-tools.lock, .github/workflows/go-freshness.yml, .github/dependabot.yml]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 32, 44-49 and 73 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, REFRESH-1..6, APKO-25, FIPS-59; rule 48 "dont do this 7 day hold on wolfi.")
@@ -3549,6 +3654,33 @@ requirements:
         given: "a refresh or FIPS-module pull request that bin/refresh-inputs.sh opens, and a main whose ruleset requires signed commits"
         when: "the pull request is opened (open_pr, directly or from a plan)"
         then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the changed files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token) with exactly the working tree's bytes for the planned paths, and the API is asked whether that commit is verified; only then is the pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; nothing is committed or pushed to main, and no git commit is made (rule: main requires signed commits; advisor reading Oct 17 after cache#404 and cache#422 were found unmergeable with an unsigned job commit)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      # NEW, ADVISOR READING Oct 20 (handoff 0524; the English is in ops/handoffs/outbox/2026-10-20-cache-a7-acs-host-tools-ratify.md): AC35-AC38 are the concrete form of rules the owner
+      # already ratified (15: build tools come from the archive only; 38a: melange's bubblewrap runner; 44-49: the refresh job is the only updater, no waiting period) and of REQ-SUP-001 (no
+      # unpinned install line). Not ratified by the owner until he says so: the status below is "approved" only because the schema allows one status under an approved baseline.
+      - id: REQ-REFRESH-001-AC35
+        given: "build/host-tools.yaml, which names the packages the Build jobs run on the runner itself (bubblewrap), and the committed build/locks/host-tools.lock"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it resolves them with apko lock against https://packages.wolfi.dev/os for both architectures (a fourth lock, like melange's build tools), archives every package the archive lacks under the checks of AC3 (HTTPS, the lock's control and data checksums, the datahash, the signed index) before any lock changes, and writes build/locks/host-tools.lock as sorted name=version lines; when the resolution equals the committed lock nothing is committed, pushed or opened, and a repository without the data file or the lock is refused, as is a data file that is not exactly one packages key holding a non-empty list of unique plain names (duplicate keys, versions, paths) and a lock with a row outside the name=version grammar or a name twice (exit 2, before any lock is made)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC36
+        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold and live Wolfi no longer resolves (a version live Wolfi still resolves is downloaded again and checked under the repair of AC17 and AC32, and a first fill fetches the committed versions), or an archived host-tools package that is damaged"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it exits non-zero naming the package and the file, keeps nothing new in the archive, changes no lock and opens no pull request (the archive is the source of truth, as for the melange lock)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC37
+        given: "a version in the committed host-tools.lock that live Wolfi no longer resolves"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it notes in its output that the version is no longer in live Wolfi's resolution (host tools), exits 0 and keeps the archived copy"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC38
+        given: "the refresh changed build/locks/host-tools.lock"
+        when: "bin/refresh-inputs.sh refresh finishes"
+        then: "the lock goes in the same one refresh pull request as the other lock changes and the archive pointer (AC5), never merged by the job, and the host tools carry no waiting period (AC7)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-ARCHIVE-001

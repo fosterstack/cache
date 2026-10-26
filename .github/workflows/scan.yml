@@ -37,6 +37,13 @@ on:
     branches: [main]
     tags: ['v*']
 
+# A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
+# its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
+# nothing. The prefix is a literal, not github.workflow, so no workflow name can collide with another's group.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('scan-pr-{0}', github.event.pull_request.number) || format('scan-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Workflow default: read only. Each job states what it needs. The two
 # reusable-stage callers (build, assemble) grant what the shared stage files
 # REQUEST, or the run is a startup_failure with zero jobs
