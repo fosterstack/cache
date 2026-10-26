@@ -108,7 +108,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
+python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; exit 1; }
 attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_provenance"
 python3 - "$work" $attempts <<'PY'
 import copy, json, sys
@@ -285,6 +285,54 @@ for n in TX:"a file whose name only ends like Sign's (xstage-sign.yml)" TO:"Sign
 done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
 if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
+# a Build job with no id-token permission has no token request address (the Witness move): graded isolated, the static permission judge being the proof and this transcript the corroboration (an incomplete transcript is an error, never isolation)
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent0.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 2\n' "$TR" > "$work/tok_absentbad.txt"
+printf '%s\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absentold.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-read: 99\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdup.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdupk.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\n' "$TR" > "$work/tok_absentnc.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absenthold.txt"
+xexpect refuse "hostile-material: no token request address in the job, with the corroborating lines, is graded isolated (refused at runner), and the refusal names the static permission judge as the proof" "proven by the static permission judge" -- hostile-material --kind token --file "$work/tok_absent.txt"
+for f in tok_absent0 tok_absentbad tok_absentold tok_absentdup tok_absentdupk tok_absentnc tok_absenthold; do
+  mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no environ file read, an unreadable environ among the step's own ancestors, the old bare environ-files count, a repeated or missing count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
+done
+# the REAL step's token attempt in a job with no request address: it writes the absence proof and no claims line (functions only: the cut drops the five calls at the end)
+mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
+(cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
+if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-read: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && { [ ! -r /proc/self/environ ] || grep -q '^environ-read: [1-9]' "$work/stepnotok/attempts/read_sign_token.txt"; } && grep -qx 'environ-unreadable-same-user: 0' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, the count of environ files it read and no unreadable file of its own user, and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+# Linux only (/proc/PID/environ): an UNRELATED process of the same user that denies its environ (dumpable off, as hosted runners have) must not change the grade; a non-dumpable
+# ANCESTOR of the step must be an error (it could hide a request variable). Skipped, with an ok line, where there is no /proc.
+if [ -r /proc/self/environ ]; then
+  mkdir -p "$work/stepproc"
+  cp "$work/stepnotok/fns.sh" "$work/stepproc/fns.sh"
+  python3 -c 'import ctypes, time; ctypes.CDLL(None).prctl(4, 0); time.sleep(40)' & unrel=$!
+  sleep 1
+  (cd "$work/stepproc" && env -i PATH="$PATH" HOME="$work" bash -c '. ./fns.sh; attempt_read_sign_token')
+  kill "$unrel" 2> /dev/null || true
+  mrc=0; cvx hostile-material --kind token --file "$work/stepproc/attempts/read_sign_token.txt" || mrc=$?
+  if [ "$mrc" = 1 ] && grep -qx 'environ-unreadable-same-user: 0' "$work/stepproc/attempts/read_sign_token.txt" && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated (K counts the step's ancestors only)"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
+  mkdir -p "$work/stepanc"; cp "$work/stepnotok/fns.sh" "$work/stepanc/fns.sh"
+  (cd "$work/stepanc" && env -i PATH="$PATH" HOME="$work" python3 -c 'import ctypes, subprocess; ctypes.CDLL(None).prctl(4, 0); subprocess.run(["bash", "-c", ". ./fns.sh; attempt_read_sign_token"])')
+  mrc=0; cvx hostile-material --kind token --file "$work/stepanc/attempts/read_sign_token.txt" || mrc=$?
+  if [ "$mrc" = 2 ] && ! grep -qx 'environ-unreadable-same-user: 0' "$work/stepanc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a non-dumpable ANCESTOR of the step is counted and the transcript is an error (exit 2), never isolation"; else bad "hostile step (Linux): non-dumpable ancestor: rc $mrc, transcript $(tr '\n' '|' < "$work/stepanc/attempts/read_sign_token.txt" | head -c 400)"; fi
+else
+  ok "hostile step (Linux fixtures): skipped, this system has no /proc"
+  ok "hostile step (Linux fixtures): skipped, this system has no /proc (ancestor case)"
+fi
+# the REAL step's mint and forge attempts in a job with no token: both leave material (a record signed by a throwaway key), the REAL verifier refuses it at Sign naming stage-sign.yml,
+# and hostile-row turns that refusal into a counted row (a missing file would be an error, which is what the old cosign form produced without a token)
+mkdir -p "$work/stepsign" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepsign/fns.sh"
+printf 'attempt_mint_sign_cert\nattempt_forge_provenance\n' >> "$work/stepsign/fns.sh"
+(cd "$work/stepsign" && env -i PATH="$PATH" HOME="$work" bash fns.sh > /dev/null 2>&1)
+(cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$root/.github/policy/release-policy.template.json" --ref refs/tags/v0.3.0-rc1 --out policy.json > /dev/null 2>&1)
+for a in mint_sign_cert forge_provenance; do
+  vrc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" verify --stage sign --record "attempts/$a.json" --policy policy.json 2> "$a.err") || vrc=$?
+  hrc=0; (cd "$work/stepsign" && mkdir -p results && python3 "$root/bin/chain-verify.py" hostile-row --attempt "$a" --exit-code "$vrc" --stderr "$a.err" --out "results/$a.json" > /dev/null 2>&1) || hrc=$?
+  if [ -s "$work/stepsign/attempts/$a.json" ] && [ "$vrc" = 1 ] && grep -q "refused at sign" "$work/stepsign/$a.err" && grep -q "stage-sign.yml" "$work/stepsign/$a.err" && [ "$hrc" = 0 ] && [ -s "$work/stepsign/results/$a.json" ]; then ok "hostile step: the real $a attempt leaves a throwaway-key record without any token, the real verifier refuses it at sign naming stage-sign.yml, and hostile-row counts the refusal"; else bad "hostile step: $a material and refusal" "verify rc $vrc, row rc $hrc, $(head -c 200 "$work/stepsign/$a.err" 2>&1)"; fi
+done
 xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --sign-record "$work/signrec.json"
@@ -351,18 +399,31 @@ def conj(cond):
     condition proves nothing about either side). A conjunct must be EXACTLY the wanted text: `!startsWith(...)` and
     `startsWith(...) == false` are different conjuncts (Opus r5 SF-B)."""
     m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", cond.strip(), re.S)
-    if not m or "||" in m.group(1): return None
-    # round 8 (Opus R3 should-fix 1): the ONLY parentheses allowed are those of the exact startsWith(...) call; any other
-    # grouping (`!( a && b )`) changes what the conjuncts mean, so it fails closed
-    body = re.sub(r"startsWith\(\s*github\.ref\s*,\s*'refs/tags/v'\s*\)", "TAGCALL", m.group(1))
-    # implementation step (PR 1): the exact status function `failure()` (no arguments, no grouping) is also allowed, because patch-failed
-    # must run on a failed stage; it is a status check, not a grouping, so it cannot negate or hide a conjunct
-    body = re.sub(r"(?<![\w.])failure\(\)", "FAILCALL", body)
-    # the exact rc-tag test (advisor 0383) is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')` conjunct keeps an rc tag out of the old publishing path
-    body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
-    if "(" in body or ")" in body: return None
-    return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("RCCALL", "contains(github.ref_name, '-rc')") for c in body.split("&&")]
-OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
+    if not m: return None
+    # whitespace is collapsed FIRST, then the text is split on && and every conjunct must be exactly an accepted item (cache#581 ruling): the one grouped
+    # or-condition allowed is patch-failed's exact group (cache#554), and only as a whole conjunct, so `! (group)`, `(group) == false`, `format(group)` and
+    # any other `||` or grouping make the whole condition refused
+    GRP = "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')"
+    flat = re.sub(r"\s+", " ", m.group(1)).strip()
+    if re.search(r"TAGCALL|FAILCALL|ALWAYSCALL|RCCALL|FAILGRP", flat): return None   # the placeholder words below are never part of a condition
+    out = []
+    for part in flat.split("&&"):
+        part = part.strip()
+        if part == GRP: out.append(part); continue
+        if "||" in part: return None
+        # round 8 (Opus R3 should-fix 1): the ONLY parentheses allowed are those of the exact startsWith(...) call; any other
+        # grouping (`!( a && b )`) changes what the conjuncts mean, so it fails closed
+        body = re.sub(r"startsWith\(\s*github\.ref\s*,\s*'refs/tags/v'\s*\)", "TAGCALL", part)
+        # implementation step (PR 1): the exact status functions `failure()` and `always()` (no arguments, no grouping) are also allowed, because
+        # patch-failed must run after a failed stage; they are status checks, not groupings, so they cannot negate or hide a conjunct
+        body = re.sub(r"(?<![\w.])failure\(\)", "FAILCALL", body)
+        body = re.sub(r"(?<![\w.])always\(\)", "ALWAYSCALL", body)
+        # the exact rc-tag test (advisor 0383) is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')` conjunct keeps an rc tag out of the old publishing path
+        body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
+        if "(" in body or ")" in body: return None
+        out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')"))
+    return out
+OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "sign-rebuild": "stage-sign.yml", "sign-check": "stage-sign.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
 import importlib.util as _ilu
@@ -407,10 +468,10 @@ if rl is None: bad.append("release.yml missing")
 else:
     jobs = rl.get("jobs") or {}
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
-    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, hostile-verify and hostile-verdict may exist
+    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), hostile-verify and hostile-verdict may exist
     for _jn in jobs:
-        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "hostile-verify", "hostile-verdict"):
-            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, hostile-verify and hostile-verdict are allowed" % _jn)
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "sign-rebuild", "sign-check", "hostile-verify", "hostile-verdict"):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, hostile-verify and hostile-verdict are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
@@ -448,8 +509,8 @@ else:
                 if WITH(s) != {"persist-credentials": "false"}: bad.append("hostile-verify's checkout with: must be exactly {persist-credentials: false} (no repository, ref, token, path, fetch-depth: it runs this repository's verifier): %s" % WITH(s))
             elif act and act.group(1) == "download-artifact":
                 nm, pth = WITH(s).get("name"), WITH(s).get("path")
-                want = {"hostile-attempts": "attempts", "witness-build": "witness-build", "provenance": "provenance"}
-                if want.get(nm) != pth or set(WITH(s)) - {"name", "path"}: bad.append("hostile-verify downloads %s into %s; only hostile-attempts->attempts, witness-build->witness-build, provenance->provenance" % (nm, pth)); kinds.append("download?")
+                want = {"hostile-attempts": "attempts", "signed-witness-build": "witness-build", "provenance": "provenance"}
+                if want.get(nm) != pth or set(WITH(s)) - {"name", "path"}: bad.append("hostile-verify downloads %s into %s; only hostile-attempts->attempts, signed-witness-build->witness-build, provenance->provenance" % (nm, pth)); kinds.append("download?")
                 else: kinds.append("download:" + nm)
             elif act and act.group(1) == "upload-artifact":
                 kinds.append("upload")
@@ -460,14 +521,14 @@ else:
             else:
                 kinds.append("other"); bad.append("hostile-verify has a step outside the allowlist (checkout, the three downloads, the pinned `policy make`, the attempt steps and the positive control, collect, upload): %r" % (s.get("name") or run or u))
         if kinds.count("checkout") != 1: bad.append("hostile-verify must check the repo out exactly once")
-        for nm in ("hostile-attempts", "witness-build", "provenance"):
+        for nm in ("hostile-attempts", "signed-witness-build", "provenance"):
             if kinds.count("download:" + nm) != 1: bad.append("hostile-verify must download the artifact %s exactly once (without it every verify reads a missing file and 'refuses')" % nm)
         if kinds.count("policy") != 1: bad.append("hostile-verify must run the pinned `policy make --template .github/policy/release-policy.template.json --ref \"$GITHUB_REF\" --out policy.json` exactly once (a permissive or tracked policy.json proves nothing)")
         if os.path.exists(os.path.join(root, "policy.json")): bad.append("a policy.json is part of the tree: the verify job must make its own")
         try:
             lead = [k for k in kinds if not k.startswith("attempt:")]
             first_att = next(i for i, k in enumerate(kinds) if k.startswith("attempt:"))
-            if not (kinds[0] == "checkout" and kinds.index("policy") < first_att and all(kinds.index("download:" + n) < first_att for n in ("hostile-attempts", "witness-build", "provenance"))):
+            if not (kinds[0] == "checkout" and kinds.index("policy") < first_att and all(kinds.index("download:" + n) < first_att for n in ("hostile-attempts", "signed-witness-build", "provenance"))):
                 bad.append("hostile-verify order must be checkout, downloads, policy make, then the attempts")
         except (StopIteration, ValueError): bad.append("hostile-verify has no attempt steps or no policy step")
         # one three-line step per attempt, the exit code captured from the verifier's own invocation
@@ -610,7 +671,7 @@ jobs:
       - uses: actions/download-artifact@$sha # v8
         with: {name: hostile-attempts, path: attempts}
       - uses: actions/download-artifact@$sha # v8
-        with: {name: witness-build, path: witness-build}
+        with: {name: signed-witness-build, path: witness-build}
       - uses: actions/download-artifact@$sha # v8
         with: {name: provenance, path: provenance}
       - run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "\$GITHUB_REF" --out policy.json
@@ -969,6 +1030,12 @@ d=$(mk w_rd_sign2); pymut "$(rel "$d")" "  hostile-verdict:
       - run: echo hi
   hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra sign-extra job" "$d"
+d=$(mk w_rd_signrb); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-rebuild:
+    needs: sign
+    uses: ./.github/workflows/stage-sign.yml
+  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the job sign-rebuild (Sign's second call, for Rebuild's records) is not refused as an extra sign* job" "$d"
 d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  SIGN2:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
@@ -1103,10 +1170,11 @@ d=$(mk w_tpl); pymut "$(rel "$d")" "--template .github/policy/release-policy.tem
 d=$(mk w_policytracked); echo '{}' > "$d/policy.json"; wexpect caught "wiring: a policy.json is committed to the tree" "$d"
 d=$(mk w_nowb); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("      - uses: actions/download-artifact@" + "a" * 40 + " # v8\n        with: {name: witness-build, path: witness-build}\n", "", 1)
+t = open(sys.argv[1]).read().replace("      - uses: actions/download-artifact@" + "a" * 40 + " # v8\n        with: {name: signed-witness-build, path: witness-build}\n", "", 1)
 open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: Build's verified record (witness-build) is not downloaded" "$d"
+d=$(mk w_unsignedbuild); pymut "$(rel "$d")" "name: signed-witness-build, path: witness-build" "name: witness-build, path: witness-build"; wexpect caught "R1 (row-78 pass): hostile-verify downloads the unsigned witness-build (its .local.json record is refused at stage build, not sign)" "$d"
 d=$(mk w_bradv); pymut "$(rel "$d")" "--build-record witness-build/build-collection.json" "--build-record attempts/build-collection.json"; wexpect caught "wiring: hand_sign_code checks against the record the HOSTILE step supplied, not Build's verified one" "$d"
 d=$(mk w_noprov); python3 - "$(rel "$d")" <<'PY'
 import sys
@@ -1197,6 +1265,97 @@ d=$(mk w_tagneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref,
 d=$(mk w_tagfalse); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v') == false"; wexpect caught "wiring: the tag conjunct is compared (== false)" "$d"
 d=$(mk w_tagparen); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!(true && !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') && true)"; wexpect caught "wiring: the whole condition is negated by a grouping parenthesis (round 8, Opus R3)" "$d"
 d=$(mk w_gateneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "inputs.dry-run && startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the dry-run conjunct is not negated (promotion would run ONLY in a dry run)" "$d"
+d=$(mk w_pf_ok); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect ok "wiring: patch-failed with the cache#554 condition (a failed job, or a cancelled release, on a tag run) passes" "$d"
+d=$(mk w_pf_notag); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form without the tag conjunct (a branch run could reach it)" "$d"
+d=$(mk w_pf_negtag); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && !startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form with the tag conjunct negated" "$d"
+d=$(mk w_pf_nodry); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form without !inputs.dry-run" "$d"
+d=$(mk w_pf_orrest); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run || true }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form with a trailing || true" "$d"
+d=$(mk w_pf_orgrp); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled' || startsWith(github.ref, 'refs/tags/v')) && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed whose group has a third or-term (the tag test hidden in the group)" "$d"
+d=$(mk w_pf_othergrp); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || true) && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with a different grouped or-condition (|| true)" "$d"
+d=$(mk w_pf_negrp); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && !(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with the group negated" "$d"
+d=$(mk w_pf_negsp2); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && !  (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with the group negated by ! and two spaces" "$d"
+d=$(mk w_pf_negtab); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && !	(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with the group negated by ! and a tab" "$d"
+d=$(mk w_pf_cmpfalse); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') == false && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with the group compared to false" "$d"
+d=$(mk w_pf_format); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && !format('{0}', (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')) && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with the group wrapped in format()" "$d"
+d=$(mk w_pf_literal); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && TAGCALL && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: a literal placeholder word stands in for the tag test" "$d"
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
 d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
@@ -1269,7 +1428,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=253
+EXPECT=281
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

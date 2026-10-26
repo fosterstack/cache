@@ -85,17 +85,21 @@ func New(reg prometheus.Registerer) *Metrics {
 		StoreWritable: f.NewGauge(prometheus.GaugeOpts{
 			Namespace: "fscache",
 			Name:      "store_writable",
-			Help:      "1 when the server could create, sync and delete a file in the data directory within the probe limit, else 0.",
+			Help: "1 when the server could create, sync and delete a file in the data directory " +
+				"within the probe limit, else 0.",
 		}),
 		StoreFreeBytes: f.NewGauge(prometheus.GaugeOpts{
 			Namespace: "fscache",
 			Name:      "store_free_bytes",
-			Help:      "Bytes available to an unprivileged process on the filesystem that holds the data directory (what df shows as Avail); 0 if it could not be read. A float64 gauge: exact up to 2^53 bytes (/statusz gives the exact count).",
+			Help: "Bytes available to an unprivileged process on the filesystem that holds the data " +
+				"directory (what df shows as Avail); 0 if it could not be read. A float64 gauge: " +
+				"exact up to 2^53 bytes (/statusz gives the exact count).",
 		}),
 		PutErrors: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "fscache",
 			Name:      "put_errors_total",
-			Help:      "PUTs that failed inside the store write path, by reason (no_space, read_only, too_large, client_aborted, other).",
+			Help: "PUTs that failed inside the store write path, by reason " +
+				"(no_space, read_only, too_large, client_aborted, other).",
 		}, []string{"reason"}),
 	}
 	for _, r := range PutErrorReasons {

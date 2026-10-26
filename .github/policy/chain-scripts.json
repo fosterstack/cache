@@ -2,7 +2,11 @@
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
     "DIGESTS",
-    "MODE"
+    "MODE",
+    "RAPK_ARM_RECORDS",
+    "RAPK_RECORDS",
+    "RECORDS",
+    "RECORDS_ARM64"
   ],
   "scripts": [
     {
@@ -38,20 +42,32 @@
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
-      "sha256": "55c2c5716053b8b82b0009d6186aba33e1f478e75ebc728b9f7c3714155699ed"
+      "sha256": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31"
+    },
+    {
+      "path": "bin/install-host-bwrap.py",
+      "tools": [
+        "at",
+        "tar"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the apk jobs' host-tools step: unpacks bubblewrap and what it needs from the archive just pulled (the packages build/locks/host-tools.lock names, checked against the datahash of each apk) into host-tools/ and writes the bwrap wrapper melange's bubblewrap runner calls; no network, no package manager, no sudo, no other program (REQ-CHAIN-004-AC17); the listed tools are words in its messages and comments that the text scan over-reports (the script starts no program: the archive format is read with the Python library)",
+      "sha256": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4"
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "b8af29ebf7c3e60ff8802f9506a33045ca2f4750954ef580070e3eefc01b05c0",
+      "sha256": "5df724aac2c74d37a5f513c53aad2b8520d2431f80235fdb90583becaa1470f1",
       "tools": [
         "make",
         "at",
-        "exec"
+        "exec",
+        "git"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
       "env_mentions": [
         {
           "name": "PATH",
@@ -67,7 +83,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "8f9cca7b3b6be118143ecea0346fa24c6952df0bf03147875e910482d46ed03f",
+      "sha256": "45f99586b72c3cc2ae654981e04af9518a7fb03c4c63e5203ec5186e657a23c5",
       "tools": [
         "at",
         "curl",
@@ -141,7 +157,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
+      "sha256": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
       "tools": [
         "at",
         "bash",
@@ -154,7 +170,7 @@
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)",
+      "reason": "the hostile Build step (a release-candidate tag push): signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs only when the caller asks (if: inputs.hostile; release.yml sets it on an -rc tag push)",
       "exceptions": [
         {
           "rule": "deny",
@@ -186,8 +202,8 @@
         },
         {
           "rule": "deny",
-          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(jq -r '.messageSignature.signature' hostile-work/forged.bundle.json)\" \\",
-          "line_sha256": "a56d256000295c1ddacdf51c37a83398f80b006007366ddc10c6ebae719bfe35",
+          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(base64 < hostile-work/forged.sig | tr -d '\\n')\" --arg kid \"$kid\" \\",
+          "line_sha256": "da931bdf2d5804511057f5fbaa354488b2095eaa854c58d6a2db0666e3ebb052",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         },
@@ -217,13 +233,13 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "726e3016604e4971aec8e5e69f266cc200e5aed19df11bf567b349c483b94750",
+      "sha256": "6579d4bdd52b9f26e0bafc2474ecd54847b48baf98bc738f0b8198dd6c3578aa",
       "tools": [
         "at"
       ],
       "runs": [],
       "signs": false,
-      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+      "reason": "imported by chain-verify.py: the hostile judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
     },
     {
       "path": "bin/chain-bytes-sha.py",
@@ -280,7 +296,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
     },
     {
       "path": "bin/witnessed.sh",
@@ -300,7 +316,53 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
+      "sha256": "0b95fcac85c4e52273299b557d78fb9677bb2ec1901a137bb3ebe22dc879dccd",
+      "reads_env": [
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
+      ],
+      "arg_map": {
+        "release-verify": "bin/release-verify.sh",
+        "release-apks": "bin/release-apks.sh",
+        "release-publish": "bin/release-publish.sh",
+        "release-sign": "bin/release-sign.sh",
+        "release-assets": "bin/release-assets.sh",
+        "release-postverify": "bin/release-postverify.sh"
+      },
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
+        },
+        {
+          "rule": "witness-target",
+          "text": "timeout -k 20 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout -k 20 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/chain-test-shape.py",
+          "why": "a comment naming the helper that judges this file's exact text; it is never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/witnessed-local.sh",
+      "tools": [
+        "bash",
+        "git",
+        "openssl",
+        "script",
+        "timeout",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -319,38 +381,55 @@
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
-        "release-verify": "bin/release-verify.sh",
-        "release-apks": "bin/release-apks.sh",
-        "release-publish": "bin/release-publish.sh",
-        "release-sign": "bin/release-sign.sh",
-        "release-assets": "bin/release-assets.sh",
-        "release-postverify": "bin/release-postverify.sh",
         "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
-          "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
-        },
-        {
           "rule": "witness-target",
-          "text": "timeout -k 20 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout -k 20 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+          "text": "timeout -k 20 540 bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2: the wrapped build runs under timeout -k 20 540; the target is one of the arg_map scripts, bound by the stage line"
         },
         {
           "rule": "script-name",
           "text": "bin/chain-test-shape.py",
-          "why": "a comment naming the helper that judges this file's exact text; it is never run from here"
-        },
-        {
-          "rule": "deny",
-          "line": "if [ \"$step\" = release-sign ]; then sig=$(sh bin/loopback-get.sh -sSf -H \"Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN\" \"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore\" | jq -r .value); [ -n \"$sig\" ] && [ \"$sig\" != null ] || { echo \"witnessed: no identity token for release-sign\" >&2; exit 1; }; echo \"::add-mask::$sig\"; export SIGSTORE_ID_TOKEN=\"$sig\"; fi",
-          "line_sha256": "3354f0851eada9aac8c6906ec43f0852375173efb379d52453d0f685475c9cbf",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a comment naming the judge of this file's exact text; it is never run from here"
         }
       ]
+    },
+    {
+      "path": "bin/witness-sign-staged.sh",
+      "tools": [
+        "bash",
+        "cp",
+        "make",
+        "mkdir",
+        "python3",
+        "script",
+        "sh"
+      ],
+      "runs": [
+        "bin/loopback-get.sh",
+        "bin/chain-verify.py"
+      ],
+      "signs": "other",
+      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
+      "sha256": "1fdd8eaf6aa2cc24bd61c77f5a88a79454ca828b951cf3618956ce7b692dab2e"
+    },
+    {
+      "path": "bin/rebuild-records-digests.sh",
+      "tools": [
+        "basename",
+        "bash",
+        "cut",
+        "grep",
+        "jq",
+        "openssl",
+        "sed"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the lists of the records Rebuild's jobs made (REQ-CHAIN-005-AC4): each apk job prints its own leg after its Witness step (--rapk), the assemble job checks both legs against the folders BEFORE its Witness step (--check: any difference, extra or missing file, empty or invalid output is refused) and prints the whole list after it; the text leaves a job as a job output and Sign refuses any folder that differs; reads and prints, writes nothing, builds nothing",
+      "sha256": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49"
     },
     {
       "path": "bin/build-stage-apk.sh",
@@ -365,7 +444,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "8a0dd834bf709677c2d79218ef4ccd2bcf1de6de7c1ab0454b9c936ebb1d5756",
+      "sha256": "def62ef70604658d4bf69113c02577addeedf7797e5da98754bce548fad6b96e",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -386,7 +465,7 @@
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "b8204607679e636797bedaeae874a22aa2e3240149101b66814b1b5804a7a370"
+      "sha256": "b07a7d56a6c1c37e6bb86cb5143b16d329cf9e966b25b843fa14d1552758c3c0"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -400,7 +479,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "54324ab757e81752da108e53eb4eb9de4a483705b801199f8f1794785d8b9e3d"
+      "sha256": "7a1d4667a1e7e46f02278f6d8b221b062d43aa9d6f03b67ddaa0963004ad2bc5"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -417,7 +496,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "2d6917aed16eda8d043c69d66ab16cd41d2a167d577b05940306f3369307ae2e"
+      "sha256": "572adc34d48b285fcb2bb6a884bec99b2377b198a1064efa64565f69e3ad709f"
     },
     {
       "path": "bin/build-admit.py",
@@ -475,7 +554,7 @@
       ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
-      "sha256": "dadf64fc26c32813a4cca0028981006b8294226ab2fef7830f50f5e45a704dbc",
+      "sha256": "a25d175c03b3076ef2d9fc550de8acf578d6be3cf3ac24b25fdf156d30659c08",
       "env_mentions": [
         {
           "name": "PATH",
@@ -486,6 +565,15 @@
           "name": "PATH",
           "text": "`go version -m PATH`",
           "why": "a docstring naming the path operand of go version -m; nothing is set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GO_TOOL = \"/usr/local/bin/fscache-go/bin/go\"  # TEST-SUBST",
+          "line_sha256": "0e226c4829cd0f5e3fec00fe7a6c559176fefe5563112a733da3f81a1db719ce",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); the version check reads the buildinfo with exactly this go in a closed environment, never the runner's"
         }
       ]
     },
@@ -516,7 +604,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "629e13abc2d7b885e631ffaeae089a2609f3d65aeae940d29386cc7529ef2909"
+      "sha256": "5bd31680dc7cc66eafda3d5cae3fbaa0f28432adfc8a499ce7ee622699f23dae"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -564,7 +652,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "50c16ff497e10b995d846c5fe7ba74ce5a3e97fd921e0efcd5f256fe64cd62ee"
+      "sha256": "fd57429dcae7f905a50d4ed580066a5b8a52fed0fc765ee2ede38cff43f0ad26"
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
@@ -613,7 +701,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "64392922a2d944a139c2c585b8e86cff0934bab6203c0e9362f1aa24865d0bd4"
+      "sha256": "45fe2941df5fcadcb111c3fb2279ef4282576671b12db93c5b1c8410268b8d45"
     },
     {
       "path": "bin/admission-tag-signer.py",
@@ -669,14 +757,15 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "50c24d360d311fa88bfba26fc2734c5e2622319bf1d966623aa6aa171bb888c4",
+      "sha256": "5fa2ab1c2d4cf32e29832d0a24f2fb910b752e812d108ba85449b4e219e5cb8f",
       "tools": [
         "env",
+        "go",
         "source"
       ],
       "runs": [],
       "signs": false,
-      "reason": "Check's Go scan of the module's code: `govulncheck -json ./...` in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the pinned Go first on the tool's search path), the stream written unchanged to check-results/govulncheck.json, a called symbol fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs",
+      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, its GOFIPS140 selection; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with the FIPS recipe's GOFIPS140 selection on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
       "env_mentions": [
         {
           "name": "PATH",
@@ -687,8 +776,9 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "ff28939bc293f498968880832fdef0715594340f9d3c09e6f8a9f2cb9da4bf5c",
+      "sha256": "fc0300fd53f7bcf2376d4759217e59512495dcd3500aabf84f925d2ffd7b6dea",
       "tools": [
+        "bash",
         "find",
         "python3",
         "script",
@@ -700,7 +790,8 @@
       "runs": [
         "bin/check-osv-db.py",
         "bin/check-bind.py",
-        "bin/check-osv-vex.py"
+        "bin/check-osv-vex.py",
+        "bin/layout-archive.sh"
       ],
       "signs": false,
       "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)",
@@ -737,20 +828,6 @@
           "rule": "deny",
           "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
           "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    if [ -n \"${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:-}\" ]; then",
-          "line_sha256": "1a4a1219de6345a09bc7fe13eb2fcb5e4605a3f28fcb61aa972aa020e6951407",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "      if [ -n \"$(find \"$osvcache\" -mindepth 1 -print -quit)\" ]; then",
-          "line_sha256": "4a3a47eac2c5b5eb85d6b5aef7ca16519682386af3cd44bbc37240b197cbe2b3",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -800,7 +877,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
+      "sha256": "5f021d2ae72110ec0ac030d9a216a9c0fd4da01c33591282441b150315ce77f0",
       "tools": [
         "curl",
         "docker",
@@ -820,7 +897,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "e4e68f95fd045da4878c68f71298306367f884143b12a420ec5af2d6151e7647",
+      "sha256": "1bd55a2be1e76399546deb4379e01a142993c0c215a8e215b580911a591617d0",
       "tools": [
         "bash",
         "docker",
@@ -906,7 +983,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "6b4b3e150a8f562715f8b882a2e7fe67f4c06b4d846e2f5ca8fb0a0363961290",
+      "sha256": "c1c96768f690f949da407538f664c7b35b4b80d3b9139c4baa3ccfb985d04f14",
       "tools": [
         "at",
         "awk",
@@ -1010,7 +1087,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "aab318ef556e89bc9b4871be6cf4458fc5eb81c562f0af56b0425e8d4c71d1ee",
+      "sha256": "ef70a1c5a204629bc7a96d82c9043012b185c53b98938f07f59cb377c0ddacf6",
       "tools": [
         "awk",
         "bash",
@@ -1137,7 +1214,7 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "92c39c7c22f4c04c7910a0b0f110e0da7acaa7f97961757d9765d161c0505324",
+      "sha256": "bd10fd3badd0a4f8fe1ba9e014446266b9adf02de8b4d5e319cc968fde7407ae",
       "tools": [
         "awk",
         "bash",
@@ -1147,55 +1224,11 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  | awk '/^fscache_http_requests_total\\{method=\"PUT\",status=\"201\"\\}/ {print $2}')",
-          "line_sha256": "f0fcb28faa75f71b31dc4fa3965c8680b034e1bd8f232e573f107bfe992221a4",
-          "count": 2,
-          "why": "closes the multi-line command substitution that reads the PUT counter: curl piped into a single awk program (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${puts:-0}\" -eq \"$COLD_UPLOADS\" ] || { echo \"::error::cold uploads ${puts:-0}, expected $COLD_UPLOADS\" >&2; exit 1; }",
-          "line_sha256": "44dd04552af742d6bbcc29c14dc5639dc48e00f696c7127ba3baa17d36836aff",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${gets404:-0}\" -eq \"$COLD_LOOKUPS\" ] || { echo \"::error::cold lookups ${gets404:-0}, expected $COLD_LOOKUPS\" >&2; exit 1; }",
-          "line_sha256": "d92bb12f28aa9608e295228ff6fb200d52a40620333cff7603536283ae215319",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${restored}\" -eq \"$MODULES\" ] || { echo \"::error::${restored} modules restored, expected $MODULES\" >&2; exit 1; }",
-          "line_sha256": "92fc57117f1467ac5102f1ac34972671846f2bade9cf83e15cda328e0f66384d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${hits:-0}\" -ge \"$MODULES\" ] || { echo \"::error::server saw ${hits:-0} hits; the restore did not come from the remote\" >&2; exit 1; }",
-          "line_sha256": "58609ec6e0175d5da421d0c1fe2d985efbb47bf87e5d2609314857d38584c7a3",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${after_puts}\" -eq \"${before_puts}\" ] \\",
-          "line_sha256": "a528cf832d34cf784018a64edaada31e99ad4fd605f03b0ae2eff86cd53006a9",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
+      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "9d5136ab1a7a16188e4e66553fe53fef7ec927560086aac83d0698722ca4266e",
+      "sha256": "5afe2ee9a14d189953385b36f9a0c7ffbbf32f383b2e7ea17b7fdb0e4fecbd84",
       "tools": [
         "awk",
         "bash",
@@ -1204,48 +1237,11 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  -I \"http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar\")",
-          "line_sha256": "3ffc3b617c8b70ffa265f7a03429db49afd26e0e558abcc81bba0a1d86286602",
-          "count": 1,
-          "why": "closes the multi-line curl command substitution that reads a response header of the app jar (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "  --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)",
-          "line_sha256": "7d1cb3e324b12c8b9b18ffec5de18928ac107f109b4687bce495e9a8e8e43783",
-          "count": 1,
-          "why": "closes the multi-line curl command substitution of the oversized probe (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$app_key_a\" = \"$app_key_b\" ] \\",
-          "line_sha256": "bc7db97612f4e5adc4b3f2a1b29f531d4bac194fedaefb32d294c2839495fdd5",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$app_code\" = \"404\" ] \\",
-          "line_sha256": "c67b142474d9c5069066855aa1707340c2190fbc23b06bdad40984737e46a8f7",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$code\" = \"404\" ] || { echo \"::error::rejected entry is retrievable (${code}) - it was stored\" >&2; exit 1; }",
-          "line_sha256": "589135d0238723b23ca8b4372ee422098dc0d8d6043e1d322d0d4214005e66e2",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
+      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "2cb48402757c20362f4b6c3efa4dbbe5332b66e25e6c01c53972cf2206360119",
+      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
       "tools": [
         "at",
         "awk",
@@ -1365,7 +1361,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "559d11a534978607c3176b899c64239e20127dc9e0a7a4a1da114b5fe19087a9",
+      "sha256": "492fa6c7eda66c28d0a0305ad2e6b588ddbc1eac6a60551863e0533ef41ad265",
       "tools": [
         "at",
         "bash",
@@ -1385,7 +1381,6 @@
       "runs": [
         "bin/acceptance-k8s-manifests.py",
         "bin/acceptance-k8s-smoke.py",
-        "bin/install-kind.sh",
         "bin/loopback-get.sh"
       ],
       "signs": false,
@@ -1405,7 +1400,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "26f711ac440240a0baa0057bb5fa0c6b4b4602f20ebd0c5b110a5f2b8dc5acc7",
+      "sha256": "27093e3c59ebd2f42dec74c96ec30d803e81a82bf474301062b94ece902f1a2a",
       "tools": [
         "curl",
         "docker",
@@ -1429,29 +1424,6 @@
       ]
     },
     {
-      "path": "bin/install-kind.sh",
-      "sha256": "f4e7f3e861fdcb46086f6118d2ef3dcdc8934d0442c721f22c69cd0f2c30fc18",
-      "tools": [
-        "curl",
-        "docker",
-        "kubectl",
-        "node",
-        "trap"
-      ],
-      "runs": [],
-      "signs": false,
-      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "[ \"$(uname -s)-$(uname -m)\" = Linux-x86_64 ] || { echo \"install-kind: only linux amd64 is pinned (the Check runner is ubuntu-24.04)\" >&2; exit 1; }",
-          "line_sha256": "af6d30eba1ea58ca8a9c0c6e505928a618923927c3bb79e95e4e1e695719e779",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
-    },
-    {
       "path": "bin/check-guide-plan.py",
       "sha256": "1fe025098c384974dfcf3e1df0503fb01080b3d9bba40c8acfe040f8a8f2bd8d",
       "tools": [
@@ -1468,7 +1440,7 @@
     },
     {
       "path": "bin/check-osv-db.py",
-      "sha256": "3f2533f0e296d7e87eebe1940eded34a727b8aa284b2e35d410881002501486e",
+      "sha256": "5c76cb9a4fb513345d2db6eb0cd80f50aa7e5b1a13640c2c167336729a8cebcd",
       "tools": [],
       "runs": [
         "bin/check-scan.sh"
@@ -1586,7 +1558,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "276a2b27707d86698c23c6b17d4d11cf87614e07016cd438e4dcec73a2d8b6d4",
+      "sha256": "e638d4892f4f6cdf5ba3c93a769d72e65a1c0d286deaaf58a7f058c41f079a45",
       "exceptions": [
         {
           "rule": "deny",
@@ -1617,7 +1589,7 @@
         "bin/release-sign-apks.sh"
       ],
       "signs": "other",
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (melange sign of Build's apks only; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
       "sha256": "bb859d4254e1d4cced43922b4c381be86e6a723fd4ef3bb515b496bec2e4828f",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
@@ -1673,7 +1645,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "7562be1b5cbcd9d57a051d309ba07dfad02ccee935e817bb6e645052b29fb8b3",
+      "sha256": "8f568f99ac6e0a2abe16191bfac624ee88a9aee1835351f2831c0d16771308b8",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1707,13 +1679,6 @@
           "line_sha256": "1ef923e0855bd10ef7f6ad6275a077edae3c38f8a0fe88aabd831c065b0a679e",
           "count": 2,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  if [ \"$highest\" = \"$ver\" ]; then plan+=(\"production:${ver%%.*}\" \"production:latest\"); fi",
-          "line_sha256": "28601330ec12bb7daf5fe62e79a6cf8390227cc8b80121dfdf862ca888e98398",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -1855,7 +1820,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "2b706582f3d46ec1f22e0ebda52f0878376c75e77ccf36212054f58b41e84f9b",
+      "sha256": "c55e049c80aa4a2d0873d6eae090793ba132ec5630b7544cf0194b405ab76d4d",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1883,7 +1848,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "8a030a98d013b754c5c8e9806bac1c98e1adf4cdced1ca71aaa17516a5f42b76",
+      "sha256": "f0f2083bca437f02dece6af7dce3fb03bd40d9f5e667c4fe0bbc236949e96a46",
       "env_mentions": [
         {
           "name": "ENV",
@@ -1912,7 +1877,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "32b419557df99ec925b50b9e2b36bf7bd5048a111e93cf177209721eaffd43b6",
+      "sha256": "efbd2bb935a223d4abb4b26ff6ac78f72a3758c1f1f959a9ac7798bcbb19881f",
       "exceptions": [
         {
           "rule": "deny",
@@ -1961,7 +1926,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
+      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
       "tools": [
         "at",
         "curl",
@@ -1984,8 +1949,8 @@
       "exceptions": [
         {
           "rule": "deny",
-          "line": "stop_last() { kill \"${pids[${#pids[@]}-1]}\" > /dev/null 2>&1 || true; }",
-          "line_sha256": "0d964a14c5ea1af0f5292642809f0f8f615d89eb2394e012d043d5a2ff4b6677",
+          "line": "stop_last() { stop_pid \"${pids[${#pids[@]}-1]}\"; }",
+          "line_sha256": "bf7dd9a233e62c2ae4256e92705e3b58197d21da1646f34f48717022a8efccbd",
           "count": 1,
           "why": "a plain parameter expansion of an array element: ${pids[${#pids[@]}-1]} is the last element of pids, the nested ${#pids[@]} is a length (REQ-CHAIN-001-AC1: a subscript NAME[ ... holding a substitution is refused unless waived here)"
         },
@@ -2032,7 +1997,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
       "tools": [],
       "runs": [
         "bin/chain_items.py"
@@ -2042,7 +2007,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "sha256": "3980fc06bf599e35e945a30419727006e9dffe825dd41695b881f45503be9711",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
@@ -2052,7 +2017,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
+      "sha256": "7102fb6b83d6b2cf4c444ec35e01144daa92b6305b75f9b49d1165785e93f1d2",
       "tools": [
         "at",
         "gh",
@@ -2095,12 +2060,14 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "25a0cdba9df3466d04296a8da3e3883961f280fbc8a8f6ea3b90be48eeb828d1",
+      "sha256": "ec4c3549b7bece428ea93db4bba00e03a00a2e9b2a242f3675fbc0d445e871e6",
       "tools": [
         "at",
         "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     },
@@ -2175,7 +2142,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "f589caa84302a03c3772cb2d315eba0bd53e525da99d67af60e17eaa057a8d0d"
+      "sha256": "6885b20ca04340219a59d92b35d6741aae93b177acb24567ee737fe24027bf2f"
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2190,8 +2157,8 @@
         "bin/apk-tool.py"
       ],
       "signs": "other",
-      "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "42201bbb58cffc49f69e06c385534e931ae25a85ad5c3b0178ead644e2b9022b",
+      "reason": "cache P4's release signing: re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "ba3c434fe1d2162e61a797907e487fe9f31fcbfe237cc0e9f4e7599efee6876f",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2210,51 +2177,37 @@
         },
         {
           "rule": "deny",
-          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] || die \"--key must be a file named release.rsa: melange names the signature after the key file, and the committed public key is build/keys/release.rsa.pub\"",
-          "line_sha256": "778607070774d4ea884498a62ba3d2b4a3e2d4a7298f6e90cf309f3a7409557a",
+          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] ||",
+          "line_sha256": "8edde846c25cb6d9bdc4d9a3363070a5509b1e5b2a8a9689dfc27e7017734d39",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $orig_a\"",
-          "line_sha256": "0c465c41778098158f8fc325dcca5187f8b3bc1bc494e1d9580370a5f2a40eb1",
+          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $build_dir\"",
+          "line_sha256": "c1d6baed7abf8eabb6177604f72b5eac4945f97ecf55d071db51797af175c7fd",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$orig_a/$rel\")\" = release.rsa.pub ] || die \"after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory\" 1",
-          "line_sha256": "d17bc0110e83028ab9a33ed16e1a69e6952ccefe1bed960dfc50d36ff778fb5e",
+          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; $kept\" 1",
+          "line_sha256": "04f704f7e54ef983d81b05f55c4d3d78825fe1a0bac1cd59c045126abaff9eb9",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ -z \"$ctl\" ] || die \"a file name under $d holds a control character (newline or other): ${ctl#\"$d\"/}; refusing (a name is never split into two)\"",
-          "line_sha256": "c5cb77bf9ce3302712e5cbd2e35204d6da817856f598354be4a49a90e534284d",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$build_dir/$rel\")\" = release.rsa.pub ] ||",
+          "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed\" 1",
-          "line_sha256": "cdafaca2bb8feae6f3ade2acaf46d44da378429425627d9e632f9dea6f5ffa44",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$sg\" = assembly.rsa.pub ] || die \"${rel#./} is signed by '$sg', not assembly.rsa.pub: Build must carry the assembly key's signature\"",
-          "line_sha256": "9cacb3ed41ec99346374fd13c3795d92b178c5879a712400904164141a2a8e70",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         }
       ],
       "env_mentions": [
         {
           "name": "PATH",
-          "text": "r = subprocess.run([sys.argv[2], \"rsa\", \"-pubout\", \"-passin\", \"pass:\"], input=block.encode(), capture_output=True, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "text": "child_env = {\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"}",
           "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
@@ -2284,7 +2237,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "5136b1ef162888a4637e4f766eeff9a79762d72bf11e7b1f7ad5008a5c68e6d7",
+      "sha256": "d4a5b950ee47a116b69b199636d78085d77f2cf91b77dce0cf58f24ec658ca05",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2403,8 +2356,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ \"$fipsvals\" = \"GOFIPS140=v1.0.0-c2097c7c\" ] || die \"the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})\" 1",
-          "line_sha256": "d702c5f2fa63ec57010d630e165a2576ab4b77be29cbaf20885a78a771b5c05b",
+          "line": "  [ \"$fipsvals\" = \"$fipswant\" ] || die \"the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})\" 1",
+          "line_sha256": "b683d12502b5ba1ff41a702cc87c40c38a0ed7bbe677193a20ecebed8abadec5",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -2651,7 +2604,8 @@
         "wc"
       ],
       "signs": false,
-      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)"
+      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)",
+      "runs": []
     },
     {
       "path": "bin/release-compare.sh",
@@ -2667,20 +2621,73 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "561e4059bd2c99dc9af3d4a71361be72a610c687d7e6fcb327f923feaa988589",
-      "tools": [],
+      "sha256": "ee65db258704b1a243eb01e9d500ebff5711df460180b7a376aa2e18b0466a38",
+      "tools": [
+        "make"
+      ],
       "runs": [
-        "bin/apk-tool.py"
+        "bin/apk-tool.py",
+        "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
+    },
+    {
+      "path": "bin/pack-govulncheck.sh",
+      "sha256": "8a982c3a166e9603f68fad21ede4942242ed785c6be5ca76c80924f0800722eb",
+      "tools": [
+        "install",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "govulncheck-build's last step: places the built govulncheck where the job uploads it from (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/unpack-govulncheck.sh",
+      "sha256": "e4284194b78c956631fd518b61a44e18dd6e15e5261096c0614deb5dfa3fe56e",
+      "tools": [
+        "install",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Check installs the govulncheck the credential-free govulncheck-build job built, after download-artifact's digest check (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/check-records-digests.sh",
+      "sha256": "c688699f949e46cfe8e4613754161f519e4b12c3dadb7b8f791097159a3feb49",
+      "tools": [
+        "basename",
+        "jq",
+        "openssl"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "a Check job's list of the records it made, as a job output Sign compares with what it receives (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/layout-archive.sh",
+      "sha256": "7836f557cfa126a2b09d3bed57aa883591ed82f6fe3e0d7b8037db4b74b2ce6f",
+      "tools": [
+        "awk",
+        "cp",
+        "jq",
+        "mktemp",
+        "sha256sum",
+        "tar",
+        "trap"
+      ],
+      "signs": false,
+      "runs": [],
+      "reason": "the one builder of the docker-save tar of an OCI layout's linux/ARCH image, which check-scan.sh gives to the scanners: it copies each blob to a private stage, re-hashes it and packs only the config and layers (REQ-CHAIN-006-AC4)"
     }
   ],
   "ambient_env": [
     {
       "name": "GH_TOKEN",
-      "script": "bin/witnessed.sh",
-      "why": "the Witness wrapper receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
+      "script": "bin/witnessed-local.sh",
+      "why": "the Witness wrapper of the building steps (bin/witnessed-local.sh) receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
       "file": ".github/workflows/stage-build.yml",
       "job": "apk"
     },
@@ -2798,6 +2805,41 @@
       "id": "digests",
       "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "assemble",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild's records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "rapk",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "rapk-arm",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
+    },
+    {
+      "file": ".github/workflows/stage-verify.yml",
+      "job": "check",
+      "id": "records",
+      "run": "r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-REL-011-AC1: the Check job lists its records (witness-scanners, witness-acceptance, witness-runtime) as a stage output for Sign; the reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-verify.yml",
+      "job": "check-arm64",
+      "id": "records-arm64",
+      "run": "r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-REL-011-AC1: the arm64 Check job lists its record (witness-arm64) as a stage output for Sign; the reviewed write into the job outputs"
     }
   ]
 }
