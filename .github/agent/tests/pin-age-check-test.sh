@@ -4235,6 +4235,50 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
+CASE="owner rule 1: a changed trigger MOVES a variable placeholder; a changed paths filter does not"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1])
+inv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inv)
+def wf(on, run='docker run --rm "$IMAGE" true', env="alpine:3.20", jobenv="", top=""):
+    steps = "    steps:\n      - env:\n          IMAGE: " + env + "\n        run: " + run + "\n"
+    return {".github/workflows/a.yml": top + "on:\n" + on + "jobs:\n  j:\n" + jobenv + steps}
+base = "  push:\n    branches: [main]\n  pull_request:\n"
+def moved(a, b):
+    """the placeholder (variable image) itself is among the items the head adds"""
+    return [i.key for i in inv.moved(inv.inventory(a), inv.inventory(b)) if "(variable)" in i.key]
+def moves(label, a, b): assert moved(a, b), label + ": must move the placeholder"
+def still(label, a, b): assert not moved(a, b), label + ": must move nothing"
+# a changed paths filter chooses whether a run happens, never what it fetches
+still("paths filter added", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    paths: [bin/**]\n")))
+still("paths-ignore changed", wf(base + "    paths-ignore: [a]\n"), wf(base + "    paths-ignore: [b]\n"))
+# every other trigger change moves it
+moves("merge_group added", wf(base), wf(base + "  merge_group:\n"))
+moves("branch filter", wf(base), wf("  push:\n    branches: [main, dev]\n  pull_request:\n"))
+moves("types filter", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    types: [opened]\n")))
+moves("event removed", wf(base), wf("  push:\n    branches: [main]\n"))
+moves("cron-only change", wf("  schedule:\n    - cron: '0 1 * * *'\n"), wf("  schedule:\n    - cron: '*/5 * * * *'\n"))
+ref_run = 'docker run --rm "${{ github.ref_name }}" true'
+moves("tags filter read via ref_name",
+      wf("  push:\n    tags: ['v1.*']\n", run=ref_run), wf("  push:\n    tags: ['*']\n", run=ref_run))
+moves("repository_dispatch added", wf(base), wf(base + "  repository_dispatch:\n    types: [scan]\n"))
+call = lambda v, out="a": ("  workflow_call:\n    inputs:\n      image-ref:\n        default: " + v
+                           + "\n    outputs:\n      image:\n        value: ${{ jobs.j.outputs." + out + " }}\n")
+disp = lambda v: "  workflow_dispatch:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
+moves("workflow_call input default", wf(call("a")), wf(call("b")))
+moves("workflow_dispatch input default", wf(disp("a")), wf(disp("b")))
+moves("workflow_call output mapping", wf(call("a", "a")), wf(call("a", "b")))
+# the step's own text, its env value (two tag-only values: the placeholder itself moves), the job env and the
+# workflow env still move it
+moves("env value", wf(base, env="alpine:3.20"), wf(base, env="alpine:3.21"))
+moves("step text", wf(base), wf(base, run='docker run --rm "$IMAGE" false'))
+moves("job env", wf(base), wf(base, jobenv="    env:\n      X: y\n"))
+moves("workflow env", wf(base, top="env:\n  X: y\n"), wf(base, top="env:\n  X: z\n"))
+# a scalar or list `on` is unchanged, and nothing changed moves nothing
+still("nothing changed", wf(base), wf(base))
+PY2
+
 
 # --- REQ-SUP-001-AC34: a file pin (a checksum file for an upstream artifact) is dated by a ruling row of the BASE branch's exceptions file: {file, content, upstream, version, published} ---
 FPFILE=.github/policy/gradle-wrapper-jar-sha256.txt

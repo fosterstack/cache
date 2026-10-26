@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build's Linux archives (PROPOSED/UNVERIFIED layout, REQ-PLAT-001): the four tar.gz files Release publishes, made from the melange repo's apks.
+"""Build's Linux archives (REQ-PLAT-001): the four tar.gz files Release publishes, made from the melange repo's apks.
 
   build-archives.py --melange-repo DIR --version V --out DIR      (V is the tag minus the leading v; SOURCE_DATE_EPOCH is read from the environment)
 
