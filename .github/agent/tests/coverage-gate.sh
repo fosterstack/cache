@@ -41,14 +41,14 @@ bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
 tail -1 "$W/shardtest.log"
 PINS_DRY=1 bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.manifest" 2>/dev/null \
   || { echo "::error::could not list the action-pin units" >&2; exit 1; }
-bash .github/agent/tests/unit-shards.sh "$W/unit" > "$W/unit.log" 2>&1 & p_unit=$!   # the parser unit tests as UNIT_SHARDS (4) parallel shards under coverage; every shard's exit status is checked and unit-shard-sum.py proves every test finished once
-bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 & p_matrix=$!
+( bash .github/agent/tests/unit-shards.sh "$W/unit" > "$W/unit.log" 2>&1; rc=$?; echo "gate-time unit $SECONDS rc=$rc" >&2; exit $rc ) & p_unit=$!   # the parser unit tests as UNIT_SHARDS (4) parallel shards under coverage; every shard's exit status is checked and unit-shard-sum.py proves every test finished once
+( bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1; rc=$?; echo "gate-time matrix $SECONDS rc=$rc" >&2; exit $rc ) & p_matrix=$!
 p_pins=()
 for i in $(seq 0 $((PINS_SHARDS-1))); do   # row 78: the action-pin checker's fixture cases (it lives here so its changes need the independent second review)
-  PINS_SHARD=$i/$PINS_SHARDS bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.$i.log" 2>&1 & p_pins+=($!)
+  ( PINS_SHARD=$i/$PINS_SHARDS bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.$i.log" 2>&1; rc=$?; echo "gate-time pins$i $SECONDS rc=$rc" >&2; exit $rc ) & p_pins+=($!)
 done
 # the k8s harness's fenced exclusion (advisor 0084): its refusals are branches of the same checker
-bash .github/agent/tests/k8s-harness-fence-test.sh > "$W/fence.log" 2>&1 & p_fence=$!
+( bash .github/agent/tests/k8s-harness-fence-test.sh > "$W/fence.log" 2>&1; rc=$?; echo "gate-time fence $SECONDS rc=$rc" >&2; exit $rc ) & p_fence=$!
 bad=0
 wait "$p_unit" || { cat "$W/unit.log" >&2; echo "::error::parser unit tests failed under coverage" >&2; bad=1; }
 wait "$p_matrix" || { grep -A2 '^FAIL' "$W/matrix.log" >&2; tail -1 "$W/matrix.log" >&2
@@ -64,6 +64,7 @@ python3 .github/agent/tests/coverage-shard-sum.py "$W/pins.manifest" "$W"/pins.[
   || { echo "::error::the action-pin shards did not run the whole list exactly once" >&2; exit 1; }
 tail -qn1 "$W"/pins.[0-9].log
 tail -1 "$W/fence.log"
+echo "gate-time before-combine $SECONDS" >&2
 python3 -m coverage combine -q
 python3 -m coverage json -q -o "$W/coverage.json"
 python3 .github/agent/tests/coverage-check.py "$W/coverage.json" .github/agent/coverage-exclusions.txt \
