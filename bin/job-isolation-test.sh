@@ -263,10 +263,12 @@ PY
 }
 check() { local name=$1 want=$2 dir=$3 out rc=0
   out=$(judge "$dir" 2>&1) || rc=$?
-  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } || { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }; then echo "ok   $name"
+  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } ||
+     { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }
+  then echo "ok   $name"
   else echo "FAIL $name (want $want, rc=$rc): $out"; fi; }
-# The cases do not depend on each other (each mutates its own copy), so they run four at a time. A case writes its one result
-# file; the end prints the files in call order and counts each file once, so a case that died without a line counts as failed.
+# The cases do not depend on each other (each mutates its own copy), so they run four at a time. A case writes its one
+# result file; the end prints the files in call order and counts each once, so a case that died without a line failed.
 slot() { seq=$((seq+1)); "$@" > "$work/r/$(printf %04d "$seq")" 2>&1 &
   while [ "$(jobs -r | wc -l)" -ge "${JI_JOBS:-4}" ]; do sleep 0.2; done; }
 mutate() { slot mutate_one "$@"; }
@@ -456,7 +458,9 @@ edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scan
 echo '{"scanners": ["grype"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "govulncheck"]}' > "$work/sc-bad.json"
 prgate_case() { local out rc
   out=$(ISO_SCANNERS="$work/sc-bad.json" judge "$root/.github/workflows" 2>&1) && rc=0 || rc=$?
-  if [ "$rc" != 0 ] && grep -Fq "pr_gate holds govulncheck" <<< "$out"; then echo "ok   a pr_gate list that holds govulncheck is refused (the matrix job would build it)"; else echo "FAIL a pr_gate list holding govulncheck passed or was mis-reported: rc=$rc $out"; fi
+  if [ "$rc" != 0 ] && grep -Fq "pr_gate holds govulncheck" <<< "$out"; then
+    echo "ok   a pr_gate list that holds govulncheck is refused (the matrix job would build it)"
+  else echo "FAIL a pr_gate list holding govulncheck passed or was mis-reported: rc=$rc $out"; fi
 }
 slot prgate_case
 # the Check stage hand-over: the build job, the output, and download-artifact's digest check left on
@@ -524,7 +528,11 @@ edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane
 
 wait
 pass=0 failn=0
-for f in "$work"/r/*; do cat "$f"; case $(head -n 1 "$f") in "ok   "*) pass=$((pass+1)) ;; *) failn=$((failn+1)) ;; esac; done
-[ "$(ls "$work/r" | wc -l)" -eq "$seq" ] || { echo "FAIL ran $(ls "$work/r" | wc -l) result files for $seq cases"; failn=$((failn+1)); }
+for f in "$work"/r/*; do
+  cat "$f"
+  case $(head -n 1 "$f") in "ok   "*) pass=$((pass+1)) ;; *) failn=$((failn+1)) ;; esac
+done
+files=$(ls "$work/r" | wc -l)
+[ "$files" -eq "$seq" ] || { echo "FAIL $files result files for $seq cases"; failn=$((failn+1)); }
 echo "job-isolation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
