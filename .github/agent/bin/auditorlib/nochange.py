@@ -77,7 +77,7 @@ def _evidence(v):
 
 
 PULL_CHECKS = {"pullable": _flag, "bump_attempted": _flag, "hold": lambda v: v in (None,) + HOLDS, "evidence": _evidence,
-               "lift_trigger": _text, "component_fixed": _text, "candidate_release": _text, "bump_result": _text,
+               "lift_trigger": _evidence, "component_fixed": _text, "candidate_release": _text, "bump_result": _text,
                "repo_version": _text, "base_release": _text}
 
 
@@ -177,7 +177,7 @@ def pull_record(ans):
 
 def settle(verdicts, pull, narr, incomplete):
     """what a run may leave for tomorrow. A run where any attempted model call ended without a cacheable result (a refusal, an error,
-    an answer outside the five categories or one the router cannot read, a budget or iteration stop, a narrative that was empty or
+    an answer outside the five categories or one the router cannot read, a token-budget stop, a narrative that was empty or
     disagreed with the record) is incomplete: it leaves nothing reusable, so the next run repeats its calls instead of treating a
     partial state as 'nothing to ask' (REQ-AUD-3 AC3, zero calls only on a complete state)."""
     return ({}, {}, None) if incomplete else (verdicts, pull, narr)

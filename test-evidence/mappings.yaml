@@ -406,6 +406,7 @@ mappings:
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
+      - { type: shell-test, ref: "bin/layout-archive-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
@@ -437,6 +438,15 @@ mappings:
   - ac: REQ-REL-004-AC9
     evidence:
       - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
+  - ac: REQ-REL-004-AC10
+    evidence:
+      - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }
+      - { type: inspection, ref: "The guard before every first use of skopeo, in these 3 jobs, spelled the same in each:" }
+      - { type: inspection, ref: "command -v skopeo > /dev/null || { echo \"::error::skopeo is not on this runner image\"; exit 1; }" }
+      - { type: inspection, ref: "auditor.yml: audit. main-candidate-rescan.yml: vex-attach, scout-root-cause." }
+      - { type: inspection, ref: "The scan and panel jobs that scan the candidate read a tar made by bin/layout-archive.sh and use no skopeo." }
+      - { type: inspection, ref: "No job installs skopeo. The job token reaches docker login only through env: GH_TOKEN," }
+      - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
@@ -460,6 +470,32 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
+  - ac: REQ-REL-012-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+  - ac: REQ-REL-012-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+  - ac: REQ-REL-012-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+  - ac: REQ-REL-012-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with all five checks" }
+  - ac: REQ-REL-012-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix (the record job's pinned shape and mutants) and the signed-commit unit tests (the audit/ lane guard)" }
+  - ac: REQ-REL-012-AC6
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose record case runs the sweep step with an old failure, with and without a record branch" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -896,6 +932,12 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-SUP-001-AC29
+    evidence:
+      - { type: inspection, ref: ".github/workflows/acceptance.yml: workflow_call has no inputs, and no step in either job runs a container image; reviewers read it (no coded check)" }
+  - ac: REQ-SUP-001-AC31
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC32
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-SUP-001-AC30

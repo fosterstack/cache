@@ -372,13 +372,17 @@ def _find_pr(ws, branch):
     return (q.stdout or "").strip(), None
 
 
-BASE_VEX, BASE_ITEMS = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"      # the two reviewed files the delivery merges into
+# the two reviewed files the delivery merges into
+BASE_VEX, BASE_ITEMS = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"
 
 
 def _fetch_base(ws):
-    """(sha, None) or (None, the failure text): ONE `git fetch origin main` (it changes no ref the workspace stands on) and the sha origin/main resolved to. The sha is what the base is read
-    at, what the delivery branch is cut from and what the signed commit is built on, so the validated bytes are the bytes merged into (cache#708 rulings 1, 2). A failure is handed down to the
-    delivery, which reports it and acquires nothing again: a second acquisition could find a base the first never validated, after an owner issue exists."""
+    """(sha, None) or (None, the failure text): ONE `git fetch origin main` (it changes no ref the workspace stands on)
+    and the sha origin/main resolved to. The sha is what the base is read
+    at, what the delivery branch is cut from and what the signed commit is built on, so the validated bytes are the
+    bytes merged into (cache#708 rulings 1, 2). A failure is handed down to the
+    delivery, which reports it and acquires nothing again: a second acquisition could find a base the first never
+    validated, after an owner issue exists."""
     r = subprocess.run(["git", "fetch", "origin", "main"], cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "git fetch: " + (r.stderr or "").strip()
@@ -390,8 +394,10 @@ def _fetch_base(ws):
 
 
 def _base_file(ws, sha, rel):
-    """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is not touched: the parsed JSON object the reader requires, None when the
-    base does not hold it (the first run; a file git reports as existing on disk but not in the base is absent at the base too: the workspace copy is never the base), or
+    """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is
+    not touched: the parsed JSON object the reader requires, None when the
+    base does not hold it (the first run; a file git reports as existing on disk but not in the base is absent at the
+    base too: the workspace copy is never the base), or
     ReviewedInputInvalid. git runs in the C locale because its messages are matched."""
     r = subprocess.run(["git", "show", sha + ":" + rel], cwd=ws, capture_output=True, env=dict(os.environ, LC_ALL="C"))
     if r.returncode != 0:
@@ -408,9 +414,11 @@ def _base_docs(ws, sha):
 
 
 def _preflight_delivery(out, supp):
-    """What _merge_suppressions reads of the files THIS run wrote (the consolidated VEX, the reopened-expired ledger, the accepted-items inventory), validated BEFORE
+    """What _merge_suppressions reads of the files THIS run wrote (the consolidated VEX, the reopened-expired ledger,
+    the accepted-items inventory), validated BEFORE
     `git checkout -B` touches the workspace (cache#701 ruling F3/B3: exit 3 never follows a mutating call)."""
-    _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))      # absent is the staging error _merge_suppressions reports; present must be the VEX object
+    # absent is the staging error _merge_suppressions reports; present must be the VEX object
+    _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     _read_reopened(os.path.join(out, ".auditor", "reopened-expired.json"))
     _read_reviewed_json(os.path.join(out, ".auditor", "accepted-items.json"))
 
@@ -475,13 +483,17 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
-    if base_err:                                          # run() tried to acquire the base before the first owner issue and failed: that failure is the delivery's, and nothing is acquired again
+    # run() tried to acquire the base before the first owner issue and failed: that failure is the delivery's, and
+    # nothing is acquired again
+    if base_err:
         return None, base_err
-    if base_sha is None:                                  # run() hands the validated sha down; a direct caller (neither given) acquires it here
+    # run() hands the validated sha down; a direct caller (neither given) acquires it here
+    if base_sha is None:
         base_sha, base_err = _fetch_base(ws)
         if base_err:
             return None, base_err
-    base_docs = _base_docs(ws, base_sha)                  # the belt: the base read again at the sha, with the run's own outputs, before anything touches the workspace
+    # the belt: the base read again at the sha, with the run's own outputs, before anything touches the workspace
+    base_docs = _base_docs(ws, base_sha)
     _preflight_delivery(out, supp)
     r = _git("checkout", "-B", branch, base_sha)          # off main => not stacked
     if r.returncode != 0:
@@ -524,7 +536,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if err:
         return None, err
     # the commit is made THROUGH THE API so GitHub signs it (main requires signed commits; a `git commit` is unsigned and left the PR BLOCKED)
-    oid, err = _signed_delivery(ws, branch, base_sha, title, changed)       # built on the validated sha, never on a ref that may have moved since
+    # built on the validated sha, never on a ref that may have moved since
+    oid, err = _signed_delivery(ws, branch, base_sha, title, changed)
     if err:
         return None, err
     if ex:
@@ -549,6 +562,91 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if automerge and url:
         return _arm_head(url)                    # a new PR is bound to the verified head too
     return url, None
+
+
+# rc-5b R1 (REQ-AUD-14 AC3/AC4): the lift trigger is {carrier, min_version, component, component_min_version} ("carrier
+# >= X embeds component >= Y"), validated by shape and compared with the SBOM's carrier version on
+# the daily recheck before the model is asked. A free-text trigger is no acceptance (the finding stays visible), exactly
+# like a missing one.
+_LIFT_KEYS = {"carrier", "min_version", "component", "component_min_version"}
+# matches 20.2, v1.1.1n, 3.0.9-1+deb12u1, 20.2~rc1; refuses soon, 20.2; rm, an Arabic-Indic digit string
+_LIFT_VERSION = re.compile(r"^v?[0-9]+(?:\.[0-9]+)*[0-9A-Za-z.+~:-]*$")
+
+
+def _lift_trigger(t):
+    """The normalized {carrier, min_version, component, component_min_version} of a well-formed trigger, else None."""
+    if not isinstance(t, dict) or set(t) != _LIFT_KEYS or not all(isinstance(v, str) for v in t.values()):
+        return None
+    out = {k: v.strip() for k, v in t.items()}
+    for name in ("carrier", "component"):
+        if not out[name] or len(out[name]) > 200 or any(ord(ch) < 32 for ch in out[name]):
+            return None
+    for ver in ("min_version", "component_min_version"):
+        if not out[ver] or len(out[ver]) > 64 or not _LIFT_VERSION.match(out[ver]):
+            return None
+    return out
+
+
+def _trigger_for(trigger, package):
+    """The well-formed trigger, only when it names the finding's own component (a trigger about another component is no
+    acceptance: the finding stays visible)."""
+    t = _lift_trigger(trigger)
+    return t if t and t["component"].lower() == str(package or "").strip().lower() else None
+
+
+def _version_key(v):
+    """(numbers, tail) for a version the trigger can order, else None. The tail is empty for a plain version,
+    ("l", n) for a lone letter (OpenSSL 1.1.1n) and ("r", rev, deb, u) for a Debian revision (3.0.9-1 or
+    3.0.9-1+deb12u1). Any other suffix (~rc1, +dfsg, a second letter) is not ordered here."""
+    m = re.match(r"^v?([0-9]+(?:\.[0-9]+)*)(.*)$", str(v or "").strip())
+    if not m:
+        return None
+    numbers, rest = tuple(int(x) for x in m.group(1).split(".")), m.group(2)
+    if not rest:
+        return numbers, ()
+    if re.fullmatch(r"[a-z]", rest):                       # matches n; refuses N, nn, 1
+        return numbers, ("l", ord(rest))
+    rev = re.fullmatch(r"-([0-9]+)(?:\+deb([0-9]+)u([0-9]+))?", rest)      # matches -1, -1+deb12u1; refuses -1~rc1, -a
+    return (numbers, ("r",) + tuple(int(x or 0) for x in rev.groups())) if rev else None
+
+
+def _version_ge(a, b):
+    """True/False when a >= b (20.10 > 20.2; 1.1.1n < 1.1.1w; 3.0.9-1 < 3.0.9-1+deb12u1), None when either is not a
+    version it can order: the model is asked then, as for an unreadable one."""
+    x, y = _version_key(a), _version_key(b)
+    if x is None or y is None:
+        return None
+    if x[1] and y[1] and x[1][0] != y[1][0]:               # a letter against a Debian revision has no order
+        return None
+    n = max(len(x[0]), len(y[0]))
+    pad = lambda numbers: numbers + (0,) * (n - len(numbers))
+    return (pad(x[0]), x[1]) >= (pad(y[0]), y[1])
+
+
+def _carrier_name(c):
+    """A carrier by its plain lower-case name, from `nodejs` or `pkg:deb/debian/nodejs@20.1?arch=amd64`."""
+    c = str(c or "").strip()
+    if c.startswith("pkg:"):
+        c = c.split("?", 1)[0].split("@", 1)[0].rsplit("/", 1)[-1]
+    return c.lower()
+
+
+def _trigger_state(trigger, carrier):
+    """'met' / 'unmet' when a well-formed trigger and the SBOM's record of the SAME carrier let the version be
+    compared, else 'unknown' (a legacy text trigger, another carrier, an unreadable version: nothing is
+    concluded and the model is asked as before)."""
+    t = _lift_trigger(trigger)
+    if t is None or not carrier:
+        return "unknown"
+    names = {_carrier_name(carrier.get("carrier")), _carrier_name(carrier.get("carrier_purl"))} - {""}
+    if _carrier_name(t["carrier"]) not in names:
+        return "unknown"
+    ge = _version_ge(carrier.get("carrier_version"), t["min_version"])
+    return "unknown" if ge is None else ("met" if ge else "unmet")
+
+
+def _trigger_text(t):
+    return "%s >= %s embeds %s >= %s" % (t["carrier"], t["min_version"], t["component"], t["component_min_version"])
 
 
 def _bump_target(fb):
@@ -774,7 +872,8 @@ def _merge_suppressions(ws, supp, base=None):
     newdoc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     if newdoc is None:                              # the run's own consolidated VEX must exist (as before: a missing file is a staging error)
         raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
-    existing = (base[BASE_VEX] if base is not None else _read_reviewed_json(vp)) or {}      # the delivery hands down the base documents it validated at the sha: the tree is not read again
+    # the delivery hands down the base documents it validated at the sha: the tree is not read again
+    existing = (base[BASE_VEX] if base is not None else _read_reviewed_json(vp)) or {}
     # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
     # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
     # same-scope statement — this run's or a carried one — has the same key and the incoming
@@ -903,18 +1002,22 @@ def _merge_suppressions(ws, supp, base=None):
 
 
 def _collect_vex(out, ts):
-    """Read every per-CVE VEX this run wrote and validate the merged document; writes nothing. Returns (document, statements). run() calls it BEFORE the first owner-decision issue
-    so a damaged per-finding VEX stops the run (exit 3) while nothing outside the run's own directory has been touched (cache#701 ruling F3/B3); _consolidate does the same read."""
+    """Read every per-CVE VEX this run wrote and validate the merged document; writes nothing. Returns (document,
+    statements). run() calls it BEFORE the first owner-decision issue
+    so a damaged per-finding VEX stops the run (exit 3) while nothing outside the run's own directory has been touched
+    (cache#701 ruling F3/B3); _consolidate does the same read."""
     vdir = os.path.join(out, "vex")
     try:
         names = sorted(n for n in os.listdir(vdir) if n.endswith(".openvex.json") and not n.startswith("."))
     except FileNotFoundError:
         names = []                                    # the run wrote no per-finding VEX
-    except OSError as ex:                             # unreadable, or not a directory: a stop, never "no statements" (glob turned it into an empty list)
+    # unreadable, or not a directory: a stop, never "no statements" (glob turned it into an empty list)
+    except OSError as ex:
         raise ReviewedInputInvalid("%s cannot be listed (%s)" % (vdir, type(ex).__name__))
     statements = []
     for n in names:
-        statements.extend((_read_reviewed_json(os.path.join(vdir, n)) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+        # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+        statements.extend((_read_reviewed_json(os.path.join(vdir, n)) or {}).get("statements", []))
     document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
                 "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
                 "statements": statements}
@@ -1526,7 +1629,14 @@ def _dispose(c, findings, aliases, env, would, name=None):
         carrier = _carrier_for(env.get("carriers"), _purls)
         base_hold = bool(env.get("base_policy_held"))
         pull = None
-        if (carrier or base_hold) and not gf["is_go"]:
+        # rc-5b R1: a carried structured trigger the SBOM's carrier version has not reached needs no model call (and no
+        # new verdict): the suppression is re-carried
+        carried_trig = _trigger_for(env.get("carried_lift_trigger", {}).get((c, this_scope)), gf["package"])
+        # a base-held scope can also lift through a base release the carrier says nothing about
+        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable",
+            set()) and carrier is not None and not base_hold
+                      and _trigger_state(carried_trig, carrier) == "unmet")
+        if (carrier or base_hold) and not gf["is_go"] and not trig_unmet:
             pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
                     "installed_version": gf["installed"], "component_fixed": gf["fixed"],
                     "purl": (subs or [None])[0], "carrier": carrier, "base": _stable_base(env.get("base")),
@@ -1538,7 +1648,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
         # risk ONLY when it carries a machine-checkable lift trigger (AC3). An incomplete verdict
         # ({"pullable": false} with no lift trigger) must NOT create a silent suppression — it falls
         # through to the normal fixable routing, so the finding stays visible (Codex R1 residual 3).
-        _not_pullable = bool(pull and pull.get("pullable") is False and (pull.get("lift_trigger") or "").strip())
+        _lt = _trigger_for(pull.get("lift_trigger"), gf["package"]) if pull else None
+        # a trigger the SBOM's carrier ALREADY meets contradicts "not pullable": no acceptance (the finding stays
+        # visible), never a suppression that reads "lifts when X" beside "carried at X or later"
+        _not_pullable = bool(pull and pull.get("pullable") is False and _lt and _trigger_state(_lt, carrier) != "met")
         if _not_pullable:
             hold = pull.get("hold") or ("policy-held" if (base_hold and not carrier) else "upstream-held")
             # An expired carried acceptance for THIS scope reopens into §3 BEFORE re-accepting — a
@@ -1553,7 +1666,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                            reopened_scope=[c, list(this_scope[0]), list(this_scope[1])])
                 return row, m_inc
             this_exp2 = _cexp or exp
-            lift_trigger = pull.get("lift_trigger") or ""
+            lift_trigger = _lt
             comp_fixed = pull.get("component_fixed") or gf["fixed"]
             ev = {"check": "fix-not-pullable", "hold": hold, "carrier": carrier,
                   "component": gf["package"], "installed": gf["installed"], "component_fixed": comp_fixed,
@@ -1576,7 +1689,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 cr_ver = (carrier or {}).get("carrier_version") or "?"
                 case = ("fix exists in %s >= %s; not pullable: carried by %s at %s; lifts when %s"
                         % (gf["package"], comp_fixed, cr_name, cr_ver,
-                           lift_trigger or ("%s embeds %s >= %s" % (cr_name, gf["package"], comp_fixed))))
+                           _trigger_text(lift_trigger)))
             in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
             reason = policy.threshold_reason(gf["severity"], in_kev, gf["known_exploited"])
             at = reason != "below"
@@ -1611,11 +1724,20 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 return row, m_inc
             hold = "policy-held" if (base_hold and not carrier) else "upstream-held"
             this_exp3 = _cexp or exp
-            cause = "adjudicator unavailable" if (carrier or base_hold) and pull is None else "carrier signal absent this run"
+            if trig_unmet:
+                cause = "lift trigger not met: %s at %s, below %s" % (
+                    _carrier_name(carrier.get("carrier") or carrier.get("carrier_purl")),
+                    carrier.get("carrier_version"), carried_trig["min_version"])
+            elif (carrier or base_hold) and pull is None:
+                cause = "adjudicator unavailable"
+            else:
+                cause = "carrier signal absent this run"
             # preserve the CONCRETE machine-checkable lift trigger from the prior acceptance rather
             # than a generic placeholder, so a deferred recheck does not lose the condition (Codex
             # round-2 P2). Falls back to a note only if none was carried.
             prior_trigger = env.get("carried_lift_trigger", {}).get((c, this_scope))
+            if _lift_trigger(prior_trigger) and not _trigger_for(prior_trigger, gf["package"]):
+                prior_trigger = None             # a structured trigger about another component is not carried on
             deferred_trigger = (prior_trigger if prior_trigger
                                 else "prior lift trigger stands (recheck deferred: %s)" % cause)
             ev = {"check": "fix-not-pullable", "hold": hold, "recheck": "deferred", "cause": cause,
@@ -1940,8 +2062,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     adj_err_msgs = sorted((state.get("adj_errors") or {}).values())
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
-    _collect_vex(out, ts)       # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never follows a mutating call (cache#701 ruling F3/B3)
-    base_sha = base_err = None  # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh call (cache#708 ruling 1); the delivery cuts its branch from this sha
+    # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never
+    # follows a mutating call (cache#701 ruling F3/B3)
+    _collect_vex(out, ts)
+    # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh
+    # call (cache#708 ruling 1); the delivery cuts its branch from this sha
+    base_sha = base_err = None
     if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and (m.get("provenance") or {}).get("source") != "test-image":
         base_sha, base_err = _fetch_base(_workspace())
         if base_sha:

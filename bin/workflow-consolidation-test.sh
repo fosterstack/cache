@@ -283,9 +283,9 @@ if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.
     bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
 jobs = d.get("jobs") or {}
 g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
-if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read", "packages": "read"}:
+if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read"}:
     bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
-if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read", "packages": "read"} or \
+if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read"} or \
         (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
     bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
 if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):

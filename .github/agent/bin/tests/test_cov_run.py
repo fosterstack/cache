@@ -29,7 +29,8 @@ class FakeRun:
     (rc, stdout, stderr), a list of responses consumed in order, or an Exception to raise.
     The longest matching prefix wins; unmatched argv -> rc 0, empty output."""
     def __init__(self, rules=None):
-        # the delivery base holds no reviewed file yet unless a test says so (git show of origin/main:<path> is read before the checkout)
+        # the delivery base holds no reviewed file yet unless a test says so (git show of origin/main:<path> is read
+        # before the checkout)
         self.defaults = {("git", "show"): (128, "", "fatal: path 'x' does not exist in 'origin/main'"),
                          ("git", "rev-parse", "origin/main"): (0, "a" * 40 + "\n", "")}
         self.rules = dict(rules or {}); self.calls = []
@@ -41,7 +42,8 @@ class FakeRun:
             if tuple(argv[:len(pre)]) == pre and (best is None or len(pre) > len(best)):
                 best = pre
         resp = (0, "", "") if best is None else self.rules[best]
-        if best is None:                          # no rule of the test: the delivery base holds no reviewed file yet, origin/main resolves to SHA
+        # no rule of the test: the delivery base holds no reviewed file yet, origin/main resolves to SHA
+        if best is None:
             for pre in self.defaults:
                 if tuple(argv[:len(pre)]) == pre:
                     resp = self.defaults[pre]
@@ -145,7 +147,9 @@ class Base(unittest.TestCase):
         self.assertTrue(co, "no branch checkout issued")
         for x in co:
             self.assertEqual(len(x), 5)
-            if x[4] != "origin/main":                 # the suppression delivery cuts its branch from the sha origin/main resolved to right after the fetch (cache#708 ruling 1)
+            # the suppression delivery cuts its branch from the sha origin/main resolved to right after the fetch
+            # (cache#708 ruling 1)
+            if x[4] != "origin/main":
                 self.assertEqual(x[4], SHA)
                 self.assertLess(a.index(["git", "rev-parse", "origin/main"]), a.index(co[0]))
         self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(co[0]))
@@ -175,7 +179,7 @@ class Base(unittest.TestCase):
 
     def env(self, **kw):
         e = {"gvc": None, "module": None, "gvc_usable": False, "idx": {}, "logpath": None,
-             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "iters": 0, "roles_used": set()},
+             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "roles_used": set()},
              "kev_ids": set(), "kev_ok": True, "exp": "2026-10-22", "out": self.d("out"),
              "ts": "2026-09-22T00:00:00Z", "dry": True, "digest": "sha256:cand", "carried_expiry": {},
              "carried_scopes": set(), "carried_status": {}, "today": "2026-09-22", "knowledge": "",
@@ -267,7 +271,7 @@ class NoChange(Base):
     CTX = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
 
     def state(self, **kw):
-        st = {"tokens": 0, "iters": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
+        st = {"tokens": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
               "nc_prev": None, "nc_today": "2026-10-24"}
         st.update(kw); return st
 
@@ -582,7 +586,8 @@ class Dispose(Base):
         c = "CVE-2099-13"; f = F(c, self.PURL, "libz", sev=sev, fixed="1.1")
         carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
         env = self.env(carriers=[carrier], kev_ok=kev_ok)
-        ans = {"pullable": False, "lift_trigger": "nodejs >= 20.2 embeds libz 1.1", "token_usage": 7}
+        ans = {"pullable": False, "lift_trigger": {"carrier": "nodejs", "min_version": "20.2", "component": "libz",
+            "component_min_version": "3.0.13"}, "token_usage": 7}
         with mock.patch.object(R.cli, "ask_model", return_value=ans) as ask:
             row, mi = R._dispose(c, [f], [c], env, [])
         self.assertEqual(ask.call_args.kwargs["attempt"], "pullability")
@@ -622,14 +627,201 @@ class Dispose(Base):
     def test_carried_not_pullable_deferred_kev_unavailable(self):
         c = "CVE-2099-15"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
         base = dict(carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
-                    carried_lift_trigger={key: "nodejs >= 20.2"})
+                    carried_lift_trigger={key: {"carrier": "nodejs", "min_version": "20.2", "component": "libz",
+                        "component_min_version": "3.0.13"}})
         row, _ = R._dispose(c, [f], [c], self.env(kev_ok=False, **base), [])
         self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
-        self.assertEqual((row["threshold"], row["expiry"], row["lift_trigger"]), ("at_or_above", "2026-12-01", "nodejs >= 20.2"))
+        self.assertEqual((row["threshold"], row["expiry"], row["lift_trigger"]), ("at_or_above", "2026-12-01",
+            {"carrier": "nodejs", "min_version": "20.2", "component": "libz", "component_min_version": "3.0.13"}))
         self.assertEqual(row["owner_issue_intent"]["reason_key"], "kev-unavailable (fail-closed)")
         self.assertIn("carrier signal absent this run", row["action"])
         row2, _ = R._dispose(c, [f], [c], self.env(kev_ok=True, **base), [])
         self.assertEqual(row2["threshold"], "below"); self.assertNotIn("owner_issue_intent", row2)
+
+
+# ---------------------------------------------------------------- rc-5b R1: the lift trigger is structured and
+# machine-checked
+
+class LiftTrigger(Base):
+    PURL = "pkg:deb/debian/libz@1.0?arch=arm64"
+    GOOD = {"carrier": "nodejs", "min_version": "20.2", "component": "libz", "component_min_version": "3.0.13"}
+
+    def test_the_shape_is_checked(self):
+        self.assertEqual(R._lift_trigger(self.GOOD), self.GOOD)
+        self.assertEqual(R._lift_trigger({"carrier": " nodejs ", "min_version": " v20.2.1 ", "component": "openssl",
+            "component_min_version": "3.0.13"}), {"carrier": "nodejs", "min_version": "v20.2.1", "component": "openssl",
+            "component_min_version": "3.0.13"})
+        # a letter suffix is a real version
+        self.assertEqual(R._lift_trigger({"carrier": "openssl", "min_version": "1.1.1n", "component": "openssl",
+            "component_min_version": "3.0.13"}), {"carrier": "openssl", "min_version": "1.1.1n", "component": "openssl",
+            "component_min_version": "3.0.13"})
+        for bad in ("nodejs >= 20.2 embeds libz 1.1", "", None, 5, [], {}, {"carrier": "nodejs"},
+            {"min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"},
+                    {"carrier": "nodejs", "min_version": "20.2", "extra": 1}, {"carrier": "", "min_version": "20.2",
+                        "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs",
+                        "min_version": "", "component": "openssl", "component_min_version": "3.0.13"},
+                    {"carrier": "nodejs", "min_version": "soon", "component": "openssl",
+                        "component_min_version": "3.0.13"}, {"carrier": "nodejs", "min_version": "\u0662\u0660",
+                        "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs",
+                        "min_version": "20.2; rm", "component": "openssl", "component_min_version": "3.0.13"},
+                        {"carrier": 5, "min_version": "20.2", "component": "openssl",
+                        "component_min_version": "3.0.13"},
+                    {"carrier": "node\njs", "min_version": "20.2", "component": "openssl",
+                        "component_min_version": "3.0.13"}, {"carrier": "x" * 201, "min_version": "20.2",
+                        "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs",
+                        "min_version": "9" * 65}):
+            self.assertIsNone(R._lift_trigger(bad), repr(bad))
+        g = self.GOOD
+        # the old two-key form: no component, no acceptance
+        for bad in ({"carrier": "nodejs", "min_version": "20.2"},
+                    dict(g, component=""), dict(g, component="o\npenssl"), dict(g, component="x" * 201),
+                    dict(g, component_min_version=""), dict(g, component_min_version="soon"), dict(g,
+                        component_min_version="3.0; rm"), dict(g, component_min_version="9" * 65),
+                    dict(g, component=3), dict(g, component_min_version=None)):
+            self.assertIsNone(R._lift_trigger(bad), repr(bad))
+        self.assertEqual(R._trigger_text(g), "nodejs >= 20.2 embeds libz >= 3.0.13")
+
+    def test_versions_compare_by_their_numbers_a_letter_or_a_debian_revision(self):
+        for a, b, want in (("20.3", "20.2", True), ("20.2", "20.2", True), ("20.1", "20.2", False),
+                           ("20.10", "20.2", True), ("v20.2.1", "20.2", True), ("20.2", "20.2.1", False),
+                           ("12.4", "12.6", False), ("abc", "20.2", None), ("20.2", "abc", None), (None, "1", None),
+                           # a letter suffix orders (OpenSSL), a plain version is below its lettered one
+                           ("1.1.1n", "1.1.1w", False), ("1.1.1w", "1.1.1n", True), ("1.1.1n", "1.1.1n", True),
+                           ("1.1.1a", "1.1.1", True), ("1.1.1", "1.1.1a", False),
+                           # a Debian revision orders: -1 < -1+deb12u1 < -2
+                           ("3.0.9-1", "3.0.9-1+deb12u1", False), ("3.0.9-1+deb12u1", "3.0.9-1", True),
+                           ("3.0.9-1+deb12u2", "3.0.9-1+deb12u10", False), ("3.0.9-2", "3.0.9-1+deb12u1", True),
+                           ("3.0.9-1", "3.0.9", True), ("3.0.9", "3.0.9-1", False),
+                           # a suffix that cannot be ordered here is unknown, never equal to its base
+                           ("20.2~rc1", "20.2", None), ("20.2", "20.2~rc1", None), ("3.0.13-1~deb12u1", "3.0.13", None),
+                           ("1.1.1nn", "1.1.1", None), ("1.1.1N", "1.1.1", None), ("1.1.1n", "3.0.9-1", None)):
+            self.assertIs(R._version_ge(a, b), want, (a, b))
+
+    def test_a_carried_trigger_for_another_component_is_not_trusted_on_the_recheck(self):
+        c = "CVE-2099-27"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}   # below the trigger
+        about_openssl = dict(self.GOOD, component="openssl")
+        env = self.env(carriers=[carrier], carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+                       carried_lift_trigger={key: about_openssl})
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "token_usage": 1}) as ask:
+            row, mi = R._dispose(c, [f], [c], env, [])
+        ask.assert_called_once()                 # not skipped as "unmet": the model is asked, as for a legacy trigger
+        self.assertNotEqual(row.get("lift_trigger"), about_openssl)       # and the mismatched trigger is not re-carried
+
+    def test_a_recheck_whose_model_call_fails_says_the_adjudicator_was_unavailable(self):
+        c = "CVE-2099-28"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.3"}     # the trigger is met
+        env = self.env(carriers=[carrier], carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+                       carried_lift_trigger={key: self.GOOD})
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            row, mi = R._dispose(c, [f], [c], env, [])
+        self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
+        # the suppression is retained
+        self.assertIn("recheck deferred (adjudicator unavailable)", row["action"])
+
+    def test_a_trigger_must_name_the_findings_own_component(self):
+        self.assertEqual(R._trigger_for(self.GOOD, "libz"), self.GOOD)
+        self.assertEqual(R._trigger_for(self.GOOD, " LIBZ "), self.GOOD)                 # case and spaces do not matter
+        self.assertIsNone(R._trigger_for(self.GOOD, "openssl"))                           # another component's trigger
+        self.assertIsNone(R._trigger_for(self.GOOD, None))
+        # still checked by shape
+        self.assertIsNone(R._trigger_for({"carrier": "nodejs", "min_version": "20.2"}, "libz"))
+        c = "CVE-2099-26"; f = F(c, self.PURL, "libz", fixed="1.1")
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        about_openssl = dict(self.GOOD, component="openssl")
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "lift_trigger": about_openssl,
+                                                                  "token_usage": 1}):
+            row, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        self.assertNotEqual(row["section"], 2); self.assertNotIn("lift_trigger", row)    # no acceptance: stays visible
+
+    def test_the_trigger_state_reads_the_carrier_version(self):
+        crs = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        self.assertEqual(R._trigger_state(self.GOOD, crs), "unmet")
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier_version="20.2")), "met")
+        # the carrier named by purl or by name
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier="pkg:deb/debian/NodeJS@20.1")), "unmet")
+        # a different carrier proves nothing
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier="other")), "unknown")
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier_version="weird")), "unknown")
+        self.assertEqual(R._trigger_state(self.GOOD, None), "unknown")
+        # a legacy or malformed trigger is never compared
+        self.assertEqual(R._trigger_state(None, crs), "unknown")
+
+    def test_a_structured_trigger_is_accepted_and_an_unstructured_one_is_not(self):
+        c = "CVE-2099-21"; f = F(c, self.PURL, "libz", fixed="1.1")
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "lift_trigger": self.GOOD,
+            "token_usage": 1}):
+            row, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        self.assertEqual((row["section"], row["lift_trigger"]), (2, self.GOOD))
+        self.assertIn("lifts when nodejs >= 20.2", row["reason"])
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False,
+            "lift_trigger": "nodejs >= 20.2 embeds libz 1.1", "token_usage": 1}):
+            row2, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        # no acceptance without a machine-checkable trigger
+        self.assertNotEqual(row2["section"], 2)
+        self.assertNotIn("lift_trigger", row2)
+
+    def test_a_trigger_the_carrier_already_meets_is_no_acceptance(self):
+        c = "CVE-2099-24"; f = F(c, self.PURL, "libz", fixed="1.1")
+        # already at the trigger's version
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.3"}
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "lift_trigger": self.GOOD,
+            "token_usage": 1}):
+            row, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        self.assertNotEqual(row["section"], 2); self.assertNotIn("lift_trigger", row)
+
+    def test_a_base_held_scope_is_not_skipped_by_the_carrier_comparison(self):
+        c = "CVE-2099-25"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        env = self.env(carriers=[carrier], base_policy_held=True, carried_not_pullable={key},
+            carried_expiry={key: "2026-12-01"}, carried_lift_trigger={key: self.GOOD})
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": True, "component_fixed": "1.1",
+            "candidate_release": "debian 12.6", "token_usage": 1}) as ask:
+            row, mi = R._dispose(c, [f], [c], env, [])
+        # the base release can still lift it
+        self.assertEqual(ask.call_args.kwargs["attempt"], "pullability")
+        self.assertEqual(row["disposition"], "lifted (fix now pullable)")
+
+    def _recheck(self, version, trigger, ask_answer=None):
+        c = "CVE-2099-22"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": version}
+        env = self.env(carriers=[carrier], carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+            carried_lift_trigger={key: trigger})
+        with mock.patch.object(R.cli, "ask_model", return_value=ask_answer or {"pullable": False,
+            "lift_trigger": self.GOOD, "token_usage": 1}) as ask:
+            row, mi = R._dispose(c, [f], [c], env, [])
+        return row, mi, ask
+
+    def test_the_recheck_compares_the_carrier_version_before_asking_the_model(self):
+        # the carrier is still below the trigger
+        row, mi, ask = self._recheck("20.1", self.GOOD)
+        ask.assert_not_called(); self.assertEqual(mi, 0)
+        self.assertEqual((row["section"], row["lift_trigger"]), (2, self.GOOD))
+        self.assertIn("lift trigger not met", row["action"]); self.assertIn("nodejs at 20.1", row["action"])
+        row, mi, ask = self._recheck("20.3", self.GOOD, {"pullable": True, "component_fixed": "1.1",
+            "candidate_release": "nodejs 20.3", "token_usage": 1})
+        # met: the model confirms before anything lifts
+        self.assertEqual(ask.call_args.kwargs["attempt"], "pullability"); self.assertEqual(mi, 1)
+        self.assertEqual(row["disposition"], "lifted (fix now pullable)")
+        # met but not confirmed: stays carried
+        row, mi, ask = self._recheck("20.3", self.GOOD)
+        self.assertEqual(mi, 1); self.assertEqual(row["section"], 2)
+
+    def test_a_legacy_text_trigger_is_not_compared_not_dropped(self):
+        # carried by an earlier release as free text
+        row, mi, ask = self._recheck("20.1", "nodejs >= 20.2 embeds libz 1.1")
+        # asked, as before
+        self.assertEqual(ask.call_args.kwargs["attempt"], "pullability"); self.assertEqual(mi, 1)
+        # and replaced by the structured one the model gives
+        self.assertEqual((row["section"], row["lift_trigger"]), (2, self.GOOD))
+
+    def test_a_deferred_recheck_keeps_the_structured_trigger(self):
+        c = "CVE-2099-23"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        env = self.env(carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+            carried_lift_trigger={key: self.GOOD})
+        row, _ = R._dispose(c, [f], [c], env, [])                                          # no carrier signal this run
+        self.assertEqual(row["lift_trigger"], self.GOOD)
 
 
 # ---------------------------------------------------------------- merge / consolidate fallbacks
@@ -886,22 +1078,27 @@ class SuppressionPR(Base):
         self.assertFalse(fr.stdins)
 
     def test_the_signed_commit_is_built_on_the_pinned_base_even_when_the_ref_moves(self):
-        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})        # a later `git rev-parse origin/main` would answer SHA: the tracking ref moved
+        # a later `git rev-parse origin/main` would answer SHA: the tracking ref moved
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr, base_sha="b" * 40), ("https://x/pull/9", None))
-        self.assertEqual(fr.stdins[0]["variables"]["input"]["expectedHeadOid"], "b" * 40)   # the API commit's parent is the validated sha
+        # the API commit's parent is the validated sha
+        self.assertEqual(fr.stdins[0]["variables"]["input"]["expectedHeadOid"], "b" * 40)
         self.assertIn(["git", "checkout", "-B", self.BR, "b" * 40], fr.argvs())
-        self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))         # no later lookup of the moving ref
+        # no later lookup of the moving ref
+        self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))
 
     def test_a_reviewed_input_that_stops_the_merge_after_the_checkout_still_ends_the_run(self):
         fr = ApiRun()
         with mock.patch.object(R, "_merge_suppressions", side_effect=R.ReviewedInputInvalid("damaged after the preflight")):
-            with self.assertRaises(R.ReviewedInputInvalid):                             # exit 3, not a "stage files" error to carry on from
+            # exit 3, not a "stage files" error to carry on from
+            with self.assertRaises(R.ReviewedInputInvalid):
                 self.real(fr, base_sha="b" * 40)
 
     def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
         fr = ApiRun()
         self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
-        self.assertEqual(fr.argvs(), [])                                                # not a second fetch, not a read, not a checkout
+        # not a second fetch, not a read, not a checkout
+        self.assertEqual(fr.argvs(), [])
 
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -1511,7 +1708,8 @@ class Run(Base):
              "products": [{"@id": PROD, "subcomponents": [{"@id": pa}]}]}]})
         self.wj(os.path.join(ws, ".auditor", "accepted-items.json"), {"accepted_items": [
             {"cve": "CVE-2099-60", "scope_purls": [pa], "expiry": "2026-12-01",
-             "not_pullable": "upstream-held", "lift_trigger": "nodejs >= 20.2"},
+             "not_pullable": "upstream-held", "lift_trigger": {"carrier": "nodejs", "min_version": "20.2",
+                 "component": "liba", "component_min_version": "3.0.13"}},
             {"cve": "CVE-2099-61", "scope_purls": [pb], "not_pullable": "upstream-held"},      # no expiry: ignored
             {"cve": "CVE-2099-62", "vex_id": "V#unknown", "expiry": "2026-12-01",
              "not_pullable": "upstream-held"}]})                                                # unresolvable: ignored
@@ -1528,7 +1726,9 @@ class Run(Base):
         self.assertEqual(cls["CVE-2099-62"]["disposition"], "real, fixable (base rebuild)")
         items = json.load(open(os.path.join(out, ".auditor", "accepted-items.json")))["accepted_items"]
         self.assertEqual([(i["cve"], i["threshold"], i["lift_trigger"]) for i in items],
-                         [("CVE-2099-60", "at_or_above", "nodejs >= 20.2")])   # KEV unparseable -> fail closed
+                         # KEV unparseable -> fail closed
+                         [("CVE-2099-60", "at_or_above", {"carrier": "nodejs", "min_version": "20.2",
+                             "component": "liba", "component_min_version": "3.0.13"})])
         self.assertTrue(os.path.exists(os.path.join(out, ".auditor", "knowledge.md")))
 
     def test_a_consistency_check_that_did_not_complete_makes_the_run_incomplete(self):
@@ -1600,8 +1800,10 @@ class Run(Base):
 
 
 class ExitThreeBeforeMutation(unittest.TestCase):
-    """cache#701 ruling F3/B3 and the cache#708 ruling: every validation that can end the run with exit 3 runs before the first mutating call: the per-finding VEX and the delivery base
-    (one fetch, one sha, its two reviewed files read as git objects) before the first owner-decision issue, the run's own outputs before `git checkout -B <sha>`."""
+    """cache#701 ruling F3/B3 and the cache#708 ruling: every validation that can end the run with exit 3 runs before
+    the first mutating call: the per-finding VEX and the delivery base
+    (one fetch, one sha, its two reviewed files read as git objects) before the first owner-decision issue, the run's
+    own outputs before `git checkout -B <sha>`."""
     SHA40 = "a" * 40
     VP, AP = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"
 
@@ -1618,7 +1820,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
             self.assertEqual(R._base_file(self.d, self.SHA40, self.VP), {"statements": []})
 
     def test_both_not_in_the_base_answers_mean_absent_and_the_workspace_copy_is_never_the_base(self):
-        os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")      # a workspace file (untracked, or deleted on main): not the base
+        # a workspace file (untracked, or deleted on main): not the base
+        os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")
         for gone in ("fatal: path 'x' does not exist in 'abc'", "fatal: path 'x' exists on disk, but not in 'abc'"):
             with mock.patch.object(R.subprocess, "run", self._show(128, "", gone)):
                 self.assertIsNone(R._base_file(self.d, self.SHA40, self.VP))
@@ -1627,7 +1830,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         fr = self._show(128, "", "fatal: path 'x' does not exist in 'abc'")
         with mock.patch.object(R.subprocess, "run", fr):
             R._base_file(self.d, self.SHA40, self.VP)
-        self.assertEqual(fr.calls[0][1]["env"]["LC_ALL"], "C")                          # git's messages are matched, so they are read in English
+        # git's messages are matched, so they are read in English
+        self.assertEqual(fr.calls[0][1]["env"]["LC_ALL"], "C")
 
     def test_a_base_file_that_cannot_be_read_or_is_not_the_required_object_is_a_stop(self):
         bad = (self._show(128, "", "fatal: bad object"), self._show(0, "{not json"), self._show(0, "[]"), self._show(0, "{}"), self._show(0, b"\xff\xfe{}"))
@@ -1640,7 +1844,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         with mock.patch.object(R.subprocess, "run", FakeRun()):
             self.assertEqual(R._fetch_base(self.d), (self.SHA40, None))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): (1, "", " offline \n")})):
-            self.assertEqual(R._fetch_base(self.d), (None, "git fetch: offline"))           # handed down: the delivery reports it and never fetches again
+            # handed down: the delivery reports it and never fetches again
+            self.assertEqual(R._fetch_base(self.d), (None, "git fetch: offline"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (0, "not-a-sha\n", "")})):
             self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: not-a-sha"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (1, "", "bad")})):
@@ -1656,17 +1861,20 @@ class ExitThreeBeforeMutation(unittest.TestCase):
     def test_preflight_validates_what_the_merge_will_read(self):
         out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
         with mock.patch.object(R.subprocess, "run", FakeRun()):
-            R._preflight_delivery(out, supp)                                                # nothing of the run is written yet: first-run shaped, passes
+            # nothing of the run is written yet: first-run shaped, passes
+            R._preflight_delivery(out, supp)
             vp = os.path.join(supp, "fosterstack-cache.openvex.json")
             open(vp, "w").write("{}")
             with self.assertRaises(R.ReviewedInputInvalid):
-                R._preflight_delivery(out, supp)                                            # a consolidated VEX without its statements stops it
+                # a consolidated VEX without its statements stops it
+                R._preflight_delivery(out, supp)
             json.dump({"statements": []}, open(vp, "w"))
             R._preflight_delivery(out, supp)
             os.makedirs(os.path.join(out, ".auditor"))
             open(os.path.join(out, ".auditor", "reopened-expired.json"), "w").write("{}")
             with self.assertRaises(R.ReviewedInputInvalid):
-                R._preflight_delivery(out, supp)                                            # a damaged ledger of the run stops it before the checkout
+                # a damaged ledger of the run stops it before the checkout
+                R._preflight_delivery(out, supp)
 
     def test_collect_vex_reads_and_validates_without_writing(self):
         os.makedirs(os.path.join(self.d, "vex"))
@@ -1677,11 +1885,13 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         with self.assertRaises(R.ReviewedInputInvalid):
             R._collect_vex(self.d, "2026-09-24T00:00:00Z")
         open(os.path.join(self.d, "vex", "a.openvex.json"), "w").write(json.dumps({"statements": [{}]}))
-        with self.assertRaises(R.ReviewedInputInvalid):                                     # a statement set that does not validate is a stop with its own reason, not "manifest invalid"
+        # a statement set that does not validate is a stop with its own reason, not "manifest invalid"
+        with self.assertRaises(R.ReviewedInputInvalid):
             R._collect_vex(self.d, "2026-09-24T00:00:00Z")
 
     def test_collect_vex_absent_directory_is_none_unreadable_or_not_a_directory_is_a_stop(self):
-        doc, st = R._collect_vex(os.path.join(self.d, "never"), "2026-09-24T00:00:00Z")      # the first run wrote no per-finding VEX at all
+        # the first run wrote no per-finding VEX at all
+        doc, st = R._collect_vex(os.path.join(self.d, "never"), "2026-09-24T00:00:00Z")
         self.assertEqual(st, [])
         open(os.path.join(self.d, "vex"), "w").write("x")
         with self.assertRaises(R.ReviewedInputInvalid):
@@ -1691,7 +1901,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         if os.geteuid() != 0:
             os.chmod(os.path.join(self.d, "vex"), 0)
             self.addCleanup(os.chmod, os.path.join(self.d, "vex"), 0o755)
-            with self.assertRaises(R.ReviewedInputInvalid):                                 # glob used to turn this into zero statements
+            # glob used to turn this into zero statements
+            with self.assertRaises(R.ReviewedInputInvalid):
                 R._collect_vex(self.d, "2026-09-24T00:00:00Z")
 
     def test_parse_decodes_bytes_and_wraps_every_failure(self):
@@ -1707,13 +1918,15 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         base_stmt = R.vex.doc("CVE-2099-2", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/b@1"])["statements"][0]
         run_stmt = R.vex.doc("CVE-2099-3", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/c@1"])["statements"][0]
         mk = lambda s: {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "x", "author": "a", "role": "vendor", "timestamp": "2026-08-24T00:00:00Z", "version": 3, "statements": [s]}
-        json.dump(mk(tree_stmt), open(os.path.join(ws, self.VP), "w"))                      # an untracked / modified file in the workspace
+        # an untracked / modified file in the workspace
+        json.dump(mk(tree_stmt), open(os.path.join(ws, self.VP), "w"))
         out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
         json.dump(mk(run_stmt), open(os.path.join(supp, "fosterstack-cache.openvex.json"), "w"))
         R._merge_suppressions(ws, supp, base={self.VP: mk(base_stmt), self.AP: None})
         merged = json.load(open(os.path.join(ws, self.VP)))
         names = sorted(s["vulnerability"]["name"] for s in merged["statements"])
-        self.assertEqual((names, merged["version"]), (["CVE-2099-2", "CVE-2099-3"], 4))    # the base document, not the tree's: CVE-2099-1 is not carried
+        # the base document, not the tree's: CVE-2099-1 is not carried
+        self.assertEqual((names, merged["version"]), (["CVE-2099-2", "CVE-2099-3"], 4))
 
     def test_delivery_given_the_sha_does_not_fetch_again_and_checks_out_the_sha(self):
         ws = self.d; out = os.path.join(ws, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)

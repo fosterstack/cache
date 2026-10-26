@@ -1602,6 +1602,13 @@ requirements:
         then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential)"
         verification: { method: unit, release_blocking: false }
         status: approved
+      # owner RATIFIED Oct 24 2026 (ops/docs/ratify/2026-10-24-runner-tools-and-token-in-env.md; named there REQ-REL-004-AC5, renumbered AC10 because AC5 exists); LLM-enforced, no judge
+      - id: REQ-REL-004-AC10
+        given: "any workflow job that uses skopeo, and any workflow step that needs the job token"
+        when: "the job starts, and the step runs"
+        then: "the job uses the skopeo on the runner image, checked by `command -v`, and a job without it fails as a labeled pipeline failure; no job installs it at run time; the job token reaches a step only through `env:`, never interpolated into `run:` script text, in every workflow"
+        verification: { method: inspection, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-005
     title: Every CI action pinned to a commit digest
@@ -2078,7 +2085,7 @@ requirements:
       - id: REQ-REL-010-AC1
         given: "Build's image layouts and the tag's .vex/ OpenVEX file"
         when: "Build writes digests.json"
-        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content in the form Docker Scout applies: the same OpenVEX document, except that in each statement a product that names the attested image (its purl) and lists subcomponents is replaced by those subcomponents (the vulnerable packages; the image is the in-toto statement's subject), in order and once each, and any other product is unchanged; the in-toto statement holds that document as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index, and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-010-AC2
@@ -2146,6 +2153,67 @@ requirements:
         given: "any workflow job in the repository"
         when: "bin/job-isolation-test.sh judges every workflow file"
         then: "the job has at most one build step (a second compile step in the same job fails), there is no exclusion; each build is its own job"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-012
+    title: A pull request into the release carries a passed-audit record for its exact head
+    statement: >
+      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
+      process rule 6, owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md:
+      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
+      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
+      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
+      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
+      record no longer applies. The verdict is part of the
+      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
+      cannot edit or skip it, and a retarget re-runs it.
+    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
+    tier: community
+    introduced: v0.3.0
+    origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2
+    confidence: implementation-only
+    notes: >
+      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
+      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
+      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
+      owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
+      something.
+    acceptance_criteria:
+      - id: REQ-REL-012-AC1
+        given: "a pull request whose base is main, and the head sha it has now"
+        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC2
+        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        when: "the judge decides"
+        then: "it fails closed and says why (an API error says it is one); no doubt passes"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC3
+        given: "a pull request whose base is not main"
+        when: "the judge runs"
+        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC4
+        given: "the verdict job and the sweep of agent-review-gate.yml"
+        when: "the auditor matrix runs them as written with stand-ins for the checks"
+        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC5
+        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the lane runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it)"
+        when: "the record job runs"
+        then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit lane guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC6
+        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
+        when: "the scheduled sweep runs"
+        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2864,10 +2932,23 @@ requirements:
         then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum"
         verification: { method: unit, release_blocking: false }
         status: approved
+      # owner RATIFIED text rewritten Oct 24 2026 (advisor ruling, a tightening; the owner sees it afterwards): the release-chain mode it described was dead and is deleted; LLM-enforced
       - id: REQ-SUP-001-AC29
-        given: "acceptance.yml run with an image-ref (release-chain mode)"
-        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
-        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
+        given: "acceptance.yml, the pull-request and main gate for the client suites"
+        when: "its workflow_call inputs and its jobs' steps are read"
+        then: "it declares no image input and no step starts a container image: both jobs run the server from source; the release chain runs the same suites through bin/check-acceptance.sh and bin/acceptance-serve.sh, where the candidate is refused unless content-addressed and run by its inspected ID (AC30); this keeps the owner's plain form for an image, pinned by digest, on the one path that is live"
+        verification: { method: inspection, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC31
+        given: "the sample project's committed Gradle wrapper jar (bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar)"
+        when: "the offline tests run, and when a pull request changes the wrapper jar or properties (CI then also runs the online test)"
+        then: "the jar's sha256 equals the reviewed value committed beside it (.github/policy/gradle-wrapper-jar-sha256.txt, one sha256sum line) and, in the online test, the sha256 Gradle publishes for the wrapper of the version the distribution URL names, so a changed or substituted jar fails; this is the owner's plain form for a tool download: exact version and checksum"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC32
+        given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
+        when: "either starts"
+        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, is not exactly one line naming the jar, or is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC30
@@ -3769,7 +3850,7 @@ requirements:
     title: Check judges the candidates and signs what it found
     statement: >
       The Check stage shall run, in one stage file beside Rebuild and off Build's output (the job check, and the job check-arm64 for the linux/arm64 artifact checks), every scanner the policy lists, the Gradle and Maven acceptance suites, the no-phone-home test, the FIPS start check and every customer-guide command against the exact candidate digests, as plain scripts that know nothing about signing, under Witness in three plainly named steps (scanners, acceptance, runtime) each limited to 9 minutes by the one shared helper, and sign its results as one Witness record per step under its own identity; it shall hold no registry or key access, and any failure shall stop the release and name Check.
-    source: [.github/workflows/stage-verify.yml, .github/workflows/release.yml, .github/workflows/acceptance.yml, bin/witnessed.sh, bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh, bin/acceptance-maven-capped.sh, bin/acceptance-egress.sh, bin/acceptance-k8s.sh, bin/acceptance-serve.sh, bin/install-kind.sh, .github/policy/scanners.json]
+    source: [.github/workflows/stage-verify.yml, .github/workflows/release.yml, .github/workflows/acceptance.yml, bin/witnessed.sh, bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh, bin/acceptance-maven-capped.sh, bin/acceptance-egress.sh, bin/acceptance-k8s.sh, bin/acceptance-serve.sh, .github/policy/scanners.json]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; PR 3 read-back approved by the advisor Oct 9, ops/handoffs/outbox/2026-10-09-pipeline-readback-check.md)
@@ -3782,10 +3863,11 @@ requirements:
       once; Q5 the scanners come from the prebaked runner (not built yet), no step installs them; Q6 package counts come from each tool's own
       machine output (grype -o json and its CycloneDX SBOM, osv-scanner --format json --all-packages; shapes recorded in
       the scanner fixtures of the auditor directory (fixtures/scanners)) and osv-scanner keeps the Go-module target; Q7 the gradle, maven, egress and Kubernetes suites are
-      plain scripts (bin/acceptance-*.sh) shared with acceptance.yml; Q8 AC14 (the advisor's AC, numbered 14 because AC8 exists): kind
-      v0.33.0, kubectl v1.37.0 and the node image kindest/node:v1.37.0@sha256:a1ed56cf...580ae5 come from the kind v0.33.0 release notes,
-      https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (published 2026-08-26); only linux amd64 is pinned (the Check runner is
-      ubuntu-24.04).
+      plain scripts (bin/acceptance-*.sh) shared with acceptance.yml; Q8 AC14 (the advisor's AC, numbered 14 because AC8 exists): the node image kindest/node:v1.37.0@sha256:a1ed56cf...580ae5 comes from the kind v0.33.0 release notes,
+      https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (published 2026-08-26). Amended Oct 24 (advisor, rule 13 of the simplest-correct-form rules: a tool that must
+      already exist is used where it is): the earlier text pinned kind v0.33.0 and kubectl v1.37.0 by sha256 and installed them; they are now the runner image's own (image 20261012:
+      Kind 0.33.0, Kubectl 1.37.1) and the Check stage has no step for them. Earlier wording of the AC: "kind and kubectl are installed by a run step from exact versions (kind v0.33.0,
+      kubectl v1.37.0) verified against sha256 values committed in the repository, no action installs them, and the node image is given by digest".
       AC15 (advisor, Oct 10, option 1: fresh databases at scan time from the scanners' own hosts only): grype's database status is read
       from the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json (descriptor.db.status: from, built, valid; host
       grype.anchore.io, digest the sha256 in the download URL's checksum). osv-scanner (advisor, Oct 10, from osv-scanner v2.6.0
@@ -3811,11 +3893,12 @@ requirements:
       literal host/path with : or @, or oci://), and is never run; the -fips tag form is cache-3f's to verify.
       RULE -> AC -> NAMED TEST (advisor, step 5, Oct 9; every rule of this PR has at least one named test): rule 50 (own file, one job) -> AC1 -> bin/chain-check-wiring-test.sh `stage` judge (the s_* cases); rule 53 (Sigstore timestamp) -> AC9 -> the `helper` judge (h_ts) and the scripts test's witness argv case; rule 55 (every scanner, results bound to digests) -> AC4 and AC5 -> bin/chain-check-scripts-test.sh (the AC4 cases); rule 58 (verify the previous stage first) -> AC3 -> the `script` judge (c_* cases) and the scripts test's dispatcher cases; rule 61 (old stages removed) -> AC10 -> the `removed` judge (r* cases; the Dockerfile, buildx and goreleaser removals of rule 61 are PR 6, not this one); rule 63 (standard records only) -> AC9 -> the `helper` judge attestor cases (h_gh, h_slsa) and AC13; rule 65 (old verifiers deleted, each named) -> AC10 -> the `removed` judge (r5, r6) plus the PR body naming every file; rule 66 (every record has a consumer; tests are plain scripts) -> AC13 and AC8 -> the `records` judge (r_* cases) and the `plain`/`listed` judges; rule 68 (Witness first, one committed script per step, the 9-minute cap) -> AC1, AC11, AC12 -> the `stage` and `helper` judges and the scripts test's helper cases (outlive, failing script, bad step name, three records); rule 70 (Check beside Rebuild) -> AC2 -> the `graph` judge (g_* cases); rule 72 (FIPS start check) -> AC6 -> the scripts test's AC6 cases; rule 79 (guide commands run in CI) -> AC7 -> the scripts test's AC7 cases.
       RULE 68, AS AMENDED BY THE OWNER (Oct 9, 16:47 EDT; harness spike (d): Witness checks the Fulcio certificate at the TIMESTAMP's time, so a command that runs past the certificate's ten minutes yields a record that never verifies): every witnessed command is limited to 9 minutes. The cap lives in ONE place, the helper bin/witnessed.sh, which PR 2 defines; the helper judge in bin/chain-check-shape.py is kept identical to PR 2's seam and is deleted in favour of it once PR 2 lands. Check is split into three steps so that none nears the cap; real phase times for Build are in the PR 2 notes. The owner also asked that the code not be ugly or overly complex to pass the rule: the stage file is four short lines, reviewers get readability for a human as an explicit brief item, and a judge that needs cleverness is simplified. CUTOVER RULE (advisor 0341): PR 3 merges into the integration branch chain-v030 only; the old chain (stage-verify.yml and the acceptance stages as they are today) stays live on main until the one cutover pull request. The real-tree cases of the tests are red until the implementation PR. Existing ACs this must not weaken: REQ-REL-004-AC1 (every scanner reports its package count; zero packages fail) and the REQ-SCAN and REQ-FIPS requirements. The scanner list is .github/policy/scanners.json (today grype and osv-scanner); the daily rescan's other scanners (Inspector, Scout, Google, Snyk) are not part of Check. The images reach Check as files (OCI tarballs from Build's artifacts), not from a registry: Check logs in to no registry and holds no packages permission. Anything in the scripts' command lines that no existing file fixes is PROPOSED/UNVERIFIED in the test headers: the guide file name (the www lane's customer guide, docs/verify-release.md), the acceptance suites' wrapper command lines, and the results file names. CREDENTIALS (coordinator correction, Oct 9): Check needs no cloud scanner federation. The release scanners in scanners.json are grype and osv-scanner, which need no credential; the AWS Inspector and GCP trusts serve only scan.yml and main-candidate-rescan.yml. The SNYK_TOKEN that today's stage-verify.yml takes as a secret is not needed by the listed scanners (scanners.json: Snyk runs in the daily rescan only), so Check holds no secret at all (decided from scanners.json; if the owner adds a scanner that needs a credential, that is a changed rule and a new read-back). id-token: write exists only so Witness can sign Check's own record.
+      WORDING BROUGHT TO THE CODE (Oct 24; the text above is history): Check's four steps run under bin/witnessed-local.sh (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md), signed with a throwaway key, no identity token and no Sigstore timestamp in the Check jobs; Sign re-signs the records keyless. The Check jobs hold contents read only. AC1, AC4, AC9 and AC11 describe that.
     acceptance_criteria:
       - id: REQ-CHAIN-006-AC1
         given: "stage-verify.yml"
         when: "it is parsed"
-        then: "it is a reusable workflow with exactly two jobs, check on a fresh GitHub-hosted ubuntu-24.04 runner and check-arm64 on a fresh GitHub-hosted ubuntu-24.04-arm runner, each with permissions exactly contents read and id-token write, no container, services, env, defaults, secrets (not even an environment secret), registry login, registry write, packages permission or package-signing key, whose steps are exactly in this order: a digest-pinned checkout without persisted credentials, the checksum-pinned Witness install, the checksum-pinned grype install and then the checksum-pinned osv-scanner install (each the single line bash bin/install-scanner.sh NAME, the scanners .github/policy/scanners.json lists), the pinned kind and kubectl install (bash bin/install-kind.sh), digest-pinned downloads of the named Build artifacts only with exactly one download of the images artifact into images/, three run steps that are each the single line bash bin/witnessed.sh STEP TARGET with STEP scanners, acceptance and runtime in that order and TARGET bin/check-phase-scanners.sh, bin/check-phase-acceptance.sh and bin/check-phase-runtime.sh respectively (the stage file never calls witness or timeout itself), and digest-pinned uploads of the named result artifacts only (witness-check carries exactly the three record directories witness-scanners/, witness-acceptance/ and witness-runtime/); check-arm64 has no needs, is not conditional, and has exactly these steps in order: a digest-pinned checkout without persisted credentials, the checksum-pinned Witness install, digest-pinned downloads of the witness-build, digests, dist and images artifacts, one run step that is the single line bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh, and a digest-pinned upload of witness-check-arm64 carrying witness-arm64/"
+        then: "it is a reusable workflow with exactly three jobs, govulncheck-build and check on fresh GitHub-hosted ubuntu-24.04 runners and check-arm64 on a fresh GitHub-hosted ubuntu-24.04-arm runner, each with permissions exactly contents read (no identity token: the Check jobs hold none and Sign re-signs their records), no container, services, env, defaults, secrets (not even an environment secret), registry login, registry write, packages permission or package-signing key; govulncheck-build has a digest-pinned checkout without persisted credentials, the pinned Go install, the govulncheck build, the pack step and one digest-pinned upload; check needs govulncheck-build and has steps exactly in this order: a digest-pinned checkout without persisted credentials, the checksum-pinned Witness install, the checksum-pinned grype install, the checksum-pinned osv-scanner install and the checksum-pinned Go install (each the single line bash bin/install-scanner.sh NAME; grype and osv-scanner are the scanners .github/policy/scanners.json lists), the digest-pinned download of the govulncheck artifact by its id and its unpack step (AC4), digest-pinned downloads of the Build record as Sign signed it (signed-witness-build), the digest list, dist and exactly one download of the images artifact into images/ and nothing else, three run steps that are each the single line bash bin/witnessed-local.sh STEP TARGET with STEP scanners, acceptance and runtime in that order and TARGET bin/check-phase-scanners.sh, bin/check-phase-acceptance.sh and bin/check-phase-runtime.sh respectively (the stage file never calls witness or timeout itself), the step that exposes the record digests as the stage output, and digest-pinned uploads of the named result artifacts only (witness-check carries exactly the three record directories witness-scanners/, witness-acceptance/ and witness-runtime/; check-results carries the results files); the workflow's outputs are the record digests of check (records) and of check-arm64 (records-arm64); check-arm64 has no needs, is not conditional, and has exactly these steps in order: a digest-pinned checkout without persisted credentials, the checksum-pinned Witness install, digest-pinned downloads of the signed-witness-build (into witness-build/), digests, dist and images artifacts, one run step that is the single line bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh, the step that exposes its record digest, and digest-pinned uploads of witness-check-arm64 carrying witness-arm64/ and of check-results-arm64"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC2
@@ -3833,7 +3916,7 @@ requirements:
       - id: REQ-CHAIN-006-AC4
         given: "the scanner list in .github/policy/scanners.json and the candidate images and archives"
         when: "bin/check-scan.sh runs"
-        then: "every listed scanner runs against every candidate image (by the digest in the digest list) and the release archives and Go modules where it is meant to (grype the archives, osv-scanner the Go modules), no unlisted scanner runs, the number of scanners that ran equals the number listed, each reports, in its own machine output, a package count above zero and a version and database, any scanner that is missing, cannot run, finds a vulnerability not excepted by the published VEX document or reports zero packages fails the script, and the results file names each scanner, its version, the digest of each subject scanned and its verdict; before it scans, the script requires the archive directory to hold exactly the four Linux archives fscache_V_linux_amd64.tar.gz, fscache_V_linux_arm64.tar.gz, fscache-fips_V_linux_amd64.tar.gz and fscache-fips_V_linux_arm64.tar.gz of one version V, and no file whose name contains darwin or windows in any case; a fifth, a missing, a mixed-version or a darwin or windows file fails the script naming the archive set; the scanners step also runs the Go source scan that .github/policy/scanners.json lists as its source_scanners (exactly govulncheck), once, on the tagged checkout: bin/check-govulncheck.py, run isolated by bin/check-stage.sh, runs `govulncheck -json ./...` with the pinned Go first on the tool's search path, GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local and no Go setting of the caller's environment (it reads the exact bytes the build uses), writes the tool's stream unchanged to check-results/govulncheck.json (a product of the scanners record, so it is tied to the digest list that record names as its material), and fails when the checkout has no vendor/ directory, when the tool cannot run, when its output holds no config message of scanner govulncheck on https://vuln.go.dev, or when a finding reaches a called symbol (a trace whose first frame names a function); a finding of an imported package that no called symbol reaches is carried in the file and does not fail; the Check job installs the pinned Go and then govulncheck (`bash bin/install-scanner.sh go`, `bash bin/install-scanner.sh govulncheck`, the tool built from the committed module tools/govulncheck, pinned by its go.sum hashes and at the version ci.yml installs) after the listed scanners and before kind"
+        then: "every listed scanner runs against every candidate image (by the digest in the digest list) and the release archives and Go modules where it is meant to (grype the archives, osv-scanner the Go modules), no unlisted scanner runs, the number of scanners that ran equals the number listed, each reports, in its own machine output, a package count above zero and a version and database, any scanner that is missing, cannot run, finds a vulnerability not excepted by the published VEX document or reports zero packages fails the script, and the results file names each scanner, its version, the digest of each subject scanned and its verdict; before it scans, the script requires the archive directory to hold exactly the four Linux archives fscache_V_linux_amd64.tar.gz, fscache_V_linux_arm64.tar.gz, fscache-fips_V_linux_amd64.tar.gz and fscache-fips_V_linux_arm64.tar.gz of one version V, and no file whose name contains darwin or windows in any case; a fifth, a missing, a mixed-version or a darwin or windows file fails the script naming the archive set; the scanners step also runs the Go source scan that .github/policy/scanners.json lists as its source_scanners (exactly govulncheck), on the tagged checkout: bin/check-govulncheck.py, run isolated by bin/check-stage.sh, runs `govulncheck -json` six times (./... and the shipped package for linux/amd64 and linux/arm64, then the shipped package for the FIPS build on each), the first run (./... on amd64) being the product below, with the pinned Go first on the tool's search path, GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local and no Go setting of the caller's environment (it reads the exact bytes the build uses), writes the stream of that first run unchanged to check-results/govulncheck.json (a product of the scanners record, so it is tied to the digest list that record names as its material), and fails when the checkout has no vendor/ directory, when the tool cannot run, when its output holds no config message of scanner govulncheck on https://vuln.go.dev, or when a finding of any of the six runs reaches a called symbol (a trace whose first frame names a function); a finding of an imported package that no called symbol reaches does not fail (the first run's is carried in the file); a job govulncheck-build (contents read only) builds govulncheck with the pinned Go (`bash bin/install-scanner.sh go`, `bash bin/install-scanner.sh govulncheck`, the tool built from the committed module tools/govulncheck, pinned by its go.sum hashes and at the version ci.yml installs) and uploads it; the Check job installs the pinned Go, downloads that artifact by its id and unpacks it (`bash bin/unpack-govulncheck.sh`), after the listed scanners and before the downloads of Build's artifacts"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC5
@@ -3857,13 +3940,13 @@ requirements:
       - id: REQ-CHAIN-006-AC8
         given: "the scripts bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh and bin/check-guide.sh"
         when: "they are read"
-        then: "they are plain scripts that know nothing about signing: no signing tool, attestation, registry login, secret or token appears in bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh or bin/check-guide.sh (which alone may name the verify-only commands cosign verify, verify-attestation, verify-blob, verify-blob-attestation and gh attestation verify), and bin/check-stage.sh is exactly its fixed grammar (AC3); each, with the suite scripts and bin/install-kind.sh, is listed in .github/policy/chain-scripts.json with its sha256 and calls only the tools it lists; every finding of the listed-script judge that a script keeps is an exact reviewed exception in chain-scripts.json (a deny exception bound to the exact physical line and its count; the others to the exact command text), each with its reason; the Python and shell helpers a script runs are listed rows, not heredocs; no script sets PATH or IFS"
+        then: "they are plain scripts that know nothing about signing: no signing tool, attestation, registry login, secret or token appears in bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh or bin/check-guide.sh (which alone may name the verify-only commands cosign verify, verify-attestation, verify-blob, verify-blob-attestation and gh attestation verify), and bin/check-stage.sh is exactly its fixed grammar (AC3); each, with the suite scripts, is listed in .github/policy/chain-scripts.json with its sha256 and calls only the tools it lists; every finding of the listed-script judge that a script keeps is an exact reviewed exception in chain-scripts.json (a deny exception bound to the exact physical line and its count; the others to the exact command text), each with its reason; the Python and shell helpers a script runs are listed rows, not heredocs; no script sets PATH or IFS"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC9
-        given: "the Check stage's signed results and the helper bin/witnessed.sh that signs them"
+        given: "the Check stage's recorded results and the helper bin/witnessed-local.sh that records them"
         when: "the helper's Witness command is read"
-        then: "the helper is exactly PR 2's bin/witnessed.sh with Check's three steps in its closed list, and each of the three steps signs one Witness record under the stage file's own identity with the Sigstore timestamp, with only the allowed flags and attestors (environment, git, material, product; never the github attestor, which embeds the raw token, nor slsa, which is Sign's alone), the token variables filtered out of the record, products the results files and materials Build's digest list, so each record is bound to the exact candidate digests, and no record type of our own is made"
+        then: "the helper is bin/witnessed-local.sh with Check's four steps (scanners, acceptance, runtime, arm64) in its closed list, and each step records one Witness record signed with a throwaway key made in the job (the Check jobs hold no identity token; Sign checks the record's product digests and re-signs it keyless, owner Oct 22), with only the allowed flags and attestors (environment, git, material, product; never the github attestor, which embeds the raw token, nor slsa, which is Sign's alone), the token variables filtered out of the record, products the results files and materials Build's digest list, so each record is bound to the exact candidate digests, and no record type of our own is made"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC10
@@ -3873,9 +3956,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CHAIN-006-AC11
-        given: "the helper bin/witnessed.sh and every Witness call of the Check stage (rule 68 as amended by the owner, Oct 9)"
+        given: "the helper bin/witnessed-local.sh and every Witness call of the Check stage (rule 68 as amended by the owner, Oct 9)"
         when: "the stage file, the helper and a run of the helper with a command that outlives the limit are read"
-        then: "every command run under Witness goes through the one helper and is wrapped in exactly one timeout of 540 seconds, with a kill-after of 20 seconds (`timeout -k 20 540`), written in the helper alone (no stage repeats it, none calls witness directly), the helper holds all the Witness flags and the identity-token fetch, a step name outside a plain lower-case word is refused before anything runs, and a command that outlives the limit or fails makes the helper fail and leaves no record, so a command that could outlive the ten-minute certificate fails the build instead of yielding a record that can never be verified"
+        then: "every command run under Witness goes through the one helper and is wrapped in exactly one timeout of 540 seconds, with a kill-after of 20 seconds (`timeout -k 20 540`), written in the helper alone (no stage repeats it, none calls witness directly), the helper holds all the Witness flags and the throwaway key, a step name outside the helper's closed list is refused before anything runs, and a command that outlives the limit or fails makes the helper fail (a nonzero exit), so a hung command fails the build instead of holding it"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC12
@@ -3893,7 +3976,7 @@ requirements:
       - id: REQ-CHAIN-006-AC14
         given: "the Check stage runs the Kubernetes acceptance suite"
         when: "it creates its cluster"
-        then: "kind and kubectl are installed by a run step from exact versions (kind v0.33.0, kubectl v1.37.0) verified against sha256 values committed in the repository, no action installs them, and the node image is given by digest"
+        then: "kind and kubectl come from the runner image (no step downloads or installs them, no action installs them, and the Check stage has no step for them: the k8s suite stops at its first use if either is missing), and the node image is given by digest"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC15

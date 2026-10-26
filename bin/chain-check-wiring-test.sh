@@ -43,8 +43,9 @@
 #      missing). It passes only for a guide whose cannot-run list is empty or absent.
 #   Graph aligned with PR 2 (3e883b3): the release job needs EXACTLY check, rebuild and sign (build is reached through check); check
 #      needs exactly build and sign.
-#   Q8 REQ-CHAIN-006-AC14: kind and kubectl from bin/install-kind.sh (exact versions, amd64 sha256 committed), no kind action, the node
-#      image by digest (`kind`, `cluster`); the runtime phase runs the k8s suite.
+#   Q8 REQ-CHAIN-006-AC14 (amended Oct 24, rule 13 of the simplest-correct-form rules): kind and kubectl come from the
+#      runner image (no Check step for them; the k8s suite stops at its first use if one is missing), no kind action,
+#      the node image by digest (`stage`, `cluster`); the runtime phase runs the k8s suite.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json (KR-CHECK-1, KR-CHECK-2): the run passes only when they are EXACTLY the red cases
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
@@ -112,7 +113,6 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\n    outputs:\n      recor
          "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
          + f"      - uses: {DWN}\n        with:\n          artifact-ids: ${{{{ needs.govulncheck-build.outputs.artifact-id }}}}\n          path: govulncheck-dl\n" +
          "      - name: install govulncheck from its build job (its download was digest-checked)\n        run: bash bin/unpack-govulncheck.sh\n"
-         "      - name: install kind and kubectl (pinned by sha256)\n        run: bash bin/install-kind.sh\n"
          + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
          + wit("scanners") + wit("acceptance") + wit("runtime")
@@ -135,10 +135,19 @@ step="$1"
 shift
 case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
-tok=$(sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
+oidc_token() {
+  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \\
+    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value
+}
+tok=$(oidc_token)
 echo "::add-mask::$tok"
 unset SIGSTORE_ID_TOKEN
-if [ "$step" = release-sign ]; then sig=$(sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value); [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; echo "::add-mask::$sig"; export SIGSTORE_ID_TOKEN="$sig"; fi
+if [ "$step" = release-sign ]; then
+  sig=$(oidc_token)
+  [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }
+  echo "::add-mask::$sig"
+  export SIGSTORE_ID_TOKEN="$sig"
+fi
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 exec witness run --step "$step" \\
@@ -204,21 +213,6 @@ jobs:
   release:
     needs: [check, sign, sign-rebuild, sign-check]
     uses: ./.github/workflows/stage-promote.yml
-""")
-open(w + "/install-kind.sh", "w").write("""#!/usr/bin/env bash
-# kind and kubectl for the Check runner (REQ-CHAIN-006-AC14).
-set -euo pipefail
-[ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] || { echo "install-kind: only linux amd64 is pinned (the Check runner is ubuntu-24.04)" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-curl -fsSL -o "$tmp/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
-cid=$(docker create kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5)
-docker cp "$cid:/usr/bin/kubectl" "$tmp/kubectl"
-docker rm "$cid" > /dev/null
-printf '%s  %s\\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$tmp/kind" 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f "$tmp/kubectl" | sha256sum -c -
-install -m 0755 "$tmp/kind" "$tmp/kubectl" /usr/local/bin/
-kind version
-kubectl version --client
 """)
 open(w + "/k8s.sh", "w").write("#!/usr/bin/env bash\nset -eo pipefail\ncreate_cluster() (\nkind create cluster --name fscache-accept --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5\n)\ncreate_cluster\n")
 open(w + "/acceptance.yml", "w").write("""name: Acceptance
@@ -295,7 +289,6 @@ expect ok "fixture: the known-good chain-records.json passes the records judge" 
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 FXD_3="fixture: plain scripts that only use scanners, docker and curl pass the plain judge"
 expect ok "$FXD_3" "" plain "$work"/plain/check-*.sh
-expect ok "fixture: the known-good bin/install-kind.sh passes the kind judge (AC14)" "" kind "$work/install-kind.sh"
 expect ok "fixture: the known-good k8s suite passes the cluster judge (AC14)" "" cluster "$work/k8s.sh"
 expect ok "fixture: the known-good acceptance.yml passes the suites judge (AC5)" "" suites "$work/acceptance.yml"
 # ---- AC1/AC9: the stage file, mutated one rule at a time ----------------------------------------------------------------
@@ -337,8 +330,6 @@ m s_threeup 'witness-runtime\n' 'elsewhere\n' 'upload-artifact' "AC12 a record d
 m s_img2   'name: images\n          path: images\n' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images2\n' 'exactly one download of the images' "AC1 a second download of the images artifact (Q4)"
 m s_imgno  '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n' '' 'exactly one download of the images' "AC1 no download of the images artifact (Q4)"
 m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'download-artifact' "AC1 another artifact name in place of images (Q4)"
-m s_kindact '        run: bash bin/install-kind.sh\n' '        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0\n' 'uses not allowed' "AC14 helm/kind-action in place of the pinned install"
-m s_kindform 'run: bash bin/install-kind.sh' 'run: bash bin/install-kind.sh \&\& kind create cluster' 'witnessed-local.sh' "AC14 the install step in another form"
 m s_xnogr  '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '' 'exactly its' "AC4 round 1 F2: Check without the grype install (check-scan.sh needs it)"
 m s_xnoosv '      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '' 'exactly its' "AC4 round 1 F2: Check without the osv-scanner install"
 m s_xinsord '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n' 'check step' "AC4 round 1 F2: the scanner installs out of the listed order"
@@ -401,7 +392,7 @@ m a_idoff  'ubuntu-24.04-arm\n    permissions:\n      contents: read' 'ubuntu-24
 m a_idread 'ubuntu-24.04-arm\n    permissions:\n      contents: read' 'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write' 'check-arm64' "REL-011-AC1 id-token: write put back on the arm64 job"
 m a_pkg    'ubuntu-24.04-arm\n    permissions:\n      contents: read' 'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      packages: read' 'check-arm64' "AC1 packages: read on the arm64 job"
 m a_sec    'name: arm64 under Witness\n'                       'name: arm64 under Witness\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}\n' 'secret'  "AC1 a secret in the arm64 job"
-m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: bash bin/install-kind.sh\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
+m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: kind version\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
 m a_nokind '      - name: arm64 under Witness\n        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh\n' '' 'check-arm64' "AC1 the arm64 job without its witnessed step"
 m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
 m a_nowb   '          name: signed-witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
@@ -412,7 +403,6 @@ m a_upname 'name: witness-check-arm64'                         'name: check-resu
 m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
 m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
 m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
-m s_kindno '      - name: install kind and kubectl \(pinned by sha256\)\n        run: bash bin/install-kind.sh\n' '' 'install kind' "AC14 no kind install step"
 # PR 3 round 1, F6 (Codex B3, A extra): the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
 # path and once, the witness-check upload by name and path. Each of these was accepted before.
 m s_xnowb '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
@@ -450,16 +440,7 @@ hm h_noset   'set -euo pipefail\n'                              ''              
 hm h_nostep  'release-verify\|release-apks\|'              ''                                                      'the helper'        "AC11 two of Release's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
 hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
-# ---- AC14: the kind install and the cluster ------------------------------------------------------------------------------
-km() { if mutate "$work/install-kind.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" kind "$work/$1.sh"; fi; }
-km k_ver     'v0.33.0/kind-linux-amd64'                         'v0.32.0/kind-linux-amd64'                                'the kind installer' "AC14 another kind version"
-km k_kver    'docker create kindest/node:v1.37.0@'                  'docker create kindest/node:v1.36.0@'                    'the kind installer' "AC14 another kubectl (node image) version"
-km k_ktag    '@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5\)' ')'                                'the kind installer' "AC14 kubectl from a node image given by tag only"
-km k_sha     'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d' 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0e' 'the kind installer' "AC14 a changed kind sha256"
-km k_ksha    '6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f' '922df28df248cc00a9e025f947704f1d1482de64ece54cfe57e61f19eaf1eef3' 'the kind installer' "AC14 the arm64 kubectl sha256 (the runner is amd64)"
-km k_nocheck ' \| sha256sum -c -'                              ''                                                       'the kind installer' "AC14 the downloads are not checked"
-km k_arm     'kind-linux-amd64'                                 'kind-linux-arm64'                                       'the kind installer' "AC14 another architecture"
-km k_after   'install -m 0755[^\n]*\n'                          ''                                                       'the kind installer' "AC14 nothing installed (or installed elsewhere)"
+# ---- AC14: the kind check and the cluster ------------------------------------------------------------------------------
 cm() { if mutate "$work/k8s.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" cluster "$work/$1.sh"; fi; }
 cm c8_tag    '@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5' ''                             'by digest'          "AC14 the node image by tag only"
 cm c8_noimg  ' --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5' '' 'by digest'      "AC14 kind's default node image"
@@ -534,7 +515,7 @@ w = sys.argv[1]
 os.makedirs(w + "/bin", exist_ok=True)
 rows = []
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
-          "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve", "install-kind"):
+          "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve"):
     p = f"bin/{n}" + (".py" if n == "check-govulncheck" else ".sh"); open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 os.makedirs(w + "/.github/policy", exist_ok=True)
@@ -708,7 +689,6 @@ expect ok "the real release.yml runs check beside rebuild, check needs build onl
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
-expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.0 against their committed sha256 (AC14)" "" kind "$root/bin/install-kind.sh"
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
@@ -729,7 +709,7 @@ out=$(signstaged evil)
 if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh still refuses a step that is not a record step"; else bad "REL-011-AC1 witness-sign-staged.sh accepted an unknown step: ${out:0:140}"; fi
 if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=321
+EXPECT=308
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -4,7 +4,9 @@ Each scanner job leaves its raw output per image under <scanner>/<image>/ in its
 
   grype      result.cdx.json   CycloneDX from `grype --vex <our VEX> -o cyclonedx-json` (VEX applied by Grype)
   scout      sbom.json         `docker scout sbom --format json`
-             cves.json         `docker scout cves --format gitlab --vex-location <our VEX>` (VEX applied by Scout)
+             cves.json         `docker scout cves --format gitlab --vex-author '^FosterStack LLC$' registry://<image>`
+                               (Scout applies our VEX through the attestation in the image index, REQ-REL-010;
+                               there is no --vex-location)
   inspector  sbom.cdx.json     inspector-sbomgen's CycloneDX
              scan.json         inspector-scan:ScanSbom's answer ({"sbom": CycloneDX with vulnerabilities})
   google     packages.json     the package list gcloud sent to on-demand scanning
@@ -95,10 +97,17 @@ def load_vex(path):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
+def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
+    if not isinstance(purl, str) or not purl.startswith("pkg:"):
+        return False
+    slash = purl.find("/", 4)
+    return 4 < slash < len(purl) - 1
+
+
 def _cdx_packages(doc):
-    """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
+    """Rule 3's package count: components that are packages (carry a package URL, pkg:<type>/<name>). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and isinstance(c.get("purl"), str) and c["purl"]]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and _is_package_url(c.get("purl"))]
 
 
 def _purl_name_version(purl):
@@ -216,7 +225,8 @@ def read_grype(d):
 def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
-    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and (a.get("purl") or a.get("version"))]
+    arts = [a for a in sbom.get("artifacts") or []
+            if isinstance(a, dict) and a.get("name") and _is_package_url(a.get("purl"))]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
