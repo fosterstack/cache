@@ -158,8 +158,17 @@ if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
-for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
+for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
     bad.append(f"the workflow sets `{k}`")
+# the one reviewed concurrency block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt of a head shares a group with the pull request's other first attempts, so a newer
+# push cancels its older run; every other run (a re-run of any head, a push to main, a merge_group) gets a group of its own per run and attempt, so ci.yml itself never cancels it nor
+# replaces it as a pending run, and a re-run of an old head cancels nothing. Anything else is refused: a shared group or cancel-in-progress on other events could cancel a required check.
+# Concurrency groups are repository-wide: another workflow that picks a colliding group is not checked here (a computed group defeats a prefix check, and a cancel fails closed:
+# a cancelled check is not a success).
+if "concurrency" in d and d["concurrency"] != {
+        "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
+    bad.append("the workflow's concurrency is not the reviewed block")
 if d.get("permissions") != {"contents": "read"}:
     bad.append("the workflow permissions are not exactly {contents: read}")
 on = d.get("on", {})
@@ -173,6 +182,14 @@ if not isinstance(push, dict) or push.get("branches") != ["main"]:
     bad.append("not triggered on push to main")
 elif set(push) != {"branches"}:
     bad.append("push is filtered: " + ", ".join(sorted(set(push) - {"branches"})))
+# the only triggers ci.yml may have: push (main), pull_request and merge_group (the merge queue). workflow_call and workflow_dispatch are refused: a called or dispatched run
+# would carry another context into the reviewed concurrency group.
+if isinstance(on, dict) and sorted(set(on) - {"push", "pull_request", "merge_group"}):
+    bad.append("ci.yml has triggers beyond push, pull_request and merge_group: " + ", ".join(sorted(set(on) - {"push", "pull_request", "merge_group"})))
+# no job of ci.yml may carry a concurrency setting: a job group competes with its parent workflow's group and can cancel the whole run
+for _jid, _j in (d.get("jobs") or {}).items():
+    if isinstance(_j, dict) and "concurrency" in _j:
+        bad.append(f"the job {_jid} has `concurrency`")
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
@@ -493,6 +510,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/patch-decide-test.sh"
   },
   {
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "run": "bash bin/audit-record-test.sh"
+  },
+  {
    "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
@@ -546,6 +567,7 @@ SPLIT_STEPS = json.loads(r'''{
   }
  ]
 }''')
+GATE6_NAME = "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)"
 for jid, want_steps in SPLIT_STEPS.items():
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
@@ -561,6 +583,10 @@ for jid, want_steps in SPLIT_STEPS.items():
     accepted = [want_steps]
     if jid == "allowlist-chain":      # the transition: the second exact form carries the chain's 25 suites (nothing between, nothing after)
         accepted.append(want_steps + json.loads(os.environ["PIN_WIRING_CHAIN25"]))
+    if jid == "allowlist-pins-auditor":   # the transition (cache#669's landing): exactly main's list, or it plus the gate-6 step once, right after patch-decide
+        _gi = [k for k, x in enumerate(want_steps) if x.get("run") == "bash bin/patch-decide-test.sh"]
+        if len(_gi) == 1 and not any(x.get("run") == "bash bin/audit-record-test.sh" for x in want_steps):
+            accepted.append(want_steps[:_gi[0] + 1] + [{"name": GATE6_NAME, "run": "bash bin/audit-record-test.sh"}] + want_steps[_gi[0] + 1:])
     if got not in accepted:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
@@ -646,7 +672,14 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" && exit 0
+  # Two exact forms are accepted: main's own (judged here) or the landing form, chain-v030's ci.yml, judged by
+  # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
+  export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
+  if main_out=$(judge "$work/head-ci.yml"); then exit 0; fi
+  landing="$here/.github/agent/tests/pin-wiring-landing.sh"
+  [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
+  if land_out=$(bash "$landing" 2>&1); then exit 0; fi
+  printf '%s\nthe landing form also refuses it: %s\n' "$main_out" "$land_out"
   exit 1
 fi
 
@@ -825,6 +858,18 @@ case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.s
 case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
 case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+# The transition judge (cache#669's landing): allowlist-pins-auditor is accepted in EXACTLY two forms: main's list, or it plus the gate-6 step once, right after patch-decide
+G6="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; g6 = {'name': 'gate 6 of the release process \\u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)', 'run': 'bash bin/audit-record-test.sh'}; "
+case_ g6-at-start                 bad "${G6}ps.insert(0, g6)"
+case_ g6-at-end                   bad "${G6}ps.append(g6)"
+case_ g6-before-patch-decide      bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh'), g6)"
+case_ g6-twice                    bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/patch-decide-test.sh') + 1, dict(g6))"
+case_ g6-or-true                  bad "${G6}g6['run'] += ' || true'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-renamed                  bad "${G6}g6['name'] = 'x'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-continue                 bad "${G6}g6['continue-on-error'] = 'true'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
@@ -840,7 +885,18 @@ case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-concurrency-test       bad "d['jobs']['test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-concurrency-lint-same  bad "d['jobs']['lint']['concurrency'] = d['concurrency'] if 'concurrency' in d else {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ on-workflow-call           bad "d['on']['workflow_call'] = {}"
+case_ on-workflow-dispatch       bad "d['on']['workflow_dispatch'] = {}"
+case_ on-merge-group             ok  "d['on']['merge_group'] = {'types': ['checks_requested']}"
+case_ on-schedule                bad "d['on']['schedule'] = [{'cron': '0 0 * * *'}]"
 case_ wf-concurrency             bad "d['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-reviewed    ok  "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-cancel-all  bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github.workflow }}-\${{ github.ref }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"
@@ -963,6 +1019,70 @@ else: json.dump(d, open(sys.argv[2], "w"))
 PY
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
+
+
+# ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
+# The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
+# pin-wiring-landing.sh accepts: it is chain-v030's own pin-wiring-test.sh, byte for byte (checked below).
+# The cases read chain-v030 as git objects at ONE pinned commit, the one the copy was taken from, so a later
+# push to chain-v030 cannot turn main red; the re-copy before the landing moves the pin. The follow-up after
+# the landing deletes this section.
+LANDING_COMMIT=6a36b066b38cc9820be4db2f516057026df30b99
+landing_ref=""
+if git cat-file -e "$LANDING_COMMIT^{commit}" 2> /dev/null; then landing_ref=$LANDING_COMMIT; fi
+git_commit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c; }
+landing_edit() {  # <ci.yml path> <python edit of the parsed file>
+  python3 - "$1" "$2" <<'PYL'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+exec(sys.argv[2])
+yaml.safe_dump(d, open(sys.argv[1], "w"), sort_keys=False)
+PYL
+}
+lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty>: judge mode over a temp commit
+  local r="$work/land-$1"; rm -rf "$r"; mkdir -p "$r/.github/policy" "$r/test-evidence" "$r/tools/govulncheck"
+  git archive "$landing_ref" .github/workflows | tar -x -C "$r"
+  git show "$landing_ref:.github/policy/required-checks.json" > "$r/.github/policy/required-checks.json"
+  git show "$landing_ref:test-evidence/suite-floors.json" > "$r/test-evidence/suite-floors.json"
+  git show "$landing_ref:tools/govulncheck/go.mod" > "$r/tools/govulncheck/go.mod"
+  [ -z "$3" ] || landing_edit "$r/.github/workflows/ci.yml" "$3"
+  ( cd "$r" && git init -q . && git add -A && git_commit )
+  head=$(cd "$r" && git rev-parse HEAD)
+  if out=$(cd "$r" && PIN_WIRING_JUDGE_GIT="$head" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1)
+  then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS landing:$1 -> $got"
+  else failn=$((failn+1)); echo "FAIL landing:$1 -> $got, want $2 ($out)"; fi
+}
+if [ -z "$landing_ref" ]; then
+  failn=$((failn+1)); echo "FAIL landing form: commit $LANDING_COMMIT is not in this clone (CI fetches every branch)"
+else
+  J='d["jobs"]'
+  WF_CONC='d["concurrency"] = {"group": "ci-pr", "cancel-in-progress": "true"}'
+  COUNTING='[s for j in d["jobs"].values() for s in (j.get("steps") or [])'
+  COUNTING+=' if "chain-hostile-test.sh" in (s.get("run") or "") and "suite-guard-run.py run" in s["run"]][0]'
+  lcase chain-v030-as-it-is                    ok  ""
+  lcase wrong-workflow-concurrency             bad "$WF_CONC"
+  lcase job-concurrency-on-lint                bad "$J['lint']['concurrency'] = {'group': 'x'}"
+  lcase live-test-group-cancels                bad "$J['live-test']['concurrency']['cancel-in-progress'] = 'true'"
+  lcase shard-step-deleted                     bad "$J['allowlist-chain-2']['steps'].pop()"
+  lcase shard-step-if-false                    bad "$J['allowlist-chain-3']['steps'][-1]['if'] = 'false'"
+  lcase gate-if-removed                        bad "$J['allowlist-chain'].pop('if')"
+  lcase gate-needs-a-shard-short               bad "$J['allowlist-chain']['needs'] = $J['allowlist-chain']['needs'][:3]"
+  lcase counting-step-or-true                  bad "x = $COUNTING; x['run'] += ' || true'"
+  lcase counting-step-env                      bad "x = $COUNTING; x['env'] = {'PINS_DRY': '1'}"
+  lcase persona-step-removed                   bad "$J['allowlist-persona']['steps'].pop()"
+  lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
+  # main's own single-job allowlist-chain inside chain-v030's ci.yml fits neither form
+  MAIN="m = yaml.load(open('$here/.github/workflows/ci.yml'), Loader=yaml.BaseLoader)"
+  SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
+  SINGLE+="$J['allowlist-chain'] = m['jobs']['allowlist-chain']"
+  lcase mixed-single-job-chain                 bad "$SINGLE"
+  # the landing judge is chain-v030's own, byte for byte
+  judge_file=.github/agent/tests/pin-wiring-test.sh
+  if git show "$landing_ref:$judge_file" | cmp -s - "$here/.github/agent/tests/pin-wiring-landing.sh"
+  then pass=$((pass+1)); echo "PASS landing judge is chain-v030's pin-wiring-test.sh at $landing_ref, byte for byte"
+  else failn=$((failn+1)); echo "FAIL landing judge differs from chain-v030's pin-wiring-test.sh at $landing_ref"; fi
+fi
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
