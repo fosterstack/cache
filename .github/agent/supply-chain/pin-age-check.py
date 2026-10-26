@@ -14,6 +14,7 @@ Fixtures (offline tests): {"now": ISO, "times": {ITEM: {"time": ISO, "source": S
 import argparse
 import base64
 import hashlib
+import http.client
 import datetime as dt
 import importlib.util
 import json
@@ -22,6 +23,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,17 +73,35 @@ def is_pin(version):
     return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
 
 
+FILE_PIN_SOURCE = "file-pin-ruling"
+
+
+def is_file_item(item):
+    """A checksum or version FILE item (its identity is the file's content), the only kind a file_pins row can date."""
+    path = getattr(item, "raw", None) or ""
+    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:") \
+        and bool(re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])) and path.rsplit("/", 1)[-1] not in inv.VERSION_FILES   # a checksum file only: never a version file (.python-version ...)
+
+
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
-            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
+    ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    if ruled_file:
+        proofs = [p for p in proofs if p[1] == FILE_PIN_SOURCE]    # the row's published time decides, never an earlier clock of the pull request
+    if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
+    bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
+    if bad is not None:
+        return False, f"age not provable: the label '# {bad}' does not name the pinned commit (the label is wrong; this is not a missing clock)", None
+    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
+        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
-        if src not in SERVER_SIDE and src != "first-seen":
+        if src not in SERVER_SIDE and src != "first-seen" and not (src == FILE_PIN_SOURCE and ruled_file):
             continue
         if src == "github-release" and item.kind == "action":
             continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
@@ -122,35 +142,106 @@ def _gh_failed(r):
     return True
 
 
-def _gh_pages(path):
-    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line)."""
+_NULL = type(None)
+
+
+def _shaped(value, need, what):
+    """The one way to read a JSON object answer: `need` is ((key, type or tuple of types), ...), given by every caller (no default). An answer that is not an object,
+    or lacks a needed key, or holds it as another type, is an answer we cannot read (CouldNotLook): never 'nothing there'. Keys a caller reads with .get are the
+    optional ones; each of those is type-checked where it is used."""
+    if not isinstance(value, dict):
+        raise CouldNotLook(f"{what} is not a JSON object")
+    for key, typ in need:
+        types = typ if isinstance(typ, tuple) else (typ,)
+        got = value.get(key, _FAILED)
+        if got is _FAILED or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
+            raise CouldNotLook(f"{what} lacks {key!r} of the expected type")
+    return value
+
+
+def _dicts(value, what, need):
+    """A list of JSON objects each holding every key of `need` (CouldNotLook otherwise): an element of another shape is an answer we cannot read."""
+    if not isinstance(value, list):
+        raise CouldNotLook(f"{what} is not a list of JSON objects")
+    for x in value:
+        _shaped(x, need, what)
+    return value
+
+
+def _gh_pages(path, rows):
+    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line); every row must hold the keys of `rows`."""
     r = _gh_run(["gh", "api", "--paginate", path, "--jq", ".[]"], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
     try:
-        return [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
+        got = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
     except ValueError:
-        return None
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _gh_api(path):
+def _gh_api(path, need):
+    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
     r = _gh_run(["gh", "api", path], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
     try:
-        return json.loads(r.stdout)
+        got = json.loads(r.stdout)
     except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _shaped(got, need, f"GitHub API {path.split('?')[0]}")
+
+
+def _gh_list(path, rows):
+    """One page of a GitHub list answer, every row holding the keys of `rows`; None only for a plain miss (404)."""
+    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
+    if r.returncode:
+        _gh_failed(r)
         return None
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _http_json(url, timeout=30):
+_FAILED = object()      # the server could not be asked (lenient mode)
+_GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
+
+
+def _fetch_json(url, timeout=30, strict=False):
+    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
+    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
+    or a body that is not JSON means we could not look (CouldNotLook)."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
-    except (OSError, ValueError):
+    except urllib.error.HTTPError as e:
+        if not strict:
+            return _FAILED
+        if e.code in (404, 410):
+            return _GONE
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        if not strict:
+            return _FAILED
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
+
+
+def _http_dict(url, need, timeout=30, strict=False):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked
+    (strict: when it said 404/410); valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+    d = _fetch_json(url, timeout, strict)
+    if d is _FAILED or d is _GONE:
         return None
+    return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
+
+
+def _http_json_strict(url, need, timeout=30):
+    """_http_dict where only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
+    return _http_dict(url, need, timeout, strict=True)
 
 
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
@@ -160,10 +251,13 @@ TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version
 }
 
 
+_RELEASE = (("published_at", (str, _NULL)), ("draft", bool))      # a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
+
+
 def _release_time(repo, tags):
     for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE)
+        if rel and rel["published_at"] and not rel["draft"]:
             return rel["published_at"]
     return None
 
@@ -206,32 +300,61 @@ def _tag_for_commit(repo, sha):
 
 
 def _commit_date(repo, sha):
-    c = _gh_api(f"repos/{repo}/commits/{sha}")
-    return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
+    c = _gh_api(f"repos/{repo}/commits/{sha}", (("commit", dict),))
+    if c is None:
+        return None
+    committer = c["commit"].get("committer")      # optional: a commit without a committer has no date
+    if committer is None:
+        return None
+    date = _shaped(committer, (), "the commit's committer").get("date")
+    if date is not None and not isinstance(date, str):
+        raise CouldNotLook("GitHub API commit answered with a committer date that is not text")
+    return date
 
 
-def _go_module(path, version):
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+
+
+def _go_module(path, version, strict=False):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
-        if info and info.get("Version"):
-            return mod, info
+        url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
+        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+        if info is None:
+            continue      # not there (strict) or the proxy could not be asked (lenient): try the shorter module path
+        if not info["Version"]:
+            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
+        return mod, info
     return None, None
 
 
 def _go_index_time(mod, version, vcs_time):
-    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it)."""
+    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it).
+    Every row of a page is validated before any is used: an unreadable row is CouldNotLook, never 'not this module'."""
     since = vcs_time
     for _ in range(40):
-        rows = []
         try:
             with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
-                rows = [json.loads(line) for line in r.read().decode().splitlines() if line.strip()]
-        except (OSError, ValueError):
+                lines = [ln for ln in r.read().decode().splitlines() if ln.strip()]
+        except (OSError, ValueError, http.client.HTTPException):
             return None
+        rows = []
+        for ln in lines:
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                raise CouldNotLook("index.golang.org answered with a line that is not JSON")
+            if not (isinstance(row, dict) and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
+                raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")
+            rows.append(row)
         for row in rows:
-            if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
+            if row["Path"] == mod and row["Version"] == version:      # exact (the module path is case-sensitive); every row was validated above
                 return row["Timestamp"]
         if len(rows) < 2000:
             return None
@@ -258,11 +381,13 @@ def observed():
     repo = os.environ.get("GITHUB_REPOSITORY")
     state = None
     if repo:
-        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100") or {}
-        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
+        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+        wruns = _dicts(data["workflow_runs"], "the scheduled workflow runs", (("id", int),))
+        runs = sorted((r for r in wruns if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
         for run in runs[:30]:
-            arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
-            art = next((x for x in arts if x.get("name") == tobs.STATE_NAME and not x.get("expired")), None)
+            adata = _gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts", (("artifacts", list),)) or {"artifacts": []}
+            arts = _dicts(adata["artifacts"], "the artifacts of a scheduled run", (("id", int), ("name", str)))
+            art = next((x for x in arts if x["name"] == tobs.STATE_NAME and not x.get("expired")), None)
             if art:
                 raw = _gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")
                 try:
@@ -284,38 +409,54 @@ def _pr_clock(item, root, base, head="HEAD"):
     if not repo or not base or not item.version:
         return None
     r = _gh_run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
+    commits = r.stdout.split()
     first = None
-    for c in r.stdout.split():
+    for i, c in enumerate(commits):
         try:
             if (root, c) not in _INV_CACHE:
                 _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
-            if item.key in _INV_CACHE[(root, c)]:
-                first = c
+            got = _INV_CACHE[(root, c)].get(item.key)
+            if got is not None and got.sum == item.sum:
+                first = i
                 break
         except RuntimeError:
             continue
-    if not first:
+    if first is None:
         return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
-    times = [x["created_at"] for x in runs if x.get("created_at")]
-    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    intro = commits[first]
+    for c in commits[first:]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own (base..head bounds the walk)
+        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c], capture_output=True).returncode != 0:
+            continue      # a sibling in a merge does not contain the introducing commit: its runs lend no clock
+        times = _run_times(repo, c)
+        if times:
+            return min(times)
+    return None
+
+
+def _run_times(repo, commit):
+    rdata = _gh_api(f"repos/{repo}/actions/runs?head_sha={commit}&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+    runs = _dicts(rdata["workflow_runs"], "the workflow runs of a commit", (("created_at", (str, _NULL)),))
+    times = [x["created_at"] for x in runs if x["created_at"]]
+    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:
         for line in r2.stdout.splitlines():
             try:
-                c = json.loads(line).get("created_at")
+                row = json.loads(line)
             except ValueError:
-                continue
+                raise CouldNotLook("GitHub API check-suites answered with a line that is not JSON")
+            c = _shaped(row, (("created_at", (str, _NULL)),), "a check suite of the first commit")["created_at"]
             if c:
                 times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
-    return min(times) if times else None
+    return times
 
 
 def _release_with_assets(repo, tags):
     for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE + (("assets", list),))
+        if rel and rel["published_at"] and not rel["draft"]:
+            _dicts(rel["assets"], "the assets of a release", ())      # name, created_at and updated_at are optional: an asset without a name matches no download, so the release lends no proof (the pin then fails as unprovable)
             return rel
     return None
 
@@ -330,12 +471,13 @@ def live_proofs(item, root, base=None, head="HEAD"):
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
         tags = _tags_for_commit(item.name, item.version)
         want = [item.label] if item.label else tags
-        if not item.label or item.label in tags:
-            state = observed()
-            for tag in want:
-                t = tobs.first_seen(state, item.name, tag, item.version)
-                if t:
-                    out.append((t, "observer"))
+        if item.label and item.label not in tags:
+            return [(None, "bad-label:" + item.label)]    # the label Dependabot bumps does not resolve to this commit: age not provable, with no PR clock to lean on
+        state = observed()
+        for tag in want:
+            t = tobs.first_seen(state, item.name, tag, item.version)
+            if t:
+                out.append((t, "observer"))
     elif item.kind == "tool":
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
         if repo:
@@ -351,13 +493,15 @@ def live_proofs(item, root, base=None, head="HEAD"):
     elif item.kind == "gotool":
         mod, info = _go_module(item.name, item.version)
         if mod:
-            t = _go_index_time(mod, info["Version"], info["Time"])
+            t = _go_index_time(mod, info["Version"], info["Time"]) if isinstance(info.get("Time"), str) else None      # no readable version-control time: no go-index proof (the pin then fails as unprovable)
             if t:
                 out.append((t, "go-index"))
     elif item.kind == "package":
         name = item.name.split("/", 1)[1]
-        d = _http_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
-        ups = [u.get("upload_time_iso_8601") for u in (d or {}).get("urls", []) if u.get("upload_time_iso_8601")]
+        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json", (("urls", list),))
+        ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {"urls": []})["urls"], "pypi urls", ()) if u.get("upload_time_iso_8601")]      # the upload time is optional, text when there
+        if not all(isinstance(x, str) for x in ups):
+            raise CouldNotLook("pypi.org answered with an upload time that is not text")
         if ups:
             out.append((max(ups), "pypi"))  # the newest file: a wheel added later to an old release is young
     elif item.kind == "image" and item.version:
@@ -376,7 +520,7 @@ def _registry_push(item):
         owner, _, pkg = name[len("ghcr.io/"):].partition("/")
         for scope in ("orgs", "users"):
             for page in (1, 2, 3):
-                vs = _gh_api(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}")
+                vs = _gh_list(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}", (("name", str), ("created_at", (str, _NULL))))
                 if not vs:
                     break
                 for v in vs:
@@ -388,15 +532,20 @@ def _registry_push(item):
         ns, repo = parts[-2], parts[-1]
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
-            d = _http_json(url)
-            if not d:
+            d = _http_dict(url, (("results", list),))
+            if d is None:
                 return None
-            for tag in d.get("results", []):
-                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in tag.get("images", [])):
-                    return tag.get("tag_last_pushed")
+            for tag in _dicts(d["results"], "hub.docker.com results", ()):
+                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images", ())):      # digest, images and tag_last_pushed are optional
+                    pushed = tag.get("tag_last_pushed")
+                    if pushed is not None and not isinstance(pushed, str):
+                        raise CouldNotLook("hub.docker.com answered with a push time that is not text")
+                    return pushed
             url = d.get("next")
             if not url:
                 break
+            if not (isinstance(url, str) and url.startswith("https://hub.docker.com/")):
+                raise CouldNotLook("hub.docker.com answered with a next link that is not a hub.docker.com URL")
     return None
 
 
@@ -427,6 +576,9 @@ def check(moved_items, source, now, min_days):
     rows = []
     for it in moved_items:
         ok, reason, proof = judge_item(it, source.proofs(it), now, min_days)
+        note = getattr(source, "notes", {}).get(it.key)
+        if note:
+            reason += f" ({note})"
         rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason, "proof": proof})
     return rows
 
@@ -458,6 +610,9 @@ def main(argv=None):
         return _run(a, moved, fx, now)
     except RuntimeError as e:
         print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        return 2
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
+        print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
         return 2
     except CouldNotLook as e:
         print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
@@ -1294,6 +1449,58 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
+_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?")   # a time with a real zone or none (UTC, as parse_time reads it); nothing parse_time would bend (a +99:99 offset)
+
+
+def load_file_pins(path, required=False):
+    """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins list (the BASE branch's copy: rows a pull request brings
+    do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time that is not a time rules nothing. Two rows for
+    one (file, content), a list that is not a list or an unreadable file stop the check (RuntimeError, exit 2): never 'nothing ruled' by guesswork and never the older of two."""
+    if not os.path.exists(path):
+        if required:
+            raise RuntimeError(f"the exceptions file {path} (file_pins) does not exist")
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the exceptions file {path} (file_pins) is unreadable: {e}")
+    rows = d.get("file_pins", []) if isinstance(d, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path}: file_pins is not a list")
+    out, seen = {}, set()
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            raise RuntimeError(f"{path}: file_pins row {i} is not an object")
+        f_, c_ = r.get("file"), r.get("content")
+        if isinstance(f_, str) and isinstance(c_, str):
+            if (f_, c_) in seen:
+                raise RuntimeError(f"{path}: file_pins repeats the row for {f_} with content {c_}")
+            seen.add((f_, c_))
+        fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
+        if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
+                or not _STRICT_TIME.fullmatch(r["published"]) or parse_time(r["published"]) is None:
+            continue
+        out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
+    return out
+
+
+class FilePinSource:
+    """Wraps a proof source: a file item the base branch's file_pins names (same file AND same content) gets the row's published time as its proof."""
+
+    def __init__(self, inner, pins):
+        self.inner, self.pins, self.notes = inner, pins, {}
+
+    def proofs(self, item, *args):
+        out = list(self.inner.proofs(item, *args))
+        if is_file_item(item):
+            row = self.pins.get((item.raw, item.step[len("content:"):]))
+            if row:
+                out.append((row[0], FILE_PIN_SOURCE))
+                self.notes[item.key] = f"file pin ruled by the base branch: {row[1]} version {row[2]}"
+        return out
+
+
 def load_base_inputs(path, required=False):
     """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside this script, never the pull request's tree).
     A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and never 'everything'."""
@@ -1509,7 +1716,7 @@ def _run(a, moved, fx, now):
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), now, a.min_days)
+        rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
