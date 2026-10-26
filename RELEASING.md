@@ -147,7 +147,7 @@ echo "$VER"
 # Image signature: who signed these exact bytes. The signer is the Release
 # stage's workflow at this release tag.
 cosign verify "ghcr.io/fosterstack/cache:${VER}" \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
@@ -166,7 +166,7 @@ every archive by SHA-256. The four metadata files are pinned the same way by
 for f in checksums.txt release-files.sha256; do
   cosign verify-blob "$f" \
     --bundle "$f.bundle" \
-    --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+    --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
     --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 done
 

