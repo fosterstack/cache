@@ -18,7 +18,7 @@ jobs = d.get("jobs", {})
 bad = []
 def text(j): return "\n".join((s.get("run") or "") for s in jobs.get(j, {}).get("steps", []))
 def uses(j): return [str(s.get("uses", "")) for s in jobs.get(j, {}).get("steps", [])]
-VAR = ("production", "debug", "fips")
+VAR = ("production", "fips")
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "panel"):
     if j not in jobs:
         bad.append(f"no {j} job")
@@ -27,12 +27,12 @@ if bad:
 # rule 1: the fixed image set, written in the workflow
 for j in ("panel-grype", "panel-scout", "panel-inspector"):
     t = text(j)
-    if "for v in production debug fips" not in t or "for arch in amd64 arm64" not in t:
-        bad.append(f"{j} does not scan the six images, fixed in the workflow")
+    if "for v in production fips" not in t or "for arch in amd64 arm64" not in t:
+        bad.append(f"{j} does not scan the four images (production and fips, each on both architectures), fixed in the workflow")
 tg = text("panel-google")
-if "for v in production debug fips" not in tg or "arm64" in tg or "for arch" in tg \
-        or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
-    bad.append("panel-google does not scan exactly the three variants on linux/amd64 (and never arm64)")
+if "for v in production fips" not in tg or "arm64" in tg or "for arch" in tg \
+        or "layout-archive.sh \"/tmp/oci/${v}\" amd64" not in tg or 'cand-${v}-amd64"' not in tg:
+    bad.append("panel-google does not scan exactly the two variants on linux/amd64 (and never arm64)")
 for j in jobs:
     # manifests/rescan are the PUBLISHED-release rescan (merged from daily-rescan.yml, consolidation 3 of 4;
     # REQ-REL-003), which runs only the scanners in .github/policy/scanners.json — neither is the scanner panel.
@@ -57,14 +57,14 @@ if "secrets." in str(gj) or "GOOGLE_APPLICATION_CREDENTIALS" in tg:
 if "--vex .vex/fosterstack-cache.openvex.json" not in text("panel-grype"):
     bad.append("Grype is not given the VEX file")
 # REQ-REL-010 on the rescan (handoff 0521): Scout applies our statements only through an attestation in the image index, and an
-# attestation lives in a registry. The vex-attach job gives each candidate index its attestation children (bin/vex-index.py) and
+# attestation lives in a registry. Build gave each candidate index its attestation children; the vex-attach job pushes them as built and
 # pushes it to the SCRATCH package only; panel-scout scans those registry refs by exact index digest with our author.
 import json, os, subprocess, tempfile
 ROOT = os.environ.get("PANEL_ROOT", ".")
 SCRATCH = "ghcr.io/fosterstack/cache-scout-probe"
 FIXTURE_DIGEST = "sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"
 DIG = {"fixture-before": "sha256:" + "1" * 64, "fixture-ours": "sha256:" + "2" * 64, "fixture-docker": "sha256:" + "6" * 64,
-       "production": "sha256:" + "3" * 64, "debug": "sha256:" + "4" * 64, "fips": "sha256:" + "5" * 64}
+       "production": "sha256:" + "3" * 64, "fips": "sha256:" + "5" * 64}
 STUB = r"""#!/usr/bin/env bash
 { printf '%s' "$(basename "$0")"; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
 if [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout cves" ]; then
@@ -110,11 +110,11 @@ else:
     if perms != {"contents": "read", "packages": "write"} or va.get("environment") or va.get("if"):
         bad.append("vex-attach must hold exactly contents: read and packages: write, no environment, no identity token, no condition: %s" % perms)
     vneeds = va.get("needs", []); vneeds = vneeds if isinstance(vneeds, list) else [vneeds]
-    if "assemble" not in vneeds or "build" not in vneeds:
-        bad.append("vex-attach does not wait for the build and the assembled candidates")
+    if vneeds != ["build"]:
+        bad.append("vex-attach does not wait for exactly the build (the chain's candidate images are Build's snapshot artifact)")
     vt = text("vex-attach")
     vsteps = va.get("steps", [])
-    att = [x for x in vsteps if "attach our OpenVEX to each candidate index" in (x.get("name") or "")]
+    att = [x for x in vsteps if "push each candidate index as Build attested it" in (x.get("name") or "")]
     fxs = [x for x in vsteps if "self-check fixtures" in (x.get("name") or "")]
     prn = [x for x in vsteps if "prune the scratch package" in (x.get("name") or "")]
     if len(att) != 1 or len(fxs) != 1 or len(prn) != 1:
@@ -183,19 +183,30 @@ exit 0
         rc, calls = run_prune("del-5000-then-fail")
         if rc == 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
             bad.append("the prune goes green when another delete fails beside a kept 5000-download version (rc=%s)" % rc)
-        for need in ("vex=.vex/fosterstack-cache.openvex.json", 'python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"',
-                     'python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"',
+        # Build's assemble already gave each layout its attestation children (ruling, cache#561 B1): the candidates are pushed as built, checked against Build's own digest file, and the tool is NOT run on them again (it refuses a second run)
+        for need in ('final=$(jq -er', '[ "$(cat "/tmp/oci/${v}.digest")" = "${final}" ]',
                      'python3 bin/release-layout.py "${d}" "${final}"', 'tag="cand-${GITHUB_RUN_ID}-${v}"', "chmod -R go-w", "skopeo copy --all",
-                     '--digestfile "/tmp/attach/${v}.pushed"', '[ "${pushed}" = "${final}" ]', "for v in production debug fips"):
+                     '--digestfile "/tmp/attach/${v}.pushed"', '[ "${pushed}" = "${final}" ]', "for v in production fips", 'cp -R "/tmp/oci/${v}" "${d}"'):
             if need not in att[0].get("run", ""):
                 bad.append("the attach step lacks %s" % need)
+        if "vex-index" in att[0].get("run", ""):
+            bad.append("the push step runs the attestation tool again on Build's layouts (they are already attested; the tool refuses a second run)")
+        # every plain assignment form of `tag` in the whole job (cache#561 ruling A1: tag=, tag+=, declare/local/export/readonly/typeset ... tag, read ... tag, printf -v tag, after ; & | ( { do then else): exactly one, the approved one. Regex count only, no shell parser; a deliberately hidden form is for the reviewers (owner, Oct 3)
+        TAG_ASSIGN = r"(?:^|[;&|(){!]|\b(?:do|then|else|if|elif|while|until|time)\b|\b\w+\+?=\S*[ \t])[ \t]*(?:(?:declare|local|export|readonly|typeset)[ \t]+(?:-[A-Za-z]+[ \t]+)*)?tag\+?=|\b(?:read|mapfile|readarray)\b[^\n;|&]*\btag\b|\bprintf[ \t]+-v[ \t]+tag\b|\b(?:declare|local|export|readonly|typeset)[ \t]+(?:-[A-Za-z]+[ \t]+)*tag(?![\w=])"
+        if len(re.findall(TAG_ASSIGN, vt, re.M)) != 1 or not re.search(r'^\s*tag="cand-\$\{GITHUB_RUN_ID\}-\$\{v\}"$', att[0].get("run", ""), re.M):
+            bad.append("the job assigns a tag in any way but the one candidate tag cand-${GITHUB_RUN_ID}-${v}")
+        if len(re.findall(r"\bskopeo copy\b", att[0].get("run", ""))) != 1:
+            bad.append("the push step is not exactly one skopeo copy")
         for need in ("python3 bin/vex-index.py layout --layout", "python3 bin/vex-index.py verify-layout --layout", "--base-digest",
                      ".vex/fosterstack-cache.openvex.json", "CVE-2023-4911", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "chmod -R go-w",
                      "--digestfile /tmp/attach/before.pushed", "--digestfile /tmp/attach/ours.pushed", '[ "$(cat /tmp/attach/ours.pushed)" = "${final}" ]', '[ "$(cat /tmp/attach/before.pushed)" = "${before}" ]', "selfcheck-before-${GITHUB_RUN_ID}", "selfcheck-ours-${GITHUB_RUN_ID}"):
             if need not in fxs[0].get("run", ""):
                 bad.append("the fixture step lacks %s" % need)
+    # no other push tool in the job: the scratch package is written by skopeo copy to docker://<scratch>:<tag> and nothing else
+    if re.search(r"\b(crane|oras|regctl|cosign|buildx)\b|\bdocker\s+(push|buildx|image\s+push)\b|\bgh\s+api\b[^\n]*(-X|--method)\s+(PUT|POST|PATCH)|\bcurl\b[^\n]*(-X\s*(PUT|POST|PATCH)|--upload)", vt):
+        bad.append("vex-attach carries a push tool other than skopeo copy to the scratch package")
     # the fixture step, RUN: skopeo lays the pinned digest out as a single IMAGE manifest (it is debian 12.0's linux/amd64 manifest, not its index);
-    # the step must wrap it into a one-child index so that bin/vex-index.py layout (unchanged, strict) accepts it, and then push it by digest
+    # the step must wrap it into a one-child index so that the attestation tool's layout check (unchanged, strict) accepts it, and then push it by digest
     if len(fxs) == 1:
         SKOPEO = r"""#!/usr/bin/env python3
 import hashlib, json, os, sys
@@ -224,7 +235,7 @@ elif dst.startswith("docker://") and df:
         def fixture_problems(run_text):
             out = []
             with tempfile.TemporaryDirectory() as t0:
-                t = os.path.realpath(t0)      # vex-index.py refuses any path through a symlink (macOS /var)
+                t = os.path.realpath(t0)      # the attestation tool refuses any path through a symlink (macOS /var)
                 os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
                 with open(os.path.join(t, "stub", "skopeo"), "w") as fh:
                     fh.write(SKOPEO)
@@ -317,11 +328,11 @@ else:
     scouts = [l for l in log if l.startswith("docker scout cves")]
     sboms = [l for l in log if l.startswith("docker scout sbom")]
     want = ["docker scout cves --format gitlab --vex-author \\^FosterStack\\ LLC\\$ --platform linux/%s registry://%s@%s" % (a, SCRATCH, DIG[v])
-            for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
+            for v in ("production", "fips") for a in ("amd64", "arm64")]
     wsbom = ["docker scout sbom --format json --platform linux/%s registry://%s@%s" % (a, SCRATCH, DIG[v])
-             for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
+             for v in ("production", "fips") for a in ("amd64", "arm64")]
     if scouts != want or sboms != wsbom:
-        bad.append("Scout's scan does not run on our six attested candidates by exact digest with our author: %s" % scouts)
+        bad.append("Scout's scan does not run on our four attested candidates by exact digest with our author: %s" % scouts)
     if rc != 0:
         bad.append("the Scout scan step fails on a clean day")
 if not diag:
@@ -343,6 +354,63 @@ else:
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
+# rc-5a D1 (Fable R4, astra B4): Grype runs with an empty config file and refuses GRYPE_* variables (as bin/grype-scan.sh does), and a failed Grype or Scout
+# command removes that image's output directory, so a readable partial report can never count as "ran" (the contract: fewer outputs = did not run)
+tg_ = text("panel-grype")
+if not re.search(r'grype "docker-archive:/tmp/arc/\$\{v\}-\$\{arch\}\.tar" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
+    bad.append("panel-grype does not run grype with -c on an empty file made in the step")
+if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker(?:-archive)?:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker-archive:[^\"]*\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
+    bad.append("panel-grype runs a grype command (the database update or a scan) without -c on the empty config")
+if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in tg_:
+    bad.append("panel-grype's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
+if not re.search(r"compgen -e \| grep '\^GRYPE_'", tg_) or "exit 2" not in tg_.split("compgen -e", 1)[-1].split("done", 1)[0]:
+    bad.append("panel-grype does not refuse a GRYPE_* variable in the environment before it runs")
+if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', tg_):
+    bad.append("panel-grype does not remove the image's output directory when grype fails")
+ts_ = text("panel-scout")
+if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', ts_.split("docker scout sbom", 1)[-1]):
+    bad.append("panel-scout does not remove the image's output directory when docker scout fails")
+# rc-5a D2 (astra B6, Fable R3 and R4): the published-release rescan holds to the same rules as the gates. Grype reads an empty config, refuses GRYPE_*, and also writes
+# a CycloneDX inventory; osv-scanner reads an empty config, refuses OSV_SCANNER_*, and lists every package and every vulnerability; each child's package count
+# (components with a purl; osv's results[].packages[]) goes into children-scanned.jsonl, and bin/rescan-statement.py refuses a completed child without one.
+rs_ = (jobs.get("rescan") or {}).get("steps", [])
+gs_ = [x.get("run") or "" for x in rs_ if x.get("id") == "grype"]
+os_ = [x.get("run") or "" for x in rs_ if x.get("id") == "osv"]
+if len(gs_) != 1 or len(os_) != 1:
+    bad.append("the rescan job lacks its one grype step or its one osv-scanner step")
+else:
+    g_, o_ = gs_[0], os_[0]
+    if not re.search(r'grype "registry:\$\{ref\}" \$plat_arg\s+-c /tmp/empty-grype\.yaml', g_) or not re.search(r': > /tmp/empty-grype\.yaml', g_):
+        bad.append("the published grype step does not run with -c on an empty file made in the step")
+    if not re.search(r"compgen -e \| grep '\^GRYPE_'", g_) or "exit 2" not in g_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:
+        bad.append("the published grype step does not refuse a GRYPE_* variable before it runs")
+    if '-o "json=${out}"' not in g_ or '-o "cyclonedx-json=${sbom}"' not in g_:
+        bad.append("the published grype step does not write both its JSON report and a CycloneDX inventory")
+    if "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in g_ or "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in o_:
+        bad.append("a published step records a package count that is not a plain integer (an empty or odd jq result would stop the loop before the child's record is written)")
+    st_ = [x.get("run") or "" for x in rs_ if x.get("id") == "statement"]
+    if len(st_) != 1 or '--expect-children "$(grep -c . /tmp/children.txt)"' not in st_[0]:
+        bad.append("the statement step does not pass the number of enumerated children (--expect-children): a shorter manifest must be an error")
+    if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in g_:
+        bad.append("the published grype step's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
+    pk_lines = [ln for ln in g_.splitlines() if ln.strip().startswith("pk=$(jq ")]   # a comment that quotes the line is not the line
+    pk_ = re.fullmatch(r"pk=\$\(jq '([^']+)' \"\$\{sbom\}\" 2>/dev/null\) \|\| pk=0", pk_lines[0].strip()) if len(pk_lines) == 1 else None
+    if not pk_ or "packages:$k" not in g_.replace(" ", ""):
+        bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
+    else:   # the count runs on inventories: only a package URL (pkg:<type>/<name>) is a package, never a file, a number or not-a-purl
+        real, junk = "pkg:deb/debian/glibc@2.36", ["not-a-purl", "pkg:", "pkg:/", "pkg:deb/", 7, None, "pkg:golang/"]
+        for want, purls in ((0, []), (1, [real]), (0, junk), (2, [real, "pkg:golang/github.com/a/b@v1"] + junk)):
+            inv = {"components": [{"purl": x} for x in purls] + [{"type": "file", "name": "/x"}]}
+            run = subprocess.run(["jq", pk_.group(1)], input=json.dumps(inv), capture_output=True, text=True)
+            if run.returncode != 0 or run.stdout.strip() != str(want):
+                bad.append("the grype step's count is %r (exit %d), not %d, on %d package URLs among %d components"
+                           % (run.stdout.strip(), run.returncode, want, want, len(inv["components"])))
+    if not re.search(r"osv-scanner scan image --config /tmp/empty-osv\.toml --all-packages --all-vulns --format json", o_) or not re.search(r': > /tmp/empty-osv\.toml', o_):
+        bad.append("the published osv-scanner step does not run with an empty config, --all-packages and --all-vulns")
+    if not re.search(r"compgen -e \| grep '\^OSV_SCANNER_'", o_) or "exit 2" not in o_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:
+        bad.append("the published osv-scanner step does not refuse an OSV_SCANNER_* variable before it runs")
+    if "results[]?.packages[]?" not in o_ or "packages:$k" not in o_.replace(" ", ""):
+        bad.append("the published osv-scanner step does not record the child's package count in children-scanned.jsonl")
 # rule 9 (owner, Oct 3): the AI judging lives in the auditor; the rescan's panel job tallies and cannot audit
 pj = jobs["panel"]
 if "id-token" in (pj.get("permissions") or {}) or pj.get("environment") or re.search(r"profiles|audit|--prior", text("panel")):
@@ -364,11 +432,13 @@ if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) fo
 # the exact scan commands: each architecture once, Google's package count from its request log
 for j in ("panel-grype", "panel-inspector"):
     t = text(j)
-    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != 1 \
-            or '--override-arch "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
+    # panel-inspector makes its tars in a step of their own, before the cache restore, then scans each: two loops
+    loops = 2 if j == "panel-inspector" else 1
+    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != loops \
+            or 'layout-archive.sh "/tmp/oci/${v}" "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
         bad.append(f"{j} does not load each architecture once by the loop variable")
 t = text("panel-scout")      # Scout names the platform of an attested index, each architecture once
-if not re.search(r"for arch in amd64 arm64; do", t) or '--platform "linux/${arch}"' not in t or "for v in production debug fips" not in t:
+if not re.search(r"for arch in amd64 arm64; do", t) or '--platform "linux/${arch}"' not in t or "for v in production fips" not in t:
     bad.append("panel-scout does not scan each variant on each architecture once by the loop variables")
 if "--log-http" not in tg or "bin/panel.py google-packages" not in tg or "list-vulnerabilities" not in tg:
     bad.append("panel-google does not take its package count from the request log and its findings from list-vulnerabilities")
@@ -379,7 +449,15 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         bad.append(f"{j} is conditional")
     for st in jobs[j].get("steps", []):
         cond = str(st.get("if", "")).replace(" ", "")
-        if cond and not cond.startswith("${{always()") and cond != "${{!cancelled()}}" and "steps.judge" not in cond:
+        # REQ-REL-004-AC8: the Inspector job's two same-day-reuse cache steps (stock actions/cache restore and save, pinned) carry the
+        # same-repo condition; bin/inspector-reuse-test.sh pins their exact form. No other step of any job may be conditional.
+        cache = j == "panel-inspector" and re.match(r"actions/cache/(restore|save)@[0-9a-f]{40}$", str(st.get("uses", ""))) \
+            and "github.event_name!='pull_request'||github.event.pull_request.head.repo.full_name==github.repository" in cond
+        # the save-time UTC day step (midnight fix) runs under plain always(), like the save it feeds
+        saveday = j == "panel-inspector" and st.get("id") == "insp-save-day" and cond == "always()"
+        # the panel job's four downloads by artifact id carry exactly the non-empty-id guard (checked in full by the artifact section below)
+        dlguard = j == "panel" and str(st.get("uses", "")).startswith("actions/download-artifact@") and re.fullmatch(r"\$\{\{needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id!=''\}\}", cond)
+        if cond and not cache and not saveday and not dlguard and not cond.startswith("${{always()") and cond != "${{!cancelled()}}" and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -394,6 +472,35 @@ if 'echo "rc=$?" >> "$GITHUB_OUTPUT"' not in js or not re.search(r"bin/panel\.py
 last = pj.get("steps", [])[-1] if pj.get("steps") else {}
 if "steps.judge.outputs.rc != '0'" not in str(last.get("if", "")) or "exit 1" not in (last.get("run") or ""):
     bad.append("the panel's last step does not fail the run when the judge's verdict is not clean")
+# one folder per scanner artifact (the Witness adversarial pass, cache#602): each scanner job uploads exactly one artifact panel-<scanner> from /tmp/panel/ and exposes its id; the
+# panel job downloads each of the four BY ARTIFACT ID (not by name or pattern, so one artifact can never stand for another) into its own fixed folder, only when the id is not empty
+# (an empty id would download every artifact), and each scanner job writes only its own scanner's folder under /tmp/panel/ (scout also its scout-diag)
+PANEL_SC = ("grype", "scout", "inspector", "google")
+PANEL_EXTRA = {"scout": {"scout-diag"}}
+for sc in PANEL_SC:
+    jb = jobs["panel-" + sc]
+    ups = [st for st in jb.get("steps", []) if str(st.get("uses", "")).startswith("actions/upload-artifact@")]
+    if len(ups) != 1 or (ups[0].get("with") or {}).get("name") != "panel-" + sc or (ups[0].get("with") or {}).get("path") != "/tmp/panel/" or ups[0].get("id") != "upload":
+        bad.append(f"panel-{sc} does not upload exactly one artifact panel-{sc} from /tmp/panel/ with the step id upload")
+    if jb.get("outputs") != {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}:
+        bad.append(f"panel-{sc} does not expose exactly the artifact-id of its upload: {jb.get('outputs')}")
+    tops = set(re.findall(r"/tmp/panel/([A-Za-z0-9_-]+)", text("panel-" + sc)))
+    if tops - ({sc} | PANEL_EXTRA.get(sc, set())):
+        bad.append(f"panel-{sc} writes under /tmp/panel/ outside its own folder: {sorted(tops - ({sc} | PANEL_EXTRA.get(sc, set())))}")
+dls = [st for st in jobs["panel"].get("steps", []) if str(st.get("uses", "")).startswith("actions/download-artifact@")]
+want = {"panel-" + sc: sc for sc in PANEL_SC}
+seen = []
+for st in dls:
+    w = st.get("with") or {}
+    ids = w.get("artifact-ids", "")
+    m = re.fullmatch(r"\$\{\{ needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id \}\}", ids)
+    if not m or set(w) != {"artifact-ids", "path"} or w.get("path") != "/tmp/panel/panel-" + m.group(1) \
+            or (st.get("if") or "").replace(" ", "") != "${{needs.panel-%s.outputs.artifact-id!=''}}" % m.group(1):
+        bad.append(f"a panel download is not exactly artifact-ids of one scanner job into its own /tmp/panel/panel-<scanner> folder, guarded by a non-empty id: {w} if {st.get('if')}")
+    else:
+        seen.append(m.group(1))
+if sorted(seen) != sorted(PANEL_SC):
+    bad.append(f"the panel job does not download each of grype, scout, inspector and google exactly once by artifact id: {seen}")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -487,8 +594,35 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
 else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
-case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
-case_ grype-five-images       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production debug fips', 'for v in production debug')"
+case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
+case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
+case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
+case_ grype-update-repo-config bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype db update -c \"\$RUNNER_TEMP/empty-grype.yaml\"', 'grype db update')"
+case_ grype-extra-archive-scan bad "s=$(step_of panel-grype 'for v in'); \
+  s['run'] = s['run'] + chr(10) + 'grype \"docker-archive:/tmp/arc/x.tar\" -o json'"
+case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
+case_ pub-grype-repo-config   bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -c /tmp/empty-grype.yaml', '')"
+case_ pub-grype-no-env-refusal bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
+case_ pub-grype-no-inventory  bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -o \"cyclonedx-json=\${sbom}\"', '')"
+case_ pub-grype-no-count      bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' --argjson k \"\${pk}\"', '').replace(', packages:\$k', '')"
+case_ pub-osv-all-packages-off bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-packages', '')"
+case_ pub-osv-all-vulns-off   bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-vulns', '')"
+case_ pub-osv-repo-config     bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --config /tmp/empty-osv.toml', '')"
+case_ pub-osv-no-env-refusal  bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(\"compgen -e | grep '^OSV_SCANNER_'\", 'echo')"
+case_ pub-pk-not-checked      bad "s=$(step_of rescan 'grype \"registry:'); s['run'] = s['run'].replace('[[ \"\${pk}\" =~ ^[0-9]+\$ ]] || pk=0', 'true')"
+case_ pub-no-expect-children  bad "s=$(step_of rescan 'rescan-statement.py statement'); s['run'] = s['run'].replace(' --expect-children \"\$(grep -c . /tmp/children.txt)\"', '')"
+case_ pub-osv-no-count        bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(', packages:\$k', '')"
+case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
+case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
+case_ panel-dl-pattern        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'pattern': 'panel-*', 'path': '/tmp/panel/'}"
+case_ panel-dl-missing        bad "$J['panel']['steps'] = [x for x in $J['panel']['steps'] if 'panel-google' not in str((x.get('with') or {}).get('path'))]"
+case_ panel-dl-no-guard       bad "s=[x for x in $J['panel']['steps'] if 'panel-inspector' in str((x.get('with') or {}).get('path'))][0]; s.pop('if')"
+case_ panel-dl-wrong-folder   bad "s=[x for x in $J['panel']['steps'] if 'panel-google' in str((x.get('with') or {}).get('path'))][0]; s['with']['path'] = '/tmp/panel/panel-grype'"
+case_ panel-job-no-output     bad "$J['panel-scout'].pop('outputs')"
+case_ panel-upload-wrong-name bad "[x for x in $J['panel-grype']['steps'] if x.get('id') == 'upload'][0]['with']['name'] = 'panel-scout'"
+case_ panel-writes-other      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + chr(10) + 'mkdir -p /tmp/panel/scout/x'"
+case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('\"/tmp/oci/\${v}\" amd64', '\"/tmp/oci/\${v}\" arm64')"
+case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production fips', 'for v in production')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
 case_ scanner-reports-back    bad "$J['scanner-reports'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'osv-scanner scan image x'}]}"
 case_ osv-in-panel            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + '\\nosv-scanner scan image x'"
@@ -508,7 +642,7 @@ case_ scout-scan-other-repo   bad "s = $(step_of panel-scout 'for v in'); s['run
 case_ scout-scan-local-vex    bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-author', '--vex-location .vex/fosterstack-cache.openvex.json --vex-author')"
 case_ scout-scan-no-author    bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
 case_ scout-scan-wrong-digest bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.[\$v]', '.production')"
-case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build', 'assemble']"
+case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build']"
 case_ scout-perms-write       bad "$J['panel-scout']['permissions']['packages'] = 'write'"
 case_ scout-diag-fails        bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 0', 'exit \$rc')"
 case_ scout-diag-always       bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() }}'"
@@ -524,15 +658,32 @@ case_ attach-perms-id-token   bad "$J['vex-attach']['permissions']['id-token'] =
 case_ attach-perms-wide       bad "$J['vex-attach']['permissions']['contents'] = 'write'"
 case_ attach-environment      bad "$J['vex-attach']['environment'] = 'agent'"
 case_ attach-conditional      bad "$J['vex-attach']['if'] = \"github.ref == 'refs/heads/main'\""
-case_ attach-no-assemble-need bad "$J['vex-attach']['needs'] = ['build']"
-case_ attach-release-package  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache:')"
-case_ attach-candidates-package bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache-candidates:')"
-case_ attach-other-tag        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('tag=\"cand-\${GITHUB_RUN_ID}-\${v}\"', 'tag=\"latest\"')"
-case_ attach-no-verify        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('python3 bin/vex-index.py verify-layout', 'true')"
-case_ attach-no-layout-check  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'true')"
-case_ attach-no-digest-check  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('[ \"\${pushed}\" = \"\${final}\" ]', 'true')"
-case_ attach-other-vex        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('vex=.vex/fosterstack-cache.openvex.json', 'vex=/dev/null')"
-case_ attach-step-soft        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['continue-on-error'] = 'true'"
+case_ attach-needs-more       bad "$J['vex-attach']['needs'] = ['build', 'panel-grype']"
+case_ attach-needs-none       bad "$J['vex-attach']['needs'] = []"
+case_ attach-release-package  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache:')"
+case_ attach-candidates-package bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache-candidates:')"
+case_ attach-other-tag        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('tag=\"cand-\${GITHUB_RUN_ID}-\${v}\"', 'tag=\"latest\"')"
+case_ attach-reattests        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'python3 bin/vex-index.py layout --layout \"\${d}\" --vex .vex/fosterstack-cache.openvex.json\\npython3 bin/release-layout.py')"
+case_ attach-no-build-digest  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('[ \"\$(cat \"/tmp/oci/\${v}.digest\")\" = \"\${final}\" ]', 'true')"
+case_ attach-push-tool        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\ncrane push \"\${d}\" ghcr.io/fosterstack/cache-scout-probe:x'"
+case_ attach-second-tag       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\ntag=latest'"
+case_ attach-tag-append       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'tag+=\\\"-x\\\"\\nskopeo copy', 1)"
+case_ attach-tag-declare      bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'declare tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-export       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'export tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-printf       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'printf -v tag %s latest\\nskopeo copy', 1)"
+case_ attach-tag-read         bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'read -r tag < /tmp/t\\nskopeo copy', 1)"
+case_ attach-tag-local        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'local -r tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-semicolon    bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'true; tag=\\\"x\\\" skopeo copy', 1)"
+case_ attach-tag-case-arm         bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'case x in x) tag=latest;; esac\\nskopeo copy', 1)"
+case_ attach-tag-negated          bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', '! tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-if               bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'if tag=latest; then :; fi\\nskopeo copy', 1)"
+case_ attach-tag-while            bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'while tag=latest; do break; done\\nskopeo copy', 1)"
+case_ attach-tag-prefix-assign    bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'a=1 tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-lookalike-ok     ok "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'a=btag=x\\nskopeo copy', 1)"
+case_ attach-two-copies       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\nskopeo copy --all oci:\"\${d}\" docker://ghcr.io/fosterstack/cache-scout-probe:other'"
+case_ attach-no-layout-check  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'true')"
+case_ attach-no-digest-check  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('[ \"\${pushed}\" = \"\${final}\" ]', 'true')"
+case_ attach-step-soft        bad "s = $(step_of vex-attach 'release-layout.py'); s['continue-on-error'] = 'true'"
 case_ prune-gone              bad "$J['vex-attach']['steps'] = [s for s in $J['vex-attach']['steps'] if 'prune' not in (s.get('name') or '')]"
 case_ prune-other-package     bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('packages/container/cache-scout-probe', 'packages/container/cache')"
 case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('14 days ago', '3650 days ago')"

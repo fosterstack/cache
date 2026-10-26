@@ -1,0 +1,45 @@
+{
+ "_note": "The command blocks of docs/using-our-vex.md that the live test (bin/vex-live-run.sh) executes with the job's credentials, in order, by section and sha256 of their exact text (scanner-panel rule 12). The live test refuses a plan that is not exactly this list: a block a Markdown reader sees differently than the parser, or any block added or changed, is stopped here. Changing a block of the page means changing its row in the same pull request.",
+ "blocks": [
+  {
+   "section": "settings",
+   "sha256": "b087b0250b5a71f5b385b1411cb29ca651267d248ae6edf17ce40812eccadd87"
+  },
+  {
+   "section": "digest",
+   "sha256": "1ebb602f2d3c486bb680d308d0d29760ac89ef05693c84bb2a596f1b22982d07"
+  },
+  {
+   "section": "download",
+   "sha256": "8b4a9ce16114553c366aa5b579a280e6fdf21a9c242544fe72a3f8c9cb11275a"
+  },
+  {
+   "section": "verify",
+   "sha256": "e1372e14d29ceefbcb54a4244f6caea977372f534dcd23540cd772d7cbc2845c"
+  },
+  {
+   "section": "grype",
+   "sha256": "894714717c2fd59b1afea419507304c55d1ea6f38e95dbcc1c585481cc08b85f"
+  },
+  {
+   "section": "inspector",
+   "sha256": "de64c5618394ef09f51c1b8386d5c98fd1337363620f3a72d21e7c0d4962de9a"
+  },
+  {
+   "section": "settings",
+   "sha256": "fef9af9394b70b4df6e59eb9f5a95c105bd48f5e0d6ab713ed2e2629eb692583"
+  },
+  {
+   "section": "google",
+   "sha256": "608a9d76265d66264759ef7404eb9ec5994d837ced4ae7688e10332ad1c2903f"
+  },
+  {
+   "section": "scout",
+   "sha256": "f52ec39ec7064875835846a5100b5bc32b1b27cc15b4b5da270e8c82ab44e79b"
+  },
+  {
+   "section": "inspector-remove",
+   "sha256": "da9da4fbdc128dced881dfb086452b4965e30949ada8dd1345e308a771c2a9cd"
+  }
+ ]
+}

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13, REQ-CHAIN-001-AC6
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
 # - decide runs on main only, in the main-only agent environment, with its own token read-only plus id-token (gitsign)
-#   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release and the new base;
+#   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release (no base image exists: rules 61, 62)
+#   and the base-input-changed signal is read from the committed base-input list (.github/policy/base-inputs.json);
 # - the tag is signed keylessly by gitsign (pinned by checksum, no key) under release.yml's identity and pushed with the
 #   auditor App's token (exactly the auditor's scope), which reaches only the push step;
 # - a failed patch-tag run opens one issue and is never retried;
@@ -26,15 +27,26 @@ if (on.get("push") or {}).get("tags") != ["v*"] or (on.get("push") or {}).get("b
 if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.get("cron", "")) for c in on.get("schedule") or []):
     bad.append("no daily schedule")
 jobs = d.get("jobs") or {}
-adm = jobs.get("admission") or {}
-if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v')}}":
-    bad.append("admission is not guarded to v* tags: %s" % adm.get("if"))
-chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes", "persona-uat")]   # persona-uat: REQ-UAT-001, an RC-tag-only job after promotion; its own shape is pinned by persona-uat-wiring-test.sh
+# PR 2 of the v0.3.0 chain: admission is no longer a job (it is the first step of Build's apk job, bin/build-admit.py), so the chain is guarded by the
+# ONE gate G on build and sign: a v* tag PUSH or a dry-run dispatch (bin/chain-build-wiring-test.sh judges the whole graph)
+if "admission" in jobs:
+    bad.append("release.yml still has an admission job (admission is Build's first step now)")
+GATE = "${{(github.event_name=='push'&&startsWith(github.ref,'refs/tags/v'))||inputs.dry-run==true}}"
+for g in ("build", "sign"):
+    if (jobs.get(g) or {}).get("if", "").replace(" ", "") != GATE:
+        bad.append("%s is not guarded by the gate G (a v* tag push or a dry run): %s" % (g, (jobs.get(g) or {}).get("if")))
+# the dry run's own jobs (sign, hostile-*) hang off the Sign boundary; they are judged by bin/chain-hostile-test.sh. The OLD downstream jobs (scans,
+# acceptance*, authorization, promotion; replaced by PRs 3 and 4) are skipped in a dry run and need a chain job.
+chain = [j for j in jobs if j not in ("decide", "patch-failed", "patch-notes", "build", "sign", "rebuild", "hostile-verify", "hostile-verdict", "rc-refusal", "persona-uat")]   # persona-uat: REQ-UAT-001, an RC-tag-only job after promotion; its own shape is pinned by persona-uat-wiring-test.sh
 for j in chain:
-    if "if" in jobs[j] or not jobs[j].get("needs"):
-        bad.append("chain job %s does not hang off admission unconditionally" % j)
+    # a job that needs Sign also carries the positive tag conjunct (bin/chain-hostile-test.sh: a branch run never reaches it)
+    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}", "${{startsWith(github.ref,'refs/tags/v')&&!inputs.dry-run}}", "${{!inputs.dry-run&&!contains(github.ref_name,'-rc')}}", "${{startsWith(github.ref,'refs/tags/v')&&!inputs.dry-run&&!contains(github.ref_name,'-rc')}}",
+                                                 # the cache lane's live test of our VEX files (REQ-SCAN-012): the rc leg after Check, the final leg after Release; each carries the tag conjunct and the dry-run conjunct
+                                                 "${{startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc')&&!inputs.dry-run}}",
+                                                 "${{startsWith(github.ref,'refs/tags/v')&&!contains(github.ref_name,'-rc')&&!inputs.dry-run}}") or not jobs[j].get("needs"):
+        bad.append("chain job %s is not skipped in a dry run or hangs off nothing" % j)
 dec = jobs.get("decide") or {}
-if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'}}":
+if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":
     bad.append("decide does not run on main only: %s" % dec.get("if"))
 if dec.get("concurrency") != {"group": "patch-decide", "cancel-in-progress": "false"}:
     bad.append("decide runs are not serialized (a push and the daily run could both cut)")
@@ -44,6 +56,8 @@ if dec.get("permissions") != {"contents": "read", "checks": "read", "id-token": 
     bad.append("decide's own token is not contents read + checks read + id-token + issues: %s" % dec.get("permissions"))
 if d.get("concurrency"):
     bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
+if set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}:
+    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}))
 steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
 if "bin/install-scanner.sh gitsign" not in text:
@@ -61,7 +75,7 @@ users = [s.get("name") for s in steps if "steps.app-token.outputs.token" in str(
 if users != ["push the signed tag (the App transports it)"]:
     bad.append("the App token reaches a step other than the tag push: %s" % users)
 if "patch-decide.py removed" not in text or "grype" not in text:
-    bad.append("the critical/high comparison does not scan the release and the new base image")
+    bad.append("the critical/high comparison does not scan the release")
 # advisor 0063: before signing, wait (bounded) for the tagged commit's push-scoped required checks, judged as admission
 # judges them; sign, mint and push only when they are ready
 names = [s.get("name") for s in steps]
@@ -93,12 +107,24 @@ if len(gated) != 3 or ungated:
 if wait and gated and names.index(wait[0].get("name")) > min(names.index(g) for g in gated if g in names):
     bad.append("the wait comes after signing")
 co = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+# the checkout supplies the code the marker gate runs: no other repository, ref or path, no env, nothing beyond the two reviewed inputs
+if len(co) != 1 or set(co[0]) - {"name", "uses", "with"} or set(co[0].get("with") or {}) != {"fetch-depth", "persist-credentials"}:
+    bad.append("decide's checkout has keys or inputs beyond uses and with fetch-depth/persist-credentials (a repository, ref, path or env would change whose code runs): %s" % (co[0] if co else None))
 if not co or (co[0].get("with") or {}).get("fetch-depth") != "0":
     bad.append("decide's checkout is shallow (a queued run must see every tag, including the earlier run's)")
 if not co or (co[0].get("with") or {}).get("persist-credentials") != "false":
     bad.append("decide's checkout keeps a credential")
 fail = jobs.get("patch-failed") or {}
-if "failure()" not in fail.get("if", "") or "refs/tags/v" not in fail.get("if", "") or fail.get("permissions") != {"contents": "read", "issues": "write"}:
+# the condition names a failed job and is exactly these && conjuncts (cache#581 ruling): always() or failure() (the status call), the exact group
+# "a needed job failed, or the release job was cancelled by its concurrency group" (needs.*.result, so a longer needs list changes nothing) as a
+# whole conjunct, the tag test, the workflow_dispatch exclusion and !inputs.dry-run. Whitespace is collapsed first; anything else, a negation, a
+# comparison, a wrapper call or a stray `||`, is refused. Required: a real status call (always() or failure(); without one GitHub keeps the implicit
+# success() and the job never fires after a failure), the group or failure(), the tag, the dispatch and the dry-run conjuncts.
+FAILGRP = "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')"
+_ALLOWED = {"always()", "failure()", FAILGRP, "startsWith(github.ref, 'refs/tags/v')", "github.event_name != 'workflow_dispatch'", "!inputs.dry-run"}
+_fm = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", str(fail.get("if", "")).strip(), re.S)
+_parts = [c.strip() for c in re.sub(r"\s+", " ", _fm.group(1)).split("&&")] if _fm else []
+if not _fm or not set(_parts) <= _ALLOWED or not ({"always()", "failure()"} & set(_parts)) or FAILGRP not in _parts and "failure()" not in _parts or not {"startsWith(github.ref, 'refs/tags/v')", "github.event_name != 'workflow_dispatch'", "!inputs.dry-run"} <= set(_parts) or fail.get("permissions") != {"contents": "read", "issues": "write"}:
     bad.append("no failure-issue job for tag runs: %s" % fail.get("if"))
 if "gh issue create" not in "\n".join(s.get("run") or "" for s in fail.get("steps") or []):
     bad.append("the failure job opens no issue")
@@ -115,7 +141,20 @@ facts = [s for s in steps if s.get("id") == "facts"]
 if not dstep or '--released "$RUNNER_TEMP/released.json"' not in dstep[0]["run"] or not facts or \
         "gh release list --exclude-drafts" not in facts[0]["run"] or "released.json" not in facts[0]["run"]:
     bad.append("decide's baseline is not the latest published release")
+# REQ-CHAIN-001-AC6 (advisor Oct 12): the step right after the checkout refuses, naming the marker, unless the committed rc-proof marker validates for the
+# commit being tagged; it is a plain run step (no `if`, no continue-on-error, no env), so a failure ends the job before anything is decided or tagged
+_RCP = 'python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"'
+_rcs = [s for s in steps if "patch-decide.py rc-proof" in (s.get("run") or "")]
+if len(_rcs) != 1 or len(steps) < 2 or steps[1] is not _rcs[0] or str(steps[0].get("uses", "")).split("@")[0] != "actions/checkout":
+    bad.append("decide's first step after the checkout is not the rc-proof marker check (exactly one such step)")
+elif set(_rcs[0]) - {"name", "run"} or "\n".join(l.strip() for l in _rcs[0]["run"].strip().splitlines() if l.strip() and not l.strip().startswith("#")) not in (_RCP, "set -euo pipefail\n" + _RCP):
+    bad.append("the rc-proof step is not exactly `%s` (no if, no continue-on-error, no env): %s" % (_RCP, _rcs[0]))
 scan = [s for s in steps if "patch-decide.py removed" in (s.get("run") or "")]
+# REQ-REL-009-AC3 (advisor 0389): the immediate cut scans the images that exist for the latest release's version (patch-decide.py variants: v0.3.0 dropped
+# the debug variant), never a literal -debug tag, and the notes read a variant's scan only when that scan was made
+_note = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
+if not scan or "patch-decide.py variants" not in scan[0]["run"] or "-debug" in scan[0]["run"] or not _note or "patch-decide.py variants" not in _note[0]["run"] or "-debug" in _note[0]["run"]:
+    bad.append("the immediate cut does not scan exactly the images that exist for the latest release (patch-decide.py variants), or names a -debug tag")
 if not scan or "&& rel+=" in scan[0]["run"] or "removed-unknown" not in scan[0]["run"] or \
         not dstep or "--removed-unknown" not in dstep[0]["run"]:
     bad.append("an unscannable release image is not reported as unknown")
@@ -126,8 +165,15 @@ elif wait[0]["run"].index("git show origin/main:") < wait[0]["run"].index("while
     bad.append("ready reads the policy once, not on each pass of the wait (a change on main during the wait is missed)")
 # Codex #159 r2: each scan file goes to the decision on its own (no jq aggregation that hides a malformed one); a base
 # scan failure is the base's alone (NEW-1)
-if scan and ("jq -s" in scan[0]["run"] or "base_ok" not in scan[0]["run"] or "--release-grype" not in scan[0]["run"]):
-    bad.append("the scans are aggregated before validation, or a base failure is read as a release failure")
+if scan and ("jq -s" in scan[0]["run"] or "--release-grype" not in scan[0]["run"]):
+    bad.append("the scans are aggregated before validation, or a release scan is not handed to the decision on its own")
+# rules 61 and 65 (advisor Oct 12): no base image exists (no image recipe file; apko assembles from committed locks), so nothing is scanned as a base. The decide job
+# reads the ONE committed list of base inputs (the apko base locks, the melange lock, the archive records, the fips module record) for the signal "a base input
+# changed since the release"; bin/patch-decide.py classifies a commit from the same list
+if not scan or 'python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE"' not in scan[0]["run"]:
+    bad.append("decide does not read the committed list of base inputs for the base-input-changed signal (patch-decide.py base-moved)")
+if re.search(r"build/docker|(?i:dockerfile)|\bFROM\b|--base-grype|base_ok|base-ok|buildx|base_arg", yaml.safe_dump(dec)):
+    bad.append("the decide job still reads an image recipe or scans a base image (none exists: rules 61, 62)")
 # AC8 wired (advisor 0135)
 nstep = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
 sign = [s for s in steps if "tag -s" in (s.get("run") or "")]
@@ -153,7 +199,7 @@ if (dec.get("outputs") or {}).get("tagged") != "${{ steps.push.outputs.tagged }}
         push[0].get("id") != "push" or "tagged=true" not in push[0]["run"]:
     bad.append("decide does not say that it tagged")
 pn = jobs.get("patch-notes") or {}
-if pn.get("needs") != "decide" or pn.get("if", "").replace(" ", "") != "${{needs.decide.outputs.tagged=='true'}}":
+if pn.get("needs") != "decide" or pn.get("if", "").replace(" ", "") != "${{needs.decide.outputs.tagged=='true'&&!inputs.dry-run}}":
     bad.append("the notes PR job does not run exactly when decide tagged")
 for ref in set(re.findall(r"needs\.decide\.outputs\.([\w-]+)", yaml.safe_dump(pn))):
     if ref not in (dec.get("outputs") or {}):
@@ -255,7 +301,7 @@ if len([st for st in psteps if st.get("run")]) != 1:
 # review of #191 round 3 (execution context): the whole job and its steps are pinned, not only the run text. A `shell:` (it runs BEFORE the run
 # body with the step's token), a working-directory, a job env (BASH_ENV, PATH, ENV), defaults.run, a container or service, continue-on-error, an
 # extra step key, or a workflow-level env / defaults would all change what the whitelisted lines mean. Action digests are checked separately.
-_JOB = {"needs": "decide", "if": "${{ needs.decide.outputs.tagged == 'true' }}", "runs-on": "ubuntu-latest", "environment": "agent",
+_JOB = {"needs": "decide", "if": "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}", "runs-on": "ubuntu-latest", "environment": "agent",
         "permissions": {"contents": "read"}}
 if {k: v for k, v in pn.items() if k != "steps"} != _JOB:
     bad.append("the notes PR job is not exactly the reviewed job (keys, env, defaults, container, services, environment): %s" % sorted(pn))
@@ -282,29 +328,18 @@ for st in psteps:
 pco = [s for s in psteps if str(s.get("uses", "")).startswith("actions/checkout@")]
 if not pco or (pco[0].get("with") or {}).get("persist-credentials") != "false" or (pco[0].get("with") or {}).get("ref") != "main":
     bad.append("the notes PR job's checkout is not main without a credential")
+# REQ-REL-009-AC8 (PR 4): the notes are posted by the patch-notes job (above: tag-notes, then the changelog PR); Release creates the release without notes
 sp = yaml.load(open(sys.argv[2]), Loader=yaml.BaseLoader)
-create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "gh release create" in (st.get("run") or "")]
-if len(create) != 1 or "patch-decide.py tag-notes" not in create[0]["run"] or "--notes-file" not in create[0]["run"]:
-    bad.append("stage-promote does not post a patch tag's notes")
+create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "--notes-file" in (st.get("run") or "") or "tag-notes" in (st.get("run") or "")]
+if create:
+    bad.append("stage-promote.yml posts patch notes: the patch-notes job does (REQ-REL-009-AC8)")
 # REQ-REL-009-AC13 downstream (found while wiring rule 10): admission's chosen baseline reaches every stage that reads a
-# baseline — the acceptance predicate and the release manifest — instead of each assuming requirements/releases/<tag>.yaml
-for job in ("acceptance-predicate", "promotion"):
-    j = jobs.get(job) or {}
-    if (j.get("with") or {}).get("baseline-version") != "${{ needs.admission.outputs.baseline }}" or "admission" not in (j.get("needs") or []):
-        bad.append("%s does not receive admission's baseline" % job)
-# Codex #163 pin pass B01: authorization checks acceptance against the baseline the SIGNED admission predicate names, not
-# the tag's own file (a CI patch has none); B03: decide's pre-check refuses what admission refuses — the checkout's copy of
+# baseline — the release manifest — instead of assuming requirements/releases/<tag>.yaml. PR 3 removed the acceptance predicate and the authorization
+# stage (REQ-CHAIN-006-AC10; the baseline checks of those two went with them); PR 2 moved admission into Build, so the OLD promotion job no longer NEEDs an
+# admission job; it keeps the baseline expression until PR 4 (Release) replaces it and reads the baseline from Build's admission evidence.
+# REQ-REL-009-AC13 (PR 4): the baseline is recorded by admission in Build; it travels with the manifest generation of Release (REQ-CHAIN-007-AC19); no stage input carries it
+# Codex #163 pin pass B03: decide's pre-check refuses what admission refuses — the checkout's copy of
 # the chosen baseline must equal the owner tag's, as admission's cmp requires
-import os
-auth = open(os.path.join(os.environ["WIRING_ROOT"], ".github/workflows/stage-authorize.yml")).read()
-if "predicate.baseline_version" not in auth or 'authorize-acceptance-check.py "${adm_base}"' not in auth \
-        or 'authorize-acceptance-check.py "${GITHUB_REF_NAME}"' in auth:
-    bad.append("authorization does not check acceptance against admission's baseline")
-# Codex #163 r2 B04: the baseline's shape check accepts exactly admission's tag grammar (owner rc tags included)
-shape = re.search(r'\[\[ "\$adm_base" =~ (\S+) \]\]', auth)
-if not shape or not all(bool(re.fullmatch(shape.group(1), v)) == want for v, want in
-                        (("v0.2.2", True), ("v0.3.0-rc.1", True), ("v0.2.2;x", False), ("0.2.2", False), ("v0.2", False))):
-    bad.append("authorization's baseline shape check is not admission's tag grammar (vX.Y.Z[-rc.N])")
 if pre and ("cmp -s" not in prun or 'git show "${base}:requirements/releases/${base}.yaml"' not in prun):
     bad.append("decide's pre-check does not require the checkout's copy of the baseline to equal the owner tag's")
 print("; ".join(bad) or "ok")
@@ -328,13 +363,43 @@ PY
 }
 J='d["jobs"]'; D="$J['decide']"
 case_ real                    ok  ""
-case_ chain-on-main           bad "$J['admission'].pop('if')"
+case_ chain-on-main           bad "$J['build'].pop('if')"
 case_ decide-anywhere         bad "$D['if'] = '\${{ always() }}'"
 case_ decide-no-env           bad "$D.pop('environment')"
+case_ rcproof-absent          bad "$D.__setitem__('steps', [s for s in $D['steps'] if 'rc-proof' not in (s.get('run') or '')])"
+case_ rcproof-conditional     bad "[s.__setitem__('if', 'always()') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-continue        bad "[s.__setitem__('continue-on-error', 'true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-env             bad "[s.__setitem__('env', {'X': '1'}) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-late            bad "(lambda L: L.append(L.pop(1)))($D['steps'])"
+case_ rcproof-other-marker    bad "[s.__setitem__('run', s['run'].replace('.github/policy/rc-proof.json', 'docs/rc-proof.json')) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-no-commit       bad "[s.__setitem__('run', s['run'].replace(' --commit \"\$GITHUB_SHA\"', '')) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-swallowed       bad "[s.__setitem__('run', s['run'] + ' || true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-job-defaults    bad "$D.__setitem__('defaults', {'run': {'shell': \"bash -c 'bash {0}; exit 0'\"}})"
+case_ rcproof-job-env         bad "$D.__setitem__('env', {'BASH_ENV': '/dev/null'})"
+case_ rcproof-wf-defaults     bad "d.__setitem__('defaults', {'run': {'shell': \"bash -c 'bash {0}; exit 0'\"}})"
+case_ rcproof-wf-env          bad "d.__setitem__('env', {'BASH_ENV': '/dev/null'})"
+case_ rcproof-step-shell      bad "[s.__setitem__('shell', 'bash -c \"bash {0}; exit 0\"') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-checkout-repo   bad "[s.__setitem__('with', dict(s['with'], repository='example/alternate-release-code')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ rcproof-checkout-ref    bad "[s.__setitem__('with', dict(s['with'], ref='refs/heads/alternate-release-code')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ rcproof-checkout-path   bad "[s.__setitem__('with', dict(s['with'], path='elsewhere')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ rcproof-checkout-env    bad "[s.__setitem__('env', {'GIT_DIR': '/tmp/x'}) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ decide-writes           bad "$D['permissions']['contents'] = 'write'"
 case_ app-widened             bad "[s['with'].__setitem__('permission-pull-requests', 'write') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
 case_ token-to-decide-step    bad "[s.setdefault('env', {}).__setitem__('GH_TOKEN', '\${{ steps.app-token.outputs.token }}') for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"
 case_ unsigned-tag            bad "[s.__setitem__('run', s['run'].replace('tag -s', 'tag -a')) for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
+case_ fail-cancelled-form     ok  "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-no-failure-term    bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && needs.release.result == 'cancelled' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}\")"
+case_ fail-group-negated      bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && !(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}\")"
+case_ fail-group-widened      bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run || true }}\")"
+case_ fail-no-tag             bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && !inputs.dry-run }}\")"
+case_ fail-no-dry-run         bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') }}\")"
+case_ fail-group-negated-sp bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && ! (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-group-eq-false bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') == false && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-failure-negated bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && !failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-tag-negated bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-no-dispatch bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}\")"
+case_ fail-failure-form ok "$J['patch-failed'].__setitem__('if', \"\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-no-status-call     bad "$J['patch-failed'].__setitem__('if', \"\${{ (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
 case_ a-rerun-path            bad "$J['patch-failed']['steps'][0]['run'] += '\\ngh run rerun \$GITHUB_RUN_ID'"
 case_ gitsign-unpinned        bad "[s.__setitem__('run', s['run'].replace('bin/install-scanner.sh gitsign', 'go install github.com/sigstore/gitsign@latest')) for s in $D['steps'] if 'install-scanner.sh gitsign' in (s.get('run') or '')]"
 case_ no-failure-issue        bad "$J.pop('patch-failed')"
@@ -344,6 +409,9 @@ case_ precheck-own-files     bad "[s.__setitem__('run', s['run'].replace('owner-
 case_ precheck-local-signers bad "[s.__setitem__('run', s['run'].replace('git show origin/main:.github/policy/allowed_signers', 'cat .github/policy/allowed_signers')) for s in $D['steps'] if s.get('id') == 'basecheck']"
 case_ no-baseline-check       bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'basecheck']"
 case_ wait-ignores-baseline   bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if s.get('id') == 'checks']"
+case_ scan-debug-literal       bad "[s.__setitem__('run', s['run'].replace('\$(python3 bin/patch-decide.py variants --version \"\$ver\")', '\"\$ver\" \"\$ver-debug\" \"\$ver-fips\"')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ scan-no-variants         bad "[s.__setitem__('run', s['run'].replace('patch-decide.py variants', 'patch-decide.py ready')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ notes-debug-literal      bad "[s.__setitem__('run', s['run'].replace('patch-decide.py notes', 'echo -debug; python3 bin/patch-decide.py notes')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
 case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
 case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
@@ -351,10 +419,12 @@ case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
-case_ predicate-own-baseline  bad "$J['acceptance-predicate']['with'].pop('baseline-version')"
-case_ promotion-own-baseline  bad "$J['promotion']['with']['baseline-version'] = '\${{ github.ref_name }}'"
 case_ no-schedule             bad "d['on'].pop('schedule')"
-case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('base_ok', 'ok')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('--release-grype', 'jq -s . --release-grype')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-list-unread        bad "[s.__setitem__('run', s['run'].replace('base-moved', 'base-moved-x')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-list-other-file    bad "[s.__setitem__('run', s['run'].replace('.github/policy/base-inputs.json', 'build/base-inputs.json')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-image-scan-back    bad "[s.__setitem__('run', s['run'] + '\\nfor b in \$(grep -h FROM build/docker/Dockerfile.*); do grype \$b -o json; done') for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-grype-passed       bad "[s.__setitem__('run', s['run'].replace('--out \"\$RUNNER_TEMP/removed.json\"', '--base-grype x --out \"\$RUNNER_TEMP/removed.json\"')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ fail-no-repo            bad "[s['env'].pop('GH_REPO') for s in $J['patch-failed']['steps']]"
 case_ baseline-latest-tag     bad "[s.__setitem__('run', s['run'].replace('--released ', '--x ')) for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"
@@ -489,29 +559,47 @@ case_ ctx-checkout-persist    bad "[s['with'].__setitem__('persist-credentials',
 case_ ctx-wf-env              bad "d['env'] = {'BASH_ENV': 'bin/prep.sh'}"
 case_ ctx-wf-defaults         bad "d['defaults'] = {'run': {'shell': 'bash -c \"x; bash {0}\"'}}"
 case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
-sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
-if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"
-else pass=$((pass+1)); echo "PASS stage-promote-fixed-notes → bad ($out)"; fi
-# the stages themselves read the baseline they are given (empty = the tag's own baseline, as for owner-signed tags)
-stages_out=$(python3 - "$root" <<'PY'
-import os, sys, yaml
+# ---- REQ-REL-009-AC14 (cache #300; advisor): patch-decide.py refuses tag-like notes sources with exit 2 in EVERY sub-command. The two jobs that call it must
+# FAIL on a non-zero exit and post nothing: no `|| true`, no empty-notes fallback. Run the real step texts with a FAKE patch-decide.py that exits 2.
+behav_out=$(python3 - "$root" <<'PY'
+import os, re, stat, subprocess, sys, tempfile, yaml
 root = sys.argv[1]
+d = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)
+def step(job, needle):
+    return next(s for s in d["jobs"][job]["steps"] if needle in (s.get("name") or ""))
 bad = []
-adm = yaml.load(open(os.path.join(root, ".github/workflows/stage-admission.yml")), Loader=yaml.BaseLoader)
-if (adm["on"]["workflow_call"].get("outputs") or {}).get("baseline", {}).get("value") != "${{ jobs.admit.outputs.baseline }}" \
-        or adm["jobs"]["admit"]["outputs"].get("baseline") != "${{ steps.baseline.outputs.version }}":
-    bad.append("stage-admission does not output the baseline it used")
-for f, needle in (("stage-acceptance-predicate.yml", 'frozen_path = f"requirements/releases/{base}.yaml"'),
-                  ("stage-promote.yml", '--arg baseline "requirements/releases/${base}.yaml"')):
-    d = yaml.load(open(os.path.join(root, ".github/workflows", f)), Loader=yaml.BaseLoader)
-    inp = d["on"]["workflow_call"]["inputs"].get("baseline-version") or {}
-    text = open(os.path.join(root, ".github/workflows", f)).read()
-    if inp.get("default") != "" or needle not in text or "inputs.baseline-version" not in text:
-        bad.append("%s does not read the baseline it is given" % f)
+def run(label, job, needle, calls_ok):
+    t = tempfile.mkdtemp(); os.makedirs(t + "/bin"); os.makedirs(t + "/fake"); os.makedirs(t + "/tmp"); os.makedirs(t + "/docs")
+    open(t + "/bin/patch-decide.py", "w").write("import sys, os\nopen(os.environ['LOG'], 'a').write('patch-decide ' + ' '.join(sys.argv[1:2]) + '\\n')\nsys.stderr.write('patch-decide: refused\\n'); sys.exit(2)\n")
+    open(t + "/bin/auditor-signed-commit.py", "w").write("import os\nopen(os.environ['LOG'], 'a').write('signed-commit\\n')\n")
+    for n in ("gh", "git", "grype"):
+        open(t + "/fake/" + n, "w").write("#!/usr/bin/env bash\necho \"%s $*\" >> \"$LOG\"\ncase \"$1 $2\" in 'cat-file tag') echo tagobject;; esac\nexit 0\n" % n)
+        os.chmod(t + "/fake/" + n, 0o755)
+    e = dict(os.environ, PATH=t + "/fake:" + os.environ["PATH"], LOG=t + "/log", RUNNER_TEMP=t + "/tmp", VERSION="v0.3.1", SINCE="v0.3.0",
+             GITHUB_STEP_SUMMARY=t + "/summary", GITHUB_REPOSITORY="o/r", GH_TOKEN="x", GITHUB_OUTPUT=t + "/out")
+    open(t + "/tmp/removed.json", "w").write("[]"); open(t + "/tmp/rel-0.3.0.json", "w").write("{}")
+    run_text = step(job, needle)["run"]
+    r = subprocess.run(["bash", "-c", run_text], cwd=t, env=e, capture_output=True, text=True)
+    log = open(t + "/log").read() if os.path.exists(t + "/log") else ""
+    if r.returncode == 0:
+        bad.append("%s: exit 0 although patch-decide.py exited 2 (a fallback swallowed it)" % label)
+    if "gh pr" in log or "signed-commit" in log or "gh release" in log:
+        bad.append("%s: posted or committed something after the refusal: %s" % (label, log.replace("\n", " | ")[:200]))
+    if os.path.exists(t + "/tmp/notes.md") and os.path.getsize(t + "/tmp/notes.md") == 0 and r.returncode == 0:
+        bad.append("%s: an empty notes file was accepted" % label)
+run("patch-notes job (tag-notes then changelog)", "patch-notes", "changelog-and-clear", None)
+run("decide job (the patch notes step)", "decide", "the patch notes", None)
+# the published list is never an input of a BEGIN check: it is built with %(contents) in the decide job only; the patch-notes job passes no --published
+txt = open(os.path.join(root, ".github/workflows/release.yml")).read()
+pn = d["jobs"]["patch-notes"]
+if "--published" in yaml.safe_dump(pn):
+    bad.append("the patch-notes job passes --published (tag signature blocks would reach cache's BEGIN check)")
+if re.search(r"tag-notes[^\n]*\|\|", txt) or re.search(r"patch-decide\.py (notes|changelog)[^\n]*\|\| *(true|:)", txt):
+    bad.append("a patch-decide.py call is followed by a fallback")
 print("; ".join(bad) or "ok")
 PY
 )
-if [ "$stages_out" = ok ]; then pass=$((pass+1)); echo "PASS stages-read-baseline → ok"; else failn=$((failn+1)); echo "FAIL stages-read-baseline ($stages_out)"; fi
+if [ "$behav_out" = ok ]; then pass=$((pass+1)); echo "PASS patch-decide exit 2 fails both jobs and posts nothing (no fallback)"; else failn=$((failn+1)); echo "FAIL patch-decide exit 2 handling ($behav_out)"; fi
 # the standing issue always updates (REQ-REL-009 AC1): run 39989891074 died with exit 126 (argument too long) because the whole commit
 # list went through --body, and the first fix (a 30-entry cap, each entry cut to 400 characters) dropped commits and could cut a redacted
 # token in two (Codex astra on #640). The step now sends ONE body of whole entries under 60000 bytes, never a slice of an entry, with the count

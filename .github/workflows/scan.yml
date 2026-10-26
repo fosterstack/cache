@@ -13,7 +13,7 @@ name: scan
 # DIFFERENT DATABASES (different aggregations, overlapping upstream
 # sources) — grype (Anchore's own database) scans both platform children of
 # every OCI variant AND every dist archive; Amazon Inspector scans the same
-# six children (inspector-sbomgen inventories each image on the runner;
+# four children (inspector-sbomgen inventories each image on the runner;
 # only the SBOM goes to inspector-scan:ScanSbom). Go code: govulncheck
 # (its own job), the symbol-level authority. Trivy and OSV-Scanner left
 # this gate. Findings block at ANY severity with the published VEX document
@@ -22,7 +22,7 @@ name: scan
 # run, or that inventories zero packages (row 53), is a PIPELINE failure
 # (red), never a silent clean pass (bin/install-scanner.sh).
 #
-# Inspector needs no stored secret: the scanner job alone requests
+# Inspector needs no stored secret: the inspector job alone requests
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
 # (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
 # ratified Sep 29, decision row 73; the role's trust names those subjects).
@@ -43,12 +43,13 @@ concurrency:
   group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('scan-pr-{0}', github.event.pull_request.number) || format('scan-{0}-{1}', github.run_id, github.run_attempt) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Workflow default: read only. Each job states what it needs. The two
-# reusable-stage callers (build, assemble) grant what the shared stage files
-# REQUEST, or the run is a startup_failure with zero jobs
-# (the former release-chain-pr.yml learned this the hard way); id-token/attestations/
-# packages are unused in snapshot/pr mode. The scanner job requests
-# id-token: write for the Inspector leg's role assumption. Dependabot-
+# Workflow default: read only. Each job states what it needs. The reusable-stage
+# callers (build, rebuild) grant what the shared stage files REQUEST, or the run is a
+# startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
+# checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
+# does not run, but they are static job permissions of the called stage. The callers' grants
+# are a static ceiling (REQ-CHAIN-004-AC14): no write and, since the Witness move, no id-token (building jobs record under a throwaway key). The inspector job requests
+# id-token: write for the role assumption; the scanner (grype) matrix holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
 # events are downgraded and need none of this to build and scan.
@@ -56,83 +57,40 @@ permissions:
   contents: read
 
 jobs:
+  # The proof build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, with no tag and no admission; its records are refused by every release verifier.
   build:
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      packages: write
+      checks: read
+      statuses: read
+      pull-requests: read
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
 
-  assemble:
+  # The PR-mode proof of the reproducibility property (rule 31, kept): Rebuild in snapshot mode rebuilds everything on fresh runners and compares every item with
+  # Build's snapshot record; it FAILS the job on any difference (REQ-CHAIN-005-AC7). The release relies only on release.yml's own Rebuild; this is a PR/main proof.
+  rebuild:
     needs: build
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      packages: write
-    uses: ./.github/workflows/stage-image.yml
+    uses: ./.github/workflows/stage-reproducibility.yml
     with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      upload-oci: true
+      mode: snapshot
 
-  # ---------------------------------------------------------------------------------------------------------------
-  # Merged from release-chain-pr.yml (workflow consolidation 5, owner RATIFIED Oct 2; advisor read-back 0062): the
-  # PR-mode proof of the reproducibility property. One build feeds both: `assemble` above is assembly A, `assemble-b`
-  # assembles the same attested binaries again in an independent job (verify only: it uploads no oci-candidate, so the
-  # artifact name stays unique), and the required check `reproducibility` demands identical index digests for every
-  # variant. The release relies only on release.yml's own reproducibility stage (stage-reproducibility.yml, unchanged);
-  # this job is a PR/main proof and never a gate on the tag chain.
-  assemble-b:
-    needs: build
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-      packages: write
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-
-  artifact-acceptance:
-    needs: build
-    permissions:
-      contents: read
-      packages: read
-    uses: ./.github/workflows/stage-acceptance-artifacts.yml
-    with:
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-
+  # The required check `reproducibility` keeps its name. When `rebuild` fails GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as
+  # passing, so this job runs always() and fails unless rebuild's result is exactly success (the pattern of the `scan` aggregate below). Rebuild fails on any differing item.
   reproducibility:
     name: reproducibility
-    needs: [assemble, assemble-b]
+    needs: rebuild
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: two independent assemblies must agree, digest for digest
+      - name: the snapshot Rebuild must have run and passed
         run: |
-          set -euo pipefail
-          a='${{ needs.assemble.outputs.digests }}'
-          b='${{ needs.assemble-b.outputs.digests }}'
-          echo "assembly A: $a"
-          echo "assembly B: $b"
-          for v in production debug fips; do
-            da=$(jq -r --arg v "$v" '.[$v]' <<<"$a")
-            db=$(jq -r --arg v "$v" '.[$v]' <<<"$b")
-            if [ -z "$da" ] || [ "$da" = "null" ]; then
-              echo "::error::assembly A produced no digest for ${v}" >&2; exit 1
-            fi
-            if [ "$da" != "$db" ]; then
-              echo "::error::${v} is NOT reproducible: ${da} vs ${db}" >&2; exit 1
-            fi
-            echo "${v}: reproducible at ${da}"
-          done
+          r='${{ needs.rebuild.result }}'
+          echo "snapshot Rebuild result: ${r}"
+          [ "${r}" = "success" ] || { echo "::error::the build is not shown reproducible: the snapshot Rebuild failed, was cancelled or was skipped (result=${r})" >&2; exit 1; }
 
   scanners:
     name: read the scanner list
@@ -142,73 +100,77 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: read
-        run: echo "list=$(jq -c '.pr_gate' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
+        run: echo "list=$(jq -c '.pr_gate' .github/policy/scanners.json | jq -c 'map(select(. != "inspector"))')" >> "$GITHUB_OUTPUT"
 
   scanner:
     name: scan (${{ matrix.scanner }})
-    needs: [build, assemble, scanners]
+    needs: [build, scanners]
     runs-on: ubuntu-latest
-    # id-token: write is for the Inspector leg's role assumption and is the
-    # only place in this workflow's own jobs that requests it.
+    # The grype leg(s) of the pr_gate list; Amazon Inspector runs in its own job below (the Witness adversarial pass: the one job that
+    # holds id-token: write is not a matrix, and the scanner matrix holds no token at all).
     permissions:
       contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
         scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
-    env:
-      INSPECTOR_ROLE: arn:aws:iam::821302803867:role/fosterstack-cache-inspector-scan
-      INSPECTOR_REGION: us-east-1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Both gate scanners read the OCI images; only grype scans the
-      # release archives. So: the image download + daemon load run for
-      # both; the archive download + verify run for grype only.
+      # This job scans with grype only: its three grype-only steps below are `if: matrix.scanner == 'grype'`. A pr_gate name other than grype would install a tool and scan
+      # nothing, and the `scan` aggregate would read success; a scanner that did not run is a failure, never a pass.
+      - name: refuse a scanner this job cannot run
+        if: matrix.scanner != 'grype'
+        run: |
+          echo "::error::scanners.json pr_gate names a scanner this job does not run; only grype is wired into it" >&2
+          exit 1
+
+      # grype reads the OCI images and scans the release archives: the image download + tar,
+      # the archive download and the archive verify all run in this job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: matrix.scanner == 'grype'
         with:
-          name: dist-snapshot
+          name: dist
           path: dist/
 
       - name: verify archives before scanning them
         if: matrix.scanner == 'grype'
         env:
-          EXPECTED: ${{ needs.build.outputs.checksums }}
+          EXPECTED: ${{ needs.build.outputs.digests }}
         run: |
           set -euo pipefail
-          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
-          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+          # Build has no checksums text: the four archive digests are in its digests.json output (archive-linux-ARCH, archive-fips-linux-ARCH; snapshot version 0.0.0-rc.1)
+          printf '%s' "${EXPECTED}" > /tmp/digests.json
+          jq -r 'to_entries[] | select(.key | startswith("archive-")) | (.key | capture("^archive-(?<fips>fips-)?linux-(?<arch>amd64|arm64)$")) as $m | "\(.value | ltrimstr("sha256:"))  fscache\(if $m.fips then "-fips" else "" end)_0.0.0-rc.1_linux_\($m.arch).tar.gz"' /tmp/digests.json > /tmp/expected-checksums.txt
+          [ "$(wc -l < /tmp/expected-checksums.txt)" = 4 ]
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --strict)
 
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
-        run: ./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'
+        run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
 
-      # Load every (variant, platform) child into the docker daemon. buildx
-      # writes an OCI-layout tar the scanners do not read directly, so each
-      # single-arch child is loaded by ref. Both gate scanners scan these
-      # six children by ref.
-      - name: load every variant/platform child into the docker daemon
+      # The candidate is an OCI layout. Each single-arch child is made into a docker-save tar of its own blobs
+      # (bin/layout-archive.sh), which Grype reads without a Docker daemon; the four children are scanned by tar.
+      - name: make a tar of every variant/platform child
         run: |
           set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          mkdir -p /tmp/arc
           : > /tmp/refs.txt
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
-              skopeo copy --override-arch "${arch}" --override-os linux \
-                "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}"
+              tag="${ref##*:}"
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${tag}.tar" "${ref}" > "/tmp/arc/${tag}.id"
               echo "${ref}" >> /tmp/refs.txt
             done
           done
-          echo "loaded images to scan:"; cat /tmp/refs.txt
+          echo "tars to scan:"; cat /tmp/refs.txt; cat /tmp/arc/*.id
 
-      - name: Grype scan every loaded image and every archive
+      - name: Grype scan every image tar and every archive
         if: matrix.scanner == 'grype'
         run: |
           set -euo pipefail
@@ -216,44 +178,133 @@ jobs:
           echo "## Grype" >> "$GITHUB_STEP_SUMMARY"
           # bin/grype-scan.sh: one pass per target, counts, VEX, zero packages = red.
           g() { ./bin/grype-scan.sh "$1" "$2"; }
-          while read -r ref; do g "docker:${ref}" "${ref##*:}"; done < /tmp/refs.txt
-          for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}"; done
+          rc=0   # a finding in one image must not hide the rest: every target is scanned
+          while read -r ref; do
+            tag="${ref##*:}"
+            # the report's image ID must be the config digest of the child the tar was made from
+            EXPECT_IMAGE_ID="$(awk '{print $4}' "/tmp/arc/${tag}.id")" \
+              g "docker-archive:/tmp/arc/${tag}.tar" "${tag}" || rc=1
+          done < /tmp/refs.txt
+          for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}" || rc=1; done
+          exit "$rc"
+
+  inspector:
+    name: scan (inspector)
+    needs: [build]
+    runs-on: ubuntu-latest
+    # The only job of this workflow's own that requests id-token: write: the ScanSbom-only role assumption (OIDC, no stored secret).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      INSPECTOR_ROLE: arn:aws:iam::821302803867:role/fosterstack-cache-inspector-scan
+      INSPECTOR_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Inspector reads the same OCI images (no archives): the image download + tar run here too.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: /tmp/oci/
+
+      - name: install inspector-sbomgen (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh inspector-sbomgen
+
+      # The same tars as the Grype job; sbomgen reads an image tar without a Docker daemon.
+      - name: make a tar of every variant/platform child
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/arc
+          : > /tmp/refs.txt
+          for v in production fips; do
+            for arch in amd64 arm64; do
+              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+              tag="${ref##*:}"
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${tag}.tar" "${ref}" > "/tmp/arc/${tag}.id"
+              echo "${ref}" >> /tmp/refs.txt
+            done
+          done
+          echo "tars to scan:"; cat /tmp/refs.txt; cat /tmp/arc/*.id
 
       - name: Amazon Inspector — assume the ScanSbom-only role (OIDC; no stored secret)
-        if: matrix.scanner == 'inspector'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.INSPECTOR_ROLE }}
           aws-region: ${{ env.INSPECTOR_REGION }}
           role-session-name: cache-pr-scan-${{ github.run_id }}
 
-      - name: Amazon Inspector scan every loaded image
-        if: matrix.scanner == 'inspector'
+      # Same-day reuse of Amazon Inspector results (REQ-REL-004-AC8): keyed by the SBOM's package inventory (bin/inspector-reuse.py),
+      # stored in the Actions cache, one entry per UTC day per run. The restore key never matches exactly, so restore-keys
+      # picks the newest same-day entry; a run that only reused saves nothing. Same-repo runs only (no fork reads or writes).
+      - name: Amazon Inspector - today's date (UTC) for the same-day reuse
+        id: insp-date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - restore today's results (same-repo runs only)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/inspector-cache
+          key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}-miss
+          restore-keys: inspector-${{ steps.insp-date.outputs.date }}-
+
+      - name: Amazon Inspector scan every image tar
+        id: insp-scan
+        env:
+          EXPECTED_REFS: "4"      # production and fips, each on amd64 and arm64: a tar step that left fewer must not turn into a clean pass
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
+          nrefs=$(grep -c . /tmp/refs.txt 2>/dev/null)
+          if [ "${nrefs:-0}" -ne "${EXPECTED_REFS}" ]; then
+            echo "::error::Amazon Inspector was given ${nrefs:-0} image references, expected ${EXPECTED_REFS} — did not run on every image, not a clean pass" >&2
+            exit 2
+          fi
           # inspector-sbomgen inventories each child on the runner; only the
-          # SBOM leaves the runner. Identical inventories (a variant's two
-          # platform children usually match) are sent once and their verdict
-          # reused. bin/inspector-gate.py prints the package count, applies
-          # the published VEX, and returns 0 clean / 1 findings / 2 did not run.
-          mkdir -p /tmp/insp; rc=0; sent=0
+          # SBOM leaves the runner. bin/inspector-reuse.py keys the inventory
+          # (package names and versions only): an inventory Inspector already
+          # scanned today (an earlier image of this run, or the day's cache)
+          # is reused, anything else calls ScanSbom once and stores the answer
+          # (REQ-REL-004-AC8). bin/inspector-gate.py prints the package count,
+          # applies the published VEX to the findings, reused or fresh, and
+          # returns 0 clean / 1 findings / 2 did not run.
+          mkdir -p /tmp/insp /tmp/inspector-cache; rc=0; sent=0; stored=0; reused=0
+          # the UTC day is read from the clock at each decision (never once per run); a fresh answer is cached only if the
+          # clock still reads that day when it arrives (UTC midnight during the call: used this run, not cached)
           echo "## Amazon Inspector" >> "$GITHUB_STEP_SUMMARY"
           while read -r ref; do
             tag="${ref##*:}"
-            if ! inspector-sbomgen container --image "${ref}" --outfile "/tmp/insp/${tag}.sbom.json" --disable-progress-bar; then
+            if ! inspector-sbomgen container --image "/tmp/arc/${tag}.tar" \
+                 --outfile "/tmp/insp/${tag}.sbom.json" --disable-progress-bar; then
               echo "::error::inspector-sbomgen could not inventory ${ref} — did not run, not a clean pass" >&2; rc=2; continue
             fi
-            key=$(jq -S '[.components[]? | .purl // (.name + "@" + (.version // ""))] | sort' "/tmp/insp/${tag}.sbom.json" | sha256sum | cut -c1-16)
-            if [ ! -f "/tmp/insp/${key}.findings.json" ]; then
+            key=$(python3 bin/inspector-reuse.py key "/tmp/insp/${tag}.sbom.json") || { echo "::error::no inventory key for ${ref} — did not run, not a clean pass" >&2; rc=2; continue; }
+            day=$(date -u +%F)
+            verdict=$(python3 bin/inspector-reuse.py decide /tmp/inspector-cache "${day}" "/tmp/insp/${tag}.sbom.json") || verdict=call
+            if [ "${verdict%%$'\n'*}" = reuse ] && cp "${verdict#*$'\n'}" "/tmp/insp/${key}.findings.json"; then
+              reused=$((reused+1))
+            else
+              rm -f "/tmp/insp/${key}.findings.json"
               aws inspector-scan scan-sbom --sbom "file:///tmp/insp/${tag}.sbom.json" --output-format CYCLONE_DX_1_5 \
                 > "/tmp/insp/${key}.findings.json" || { echo "::error::inspector-scan:ScanSbom failed for ${ref} — did not run, not a clean pass" >&2; rm -f "/tmp/insp/${key}.findings.json"; rc=2; continue; }
+              if ! python3 bin/inspector-reuse.py validate "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json"; then
+                echo "::error::the ScanSbom answer for ${ref} is not the response for this image's inventory — did not run, not a clean pass" >&2; rm -f "/tmp/insp/${key}.findings.json"; rc=2; continue
+              fi
               sent=$((sent+1))
+              if [ "$(date -u +%F)" != "${day}" ]; then
+                echo "::notice::UTC midnight passed during the ScanSbom call for ${ref}: its answer is used this run and not cached" >&2
+              elif python3 bin/inspector-reuse.py store /tmp/inspector-cache "${day}" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json"; then
+                stored=$((stored+1))
+              else
+                echo "::warning::the validated ScanSbom answer for ${ref} could not be cached" >&2
+              fi
             fi
             out=$(python3 bin/inspector-gate.py "${tag}" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json" .vex/fosterstack-cache.openvex.json) && c=0 || c=$?
             echo "${out}"; echo "- ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
             [ "$c" -gt "$rc" ] && rc=$c
           done < /tmp/refs.txt
-          echo "- SBOMs assessed: ${sent} (identical inventories assessed once)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2
+          echo "fresh=${stored}" >> "$GITHUB_OUTPUT"
+          echo "- SBOMs assessed: ${sent} sent to Inspector, ${reused} reused (same inventory, same UTC day)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -eq 1 ]; then
             echo "::error::Amazon Inspector found vulnerabilities. Fix the dependency, or publish a VEX statement via the audit-lane review." >&2
           elif [ "$rc" -ge 2 ]; then
@@ -261,10 +312,21 @@ jobs:
           fi
           exit "$rc"
 
+      - name: Amazon Inspector - the UTC day at save time
+        id: insp-save-day
+        if: always()
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)
+        if: always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/inspector-cache
+          key: inspector-${{ steps.insp-save-day.outputs.date }}-${{ github.run_id }}
+
       # The SBOMs and the raw ScanSbom responses, as evidence of what was
       # inventoried and what came back (kept even when the leg is red).
       - name: keep the Inspector SBOMs and responses
-        if: always() && matrix.scanner == 'inspector'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: inspector-evidence
@@ -274,12 +336,14 @@ jobs:
 
   scan:
     name: scan
-    needs: scanner
+    needs: [scanner, inspector]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: every scanner must have run and passed
         run: |
           r='${{ needs.scanner.result }}'
-          echo "aggregate scanner result: ${r}"
+          i='${{ needs.inspector.result }}'
+          echo "aggregate scanner result: ${r}, inspector result: ${i}"
+          [ "${i}" = "success" ] || { echo "::error::Amazon Inspector failed, was cancelled, or was skipped (result=${i}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }
           [ "${r}" = "success" ] || { echo "::error::one or more scanners failed, were cancelled, or were skipped (result=${r}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }
