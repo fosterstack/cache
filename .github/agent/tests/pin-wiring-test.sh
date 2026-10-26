@@ -398,6 +398,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-both-scanners-test.sh"
   },
   {
+   "name": "the candidate's OCI layout turned into a scan tar, digests checked (REQ-REL-004-AC1)",
+   "run": "bash bin/layout-archive-test.sh"
+  },
+  {
    "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
    "run": "bash bin/vex-forms-test.sh"
   },
@@ -619,6 +623,10 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)",
    "run": "bash bin/patch-decide-test.sh"
+  },
+  {
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "run": "bash bin/audit-record-test.sh"
   },
   {
    "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",

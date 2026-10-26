@@ -180,7 +180,9 @@ PYD
 mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
-cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh "$fx/bin/" 2> /dev/null || true
+cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py \
+  "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh \
+  "$root"/bin/layout-archive.sh "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
@@ -299,6 +301,15 @@ want_rc() { # want_rc LABEL RC SCRIPT ARGS...
   local l=$1 r=$2; shift 2; run "$@"; if [ "$rc" = "$r" ]; then ok "$l"; else bad "$l -> rc=$rc, wanted $r: ${out:0:140}"; fi; }
 SCAN=(check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out)
 # ---- REQ-CHAIN-006-AC4: check-scan.sh ---------------------------------------------------------------------------------------
+# one definition of the image archive (Fable on #732): check-scan.sh runs bin/layout-archive.sh and defines no
+# archive or child lookup of its own
+scan="$root/bin/check-scan.sh"
+if ! grep -Fq 'osv_archive()' "$scan" && ! grep -Fq 'child_digest()' "$scan" \
+  && grep -Fq 'bin/layout-archive.sh' "$scan"; then
+  ok "AC4 check-scan.sh builds every image archive with bin/layout-archive.sh, defining no osv_archive or child_digest"
+else
+  bad "AC4 check-scan.sh still defines its own osv_archive or child_digest, or does not run bin/layout-archive.sh"
+fi
 want_ok "AC4 both listed scanners clean with packages: exit 0" "${SCAN[@]}"
 if [ -f "$fx/out/scan-results.json" ] && jq -e '.listed == 2 and .ran == 2 and (.scanners | length == 2) and all(.scanners[]; .verdict == "pass" and (.version | length > 0))' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 results: listed 2, ran 2, every scanner pass with a version"; else bad "AC4 results file shape (listed/ran/scanners/version)"; fi
 if [ -f "$fx/out/scan-results.json" ] && jq -e --argjson want "$(jq -s '[.[] | .amd64.manifest, .arm64.manifest | "sha256:" + .] | sort' "$fx/images/production.map" "$fx/images/fips.map")" '[.scanners[].subjects[] | select(.name | test("^(production|fips)/linux/"))] | (map(.digest) | unique | sort) == $want' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 every image subject carries a child manifest digest of the layout Build recorded (not a tag, not a tarball hash)"; else bad "AC4 subject digests are not the candidate digests"; fi
@@ -836,8 +847,6 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz": return self._send(200, b"ok")
         if self.path == "/statusz":
-            if os.environ.get("FAKE_DIE_AFTER_STATUSZ") and not kind:   # one of the check's own servers (not a fake container) exits right after it answered /statusz
-                import threading; threading.Timer(0.1, lambda: os._exit(1)).start()
             forced = "fips140=on" in os.environ.get("GODEBUG", "")
             if name.endswith("fips") or kind == "fips":
                 note = os.environ.get("FAKE_FIPS_NOTE", "active (Go validated module v1.0.0, CMVP cert #5247)"); on = os.environ.get("FAKE_FIPS_BOOL", "true") == "true"
@@ -860,7 +869,15 @@ if term_delay and not kind:   # one of the check's own servers (not a fake conta
 addr = os.environ.get("FSCACHE_ADDR", ":8080")
 with open(os.path.join(os.environ.get("FAKE_DIR", "."), "pid-%s" % os.getpid()), "w") as f:   # the test asks afterwards which servers are still alive
     f.write(str(os.getpid()))
-http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H).serve_forever()
+if not kind:   # one of the check's own servers: the test asks afterwards which address the check gave it
+    with open(os.path.join(os.environ.get("FAKE_DIR", "."), "addr-%s" % os.getpid()), "w") as f:
+        f.write(addr + "\n")
+server = http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H)
+# fscache logs the address it actually bound as JSON on stdout (":0" shows the real port); the check reads the port
+# from that line
+bound = "127.0.0.1:%d" % server.server_address[1]
+print(json.dumps({"level": "INFO", "msg": "fscache: starting", "addr": bound}), flush=True)
+server.serve_forever()
 PYS
 for b in fscache fscache-fips; do { echo '#!/usr/bin/env python3'; cat "$fa/server.py"; } > "$fa/real/$b"; chmod +x "$fa/real/$b"; done
 mkarch() { # mkarch DIR: the four Linux archives, each holding its binary
@@ -930,8 +947,6 @@ mkarch "$fa/dist"
 arun FAKE_TERM_DELAY=2 -- "${ART[@]}"
 alive=0; for pf in "$work"/fakedir/pid-*; do [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2> /dev/null && alive=$((alive + 1)); done
 if [ "$rc" = 0 ] && ls "$work"/fakedir/pid-* > /dev/null 2>&1 && [ "$alive" = 0 ]; then ok "ART the check waits for its servers to die: none of its three is alive when it exits"; else bad "ART servers outlived the check (rc=$rc, alive=$alive): $(echo "$out" | tail -3)"; fi
-mkarch "$fa/dist"
-afail "ART a server that answers and then exits (its port taken by another run's server, say) fails the check naming the exit" exited FAKE_DIE_AFTER_STATUSZ=1 -- "${ART[@]}"
 squats=()
 for port in 19101 19102 19103; do
   python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(120)' "$port" &
@@ -953,10 +968,39 @@ afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${
 mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
 tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
 afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
+# a server that dies before it answers is noticed at once and its own last words are in the failure
+# (before: a silent 10 s wait)
+printf '#!/usr/bin/env bash\necho "fscache: boom cannot bind" >&2\nexit 1\n' > "$fa/bad/fscache-fips"
+chmod +x "$fa/bad/fscache-fips"
+tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
+t0=$(date +%s); arun -- "${ART[@]}"; took=$(( $(date +%s) - t0 ))
+if [ "$rc" = 1 ] && grep -Fq healthz <<< "$out" && grep -Fq "boom cannot bind" <<< "$out" && [ "$took" -le 5 ]; then
+  ok "PLAT-001-AC1 a server that dies before it answers fails within 5 s, naming healthz, with its own last log line"
+else
+  bad "PLAT-001-AC1 a dead server: rc=$rc after ${took}s: ${out:0:200}"
+fi
+mkarch "$fa/dist"
+# the check never guesses a port: each of its three servers is told to listen on port 0 of the loopback and reports
+# the port it got; servers_given lists the addresses the check gave its servers
+servers_given() { cat "$work"/fakedir/addr-* 2> /dev/null | sort | uniq -c | tr -s ' ' | tr '\n' ';'; }
+arun -- "${ART[@]}"
+addrs=$(servers_given)
+if [ "$rc" = 0 ] && [ "$addrs" = " 3 127.0.0.1:0;" ]; then
+  ok "PLAT-001-AC1 the check starts its three servers on 127.0.0.1:0 and reads the bound port from their log"
+else
+  bad "PLAT-001-AC1 the servers were given [$addrs] (rc=$rc): ${out:0:160}"
+fi
 # REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
 if grep -Fq -- '--platform linux/arm64' "$work/log" && [ -f "$fa/out/artifacts-result-arm64.json" ] && jq -e '.arch == "arm64" and .production.digest and .fips.digest' "$fa/out/artifacts-result-arm64.json" > /dev/null 2>&1; then ok "AC17 the arm64 images run with --platform linux/arm64 and the result names the arch and the same candidate digests"; else bad "AC17 arm64 run: no --platform linux/arm64, or artifacts-result-arm64.json incomplete"; fi
+# the arm64 run above: the same start code, the same port 0 (a second flake died waiting on the arm64 -fips server)
+addrs=$(servers_given)
+if [ "$addrs" = " 3 127.0.0.1:0;" ]; then
+  ok "AC17 the arm64 run also starts its three servers on 127.0.0.1:0"
+else
+  bad "AC17 the arm64 servers were given [$addrs]"
+fi
 arun -- "${ART[@]}"; if ! grep -Fq -- '--platform' "$work/log"; then ok "AC17 the default (amd64) run passes no --platform"; else bad "AC17 the amd64 run passed --platform"; fi
 # round 1 F1: the images and archives are the ones Build recorded, bound before anything is loaded or executed
 mkarch "$fa/dist"
@@ -1609,7 +1653,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=574
+EXPECT=577
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

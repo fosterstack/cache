@@ -183,6 +183,7 @@ def _norm(s):
 
 
 EVIDENCE_MARK = "--- evidence from the image ---"
+APK_DB = "/lib/apk/db/installed"        # apko-built images (ours) keep their installed packages here
 ABSENT = ("no record names", "no path in the image mentions", "no Go binary in the image records")
 
 
@@ -215,16 +216,28 @@ def installed_versions(bundle, f):
     return found
 
 
+def _dbs_read(ev):
+    """The package-database kinds the evidence section says were read from the image ("package databases read: ...")."""
+    mark = "package databases read: "
+    line = next((ln[len(mark):] for ln in ev.splitlines() if ln.startswith(mark)), "")
+    return {k.strip() for k in line.split(",") if k.strip() and k.strip() != "none"}
+
+
 def absence_is_complete(bundle, f):
-    """Absence is proof only where the evidence covers that kind of package: a distribution package (deb/rpm/apk)
-    with no record AND no file path mentioning it, or a Go module (not the standard library) in an image whose Go
-    binaries carry build information. Anything else (a static non-Go binary such as busybox, an unknown type) can
-    never be shown absent by this evidence (Codex r3 B1)."""
+    """Absence is proof only where the evidence covers that kind of package: a distribution package (deb/apk)
+    with no record in a package database of its kind that was actually read AND no file path mentioning it, or a
+    Go module (not the standard library) in an image whose Go binaries carry build information. Anything else
+    (a static non-Go binary such as busybox, an unknown type) can never be shown absent by this evidence
+    (Codex r3 B1)."""
     ev = str(bundle).split(EVIDENCE_MARK, 1)[1] if EVIDENCE_MARK in str(bundle) else ""
     pkg = str(f.get("package") or "").lower()
     short = pkg.rsplit("/", 1)[-1]
     kinds = {p[4:].split("/", 1)[0] for p in f.get("purls") or [] if str(p).startswith("pkg:")}
     if kinds & {"deb", "rpm", "apk"} and len(kinds) == 1:
+        # absence is proof only against a package database of that kind the evidence says was read (rpm is never read)
+        read = _dbs_read(ev)
+        if {"deb": "dpkg", "apk": "apk"}.get(next(iter(kinds))) not in read:
+            return False
         return not any(ln.startswith("file: ") and short in ln.lower() for ln in ev.splitlines())
     if kinds == {"golang"} and pkg not in ("stdlib", "go"):
         return bool(re.search(r"(?m)^go build info \S+: \S+: go\d", ev))
@@ -705,9 +718,10 @@ class _Layout:
 
 
 def read_image(archive, arch):
-    """The image's final filesystem facts from an OCI archive: every path, the dpkg status records, and the bytes
-    of executables carrying Go build information. Layers apply in order; whiteouts remove paths."""
-    paths, status, gobins = set(), {}, {}
+    """The image's final filesystem facts from an OCI archive: every path, the dpkg status records, the apk installed
+    database, and the bytes of executables carrying Go build information. Layers apply in order; whiteouts remove
+    paths."""
+    paths, status, gobins, apk = set(), {}, {}, {}
     with _Layout(archive) as t:
         def blob(d):
             return t.extractfile("blobs/" + d.replace(":", "/")).read()
@@ -719,7 +733,7 @@ def read_image(archive, arch):
                 members = lt.getmembers()
 
                 def drop(prefix, exact=None):
-                    for coll in (paths, status, gobins):
+                    for coll in (paths, status, gobins, apk):
                         for gone in [x for x in coll if x == exact or x.startswith(prefix)]:
                             coll.remove(gone) if isinstance(coll, set) else coll.pop(gone)
                 # whiteouts apply to the LOWER layers, before this layer's own entries are added
@@ -737,16 +751,19 @@ def read_image(archive, arch):
                     if base.startswith(".wh."):
                         continue
                     paths.add(name)
-                    status.pop(name, None); gobins.pop(name, None)      # a later layer replaces the file
+                    # a later layer replaces the file
+                    status.pop(name, None); gobins.pop(name, None); apk.pop(name, None)
                     if not m.isfile():
                         continue
                     if name == "/var/lib/dpkg/status" or name.startswith("/var/lib/dpkg/status.d/"):
                         status[name] = lt.extractfile(m).read().decode("utf-8", "replace")
+                    elif name == APK_DB:
+                        apk[name] = lt.extractfile(m).read().decode("utf-8", "replace")
                     elif m.mode & 0o111:
                         data = lt.extractfile(m).read()
                         if GO_MARK in data:
                             gobins[name] = data
-    return {"paths": sorted(paths), "status": status, "gobins": gobins}
+    return {"paths": sorted(paths), "status": status, "apk": apk, "gobins": gobins}
 
 
 def go_buildinfo(gobins, run=subprocess.run):
@@ -776,7 +793,17 @@ def bundle_text(facts, buildinfo, f):
                    for ln in st.splitlines() if ":" in ln and not ln.startswith(" ")}
             if low and (hdr.get("package", "").lower() == low or hdr.get("source", "").split(" ")[0].lower() == low):
                 stanzas.append("package database %s:\n%s" % (path, st.strip()))
-    lines += stanzas or ["package database: no record names %s" % pkg]
+    for path, text in sorted(facts.get("apk", {}).items()):
+        for st in text.split("\n\n"):
+            rec = {ln[0]: ln[2:].strip() for ln in st.splitlines() if len(ln) > 1 and ln[1] == ":"}
+            if low and rec.get("V") and (rec.get("P", "").lower() == low or rec.get("o", "").lower() == low):
+                # an apk record in the Package/Version/Source shape the validator reads (P=name, V=version, o=origin)
+                stanzas.append("package database %s (apk):\nPackage: %s\nVersion: %s\nSource: %s" % (
+                    path, rec.get("P", ""), rec["V"], rec.get("o", rec.get("P", ""))))
+    read = sorted(k for k, have in (("apk", facts.get("apk")), ("dpkg", facts["status"])) if have)
+    lines.append("package databases read: %s" % (", ".join(read) or "none"))
+    lines += stanzas or (["package database: no record names %s" % pkg] if read else
+                         ["package database: none of dpkg or apk was found in the image"])
     hits = [x for x in facts["paths"] if low and low in x.lower()][:40]
     lines += ["file: %s" % x for x in hits] or ["files: no path in the image mentions %s" % pkg]
     toolchains = ["go build info %s: %s" % (b, text.splitlines()[0].strip()) for b, text in sorted(buildinfo.items())

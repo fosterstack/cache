@@ -46,7 +46,7 @@ it:
 (set -eo pipefail
 cosign verify-attestation "ghcr.io/fosterstack/cache@${DIGEST}" \
   --type https://fosterstack.com/attestations/release-manifest/v1 \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' > release-manifest.attestation.json
 jq -r '.payload' release-manifest.attestation.json | base64 -d | jq '.predicate' > release-manifest.verified.json
 jq -r '.vex[] | "\(.sha256)  \(.file)"' release-manifest.verified.json | sha256sum -c
