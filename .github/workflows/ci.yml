@@ -899,10 +899,6 @@ jobs:
           else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
           if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
 
-  # Row 76: a drift issue dispatches the fixer in the ops repository. Only on push to main: the
-  # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
-  # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
-  # a failed call is a warning; the issue is the record.
   # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6; orchestrator ruling Oct 13). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
   # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
