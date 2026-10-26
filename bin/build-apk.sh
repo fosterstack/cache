@@ -8,8 +8,8 @@
 # Run it from the repository root: it names its helpers (bin/apk-tool.py, bin/go-module-sbom.py, bin/net-probe.py,
 # bin/build-apk-helper.py) by literal repo-relative paths and refuses (exit 2) anywhere else.
 #
-# Environment: SOURCE_DATE_EPOCH (digits) is required. Refused: APK_RELEASE_SIGNING_KEY set (a build never holds the release
-# key), GOPROXY other than off, HTTP(S)_PROXY / ALL_PROXY set. There is no --signing-key: the apk is signed with the committed,
+# Environment: SOURCE_DATE_EPOCH (digits) is required. Refused: APK_RELEASE_SIGNING_KEY defined (a build never holds the release
+# key), GOPROXY other than off, HTTP(S)_PROXY / ALL_PROXY defined. There is no --signing-key: the apk is signed with the committed,
 # non-secret assembly key build/keys/assembly.rsa (rule 22) and nothing else.
 #
 # What it does, in this order (the tests fix the order):
@@ -21,7 +21,7 @@
 #      sudo env SOURCE_DATE_EPOCH=.. unshare -n melange build ... --runner bubblewrap: melange runs directly on the VM with the
 #      network cut at the kernel (rule 38a); sudo's own environment reset keeps every token and key out of the build;
 #   5. checks the apk: signed by assembly.rsa.pub, the binary's go version -m is not (devel) and not modified, GOFIPS140=
-#      v1.0.0-c2097c7c is recorded exactly in the fips variant (rules 13, 24);
+#      the module build/locks/fips-module.txt names (v1.0.0-c2097c7c today) is recorded exactly in the fips variant (rules 13, 24);
 #   6. writes OUT/<arch>/<pkg>-<version>-r0.apk (+ APKINDEX.tar.gz, from melange), OUT/fscache-modules.spdx.json (rule 20,
 #      bin/go-module-sbom.py) and OUT/inputs-manifest.json (rule 15, bin/apk-tool.py); the fips variant writes
 #      OUT/fscache-modules-fips.spdx.json and OUT/inputs-manifest-fips.json (the chain builds both variants into one OUT).
@@ -49,6 +49,7 @@ ENVBIN=/usr/bin/env             # TEST-SUBST
 SEALED_ENV=build/sealed-env.json  # TEST-SUBST
 RECIPE_STANDARD=$PWD/build/melange.yaml  # TEST-SUBST
 RECIPE_FIPS=$PWD/build/melange-fips.yaml  # TEST-SUBST
+FIPS_MODULE=$PWD/build/locks/fips-module.txt  # TEST-SUBST (the module the FIPS build uses; the daily refresh rewrites this one file)
 
 [ -f bin/build-apk.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.json ] || die "run bin/build-apk.sh from the repository root (its helpers are named by repo-relative paths)" 2
 
@@ -94,12 +95,12 @@ case $um in x86_64|amd64) host=x86_64;; aarch64|arm64) host=aarch64;; *) host=$u
 [[ $version =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version == 0.0.0-rc.1 ]] || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 apkver=${version/-rc./_rc}; apkver=${apkver/-rc/_rc}   # the apk version syntax for a pre-release: 0.3.0-rc1 -> 0.3.0_rc1, 0.0.0-rc.1 -> 0.0.0_rc1; the Go stamp says v$version
 
-[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)"
+[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)"
 build_date=$("$PY3" -I -B bin/build-apk-helper.py build-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
-[ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || die "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is set)"
+[ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || die "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)"
 if [ -n "${GOPROXY+x}" ] && [ "${GOPROXY}" != off ]; then die "GOPROXY must be off or unset (its value is not printed: it can carry a credential)"; fi
 for p in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
-  [ -z "${!p:-}" ] || die "a proxy is set in the environment ($p); the sealed build has no network"
+  [ -z "${!p:-}" ] || die "a proxy is defined in the environment ($p); the sealed build has no network"
 done
 [ "$repo_set" = 1 ] || die "--repo DIR (the local package repository melange installs the build tools from) is required; a cache alone is not an input"
 case $repo in *://*) die "--repo must be a local directory, not an address ($repo)";; esac
@@ -154,6 +155,28 @@ mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"
 mkdir -p "$out"
 
 # ---- 4. the sealed call ----
+# tree-exclude begin
+# The job's own directories and files are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file: archive/,
+# host-tools/, out/ and witness-apk/ and admission.json (Build), build-in/, witness-build/, witness-rapk/ and policy.json (Rebuild: its downloaded inputs,
+# the witness-<step> directory and the policy it writes). These nine paths, anchored at the root, go into the exclude file of the checkout (never committed).
+# Every other untracked or modified file still makes the tree dirty, and the dirty-tree checks below and in both recipes are unchanged.
+excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || die "cannot locate the exclude file of $src (git rev-parse failed)" 1
+exdir=${excl%/*}
+mkdir -p "$exdir" 2>/dev/null || true   # a checkout made with an empty template has no info/ directory; if it cannot be made the test below says so
+[ -d "$exdir" ] && [ ! -d "$excl" ] || die "the exclude file $excl cannot be used: its directory $exdir is not a directory, or the exclude path itself is a directory" 1
+lines=()
+[ ! -f "$excl" ] || mapfile -t lines <"$excl"
+first=1
+for p in /archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /witness-build/ /witness-rapk/ /policy.json; do
+  seen=0
+  for line in "${lines[@]}"; do [ "$line" != "$p" ] || seen=1; done
+  if [ "$seen" = 0 ]; then
+    [ "$first" = 0 ] || echo >>"$excl"   # a final line with no newline would swallow the pattern
+    first=0
+    echo "$p" >>"$excl"
+  fi
+done
+# tree-exclude end
 "$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns (not needed off Ubuntu 24.04)" >&2
 margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"
   --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"
@@ -202,7 +225,11 @@ headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null) || die "cannot read the s
 [ -n "$binrev" ] && [ "$binrev" = "$headrev" ] || die "the binary's vcs.revision is '${binrev:-none}', not the source HEAD $headrev: the binary is not tied to this source" 1
 fipsvals=$(awk -F'\t' '$2=="build" && $3 ~ /^GOFIPS140=/{print $3}' "$tmp/buildinfo.txt")
 if [ "$variant" = fips ]; then
-  [ "$fipsvals" = "GOFIPS140=v1.0.0-c2097c7c" ] || die "the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})" 1
+  # REQ-BUILDAPK-001-AC4: the module is the one build/locks/fips-module.txt names, read with the grammar the daily refresh reads it with (one line
+  # vMAJOR.MINOR.PATCH-<8 lower-case hex>, a plain newline, plain ASCII; a missing file, a symlink or anything else is refused, never guessed)
+  [ -f "$FIPS_MODULE" ] && [ ! -L "$FIPS_MODULE" ] || die "build/locks/fips-module.txt is missing, not a regular file or a symlink: the module the fips binary must record is unknown" 1
+  fipswant=$("$PY3" -I -B bin/build-apk-helper.py fips-module "$FIPS_MODULE") || die "build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; refusing" 1
+  [ "$fipsvals" = "$fipswant" ] || die "the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})" 1
 else
   [ -z "$fipsvals" ] || die "the standard binary records GOFIPS140 ($fipsvals); only the fips variant may" 1
 fi

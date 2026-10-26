@@ -26,6 +26,24 @@ CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.githu
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
 
+def dup_keys(text):
+    """Duplicate mapping keys anywhere in a YAML text (a parse silently keeps the last value; GitHub rejects the file, so its checks would never run)."""
+    out = []
+    def walk(n, path):
+        if isinstance(n, yaml.MappingNode):
+            seen = set()
+            for k, v in n.value:
+                kk = k.value if isinstance(k, yaml.ScalarNode) else None
+                if kk in seen:
+                    out.append(path + "/" + str(kk))
+                seen.add(kk)
+                walk(v, path + "/" + str(kk))
+        elif isinstance(n, yaml.SequenceNode):
+            for i, v in enumerate(n.value):
+                walk(v, path + "/" + str(i))
+    walk(yaml.compose(text, Loader=yaml.BaseLoader), "")
+    return out
+
 def judge_wf(d, real=False):
     bad = []
     on = d.get("on", {})
@@ -57,8 +75,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age has an if, needs, strategy, continue-on-error or environment: a required check must run on every PR and fail when it should")
     if j.get("permissions") != {"contents": "read", "actions": "read", "checks": "read"}:
         bad.append(f"pin-age's permissions are not exactly contents: read + actions: read + checks: read (found {j.get('permissions')})")
-    if int(str(j.get("timeout-minutes", "999"))) > 10:
-        bad.append("pin-age has no short timeout-minutes (<= 10): it must pass fast")
+    if int(str(j.get("timeout-minutes", "999"))) > 20:
+        bad.append("pin-age has no bounded timeout-minutes (<= 20): the 90-day history scan of pin-audit needs the room until it is made cheaper")
     runs = "\n".join(str(s.get("run", "")) for s in j.get("steps", []))
     for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
@@ -99,9 +117,16 @@ def judge_wf(d, real=False):
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
     # nothing may change WHERE the checker comes from or what runs it
-    for key in ("env", "defaults", "concurrency"):
+    for key in ("env", "defaults"):
         if key in d:
             bad.append(f"the workflow has a top-level {key}: it could change what the trusted checker runs")
+    # the one reviewed block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt joins the pull request's group (a newer push cancels its older run); every other run (the
+    # daily schedule, a dispatch, a re-run of any head) gets a group of its own per run and attempt and is never cancelled nor replaced as a pending run. The prefix is a literal. Any other
+    # top-level concurrency is refused. daily-audit keeps its own job-level group (checked above).
+    if d.get("concurrency") != {
+            "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('supply-chain-pr-{0}', github.event.pull_request.number) || format('supply-chain-{0}-{1}', github.run_id, github.run_attempt) }}",
+            "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
+        bad.append("the workflow's top-level concurrency is not the reviewed block: it could cancel the trusted checker's run")
     for name, jj in jobs.items():
         for key in ("container", "services", "defaults"):
             if key in jj:
@@ -185,21 +210,30 @@ def judge_wf(d, real=False):
 
 def judge_db(d):
     bad = []
-    ups = {u.get("package-ecosystem"): u for u in d.get("updates", [])}
+    ups = {u.get("package-ecosystem"): u for u in d.get("updates", []) if not (u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck")}
     for eco in ("github-actions", "pip"):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
-    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
-            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
+    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}}}  # the product's CVE-fix target: byte-for-byte unchanged
     for eco, entry in want.items():
         if eco in ups and ups[eco] != entry:
             bad.append(f"the {eco} entry is not unchanged")
-    for eco in ("gomod", "docker"):
+    for eco in ("gomod",):
         if eco not in ups:
             bad.append(f"the {eco} entry is missing")
         elif "cooldown" in ups[eco]:
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+    # the pinned Go source scanner (advisor Oct 12, ruling G): tools/govulncheck is its own module, bumped through the reviewed path with the same 7-day wait as the
+    # actions and the pip pins (it is a tool, not a product dependency: the product's CVE-fix target above stays without a cooldown)
+    tool = [u for u in d.get("updates", []) if u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck"]
+    if len(tool) != 1:
+        bad.append(f"the govulncheck tool entry (gomod, /tools/govulncheck) is missing or repeated ({len(tool)})")
+    elif tool[0] != {"package-ecosystem": "gomod", "directory": "/tools/govulncheck", "schedule": {"interval": "weekly"}, "cooldown": {"default-days": "7"}}:
+        bad.append("the govulncheck tool entry is not exactly weekly with a 7-day cooldown (default-days: 7) and nothing else")
+    # rule 61 (advisor Oct 12): no Dockerfile exists, so Dependabot's docker ecosystem watches nothing and has no entry
+    if any(u.get("package-ecosystem") == "docker" for u in d.get("updates", [])):
+        bad.append("a docker entry is back: no Dockerfile exists (rule 61)")
     return bad
 
 def judge_rest():
@@ -211,7 +245,7 @@ def judge_rest():
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
     ci = open(CI).read()
     for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f"bash .github/agent/tests/{t}" not in ci:
+        if f"bash .github/agent/tests/{t}" not in ci and f"suite-floors.json {t} .github/agent/tests/{t}" not in ci:     # plain, or the counting step of REQ-CI-005
             bad.append(f"ci.yml does not run .github/agent/tests/{t}")
     return bad
 
@@ -229,10 +263,15 @@ def result(ok, msg):
     else: failed += 1; print("FAIL", msg)
 
 # the real files
+real_text = open(WF).read()
+dd = dup_keys(real_text)
+result(not dd, "the real supply-chain.yml has no duplicate YAML key" + ("" if not dd else ": " + ", ".join(dd[:5])))
+dd = dup_keys(real_text.replace("\nconcurrency:\n", "\nconcurrency: {group: shared, cancel-in-progress: true}\nconcurrency:\n", 1))
+result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a parse would keep the last value)" + ("" if dd else "; saw nothing"))
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: 7-day cooldown on github-actions, pip and the govulncheck tool module, none on the product gomod, no docker entry" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -279,7 +318,9 @@ mut_wf("pin-age needs another job", "pin-age has an if, needs", lambda d: J(d, "
 mut_wf("pin-age is allowed to fail", "pin-age has an if, needs", lambda d: J(d, "pin-age").update({"continue-on-error": "true"}))
 mut_wf("pin-age can write", "pin-age's permissions are not exactly contents: read + actions: read + checks: read", lambda d: J(d, "pin-age")["permissions"].update(issues="write"))
 mut_wf("pin-age has actions write", "pin-age's permissions are not exactly contents: read + actions: read + checks: read", lambda d: J(d, "pin-age")["permissions"].update(actions="write"))
-mut_wf("pin-age has no timeout", "no short timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
+mut_wf("pin-age has no timeout", "no bounded timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
+mut_wf("pin-age timeout above 20", "no bounded timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 21}))
+mut_wf("pin-age timeout far above", "no bounded timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 360}))
 mut_wf("pin-age never runs the age check", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
 mut_wf("pin-age never audits what moves", "does not run .github/agent/supply-chain/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
 mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and head", lambda d: [s.update(run=s["run"].replace("github.event.pull_request.base.sha", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])
@@ -330,6 +371,12 @@ mut_wf("checkout keeps credentials", "persist-credentials", lambda d: next(s for
 mut_wf("daily-audit loses issues: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].pop("issues"))
 mut_wf("daily-audit gains contents: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(contents="write"))
 mut_wf("daily-audit gains actions: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(actions="write"))
+mut_wf("a top-level concurrency that cancels every event", "not the reviewed block", lambda d: d["concurrency"].update({"cancel-in-progress": "true"}))
+mut_wf("a top-level concurrency with a shared ref group", "not the reviewed block", lambda d: d.update(concurrency={"group": "${{ github.workflow }}-${{ github.ref }}", "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}))
+mut_wf("a top-level concurrency whose pull-request group is shared by re-runs", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace(" && github.run_attempt == '1'", "")))
+mut_wf("a top-level concurrency that borrows github.workflow", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace("'supply-chain-pr-{0}', ", "'{0}-pr-{1}', github.workflow, ").replace("'supply-chain-{0}-{1}', ", "'{0}-{1}-{2}', github.workflow, ")))
+mut_wf("a top-level concurrency dropped entirely", "not the reviewed block", lambda d: d.pop("concurrency"))
+mut_wf("a top-level concurrency on its own", "not the reviewed block", lambda d: d.update(concurrency={"group": "x", "cancel-in-progress": "false"}))
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
 mut_wf("daily-audit stops keeping the observations", "does not keep the tag observations", lambda d: J(d, "daily-audit").update(steps=[x for x in J(d, "daily-audit")["steps"] if "upload-artifact" not in str(x.get("uses", ""))]))
 mut_wf("the observations are kept only on success", "does not keep the tag observations", lambda d: [x.pop("if") for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
@@ -348,14 +395,23 @@ mut_wf("top-level permissions widened", "no top-level permissions block", lambda
 mut_db("github-actions cooldown gains a semver override", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"semver-major-days": "0"}))
 mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
 mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
-mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
-mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))
+mut_db("a docker entry returns for /build/docker", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}))
+mut_db("a docker entry returns for the root", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/", "schedule": {"interval": "weekly"}}))
 mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
+TOOL = lambda d: next(u for u in d["updates"] if u.get("directory") == "/tools/govulncheck")
+mut_db("the govulncheck tool entry is removed", "govulncheck tool entry", lambda d: d["updates"].remove(TOOL(d)))
+mut_db("the govulncheck tool entry loses its cooldown", "govulncheck tool entry", lambda d: TOOL(d).pop("cooldown"))
+mut_db("the govulncheck tool cooldown is 3 days", "govulncheck tool entry", lambda d: TOOL(d)["cooldown"].update({"default-days": "3"}))
+mut_db("the govulncheck tool cooldown gains a semver override", "govulncheck tool entry", lambda d: TOOL(d)["cooldown"].update({"semver-patch-days": "0"}))
+mut_db("the govulncheck tool entry watches another directory", "govulncheck tool entry", lambda d: TOOL(d).update(directory="/tools/requirements"))
+mut_db("the govulncheck tool entry runs daily", "govulncheck tool entry", lambda d: TOOL(d)["schedule"].update(interval="daily"))
+mut_db("the govulncheck tool entry ignores a dependency", "govulncheck tool entry", lambda d: TOOL(d).update(ignore=[{"dependency-name": "golang.org/x/vuln"}]))
+mut_db("the govulncheck tool entry is repeated", "govulncheck tool entry", lambda d: d["updates"].append(copy.deepcopy(TOOL(d))))
 mut_db("github-actions loses its cooldown", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions").pop("cooldown"))
 mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: eco(d, "pip").pop("cooldown"))
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))
 mut_db("gomod gets a cooldown", "gomod entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
-mut_db("docker gets a cooldown", "docker entry has a cooldown", lambda d: eco(d, "docker").update(cooldown={"default-days": "7"}))
+mut_db("a docker entry returns with a cooldown", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}, "cooldown": {"default-days": "7"}}))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

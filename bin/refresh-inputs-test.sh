@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34
+# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34, REQ-REFRESH-001-AC35, REQ-REFRESH-001-AC36, REQ-REFRESH-001-AC37, REQ-REFRESH-001-AC38
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
-export FSCACHE_TEST_MODE=1   # gen-recipes.py's own fixture switch (its template pin); bin/refresh-inputs.sh has no test hook and does not read it
 # The production script names its tools by fixed path (TEST-SUBST lines). The suite runs a COPY, beside the real helpers, in which exactly those lines
 # point at dispatchers that exec the tool by NAME on the run's PATH (so the stubs of run_s, run_s2, ...), and checks the copy differs in no other line.
 RF_PROD="$RF"
@@ -15,9 +14,9 @@ export FETCH
 rfd=$(mktemp -d "$work/rf.XXXXXX")   # this file's own scratch: the stub tool dispatchers and the two script copies
 mkdir -p "$rfd/tools" "$rfd/rfcopy/bin" "$rfd/rfcopy-nossl/bin"
 for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp rm mkdir; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
-python3 - "$RF_PROD" "$rfd" <<'P'
+python3 - "$RF_PROD" "$rfd" "$fx" <<'P'
 import os, re, shutil, sys
-prod, work = sys.argv[1:3]
+prod, work, fxdir = sys.argv[1:4]
 # the production script names every tool by its literal fixed path at the call; the copy is the same bytes with each occurrence of one of the ten fixed
 # paths replaced, one for one, by the dispatcher of that tool (REQ-REFRESH-001-AC23)
 paths = {"/usr/bin/python3": "python3", "/usr/bin/" + os.environ["FETCH"]: os.environ["FETCH"], "/usr/bin/git": "git", "/usr/bin/gh": "gh", "/usr/local/bin/apko": "apko",
@@ -30,11 +29,11 @@ for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"/usr/bin/openssl": "/nonexist
         out = re.sub(r"(?<![\w./-])%s(?![\w.-])" % re.escape(path), lambda m, n=name, o=over, pth=path: o.get(pth, work + "/tools/" + n), out)
     dst = "%s/%s/bin" % (work, d)
     open(dst + "/refresh-inputs.sh", "w").write(out); os.chmod(dst + "/refresh-inputs.sh", 0o755)
-    for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh", "archive-verify.py"):
+    for h in ("apk-tool.py", "apko-lock.sh", "archive-verify.py"):
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
+    shutil.copy(fxdir + "/gen-recipes.py", dst + "/gen-recipes.py")   # the generator copy whose TEMPLATE_SHA256 line is the fixture template's pin (no test switch in the real one)
 P
 RF="$rfd/rfcopy/bin/refresh-inputs.sh"; RFN="$rfd/rfcopy-nossl/bin/refresh-inputs.sh"
-export FSCACHE_GEN_PIN=$(shasum -a 256 "$fx/melange.yaml.tmpl" | cut -d" " -f1)   # the fixture template's pin: the job asks the generator what the recipes become
 # ---- begin verbatim sections ----
 # ===== rules 44-49: the refresh job ======================================================================================
 t "rule 45" "dependabot.yml has no apk, apko, melange or lock-file entry (this refresh job is their only updater)" bash -c "test -x '$RF' && python3 '$work/chk.py' dependabot '$root/.github/dependabot.yml'"
@@ -97,6 +96,8 @@ P
 }
 # the pinned Wolfi key line of the fixture repository (the refresh checks the live key against it right after the fetch)
 mkdir -p "$fx/repo/build/locks"; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$fx/repo/build/locks/archive-keys.sha256"
+# REQ-REFRESH-001-AC35: the packages the Build jobs run ON the runner (data file) and the committed lock of their resolution; the fixture holds the same closure as melange.lock
+printf 'packages:\n  - busybox\n  - ca-certificates-bundle\n' >"$fx/repo/build/host-tools.yaml"; cp "$fx/melange.lock" "$fx/repo/build/locks/host-tools.lock"
 mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/"; rm -rf "$work/ar"; cp -R "$fx/archive" "$work/ar"; for a in x86_64 aarch64; do cp -n "$fx/envrepo/$a/"*.apk "$work/ar/$a/"; done   # melange's build tools are archived too
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
@@ -149,6 +150,34 @@ echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"; fr
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 t "rule 73" "fips-module: a newer certified module -> the fips recipe moves to it (GOFIPS140 and the proof value) and a PR is opened" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'v1.1.0' '$work/rp3/build/melange-fips.yaml' && grep -q 'v1.1.0-deadbeef' '$work/rp3/build/melange-fips.yaml' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
 t "rule 73" "fips-module: a PR is opened, not merged, and nothing is pushed to main" bash -c "grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^gh pr merge' '$CALLS' && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)'"
+t "rule 73" "fips-module: the PR body names every file a human must change for a new certificate, each of them really carries the current module or certificate, and no other file that carries it is missing from the body or from the list of fixtures and generated files (rc-3 item 7)" bash -c "l=\$(grep '^gh pr create' '$CALLS'); python3 -I - \"\$l\" '$root' <<'PY'
+import re, subprocess, sys
+body, root = sys.argv[1], sys.argv[2]
+need = ['bin/check-artifacts.sh', 'bin/check-fips.sh', 'bin/check-govulncheck.py', 'internal/buildinfo/buildinfo.go', 'internal/buildinfo/buildinfo_test.go', '.github/workflows/ci.yml',
+        'docs/install.md', 'SECURITY.md', 'RELEASING.md', 'docs/offline-install.md', 'docs/verify-images.md']
+bad = ['the body does not name ' + f for f in need if f not in body]
+lit = re.compile(r'GOFIPS140=v[0-9]|CMVP cert #[0-9]+|cert #[0-9]+|#[0-9]{4} ')
+for f in need:
+    try:
+        if not lit.search(open(root + '/' + f).read()):
+            bad.append(f + ' no longer carries the module or certificate literal: the list is stale')
+    except OSError:
+        bad.append(f + ' does not exist')
+# a file that carries the literal and is neither named nor a fixture, a generated file, a test of something else or a record is a file the body would have to name
+exempt = ('build/', 'docs/quality/', 'requirements/', 'test-evidence/', 'audits/')
+exempt_files = {'bin/build-apk.sh', 'bin/melange-apko-lib.sh', 'bin/check-version-literals.sh', 'bin/build-apk-test.sh', 'bin/build-helpers-test.sh', 'bin/chain-check-scripts-test.sh',
+                'bin/chain-check-wiring-test.sh', 'bin/refresh-inputs-test.sh', 'internal/server/tls_test.go'}
+for f in subprocess.run(['git', '-C', root, 'ls-files'], capture_output=True, text=True).stdout.split():
+    if f in need or f in exempt_files or f.startswith(exempt):
+        continue
+    try:
+        if re.search(r'GOFIPS140=v1\.0\.0|CMVP cert #5247|c2097c7c', open(root + '/' + f, errors='replace').read()):
+            bad.append(f + ' carries the module or certificate and is neither named in the body nor an exempt fixture')
+    except OSError:
+        pass
+print(chr(10).join(bad))
+sys.exit(1 if bad else 0)
+PY"
 rm -f "$gr/lib/fips140/certified.txt"; fr
 sf "rule 73" "fips-module: a missing certified.txt fails closed and names the file" 'certified\.txt' "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 : >"$gr/lib/fips140/certified.txt"
@@ -1090,7 +1119,7 @@ run_s4 env GH_STUB_OPEN="$wb3" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@]:
 t "rule 49" "a MISSING apk while a lock-only refresh PR waits (pointer equal to the record, not ahead) and the downloads fail: exit 0 'earlier pull request' (the guard precedes the downloads)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log' && ! test -e '$victim'"
 
 # ---- ruling (P3 finding 1): after BOTH daily jobs the generator --check stays green, and the template is never touched ----------------------------------------
-gcheck() { env FSCACHE_TEST_MODE=1 python3 "$root/bin/gen-recipes.py" --template "$1/build/melange.yaml.tmpl" --regular "$1/build/melange.yaml" --fips "$1/build/melange-fips.yaml" --melange-lock "$1/build/locks/melange.lock" --fips-module "$1/build/locks/fips-module.txt" --check; }
+gcheck() { python3 "$fx/gen-recipes.py" --template "$1/build/melange.yaml.tmpl" --regular "$1/build/melange.yaml" --fips "$1/build/melange-fips.yaml" --melange-lock "$1/build/locks/melange.lock" --fips-module "$1/build/locks/fips-module.txt" --check; }
 tsha() { shasum -a 256 "$1/build/melange.yaml.tmpl" | cut -d' ' -f1; }
 mkrepo; tpl_before=$(tsha "$work/rp"); gcheck "$work/rp" >/dev/null 2>&1 || echo "FIXTURE: the fixture repo does not pass the generator check before the job" >&2
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -1569,11 +1598,19 @@ t "AC29" "fips-module --plan-dir with a refresh plan already staged: exit 0 sayi
 mv "$gr/lib/fips140/certified.txt" "$gr/lib/fips140/certified.txt.away"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
 mv "$gr/lib/fips140/certified.txt.away" "$gr/lib/fips140/certified.txt"
-t "AC26" "fips-module --plan-dir with a refresh plan already staged and an unreadable certified-module file: exit 1 naming the file (never a silent pass)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'certified.txt' '$work/log' && ! grep -qi 'nothing pending' '$work/log'"
+t "AC12" "fips-module --plan-dir with a refresh plan already staged and an unreadable certified-module file: exit 2 naming the file (never a silent pass)" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'certified.txt' '$work/log' && ! grep -qi 'nothing pending' '$work/log'"
 printf '# only a comment\n' >"$gr/lib/fips140/certified.txt"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
 echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
-t "AC26" "fips-module --plan-dir with a refresh plan already staged and a certified-module file holding no module value (empty or only comments): exit 1, not nothing pending" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -qi 'nothing pending' '$work/log'"
+t "AC12" "fips-module --plan-dir with a refresh plan already staged and a certified-module file holding no module value (empty or only comments): exit 2, not nothing pending" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -qi 'nothing pending' '$work/log'"
+# rc-3 astra F4 (REQ-REFRESH-001-AC12): the staged-plan branch runs the same strict checks first; four inputs that used to come back as pending / nothing pending, exit 0
+for c in "not-a-module" "v1.0.0-c2097c7c|v1.1.0-deadbeef" "v0.9.0-c2097c7c" "v1.0.0-aaaaaaaa"; do
+  printf '%s\n' ${c//|/ } >"$gr/lib/fips140/certified.txt"
+  fr; rm -rf "$work/plan-x"; mkdir -p "$work/plan-x/1-refresh"; printf 'refresh/00000001\n' >"$work/plan-x/1-refresh/branch"; h_before=$(bash "$work/bhash.sh")
+  run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
+  t "AC12" "fips-module with a refresh plan already staged and the certified file '${c//|/ + }': exit 2 naming the file, not pending, nothing staged or edited" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'certified.txt' '$work/log' && ! grep -qi 'pending' '$work/log' && test \"\$(ls '$work/plan-x' | wc -l)\" -eq 1 && test \"\$(bash '$work/bhash.sh')\" = '$h_before'"
+done
+echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
 fr; rm -rf "$work/plan-f"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-f"
 t "AC29" "fips-module --plan-dir into an empty plan directory still stages its pull request (exit 0, one plan)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(ls '$work/plan-f' | wc -l)\" -eq 1"
@@ -1616,5 +1653,88 @@ t "AC30" "refresh: no pinned key line is exit 3 (never trust the archived key al
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-keys.sha256"
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC30" "refresh: the pinned key, the archived key and the live key all equal -> the run proceeds (exit 0)" bash -c "test \"\$(cat '$work/rc')\" = 0"
+# ===== REQ-REFRESH-001-AC35..AC38: the host tools (bubblewrap and its libraries, run on the runner by the Build jobs) are resolved, archived and locked like melange's build tools ==========
+# live host resolution = the fixture's "new melange closure" (adds zlib); melange's own live resolution is unchanged, so only the host lock and the archive move
+hostenv=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live")
+mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: apko lock also runs for the host tools (a fourth lock, made against live Wolfi from build/host-tools.yaml)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^apko lock ' '$CALLS')\" -ge 4 && grep '^apko lock ' '$CALLS' | grep -q 'host-tools'"
+t "AC35" "refresh: a package only the host tools' live resolution adds (zlib) is archived for both architectures" bash -c "test -f '$work/ar/x86_64/zlib-1.3.2-r0.apk' && test -f '$work/ar/aarch64/zlib-1.3.2-r0.apk'"
+t "AC35" "refresh: build/locks/host-tools.lock holds the live host resolution (sorted name=version lines, zlib included) and melange.lock is untouched" bash -c "python3 - '$work/rp' '$fx' <<'P'
+import sys
+r, fx = sys.argv[1:3]
+lock = [l.strip() for l in open(r + '/build/locks/host-tools.lock') if l.strip()]
+assert lock == sorted(lock) and 'zlib=1.3.2-r0' in lock, lock
+assert open(r + '/build/locks/melange.lock').read() == open(fx + '/melange.lock').read()
+P"
+t "AC38" "refresh: the host lock change goes in the one refresh pull request (one gh pr create, the lock among the committed paths)" bash -c "test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/host-tools.lock' && ! grep -Eq '^gh pr merge|--admin|--auto|--no-verify' '$CALLS'"
+t "AC38" "refresh: the host tools carry no waiting period (a version resolved today is archived today: no cooldown or minimum age in the output)" bash -c "! grep -Eqi 'cooldown|too young|minimum age|waiting period' '$work/log'"
+# nothing moved: the host resolution equals the committed host lock -> still no commit, no push, no pull request
+mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: a host resolution equal to the committed host-tools.lock changes nothing (exit 0, no commit, no push, no pull request)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -Eq '^(gh |git( -C [^ ]+)? (commit|push|checkout))' '$CALLS'"
+# AC35: both data file and lock are required inputs of the repository
+mkrepo; rm -f "$work/rp/build/host-tools.yaml"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: a repository without build/host-tools.yaml is refused (non-zero, names the file), nothing archived, no pull request" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'host-tools.yaml' '$work/log' && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk'"
+mkrepo; rm -f "$work/rp/build/locks/host-tools.lock"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: a repository without build/locks/host-tools.lock is refused (non-zero, names the file), no pull request" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'host-tools.lock' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC36: a host package that fails its lock checksum stops the job
+mkrepo; mkdir -p "$work/badhost/x86_64" "$work/badhost/aarch64"; cp "$fx/live/x86_64/zlib-1.3.2-r0.apk" "$work/badhost/x86_64/"; cp "$fx/live/aarch64/zlib-1.3.2-r0.apk" "$work/badhost/aarch64/"; python3 "$work/lib.py" tamper "$work/badhost/x86_64/zlib-1.3.2-r0.apk"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$work/badhost" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a downloaded host-tools package that fails its checksum stops the job (non-zero, names the checksum), keeps nothing, changes no lock, opens no pull request" bash -c "test \"\$(cat '$work/rc')\" != 0 && test \"\$(cat '$work/rc')\" != 127 && grep -Eqi 'checksum|tamper|mismatch' '$work/log' && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk' && cmp '$work/rp/build/locks/host-tools.lock' '$fx/melange.lock'"
+# AC36: the committed host lock names a version the archive does not hold (an older version the archive must keep)
+mkrepo; printf 'busybox=1.37.0-r5\nca-certificates-bundle=20260102-r0\nnosuchtool=9.9.9-r0\n' >"$work/rp/build/locks/host-tools.lock"
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: the committed host-tools.lock names a package the archive does not hold: exit 1 naming host-tools.lock and the file, nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'host-tools.lock' '$work/log' && grep -q 'nosuchtool-9.9.9-r0.apk' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC36 (round 1 of cache#491): a committed host version that live Wolfi still resolves and the archive lacks is downloaded again (the repair of AC17/AC32), not refused
+mkrepo; rm -rf "$work/lv"; cp -R "$fx/live" "$work/lv"; for a in x86_64 aarch64; do mkdir -p "$work/lv/$a"; cp "$work/ar/$a/busybox-1.37.0-r5.apk" "$work/lv/$a/"; done; rm -f "$work"/ar/*/busybox-1.37.0-r5.apk
+run_s2 "${rfe[@]}" STUB_CURL_DIR="$work/lv" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a host package the committed lock names and live Wolfi still resolves is downloaded again when the archive lacks it (exit 0, restored, verified)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ls '$work'/ar/*/busybox-1.37.0-r5.apk >/dev/null 2>&1"
+# AC36: a damaged archived copy of a host package stops the job on every run
+mkrepo; bb=$(ls "$work/ar/x86_64/" | grep '^busybox-' | head -1); printf 'X' >>"$work/ar/x86_64/$bb"
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a damaged archived host package is found (exit 1, names the file), no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q '$bb' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC37: a version the live host resolution no longer names is noted and its archived copy kept
+mkrepo; python3 - "$fx/live-mel.lock.json" "$work/live-host-drop.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); d["contents"]["packages"] = [e for e in d["contents"]["packages"] if e["name"] != "busybox"]
+json.dump(d, open(sys.argv[2], "w"))
+P
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$work/live-host-drop.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC37" "refresh: a host package version live Wolfi no longer resolves (busybox) is noted as a host tool, exit 0, the archived copy kept, the lock moves to the live resolution" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -Eqi 'busybox.*host tools|host tools.*busybox' '$work/log' && grep -qi 'no longer' '$work/log' && ls '$work/ar/x86_64/' | grep -q '^busybox-' && ! grep -q '^busybox=' '$work/rp/build/locks/host-tools.lock'"
+# round 1 of the seats (cache#475): the data file and the committed lock are fully validated before any use (fail closed), and the tests prove what they claim
+mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: the host-tools lock is asked to resolve exactly the packages of build/host-tools.yaml (the configuration given to apko, not a canned answer)" bash -c "python3 - '$CALLS.hostcfg' <<'P'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+assert d['contents']['packages'] == ['busybox', 'ca-certificates-bundle'], d
+assert d['contents']['repositories'] == [] and d['contents']['keyring'] == [], d
+P"
+bad_ht() { # bad_ht LABEL TEXT   a host-tools.yaml that must be refused before any lock is made
+  mkrepo; printf '%b' "$2" >"$work/rp/build/host-tools.yaml"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+  t "AC35" "refresh: build/host-tools.yaml $1 is refused (exit 2, names the file), before any apko call, nothing archived, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'host-tools.yaml' '$work/log' && test \"\$(grep -c '^apko lock ' '$CALLS')\" -eq 0 && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk'"
+}
+bad_ht "with a duplicate packages key" 'packages:\n  - busybox\npackages:\n  - zlib\n'
+bad_ht "whose packages is a mapping" 'packages: {busybox: null}\n'
+bad_ht "with an empty package list" 'packages: []\n'
+bad_ht "with a package that pins a version" 'packages:\n  - busybox=1.37.0-r5\n'
+bad_ht "with a package name that is a path" 'packages:\n  - ../busybox\n'
+bad_ht "with a package named twice" 'packages:\n  - busybox\n  - busybox\n'
+bad_ht "with a key that is a list (not a plain key)" '? [packages]\n: [busybox]\n'
+bad_ht "with another top-level key" 'packages:\n  - busybox\nrepositories:\n  - https://example.invalid\n'
+bad_hl() { # bad_hl LABEL TEXT   a host-tools.lock that must be refused before any lock is made
+  mkrepo; printf '%b' "$2" >"$work/rp/build/locks/host-tools.lock"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+  t "AC36" "refresh: build/locks/host-tools.lock $1 is refused (exit 2, names the file), nothing archived, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'host-tools.lock' '$work/log' && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk'"
+}
+bad_hl "with a row that is not name=version" 'busybox=1.37.0-r5\nnonsense\n'
+bad_hl "with a package named twice" 'busybox=1.37.0-r5\nbusybox=1.36.0-r0\n'
+bad_hl "with a name that is a path" '../busybox=1.37.0-r5\n'
+bad_hl "with a version that is a path" 'busybox=../1.37.0-r5\n'
+bad_hl "with a blank row between two rows" 'busybox=1.37.0-r5\n\nca-certificates-bundle=20260102-r0\n'
+bad_hl "with a carriage return in a row" 'busybox=1.37.0-r5\r\nca-certificates-bundle=20260102-r0\n'
+bad_hl "whose last row has no line end" 'busybox=1.37.0-r5\nca-certificates-bundle=20260102-r0'
+# a retained host-only package (zlib) is checked on every run, not only the ones the melange lock shares
+mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; cp "$work/rp/build/locks/host-tools.lock" "$work/ht.lock"
+mkrepo; cp "$work/ht.lock" "$work/rp/build/locks/host-tools.lock"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk" 2>/dev/null || { cp "$fx/live/x86_64/zlib-1.3.2-r0.apk" "$work/ar/x86_64/"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk"; }; cp -n "$fx/live/aarch64/zlib-1.3.2-r0.apk" "$work/ar/aarch64/"
+run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a damaged archived package that only the host tools name (zlib) is found: exit 1, names the file, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'zlib-1.3.2-r0.apk' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

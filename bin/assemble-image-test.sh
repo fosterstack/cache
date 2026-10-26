@@ -88,6 +88,7 @@ python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$air/bin/build-apk.sh" \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
   'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
   'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' \
+  'FIPS_MODULE=${TEST_FIPS_MODULE:-$PWD/build/locks/fips-module.txt}' \
   || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
 chmod +x "$air/bin/lock-proof.sh" "$air/bin/sealed-proof.sh" "$air/bin/build-apk.sh" "$air/bin/assemble-image.sh"
 cat >"$work/proofwrap.py" <<'PYW'
@@ -1309,6 +1310,12 @@ lpr=$(mo); run_s "${aie[@]}" "$LP" --out "$lpr" --archive "$fx/archive" "${lp_ar
 t "chain" "lock-proof.sh runs from the repository root and its positive control passes" test "$(rc)" = 0
 spr=$(mo); run_s "${spe[@]}" "$SP" --out "$spr" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 t "chain" "sealed-proof.sh runs from the repository root and passes" test "$(rc)" = 0
+# the script's own directory is read without dirname (a data-form case split, REQ-IMAGE-001-AC7 file-list scan): both spellings of its path name the same root
+air_real=$(cd "$air" && pwd -P)
+hr_slash=$(cd "$air" && env -i PATH="$PATH" bash ./bin/assemble-image.sh 2>&1 || true)
+hr_bare=$(cd "$air/bin" && env -i PATH="$PATH" bash assemble-image.sh 2>&1 || true)
+t "AC7" "assemble-image.sh invoked as ./bin/assemble-image.sh from the root finds the root (no refusal about the working directory)" bash -c '! printf %s "$1" | grep -q "runs from the repository root"' _ "$hr_slash"
+t "AC7" "assemble-image.sh invoked with no slash in its path (from bin/) takes its directory as . and names the real root, never /" bash -c 'printf %s "$1" | grep -qF "repository root ($2)" && ! printf %s "$1" | grep -qF "repository root (/)"' _ "$hr_bare" "$air_real"
 t "chain" "the test runs from the repository root (the harness changes into it, as the chain runs everything)" test "$(pwd -P)" = "$(cd "$root" && pwd -P)"
 
 # ===== optional: the release chain's own binder over both variants' output (set CHAIN_BINDER_DIR to a directory holding the chain's
@@ -1375,13 +1382,14 @@ ALLOWED = {
     "lock-proof.sh": {"HOST_OS", "PY3", "SUDO", "BASHBIN"},
     "sealed-proof.sh": {"HOST_OS", "PY3", "SUDO", "UNSHARE", "BASHBIN"},
     "apko-lock.sh": {"PY3"},
-    "build-apk.sh": {"PY3", "GIT", "SUDO", "UNSHARE", "MELANGE", "GO_TOOL", "SHA256SUM", "ENVBIN", "SEALED_ENV", "RECIPE_STANDARD", "RECIPE_FIPS"},
+    "build-apk.sh": {"PY3", "GIT", "SUDO", "UNSHARE", "MELANGE", "GO_TOOL", "SHA256SUM", "ENVBIN", "SEALED_ENV", "RECIPE_STANDARD", "RECIPE_FIPS", "FIPS_MODULE"},
 }
 ABS = r"/[A-Za-z0-9_./+-]+"
 CLASS = {   # each variable has ITS OWN right-hand side: a tool is an absolute path, nothing else
     "PY3": ABS, "SUDO": ABS, "UNSHARE": ABS, "BASHBIN": ABS, "APKO": ABS, "ENVBIN": ABS, "GIT": ABS, "MELANGE": ABS, "GO_TOOL": ABS, "SHA256SUM": ABS,
     "WORKDIR": ABS, "RENDER_DIR": r"", "HOST_OS": r"\$\{BASH_VERSINFO\[5\]\}",
     "SEALED_ENV": r"build/[A-Za-z0-9_./+-]+", "RECIPE_STANDARD": r"\$PWD/build/[A-Za-z0-9_./+-]+", "RECIPE_FIPS": r"\$PWD/build/[A-Za-z0-9_./+-]+",
+    "FIPS_MODULE": r"\$PWD/build/[A-Za-z0-9_./+-]+",
 }
 LINE = re.compile(r"^([A-Z][A-Z0-9_]*)=(\S*)[ ]+# TEST-SUBST(?: .*)?$")
 def plain(line, allowed):
@@ -1957,7 +1965,8 @@ EXPECT = {
     "apko-lock.sh": {"PY3": "/usr/bin/python3"},
     "build-apk.sh": {"PY3": "/usr/bin/python3", "GIT": "/usr/bin/git", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "MELANGE": "/usr/local/bin/melange",
                      "GO_TOOL": "/usr/local/bin/fscache-go/bin/go", "SHA256SUM": "/usr/bin/sha256sum", "ENVBIN": "/usr/bin/env", "SEALED_ENV": "build/sealed-env.json",
-                     "RECIPE_STANDARD": "$PWD/build/melange.yaml", "RECIPE_FIPS": "$PWD/build/melange-fips.yaml"},
+                     "RECIPE_STANDARD": "$PWD/build/melange.yaml", "RECIPE_FIPS": "$PWD/build/melange-fips.yaml",
+                     "FIPS_MODULE": "$PWD/build/locks/fips-module.txt"},
 }
 bad = []
 for name, want in EXPECT.items():
