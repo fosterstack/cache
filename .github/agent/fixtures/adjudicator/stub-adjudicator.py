@@ -65,7 +65,8 @@ CANNED = {
         "refused": False, "pullable": False, "hold": "upstream-held",
         "component_fixed": "3.0.13", "candidate_release": None,
         "bump_attempted": False, "bump_result": "no carrier release yet embeds openssl >= 3.0.13",
-        "lift_trigger": "nodejs >= 20.11.0 (embeds openssl >= 3.0.13)",
+        "lift_trigger": {"carrier": "nodejs", "min_version": "20.11.0", "component": "openssl",
+            "component_min_version": "3.0.13"},
         "evidence": {"how": "statically linked", "carrier": "nodejs", "carrier_version": "18.19.0",
                      "source": "SBOM relationship + upstream release notes"}},
     ("CVE-2099-POLICY", "pullability"): {
@@ -73,7 +74,8 @@ CANNED = {
         "component_fixed": "1.2.3-1", "repo_version": "1.2.3-1", "base_release": "debian 12.0",
         "candidate_release": "debian 12.6",
         "bump_attempted": False, "bump_result": "fix is in the debian repo; base pin predates it",
-        "lift_trigger": "base release >= debian 12.6",
+        "lift_trigger": {"carrier": "debian", "min_version": "12.6", "component": "libpolicy",
+            "component_min_version": "1.2.3-1"},
         "evidence": {"how": "base/OS release pin (reproducibility policy)", "source": "distro security tracker"}},
     ("CVE-2099-LIFT", "pullability"): {
         "refused": False, "pullable": True, "component_fixed": "3.0.13",

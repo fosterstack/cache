@@ -3,7 +3,8 @@ the signer and the builder never share a machine). A job that holds the signing 
 with no secrets and no publish permission. It runs in the compare job of stage-promote.yml as one plain step: no environment, no secret, no id-token, nothing signed, no key
 read, no network.
 
-In:  apks/<runner>/<apk arch>/<file>.apk   Build's apks (artifacts apk-ubuntu-24.04, x86_64, and apk-ubuntu-24.04-arm, aarch64)
+In:  witness-rapk-<runner>/rapk-collection.json   the records Sign signed for Rebuild's apk legs (artifacts signed-witness-rapk-<runner>)
+     apks/<runner>/<apk arch>/<file>.apk   Build's apks (artifacts apk-ubuntu-24.04, x86_64, and apk-ubuntu-24.04-arm, aarch64)
      rapks/<runner>/<apk arch>/<file>.apk  Rebuild's apks, laid out the same (artifacts rapk-...)
 Out: apk-compare/apk-compare.json  {"verdict": "pass", "pairs": [four rows: arch, variant, name, build_sha256, rebuild_sha256, build_digest, rebuild_digest]}
      written only when all four pairs agree. The verify and release jobs read only this file; the release-verify step checks it against Build's attested apk digests.
@@ -14,6 +15,7 @@ import hashlib, json, os, re, shutil, stat, subprocess, sys
 
 ROOT_MSG = "run the comparison from the repository root (the helpers are named by their repo-relative paths)"
 TOOL = [sys.executable, "-I", "-B", "bin/apk-tool.py"]
+CHAIN = [sys.executable, "-I", "-B", "bin/chain-verify.py"]
 # the four expected pairs, one fixed table (REQ-CHAIN-007-AC17): artifact (runner) -> apk architecture directory -> short name; variant -> file name pattern
 RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
 VARIANTS = (("standard", re.compile(r"fscache-[0-9][^/]*-r0\.apk")), ("fips", re.compile(r"fscache-fips-[^/]+-r0\.apk")))
@@ -26,6 +28,26 @@ def die(msg, code=2):
 
 def tool(*args):
     return subprocess.run(TOOL + list(args), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+
+def bind_rebuild_apks():
+    """Rebuild's apks are bound to the record Sign signed for them (the building jobs hold no identity token, so the record is only as good as Sign's check):
+    the signed record of each rapk leg must verify under the Sign identity (stage rebuild) and every file of rapks/<runner> must be the product it names.
+    Sign never receives these apks (the owner's separation rule), so THIS job, which holds both builds' apks and no key, is where the product digests are checked."""
+    ref = os.environ.get("GITHUB_REF", "")
+    if not ref:
+        die("GITHUB_REF is not set; the release policy cannot be made")
+    res = subprocess.run(CHAIN + ["policy", "make", "--template", ".github/policy/release-policy.template.json", "--ref", ref, "--out", "policy.json"],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if res.returncode != 0:
+        die("cannot make the release policy: %s" % res.stderr.strip()[:300])
+    for runner, _arch, _short in RUNNERS:
+        rec = "witness-rapk-%s/rapk-collection.json" % runner
+        for args in (["verify", "--policy", "policy.json", "--stage", "rebuild", "--record", rec],
+                     ["bind", "--step", "rapk", "--record", rec, "--dir", "rapks/" + runner, "--as", "out"]):
+            res = subprocess.run(CHAIN + args, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if res.returncode != 0:
+                die("%s of Rebuild's %s record failed: %s" % (args[0], runner, (res.stderr.strip() or res.stdout.strip())[:300]))
 
 
 def walk(top):
@@ -63,6 +85,7 @@ def main():
     if not os.path.isfile("build/keys/assembly.rsa.pub"):
         die("build/keys/assembly.rsa.pub is missing")
     shutil.rmtree("apk-compare", ignore_errors=True)
+    bind_rebuild_apks()
     listed = {}
     for top in ("apks", "rapks"):
         if not os.path.isdir(top):
