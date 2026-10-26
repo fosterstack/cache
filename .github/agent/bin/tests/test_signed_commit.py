@@ -518,5 +518,179 @@ class Prefixes(unittest.TestCase):
             self.assertEqual(u.count("?"), 1, u); self.assertNotIn("#", u)
 
 
+JOB = "5" * 40          # the records commit the sweep puts on a bump branch
+JOB_MSG = "Vendor records for the client_golang-1.25.0 bump"
+
+
+class RecordsCommit(unittest.TestCase):
+    """commit_on_branch: ONE signed commit on a bump branch's own head (the head is the parent and the lease:
+    expectedHeadOid), in the two bump lanes only."""
+    BR = "dependabot/go_modules/github.com/prometheus/client_golang-1.25.0"
+
+    def gh(self, live=H1, **kw):
+        g = Gh(live=None, **kw); g.refs = {self.BR: live} if live else {}
+        return g
+
+    def test_the_commit_is_made_on_the_branch_itself_with_the_head_as_parent_and_nothing_else_is_written(self):
+        gh = self.gh(mutation=mutation())
+        self.assertEqual(S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x",
+            "dependency-provenance.json": b"{}\n", "vendor/old.go": None}, run=gh), OID)
+        # no temporary ref, no ref update
+        self.assertEqual(gh.writes(), [("COMMIT", self.BR)])
+        inp = gh.stdins[0]["variables"]["input"]
+        self.assertEqual(inp["expectedHeadOid"], H1)
+        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": REPO, "branchName": self.BR})
+        self.assertEqual(inp["message"]["headline"], JOB_MSG)
+        self.assertEqual([a["path"] for a in inp["fileChanges"]["additions"]], ["dependency-provenance.json",
+            "vendor/a.go"])
+        self.assertEqual(inp["fileChanges"]["deletions"], [{"path": "vendor/old.go"}])
+
+    def test_the_auditors_bump_lane_is_allowed_too(self):
+        br = "auditor/bump-example.com-m-1.1.0"
+        gh = Gh(live=None, mutation=mutation()); gh.refs = {br: H1}
+        self.assertEqual(S.commit_on_branch(REPO, br, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh), OID)
+
+    def test_a_branch_outside_the_two_bump_lanes_is_refused_before_any_call(self):
+        for br in ("main", "auditor/panel", "auditor/bump-", "auditor/bump", "dependabot/go_modules/",
+            "dependabot/npm_and_yarn/x", "patch-notes/v0.2.9",
+                   "audit/" + "a" * 40, "dependabot/go_modules/../x", "dependabot/go_modules/x.lock",
+                       "dependabot/go_modules/x/", "refs/heads/" + self.BR,
+                   "dependabot/go_modules/a b", "auditor/bump-x y"):
+            gh = self.gh()
+            with self.assertRaises(S.CommitError, msg=br):
+                S.commit_on_branch(REPO, br, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+            self.assertEqual(gh.calls, [], br)
+
+    def test_bad_arguments_are_refused_before_any_call(self):
+        ok = dict(repo=REPO, branch=self.BR, head_sha=H1, message=JOB_MSG, changes={"vendor/a.go": b"x"})
+        for kw in (dict(repo="o"), dict(head_sha="abc"), dict(message=" "), dict(changes={}),
+            dict(changes={"../x": b"1"}), dict(changes={"vendor/a": "text"}),
+                   dict(changes={"vendor/a": b"x" * (S.MAX_FILE_BYTES + 1)})):
+            gh = self.gh()
+            with self.assertRaises(S.CommitError, msg=kw):
+                S.commit_on_branch(run=gh, **{**ok, **kw})
+            self.assertEqual(gh.calls, [], kw)
+
+    def test_a_head_that_moved_since_it_was_read_fails_closed_with_no_commit_made(self):
+        gh = self.gh(live=H2)
+        with self.assertRaises(S.CommitError) as ctx:
+            S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+        self.assertIn("moved", str(ctx.exception))
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_missing_branch_and_an_unreadable_branch_fail_closed(self):
+        broken = self.gh()
+        broken_call = broken.__call__
+        for gh in (self.gh(live=None), lambda cmd, **kw: subprocess.CompletedProcess(list(cmd), 1, "",
+            "HTTP 500") if "/git/ref/" in cmd[2] else broken_call(cmd, **kw)):
+            with self.assertRaises(S.CommitError):
+                S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+        self.assertEqual(broken.writes(), [])
+
+    def test_an_unsigned_commit_is_never_reported_made(self):
+        gh = self.gh(mutation=mutation(signature={"isValid": False, "state": "UNSIGNED"}))
+        with self.assertRaises(S.CommitError):
+            S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+
+    def test_the_lease_read_goes_through_the_default_runner_too(self):
+        gh = self.gh(mutation=mutation())
+        with mock.patch.object(S.subprocess, "run", gh):
+            self.assertEqual(S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}), OID)
+
+
+class RecordsPaths(unittest.TestCase):
+    """is_records_path: the four places the sweep may write, nothing else (go.mod and go.sum are never among them)."""
+    def test_the_four_places(self):
+        for p in ("vendor/modules.txt", "vendor/github.com/a/b/c.go", "vendor/x", "dependency-provenance.json",
+            "test-evidence/dependency-licenses.yaml"):
+            self.assertTrue(S.is_records_path(p), p)
+        for p in ("go.mod", "go.sum", "vendors/x", "vendor", "x/vendor/a", "dependency-provenance.json.bak",
+            "test-evidence/dependency-origins.yaml",
+                  ".github/workflows/ci.yml", "bin/vendor-check.sh", "", "../vendor/a", "vendor/../go.mod", "vendor//a",
+                      "vendor/./a", "/vendor/a", 7, None):
+            self.assertFalse(S.is_records_path(p), repr(p))
+
+    def test_the_headline_is_recognised_only_as_a_prefix_of_the_first_line(self):
+        self.assertTrue(S.is_records_message(JOB_MSG))
+        self.assertTrue(S.is_records_message(JOB_MSG + "\n\nbody"))
+        for m in ("Bump x", "vendor records for the x bump", " " + JOB_MSG, "x\n" + JOB_MSG, "", None, 3):
+            self.assertFalse(S.is_records_message(m), repr(m))
+
+
+class RecordsReusable(unittest.TestCase):
+    """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: verified, one parent that
+    is itself reusable by the
+    ordinary rules (verified, one parent = main, changing only the wanted files), its own files only records paths, its
+    message the sweep's.
+    The wanted files still hold exactly the wanted bytes at the head. The daily replace therefore leaves such a branch
+    as it is."""
+    WANT = {"go.mod": b"module m\n", "go.sum": None}
+
+    class Gh2(Gh):
+        """commit lookups by sha: `docs` maps sha -> (rc, out, err)"""
+        def __init__(self, docs, **kw):
+            super().__init__(**kw); self.docs = docs
+
+        def __call__(self, cmd, **kw):
+            if "/commits/" in cmd[2]:
+                self.calls.append(list(cmd))
+                r = self.docs.get(cmd[2].rsplit("/", 1)[1], (1, "", "HTTP 404"))
+                return subprocess.CompletedProcess(list(cmd), r[0], r[1], r[2])
+            return super().__call__(cmd, **kw)
+
+    @staticmethod
+    def doc(parent, files, message="Bump", verified=True):
+        return (0, json.dumps({"parents": [{"sha": parent}], "files": [{"filename": f, "status": s} for f, s in files],
+                               "commit": {"message": message, "verification": {"verified": verified}}}), "")
+
+    def gh(self, job=None, bump=None, **kw):
+        return self.Gh2({H1: job or self.doc(H2, [("vendor/a.go", "modified"), ("dependency-provenance.json",
+            "modified")], JOB_MSG),
+                         H2: bump or self.doc(BASE, [("go.mod", "modified")])}, live=H1, **kw)
+
+    def test_a_records_commit_on_a_reusable_bump_commit_is_reused_and_nothing_is_written(self):
+        gh = self.gh()
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)
+        self.assertEqual(gh.writes(), [])
+        # the wanted bytes are read at the real head
+        self.assertIn(["gh", "api", "repos/o/r/contents/go.mod?ref=" + H1], gh.calls)
+
+    def test_every_way_the_records_commit_can_be_wrong_is_not_reusable(self):
+        two_parents = (0, json.dumps({"parents": [{"sha": H2}, {"sha": BASE}],
+                                      "files": [{"filename": "vendor/a.go", "status": "modified"}],
+                                      "commit": {"message": JOB_MSG, "verification": {"verified": True}}}), "")
+        wrong = {"an unsigned records commit": self.gh(job=self.doc(H2, [("vendor/a.go", "modified")], JOB_MSG,
+            verified=False)),
+                 "a records commit touching go.mod": self.gh(job=self.doc(H2, [("vendor/a.go", "modified"), ("go.mod",
+                     "modified")], JOB_MSG)),
+                 "a records commit touching a workflow": self.gh(job=self.doc(H2, [("vendor/a.go", "added"),
+                     (".github/workflows/ci.yml", "modified")], JOB_MSG)),
+                 "a records commit touching origins": self.gh(job=self.doc(H2,
+                     [("test-evidence/dependency-origins.yaml", "modified")], JOB_MSG)),
+                 "a records commit that renames": self.gh(job=self.doc(H2, [("vendor/a.go", "renamed")], JOB_MSG)),
+                 "a records commit with no files": self.gh(job=self.doc(H2, [], JOB_MSG)),
+                 "a commit that is not the sweep's message": self.gh(job=self.doc(H2, [("vendor/a.go", "modified")],
+                     "Bump x")),
+                 "an unsigned bump commit under it": self.gh(bump=self.doc(BASE, [("go.mod", "modified")],
+                     verified=False)),
+                 "a bump commit on an old main": self.gh(bump=self.doc("9" * 40, [("go.mod", "modified")])),
+                 "a bump commit changing another file": self.gh(bump=self.doc(BASE, [("go.mod", "modified"),
+                     ("README.md", "modified")])),
+                 "a records commit on a records commit": self.gh(bump=self.doc(H2, [("vendor/a.go", "modified")],
+                     JOB_MSG)),
+                 "the bump commit cannot be read": self.Gh2({H1: self.doc(H2, [("vendor/a.go", "modified")], JOB_MSG)},
+                     live=H1),
+                 "two parents on the records commit": self.Gh2(
+                     {H1: two_parents, H2: self.doc(BASE, [("go.mod", "modified")])}, live=H1),
+                 "the wanted bytes differ at the head": self.gh(contents={"go.mod": b"module other\n"})}
+        for name, gh in wrong.items():
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), name)
+            self.assertEqual(gh.writes(), [], name)
+
+    def test_a_plain_commit_with_a_records_looking_message_is_judged_by_the_ordinary_rules(self):
+        gh = self.Gh2({H1: self.doc(BASE, [("go.mod", "modified")], JOB_MSG)}, live=H1)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)
+
+
 if __name__ == "__main__":
     unittest.main()

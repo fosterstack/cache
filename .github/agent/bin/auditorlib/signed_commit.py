@@ -18,6 +18,14 @@ they were; the live branch is never reset to main and the PR never has an empty-
 branch_reusable(repo, branch, base_sha): an EXISTING delivery branch may be left as it is only when its head commit is verified by GitHub and its
 first parent is base_sha (today's main); otherwise the caller rebuilds it through commit_via_api.
 
+commit_on_branch(repo, branch, head_sha, message, changes): the dependency-bump lanes (dependabot/go_modules/*,
+auditor/bump-*). ONE signed commit
+on the branch's own head: head_sha is the parent AND the lease (createCommitOnBranch's expectedHeadOid), so a branch
+that moved is never written.
+The sweep that regenerates a bump's vendored tree and provenance uses it; branch_reusable then accepts a head whose one
+extra commit is that
+commit (is_records_message, is_records_path), so the auditor's daily replace leaves it in place.
+
 Anything else (an API error, no oid, an unconfirmed signature, a file over 5 MB, a branch outside auditor/) is a CommitError: the delivery fails
 closed and says so. A commit that is not provably signed is never reported delivered.
 
@@ -35,6 +43,12 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_PREFIXES = ("auditor/", "patch-notes/", "audit/")   # the only lanes the App may write: a caller names which of them it uses (audit/ = the passed-audit record, REQ-REL-012)
 _BRANCH = re.compile(r"^(?:auditor|patch-notes|audit)/[A-Za-z0-9._/+-]+$")
 _AUDIT_BRANCH = re.compile(r"^audit/[0-9a-f]{40}$")
+# the two dependency-bump lanes: Dependabot's Go branches and the auditor's own bump branches
+_BUMP_BRANCH = re.compile(r"^(?:dependabot/go_modules/|auditor/bump-)[A-Za-z0-9._/+-]+$")
+# the first words of the sweep's commit message: how a records commit is recognised
+RECORDS_HEADLINE = "Vendor records for the "
+# beside everything under vendor/
+RECORDS_FILES = ("dependency-provenance.json", "test-evidence/dependency-licenses.yaml")
 
 MUTATION = ("mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) "
             "{ commit { oid signature { isValid state } } } }")
@@ -105,13 +119,35 @@ def _check_branch(branch, prefixes=(BRANCH_PREFIX,)):
         raise CommitError("signed commit: refusing branch %r: the passed-audit record branch is audit/ and a full commit sha, nothing else" % (branch,))
 
 
-def _check(repo, branch, base_sha, message, changes, prefixes=(BRANCH_PREFIX,)):
+def is_records_path(path):
+    """The only places a records commit writes: anything under vendor/, the provenance record, the reviewed licences. A
+    plain relative path."""
+    if not isinstance(path, str) or path.startswith("/") or any(p in ("", ".", "..") for p in path.split("/")):
+        return False
+    return path in RECORDS_FILES or path.startswith("vendor/")
+
+
+def is_records_message(message):
+    return isinstance(message, str) and message.split("\n", 1)[0].startswith(RECORDS_HEADLINE)
+
+
+def _check_bump_branch(branch):
+    plain = isinstance(branch, str) and _BUMP_BRANCH.match(branch) and ".." not in branch
+    if not plain or branch.endswith(("/", ".lock")):
+        raise CommitError("signed commit: refusing branch %r: a records commit goes on a dependabot/go_modules/* "
+                          "or auditor/bump-* branch only" % (branch,))
+
+
+def _check(repo, branch, base_sha, message, changes, prefixes=(BRANCH_PREFIX,), bump=False):
     if not isinstance(repo, str) or not _REPO.match(repo):
         raise CommitError("signed commit: the repository %r is not owner/name" % (repo,))
-    _check_branch(branch, prefixes)
+    if bump:
+        _check_bump_branch(branch)
+    else:
+        _check_branch(branch, prefixes)
     if not isinstance(base_sha, str) or not _SHA.match(base_sha):
         raise CommitError("signed commit: the base %r is not a full commit sha" % (base_sha,))
-    if branch.startswith("audit/") and branch != "audit/" + base_sha:
+    if not bump and branch.startswith("audit/") and branch != "audit/" + base_sha:
         raise CommitError("signed commit: the record branch %s is not audit/ plus its base commit %s" % (branch, base_sha))
     if not isinstance(message, str) or not message.strip():
         raise CommitError("signed commit: an empty commit message")
@@ -220,6 +256,16 @@ def commit_via_api(repo, branch, base_sha, message, changes, run=None, notes=Non
                 leftover.args = (str(leftover) + "; " + note,)
 
 
+def commit_on_branch(repo, branch, head_sha, message, changes, run=None):
+    """ONE signed commit on the bump branch's own head. head_sha is the parent and the lease: if the branch is no
+    longer there, nothing is written. Returns the new commit's oid, confirmed signed."""
+    _check(repo, branch, head_sha, message, changes, bump=True)
+    if _head(run, repo, branch) != head_sha:
+        raise CommitError("signed commit: branch %s moved since it was read (it is not at %s): nothing was written"
+                          % (branch, head_sha[:12]))
+    return _make_commit(run, repo, branch, head_sha, message, changes)
+
+
 def _content(run, repo, path, ref):
     """The bytes of `path` at commit `ref`, or None when it is absent there (404). Anything unreadable is an error."""
     quoted = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))     # a path like go.mod?ref=main# must not alter the request
@@ -237,6 +283,31 @@ def _content(run, repo, path, ref):
         raise CommitError("signed commit: %s at %s is not valid base64" % (path, ref[:12]))
 
 
+def _commit_doc(run, repo, sha):
+    """GitHub's answer for a commit; CommitError when it cannot be read (branch_reusable turns that into None)."""
+    rc, out, err = _api(run, ["gh", "api", "repos/%s/commits/%s" % (repo, sha)])
+    if rc != 0:
+        raise CommitError("signed commit: reading commit %s failed" % str(sha)[:12])
+    return _json(out, "the commit lookup")
+
+
+def _verified(doc):
+    commit = doc.get("commit")
+    verification = commit.get("verification") if isinstance(commit, dict) else None
+    return isinstance(verification, dict) and verification.get("verified") is True
+
+
+def _is_records_commit(doc):
+    """The sweep's commit: its message is the sweep's, and every file it changes is a records path (added, modified or
+    removed, no rename)."""
+    commit, files = doc.get("commit"), doc.get("files")
+    return (isinstance(commit, dict) and is_records_message(commit.get("message")) and isinstance(files,
+        list) and bool(files)
+            and all(isinstance(f, dict) and is_records_path(f.get("filename")) and f.get("status") in ("added",
+                "modified", "removed")
+                    and "previous_filename" not in f for f in files))
+
+
 def branch_reusable(repo, branch, base_sha, want, run=None):
     """The head oid of `branch` when it may be left as it is, else None (the caller rebuilds through commit_via_api, which is fail-closed). Reuse means ONE
     reviewed commit: GitHub verifies the head as signed, it has EXACTLY ONE parent and that is base_sha (today's main), it changes only files named in
@@ -250,13 +321,15 @@ def branch_reusable(repo, branch, base_sha, want, run=None):
         head = _head(run, repo, branch)
         if head is None or head == base_sha:               # absent, or exactly main (nothing delivered on it): rebuild
             return None
-        rc, out, err = _api(run, ["gh", "api", "repos/%s/commits/%s" % (repo, head)])
-        if rc != 0:
-            return None
-        doc = _json(out, "the commit lookup")
-        commit, parents, files = doc.get("commit"), doc.get("parents"), doc.get("files")
-        verification = commit.get("verification") if isinstance(commit, dict) else None
-        if not (isinstance(verification, dict) and verification.get("verified") is True):
+        doc = _commit_doc(run, repo, head)
+        # the sweep's commit: judge the commit under it by the ordinary rules
+        if _is_records_commit(doc):
+            parents = doc["parents"]
+            if not (_verified(doc) and len(parents) == 1 and isinstance(parents[0], dict)):
+                return None
+            doc = _commit_doc(run, repo, parents[0].get("sha"))
+        parents, files = doc.get("parents"), doc.get("files")
+        if not _verified(doc):
             return None
         if not (isinstance(parents, list) and len(parents) == 1 and isinstance(parents[0], dict) and parents[0].get("sha") == base_sha):
             return None

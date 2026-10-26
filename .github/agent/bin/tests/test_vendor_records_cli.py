@@ -1,0 +1,74 @@
+# (no AC is registered for the sweep yet: the ACs REQ-VEND-001-AC16.. are drafted for the owner's ratification, see the
+# PR)
+"""vendor-records.py: which branches the sweep visits and what its exit code says. The per-branch work is
+auditorlib.vendor_records (its own tests)."""
+import importlib.util, io, os, subprocess, sys, unittest
+from contextlib import redirect_stdout, redirect_stderr
+from unittest import mock
+
+BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, BIN)
+from auditorlib import vendor_records as V  # noqa: E402
+
+spec = importlib.util.spec_from_file_location("vendor_records_cli", os.path.join(BIN, "vendor-records.py"))
+CLI = importlib.util.module_from_spec(spec); spec.loader.exec_module(CLI)
+
+
+class Cli(unittest.TestCase):
+    def gh(self, names, rc=0):
+        self.calls = []
+        def run(cmd, **kw):
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, rc, "\n".join(names) + "\n", "HTTP 500" if rc else "")
+        return run
+
+    def main(self, argv, run, answers):
+        seen = []
+        def process(repo, branch, ws, run_, regenerate, dry_run=False):
+            seen.append((repo, branch, ws, dry_run)); return answers.get(branch, "up to date")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(V, "process_branch", process), redirect_stdout(out), redirect_stderr(err):
+            rc = CLI.main(argv, run=run, regenerate=lambda *a: None)
+        return rc, seen, out.getvalue(), err.getvalue()
+
+    def test_only_the_two_bump_lanes_are_visited_and_skips_are_a_normal_exit(self):
+        names = ["main", "auditor/panel", "dependabot/go_modules/x-1.0", "dependabot/npm_and_yarn/y",
+            "auditor/bump-a-1.0", "patch-notes/v1"]
+        rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws"], self.gh(names),
+            {"auditor/bump-a-1.0": "skipped: because"})
+        self.assertEqual(rc, 0)
+        self.assertEqual([s[1] for s in seen], ["dependabot/go_modules/x-1.0", "auditor/bump-a-1.0"])
+        self.assertEqual(out, "dependabot/go_modules/x-1.0: up to date\nauditor/bump-a-1.0: skipped: because\n")
+        self.assertEqual(self.calls, [["gh", "api", "--paginate", "repos/o/r/branches?per_page=100", "--jq",
+            ".[].name"]])
+
+    def test_a_failed_branch_makes_the_exit_one_after_the_others_were_visited(self):
+        rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws", "--dry-run"],
+            self.gh(["dependabot/go_modules/a", "dependabot/go_modules/b"]),
+                                       {"dependabot/go_modules/a": "failed: boom"})
+        self.assertEqual(rc, 1); self.assertEqual(len(seen), 2); self.assertTrue(all(s[3] for s in seen))
+
+    def test_named_branches_are_visited_without_listing(self):
+        run = self.gh([])
+        rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws", "--branch", "dependabot/go_modules/a"],
+            run, {})
+        self.assertEqual((rc, [s[1] for s in seen], self.calls), (0, ["dependabot/go_modules/a"], []))
+
+    def test_a_listing_that_fails_is_exit_one_and_visits_nothing(self):
+        rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws"], self.gh([], rc=1), {})
+        self.assertEqual((rc, seen), (1, [])); self.assertIn("could not list the branches: HTTP 500", err)
+
+    def test_the_default_runner_and_regeneration_are_wired(self):
+        with mock.patch.object(V, "make_regenerate", return_value="regen") as mk, mock.patch.object(V, "process_branch",
+            return_value="gone") as pb, \
+                mock.patch.object(CLI.subprocess, "run", self.gh([])), redirect_stdout(io.StringIO()):
+            self.assertEqual(CLI.main(["--repo", "o/r", "--workspace", "/ws", "--branch", "auditor/bump-a"]), 0)
+        mk.assert_called_once_with("/ws"); self.assertEqual(pb.call_args.args[4], "regen")
+
+    def test_run_as_a_script_it_exits_with_the_argument_parsers_status(self):
+        r = subprocess.run([sys.executable, os.path.join(BIN, "vendor-records.py")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2); self.assertIn("--repo", r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
