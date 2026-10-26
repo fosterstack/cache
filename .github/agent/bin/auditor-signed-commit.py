@@ -6,7 +6,7 @@ caller's GH_TOKEN (the App's installation token), via auditorlib.signed_commit.c
 
   auditor-signed-commit.py --repo OWNER/NAME --branch B --base FULLSHA --prefix PREFIX [--prefix PREFIX ...] --message TEXT --path P [--path P ...]
 
---prefix: the lanes B may be in; only `auditor/` and `patch-notes/` are accepted. --path: read from the CURRENT directory; a path that does not
+--prefix: the lanes B may be in; only `auditor/`, `patch-notes/` and `audit/` (the passed-audit record, REQ-REL-012: audit/<sha> on top of that sha only) are accepted. --path: read from the CURRENT directory; a path that does not
 exist there is a DELETION. Prints the new commit's oid on stdout. Exit 0 = made and confirmed signed; 1 = refused or failed (plain message on
 stderr, nothing on stdout); 2 = bad arguments. stdlib only; no git credentials are needed or used.
 """
