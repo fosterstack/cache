@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -71,6 +71,9 @@ cat >"$base/bin/install-scanner.sh" <<'EOF'
 TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
 GITSIGN_VER=0.17.1
+case "${TOOL}:${arch}" in
+  trivy:x86_64|trivy:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+esac
 EOF
 cat >"$base/.github/pins/adjudicator-requirements.txt" <<'EOF'
 # hash-pinned
@@ -291,8 +294,8 @@ out=$(liveproof "$MOVED" schedule)
 CASE="observer: the tag was seen on 2026-01-01 at a DIFFERENT commit; its move to the pinned commit was never observed: no proof (the tj-actions pattern)"
 case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
 out=$(liveproof "$GOODSTATE" schedule v9.9.9)
-CASE="observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no proof"
-case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
+CASE="observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)"
+case "$out" in "[(None, 'bad-label:v9.9.9')]") ok "$CASE";; *) bad "$CASE ($out)";; esac
 out=$(liveproof - schedule)
 CASE="observer: no scheduled run has produced state yet: nothing observed, no proof, and no error (ages only get younger)"
 case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
@@ -330,8 +333,8 @@ PY
 ) 2>&1 | tail -1; }
 CASE="PR clock: the earliest workflow run on the first commit whose INVENTORY holds the item (not on an earlier commit that merely mentions 21 in a comment, nor the later head)"
 check test "$(pcclock '[{"created_at":"2026-09-20T00:00:00Z"},{"created_at":"2026-09-25T00:00:00Z"}]')" = 2026-09-20T00:00:00Z
-CASE="PR clock: no run on the introducing commit means no clock (the later commit's runs do not count)"
-check test "$(pcclock -)" = None
+CASE="PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)"
+check test "$(pcclock -)" = 2026-10-04T00:00:00Z
 CASE="PR clock: outside a PR (no base) there is no clock"
 check test "$(cd "$work" && GITHUB_REPOSITORY=o/r python3 - "$chk" "$work/pc" <<'PY'
 import importlib.util, sys
@@ -345,7 +348,7 @@ CASE="a tool's release proof is the newest asset time: an asset replaced yesterd
 check python3 - "$chk" "$stubpy" "$work" <<'PY'
 import importlib.util, json, os, subprocess, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-json.dump({"repos/aquasecurity/trivy/releases/tags/0.75.0": {"message": "x"}, "repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
+json.dump({"repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
            "assets": [{"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-10-04T00:00:00Z"}]}}, open(sys.argv[3] + "/map.json", "w"))
 os.environ["GH_MAP"] = sys.argv[3] + "/map.json"
 orig = subprocess.run
@@ -1514,9 +1517,6 @@ while IFS=$'\t' read -r what line; do
 done <"$work/hf-accepted.tsv"
 # the distinct lines of the committed rows for bin/refresh-inputs-test.sh (the final P3 tree): the harness lines among them must be accepted, and all of them run in the runtime proof
 cat >"$work/hf-real.txt" <<'EOF'
-# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
-# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir
-# url characters, curl flags and caps
 printf -v FETCH %s curl
 EOF
 while IFS= read -r line; do
@@ -1914,14 +1914,8 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "9f54b594e70eb20f0d0a70ff9277164bd82cc360e18f5b20a78e04f3f13bbf27": "cat >\"$stubs/curl\" <<'EOF'",
     "1314309c3220e61914631f086c3994102c0cbca29603c9e177a888747643d67e": "echo \"curl $*\" >>\"$CALLS\"",
     "64612fb9a9fe82bebee266d20bfd151d4aab8c5a1d02f1a3dfadde2b97938277": "else echo \"stub curl: 22 $url\" >&2; exit 22; fi",
-    # the flattened lines of the daily input refresh tests (bin/refresh-inputs-test.sh) the P3 rows are written for
-    "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b": "# url characters, curl flags and caps",
-    "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
-    "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
-
     # the fetch tool's one-word lines of the refresh job and its test (cache#344, handoff 0432): printf -v of a constant, text for the checker
     "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596": "printf -v FETCH %s curl",
-    "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 (", "build-container install, advisor reading Oct 19: ", "pinned fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
@@ -4121,5 +4115,432 @@ vfile vl-seventh bin/govulncheck-other-test.sh "ls vendor/"
 CASE="a seventh file that names the vendored folder is still refused (exit 1)"
 check test "$rc" -eq 1
 
+
+# --- Go's own releases skip the 7-day hold (owner ratified Oct 21 2026, REQ-SUP-001-AC27): the tool item `go` only, and only when bin/install-scanner.sh
+# downloads it from https://go.dev/dl/ at its pinned version and pins the sha256 of both architectures and verifies the file; every other check still applies ----
+gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64only] -> an installer text
+  local ver=$1 trivy=${2:-0.74.0} mut=${3:-}
+  local host="https://go.dev/dl" ; [ "$mut" = nohost ] && host="https://dl.example.org/dl"
+  printf '%s\n' '#!/usr/bin/env bash' "TRIVY_VER=$trivy" "GO_VER=$ver" 'case "$TOOL:$arch" in'
+  [ "$mut" != caseglob ] || printf '%s\n' '  go:*) SUM="$GO_SHA256" ;;'
+  printf '%s\n' "  go:x86_64|go:amd64) SUM=$(printf 'a%.0s' $(seq 64)) ;;"
+  [ "$mut" = nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM=$(printf 'b%.0s' $(seq 64)) ;;"
+  [ "$mut" != nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM= ;;"
+  printf '%s\n' 'esac'
+  if [ "$mut" = failoff ]; then printf '%s\n' 'pipeline_fail() { echo "::error::scanner installer: $*" >&2; }'
+  else printf '%s\n' 'pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }'; fi
+  case $mut in
+    verifyoff) printf '%s\n' 'verify() { # file' '  :' '}' ;;
+    nocompare) printf '%s\n' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '}' ;;
+    sumreset) printf '%s\n' 'SUM=' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"' '}' ;;
+    *) printf '%s\n' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"' '}' ;;
+  esac
+  [ "$mut" != gover2 ] || printf '%s\n' 'if [ "$arch" = amd64 ]; then GO_VER=1.27.4; fi'
+  [ "$mut" != gofile2 ] || printf '%s\n' 'if [ "$arch" = amd64 ]; then gofile=go1.27.1.linux-amd64.tar.gz; fi'
+  [ "$mut" != urlvar ] || printf '%s\n' 'mirror_url="https://mirror.example.org/go1.27.3.linux-amd64.tar.gz"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
+  [ "$mut" != aria ] || printf '%s\n' 'aria2c -d "$tmp" https://mirror.example.org/go1.27.3.linux-amd64.tar.gz'
+  [ "$mut" != forloop ] || printf '%s\n' 'for GO_VER in 1.27.2; do :; done'
+  [ "$mut" != mapfile ] || printf '%s\n' "mapfile -t gofile <<< 'go1.27.2.linux-amd64.tar.gz'"
+  [ "$mut" != scp ] || printf '%s\n' 'scp mirror.example.org:/releases/go1.27.3.linux-amd64.tar.gz "$tmp/go.tgz"'
+  [ "$mut" != tgzvar ] || printf '%s\n' 'mirror_url="https://mirror.example.org/go.tgz"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
+  [ "$mut" != scpvar ] || printf '%s\n' 'scp "mirror.example.org:/releases/${gofile}" "$tmp/other.tgz"'
+  [ "$mut" != urlgofile ] || printf '%s\n' 'mirror_url="https://mirror.example.org/${gofile}"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
+  [ "$mut" != printfv ] || printf '%s\n' 'printf -v "GO_VER" %s 1.27.4'
+  [ "$mut" != declq ] || printf '%s\n' 'declare "GO_VER=1.27.4"'
+  [ "$mut" != rsyncver ] || printf '%s\n' 'rsync "mirror.example.org:/r/go${GO_VER}.tar.gz" "$tmp/o.tgz"'
+  [ "$mut" != shasum ] || printf '%s\n' 'sha256sum() { printf "%s  %s\n" "$SUM" "$1"; }'
+  [ "$mut" != cutfn ] || printf '%s\n' 'cut() { cat; }'
+  [ "$mut" != aliasmut ] || printf '%s\n' 'alias sha256sum=true'
+  [ "$mut" != ifdef ] || printf '%s\n' 'if true; then sha256sum() { printf "%s  %s\n" "$SUM" "$1"; }; fi'
+  [ "$mut" != spacedef ] || printf '%s\n' 'sha256sum ( ) { printf "%s  %s\n" "$SUM" "$1"; }'
+  [ "$mut" != wrapall ] || printf '%s\n' '('
+  [ "$mut" != fn2 ] || printf '%s\n' 'function verify { :; }'
+  [ "$mut" != ifsum ] || printf '%s\n' 'if [ "$TOOL" = go ]; then SUM="$GO_SHA256"; fi'
+  printf '%s\n' 'case "$TOOL" in' '  go)'
+  [ "$mut" != inlinesub ] || printf '%s\n' '    :; ('
+  [ "$mut" != subshell ] || printf '%s\n' '    ('
+  printf '%s\n' '    gofile="go${GO_VER}.${A_GO}.tar.gz"' "    curl -q -fsSL -g -o \"\$tmp/go.tgz\" \"$host/\${gofile}\" || die \"download failed: go toolchain\""
+  [ "$mut" = literal2 ] && printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" != multiline ] || printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" \' '      "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" = twohosts ] && printf '%s\n' '    curl -fsSL -o "$tmp/go2.tgz" "https://mirror.example.org/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" = noverify ] || printf '%s\n' '    verify "$tmp/go.tgz"'
+  [ "$mut" != subshell ] || printf '%s\n' '    ) || :'
+  [ "$mut" != inlinesub ] || printf '%s\n' '    ) || :'
+  printf '%s\n' '    ;;' 'esac'
+  [ "$mut" != wrapall ] || printf '%s\n' ') || :'
+}
+gocase() {   # gocase NAME BASE-TEXT HEAD-TEXT [extra head files via a python edit]
+  local n=$1; rm -rf "$work/$n"; mkdir -p "$work/$n/bin"; printf '%s\n' "$2" >"$work/$n/bin/install-scanner.sh"
+  git -C "$work/$n" init -q; git -C "$work/$n" add -A; git -C "$work/$n" -c user.name=t -c user.email=t@x commit -q -m base
+  printf '%s\n' "$3" >"$work/$n/bin/install-scanner.sh"; git -C "$work/$n" add -A; git -C "$work/$n" -c user.name=t -c user.email=t@x commit -q -m head
+}
+GOB="$(gosc 1.27.2)"
+gocase goage "$GOB" "$(gosc 1.27.3)"
+runck goage '{"times": {}}'
+CASE="Go 1.27.3 moved in the installer, downloaded from go.dev with both sha256 pins and the verify call, passes the age check with NO age data (exit 0) and says it is the ratified exemption"
+check test "$rc" -eq 0; check grep -q 'tool:go@1.27.3' "$work/goage.out"; check grep -qi 'ratified\|exempt' "$work/goage.out"
+runck goage "{\"times\": {\"tool:go@1.27.3\": {\"time\": \"$NOW\", \"source\": \"github-release\"}}, \"first_seen\": {\"tool:go@1.27.3\": \"$NOW\"}}"
+CASE="the same Go move with a release published at the same instant (0 days) still passes (exit 0)"
+check test "$rc" -eq 0
+gocase gotrivy "$GOB" "$(gosc 1.27.2 0.75.0)"
+runck gotrivy '{"times": {}}'
+CASE="another tool (trivy) moved with no age data in a tree that holds the Go exemption still FAILS (exit 1): only go is exempt"
+check test "$rc" -eq 1
+runck gotrivy "{\"times\": {\"tool:trivy@0.75.0\": {\"time\": \"$NOW\", \"source\": \"github-release\"}}}"
+CASE="trivy released at the same instant (0 days) still FAILS (exit 1)"
+check test "$rc" -eq 1
+gocase gobothmoved "$GOB" "$(gosc 1.27.3 0.75.0)"
+runck gobothmoved '{"times": {}}'
+CASE="go and trivy moved together: trivy still FAILS (exit 1), go is listed as exempt, not as failing"
+check test "$rc" -eq 1; check grep -q 'FAIL tool:trivy@0.75.0' "$work/gobothmoved.out"; check bash -c "! grep -q 'FAIL tool:go@' '$work/gobothmoved.out'"
+for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 fn2 failoff caseglob ifsum multiline gover2 gofile2 urlvar aria forloop mapfile scp tgzvar scpvar urlgofile printfv declq rsyncver shasum cutfn aliasmut subshell ifdef spacedef wrapall inlinesub; do
+  if [ "$mut" = scpvar ] || [ "$mut" = urlgofile ] || [ "$mut" = rsyncver ] || [ "$mut" = literal2 ] || [ "$mut" = multiline ] || [ "$mut" = urlvar ] || [ "$mut" = aria ] || [ "$mut" = scp ] || [ "$mut" = tgzvar ]; then gocase "gomut-$mut" "$(gosc 1.27.2 0.74.0 $mut)" "$(gosc 1.27.3 0.74.0 $mut)"; else gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"; fi
+  runck "gomut-$mut" '{"times": {}}'
+  case $mut in
+    nohost) CASE="go downloaded from a host that is not go.dev keeps the 7-day hold: FAILS (exit 1)" ;;
+    nopin) CASE="go whose arm64 sha256 pin is empty keeps the 7-day hold: FAILS (exit 1)" ;;
+    noverify) CASE="go with no verify call on the download keeps the 7-day hold: FAILS (exit 1)" ;;
+    twohosts) CASE="go with a second download from another host keeps the 7-day hold: FAILS (exit 1)" ;;
+    verifyoff) CASE="go whose verify() does nothing keeps the 7-day hold: FAILS (exit 1)" ;;
+    nocompare) CASE="go whose verify() computes the hash but never compares it keeps the 7-day hold: FAILS (exit 1)" ;;
+    sumreset) CASE="go whose installer resets SUM outside the pinned rows keeps the 7-day hold: FAILS (exit 1)" ;;
+    literal2) CASE="go with a second download of a literal Go archive name (present in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    fn2) CASE="go with a second verify definition (function verify { :; }) keeps the 7-day hold: FAILS (exit 1)" ;;
+    failoff) CASE="go whose pipeline_fail no longer exits keeps the 7-day hold: FAILS (exit 1)" ;;
+    caseglob) CASE="go with a glob case arm that assigns SUM before the pinned rows keeps the 7-day hold: FAILS (exit 1)" ;;
+    ifsum) CASE="go with an inline if ...; then SUM=...; fi keeps the 7-day hold: FAILS (exit 1)" ;;
+    multiline) CASE="go with a second Go download split over a continuation line (present in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    gover2) CASE="go with an inline GO_VER reassignment before the filename is built keeps the 7-day hold: FAILS (exit 1)" ;;
+    gofile2) CASE="go with an inline gofile reassignment keeps the 7-day hold: FAILS (exit 1)" ;;
+    urlvar) CASE="go with a second Go download through a URL held in a variable (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    aria) CASE="go with a second Go download through another downloader (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    forloop) CASE="go with a for GO_VER in ... binding keeps the 7-day hold: FAILS (exit 1)" ;;
+    mapfile) CASE="go with a mapfile write of gofile keeps the 7-day hold: FAILS (exit 1)" ;;
+    scp) CASE="go with an scp transfer of a Go archive (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    tgzvar) CASE="go with a second download of a go.tgz URL held in a variable (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    scpvar) CASE="go with an scp of \${gofile} to another host (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    urlgofile) CASE="go with a mirror URL variable built from \${gofile} and a second curl (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    printfv) CASE="go with printf -v \"GO_VER\" keeps the 7-day hold: FAILS (exit 1)" ;;
+    declq) CASE="go with declare \"GO_VER=...\" keeps the 7-day hold: FAILS (exit 1)" ;;
+    rsyncver) CASE="go with an rsync that reads GO_VER (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    shasum) CASE="go with a redefined sha256sum function keeps the 7-day hold: FAILS (exit 1)" ;;
+    cutfn) CASE="go with a redefined cut function keeps the 7-day hold: FAILS (exit 1)" ;;
+    aliasmut) CASE="go with an alias for sha256sum keeps the 7-day hold: FAILS (exit 1)" ;;
+    subshell) CASE="go with the download and verify wrapped in a subshell whose failure is ignored keeps the 7-day hold: FAILS (exit 1)" ;;
+    ifdef) CASE="go with a sha256sum function defined after then keeps the 7-day hold: FAILS (exit 1)" ;;
+    spacedef) CASE="go with a function declared as name ( ) keeps the 7-day hold: FAILS (exit 1)" ;;
+    wrapall) CASE="go with the whole tool dispatch wrapped in a subshell whose failure is ignored keeps the 7-day hold: FAILS (exit 1)" ;;
+    inlinesub) CASE="go with an inline ':; (' subshell around the download keeps the 7-day hold: FAILS (exit 1)" ;;
+  esac
+  check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
+done
+
+
+# --- REQ-SUP-001-AC34: a file pin (a checksum file for an upstream artifact) is dated by a ruling row of the BASE branch's exceptions file: {file, content, upstream, version, published} ---
+FPFILE=.github/policy/gradle-wrapper-jar-sha256.txt
+FPTEXT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
+newcase fp "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+FPSUM=$(python3 -c "import hashlib,sys;print(hashlib.sha256(('$FPFILE' + chr(0) + '$FPTEXT\n').encode()).hexdigest())")
+fprow() { # FILE CONTENT UPSTREAM VERSION PUBLISHED -> one row (a field given as - is left out)
+  python3 - "$@" <<'PY'
+import json, sys
+keys = ("file", "content", "upstream", "version", "published")
+print(json.dumps({k: v for k, v in zip(keys, sys.argv[1:6]) if v != "-"}))
+PY
+}
+fpck() { # NAME ROWS-JSON-ARRAY-OR-RAW -> rc, $work/fp.out ; the exceptions file is the base branch's copy
+  printf '{"exceptions": [], "unmeasured_text": [], "file_pins": %s}' "$2" >"$work/fp-$1.json"; rc=0
+  python3 "$chk" --root "$work/fp" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/fp-$1.json" >"$work/fp.out" 2>&1 || rc=$?
+}
+GRADLE=https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256
+fpck ok "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")]"
+CASE="AC34: a file pin with a base-branch row for the same file and content, published 10 days ago, passes (exit 0) and the check names the file and the version"
+check test "$rc" -eq 0; check grep -q 'gradle-wrapper-jar-sha256.txt' "$work/fp.out"; check grep -q '9.7.1' "$work/fp.out"
+fpck young "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 3)")]"
+CASE="AC34: the same row published 3 days ago is too young: the 7 days still apply (exit 1)"
+check test "$rc" -eq 1; check grep -q 'too young' "$work/fp.out"
+fpck content "[$(fprow "$FPFILE" "$(printf 'a%.0s' $(seq 64))" "$GRADLE" 9.7.1 "$(d 10)")]"
+CASE="AC34: a row for other content of the file (the file changed after the ruling) rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck file "[$(fprow ".github/policy/other-sha256.txt" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")]"
+CASE="AC34: a row for another file rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck noup "[$(fprow "$FPFILE" "$FPSUM" - 9.7.1 "$(d 10)")]"
+CASE="AC34: a row without upstream rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck nover "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" - "$(d 10)")]"
+CASE="AC34: a row without version rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck future "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2099-01-01T00:00:00Z")]"
+CASE="AC34: a row published in the future lends no age (exit 1)"
+check test "$rc" -eq 1
+fpck garbage "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "last tuesday")]"
+CASE="AC34: a row whose published time is not a time lends no age (exit 1)"
+check test "$rc" -eq 1
+fpck dup "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)"), $(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 2)")]"
+CASE="AC34: two rows for the same file and content: the check stops, it never picks the older (exit 2)"
+check test "$rc" -eq 2
+fpck naive "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10 | sed 's/Z$//')")]"
+CASE="AC34: a published time without a zone is read as UTC, as the checker reads every time: an old row passes (exit 0)"
+check test "$rc" -eq 0
+fpck offset "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2026-10-02T12:00:00+99:99")]"
+CASE="AC34: a published time with an impossible zone offset (+99:99, which would count as over 7 days) lends no age (exit 1)"
+check test "$rc" -eq 1
+for vf in .python-version .nvmrc; do
+  newcase fpv "
+import pathlib
+pathlib.Path('$vf').write_text('3.12\\n')"
+  VSUM=$(python3 -c "import hashlib;print(hashlib.sha256(('$vf' + chr(0) + '3.12\n').encode()).hexdigest())")
+  printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [%s]}' "$(fprow "$vf" "$VSUM" "$GRADLE" 3.12 "$(d 30)")" >"$work/fp-vf.json"; rc=0
+  python3 "$chk" --root "$work/fpv" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/fp-vf.json" >"$work/fp.out" 2>&1 || rc=$?
+  CASE="AC34: a version file ($vf) with an old, otherwise valid row is still not a pin: the rows date checksum files only (exit 1)"
+  check test "$rc" -eq 1
+done
+fpck notlist '"x"'
+CASE="AC34: a file_pins that is not a list stops the check (exit 2)"
+check test "$rc" -eq 2
+rm -rf "$work/fp-tree"; cp -R "$work/fp" "$work/fp-tree"; printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [%s]}' "$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")" >"$work/fp-tree/.github/supply-chain-exceptions.json"
+( cd "$work/fp-tree" && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )   # the row is in the head commit of the tree under test
+rc=0; python3 "$chk_nolist" --root "$work/fp-tree" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/fp.out" 2>&1 || rc=$?
+CASE="AC34: a row that only the pull request's own tree carries rules nothing: the default list is the one beside the checker, never the tree under test (exit 1)"
+check test "$rc" -eq 1
+
+# --- rc-5b item 6 (A4, R7, R8, R12): the checksum is part of an item's identity; a server proof beats the PR clock for tools and packages; a label that does not resolve is "age not provable"; the Go proxy's case escaping ---
+A64=$(printf 'a%.0s' $(seq 64)); B64=$(printf 'b%.0s' $(seq 64))
+newcase sum-scanner "$(sub bin/install-scanner.sh "SUM=$A64" "SUM=$B64")"
+runck sum-scanner '{"times": {}}'
+CASE="sum: a checksum change under the SAME tool version is a moved item (no age data: fails and names it)"
+check test "$rc" -eq 1; check grep -qF 'tool:trivy@0.74.0' "$work/sum-scanner.out"
+runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$YOUNG\", \"source\": \"github-release\"}}}"
+CASE="sum: the same sum-only change with a release asset 3 days old fails"; check test "$rc" -eq 1
+runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$OLD\", \"source\": \"github-release\"}}}"
+CASE="sum: the same sum-only change with a release asset 10 days old passes"; check test "$rc" -eq 0
+newcase sum-req "$(sub .github/pins/adjudicator-requirements.txt '--hash=sha256:aaaa' '--hash=sha256:cccc')"
+runck sum-req '{"times": {}}'
+CASE="sum: a --hash change under the SAME package version is a moved item"
+check test "$rc" -eq 1; check grep -qF 'package:pypi/anthropic@1.9.0' "$work/sum-req.out"
+newcase sum-comment "pathlib=__import__('pathlib'); p=pathlib.Path('bin/install-scanner.sh'); p.write_text(p.read_text()+'# a note\n')"
+runck sum-comment '{"times": {}}'
+CASE="sum: a comment added to the installer script moves nothing"; check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/sum-comment.out"
+CASE="item 6: a server proof beats the PR clock for tools and packages; the clock stands in only when there is none"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+    it = inv.Item(kind, name, ver)
+    ok, why, pr = ac.judge_item(it, [("2026-10-04T00:00:00Z", src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert not ok and pr["source"] == src, (kind, why)          # a replaced asset (young server proof) is not out-aged by the version's old PR clock
+    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert ok and pr["source"] == "pr-clock", (kind, why)        # the PR clock stands in only when no server proof exists
+    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", src), ("2026-10-04T00:00:00Z", "pr-clock")], now)
+    assert ok and pr["source"] == src, (kind, why)               # an old server proof decides; a young PR clock does not undo it
+act = inv.Item("action", "o/act", "a" * 40, "v4")
+ok, why, pr = ac.judge_item(act, [("2020-01-01T00:00:00Z", "pr-clock"), ("2026-10-04T00:00:00Z", "observer")], now)
+assert ok, why   # actions keep the oldest-proof rule (their age is the observer or the PR clock)
+PY
+CASE="item 6: a # vX label that does not resolve to the pinned commit is 'age not provable' and names the label, even with an old PR clock"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+SHA = "a" * 40
+ac._tag_refs = lambda repo: {"v4": SHA}
+ac.observed = lambda: None
+ac._pr_clock = lambda *a, **k: "2020-01-01T00:00:00Z"
+bad = inv.Item("action", "o/act", SHA, "v9.9.9")
+ok, why, _ = ac.judge_item(bad, ac.live_proofs(bad, ".", "base"), now)
+assert not ok and "v9.9.9" in why and "label" in why and "does not" in why, why   # the label is wrong; it is not read as a missing clock
+good = inv.Item("action", "o/act", SHA, "v4")
+ok, why, _ = ac.judge_item(good, ac.live_proofs(good, ".", "base"), now)
+assert ok, why
+PY
+CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+check python3 - "$chk" <<'PY'
+import contextlib, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert ac._go_escape("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+assert ac._go_escape("golang.org/x/tools") == "golang.org/x/tools"
+seen = []
+def fake(u):
+    seen.append(u)
+    return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+ac._http_json = fake
+mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+urllib.request.urlopen = lambda *a, **k: R(rows.encode())
+assert ac._go_index_time("github.com/BurntSushi/toml", "v1.0.0", "2020-01-01T00:00:00Z") == "2026-02-02T00:00:00Z"   # an exact Path match: another module's case-twin lends no time
+PY
+
+# --- rc-5b item 6, round 1 rulings on #639 (ancestry, unusable server proof, no cap, literal-download sums, sums across files) -----------------------------------------------------------------
+CASE="PR clock: a later commit that does NOT contain the introducing commit (a sibling in a merge) lends no clock; the merge that contains it does"
+check python3 - "$chk" "$stubpy" "$work" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+work = sys.argv[3]; repo = work + "/anc"; os.makedirs(repo + "/.github/workflows")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+def g(*a, date=None):
+    e = dict(env, **({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date} if date else {}))
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=e, check=True).stdout.strip()
+wf = repo + "/.github/workflows/a.yml"
+g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base", date="2026-09-01T00:00:00Z")
+base = g("rev-parse", "HEAD")
+g("checkout", "-q", "-b", "side"); open(repo + "/other.txt", "w").write("x"); g("add", "-A"); g("commit", "-q", "-m", "sibling", date="2026-09-05T00:00:00Z")
+sib = g("rev-parse", "HEAD")
+g("checkout", "-q", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro", date="2026-09-04T00:00:00Z")
+intro = g("rev-parse", "HEAD")
+subprocess.run(["git", "-C", repo, "merge", "-q", "--no-ff", "-m", "merge", "side"], env=dict(env, GIT_COMMITTER_DATE="2026-09-06T00:00:00Z"), check=True, capture_output=True)
+head = g("rev-parse", "HEAD")
+m = {f"repos/o/r/actions/runs?head_sha={sib}&per_page=100": {"workflow_runs": [{"created_at": "2026-01-01T00:00:00Z"}]},
+     f"repos/o/r/actions/runs?head_sha={head}&per_page=100": {"workflow_runs": [{"created_at": "2026-10-04T00:00:00Z"}]}}
+json.dump(m, open(work + "/anc.json", "w")); os.environ.update(GITHUB_REPOSITORY="o/r", GH_MAP=work + "/anc.json")
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = [sys.argv[2], *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+got = ac._pr_clock(ac.inv.Item("tool", "java", "21"), repo, base, "HEAD")
+assert got == "2026-10-04T00:00:00Z", got
+PY
+CASE="judge: a server proof that is in the future or unreadable still removes the PR-clock fallback for a tool or package (age not provable, the reason names the source)"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+    for t in ("2026-10-06T00:00:00Z", "garbage"):
+        ok, why, _ = ac.judge_item(ac.inv.Item(kind, name, ver), [(t, src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+        assert not ok and src in why, (kind, t, why)
+PY
+CASE="PR clock: no cap on the walk: a 70-commit push whose only containing run is on its head still gets that clock"
+check python3 - "$chk" "$stubpy" "$work" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+work = sys.argv[3]; repo = work + "/nocap"; os.makedirs(repo + "/.github/workflows")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+g = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env, check=True).stdout.strip()
+wf = repo + "/.github/workflows/a.yml"
+g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base")
+base = g("rev-parse", "HEAD")
+open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro")
+for i in range(69): g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+head = g("rev-parse", "HEAD")
+json.dump({f"repos/o/r/actions/runs?head_sha={head}&per_page=100": {"workflow_runs": [{"created_at": "2026-09-20T00:00:00Z"}]}}, open(work + "/nocap.json", "w"))
+os.environ.update(GITHUB_REPOSITORY="o/r", GH_MAP=work + "/nocap.json")
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = [sys.argv[2], *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+got = ac._pr_clock(ac.inv.Item("tool", "java", "21"), repo, base, "HEAD")
+assert got == "2026-09-20T00:00:00Z", got
+PY
+CASE="sum: a literal release download inside an installer arm (crane) carries its arm's sums; changing only that sum is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+a, b = inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))
+assert any("go-containerregistry" in k for k in a), list(a)
+assert inv.moved(a, b) and not inv.moved(a, inv.inventory(files("a" * 64)))
+PY
+CASE="sum: the same package pinned in two requirements files: a hash change in the SECOND file is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+r = lambda h: "demo==1.2.3 \\\n    --hash=sha256:" + h + "\n"
+a = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")})
+b = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("cc")})
+assert inv.moved(a, b), "a hash change in the second file was hidden by the first"
+assert not inv.moved(a, inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")}))
+PY
+CASE="sum: a decoy arm label inside a heredoc (xq) cannot hide the crane arm's sums: with no sums found for a literal download the identity is the whole script, so a sum-only edit is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm, decoy=True):
+    d = "    : <<'EOF'\n  xq)\nEOF\n" if decoy else ""
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + d + '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+assert inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))), "a sum-only edit behind a decoy arm label was not seen"
+assert not inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("a" * 64)))
+PY
+CASE="sum: a download in a multi-label arm (a|b)) or after esac is in no single tool's arm: no foreign sums attach and a sum-only edit of its own row is a moved item (Fable ruling on #639)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+HEAD = '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  foo:amd64) SUM=' + "f" * 64 + ' ;;\n  crane:amd64) SUM=%s ;;\nesac\ncase "$TOOL" in\n  foo)\n    echo foo\n    ;;\n'
+def multi(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "  crane|other)\n" + DL + "    ;;\nesac\n"}
+def after(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "esac\n" + DL}
+for name, mk in (("a|b) arm", multi), ("after esac", after)):
+    a, b = inv.inventory(mk("a" * 64)), inv.inventory(mk("b" * 64))
+    dl = [it for it in a.values() if "go-containerregistry" in it.name]
+    assert dl, (name, list(a))
+    assert not any("f" * 64 in it.sums for it in dl), (name, "foreign sums attached", [it.sums for it in dl])
+    assert inv.moved(a, b), (name, "a sum-only edit was not a moved item")
+    assert not inv.moved(a, inv.inventory(mk("a" * 64))), name
+PY
+CASE="sum: the same download line in two single-label arms (crane, cosign) with different SUM rows: neither gets the other's sum, and a sum-only edit of the SECOND arm's row is a moved item (round 4 finding)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+def files(second):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:amd64) SUM=' + "a" * 64 + ' ;;\n  cosign:amd64) SUM=' + second + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + DL + '    ;;\n  cosign)\n' + DL + '    ;;\nesac\n'}
+a, b = inv.inventory(files("b" * 64)), inv.inventory(files("c" * 64))
+dl = [it for it in a.values() if "go-containerregistry" in it.name]
+assert dl, list(a)
+assert not any(it.sums == ["a" * 64] for it in dl), [it.sums for it in dl]      # the first arm's sum is not attached to the second arm's identical line
+assert inv.moved(a, b), "a sum-only edit of the second arm was not a moved item"
+assert not inv.moved(a, inv.inventory(files("b" * 64)))
+PY
+CASE="structural closure: an unexpected KeyError/AttributeError/TypeError/IndexError/ValueError while reading an answer ends the age check with exit 2 (cannot run, not a pass)"
+newcase struct-guard "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
+check python3 - "$chk" "$work/struct-guard" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx = sys.argv[2] + ".fx.json"; json.dump({"times": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    ac.Fixture.proofs = boom
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(["--root", sys.argv[2], "--base", "HEAD~1", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])
+    assert rc == 2 and "cannot run" in err.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+# --- REQ-SUP-001-AC34: the committed file_pins row dates the committed Gradle wrapper jar sum (the repository's own exceptions file, read as the base branch's) ---
+newcase gjar "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+rc=0; python3 "$chk" --root "$work/gjar" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$root/.github/supply-chain-exceptions.json" >"$work/gjar.out" 2>&1 || rc=$?
+CASE="AC34: the committed row dates a checksum file holding the Gradle 9.7.1 wrapper jar sum (the file itself arrives with the wrapper-jar guard, cache#610): exit 0, names the file and the version"
+check test "$rc" -eq 0; check grep -q '9.7.1' "$work/gjar.out"; check grep -q 'gradle-wrapper-jar-sha256.txt' "$work/gjar.out"
+CASE="AC34: the committed row is exactly the Gradle 9.7.1 ruling: the canonical upstream URL alone, version 9.7.1, published 2026-08-19T15:30:28Z (the GitHub release v9.7.1 of gradle/gradle), the sum 44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42 (a wrong version, date or URL here is a failing case, not a silent pass)"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PYROW'
+import json, sys
+rows = json.load(open(sys.argv[1]))["file_pins"]
+assert len(rows) == 1, rows
+r = rows[0]
+assert r == {"file": ".github/policy/gradle-wrapper-jar-sha256.txt", "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+             "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "2026-08-19T15:30:28Z"}, r
+PYROW
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

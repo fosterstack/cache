@@ -1,14 +1,15 @@
 # The FosterStack Cache image (apko config); the FIPS image uses the same file with a different apk name.
 #
-# Modelled on: apko's file reference (docs/apko_file.md: contents, accounts, paths, entrypoint, work-dir, archs) and the usual layout of a
-# distroless static image (baselayout, ca-certificates-bundle, tzdata and the program).
+# Modelled on: apko's file reference (docs/apko_file.md: contents, accounts, paths, entrypoint, work-dir, archs)
+# and the usual layout of a distroless static image (baselayout, ca-certificates-bundle, tzdata and the program).
 #
-# Rules (v0.3.0): 25 no base image and no extra variants: only the packages named here; 26 packages come only from the
-# archive (/work/archive) and the local package folder melange writes (/work/melange-repo), never a live address; 19 each
-# package is checked against its key (the Wolfi key for archive packages, the assembly key for ours); 33 one run builds
-# linux/amd64 and linux/arm64; 34 no shell, no shell-fragment, no sh path; 38 a nonroot user (65532) owns /home/nonroot.
-# The package versions are pinned by the lock files (build/locks/*.base.lock.json), not here; @FSCACHE_VERSION@ is replaced
-# by bin/assemble-image.sh.
+# Rules (v0.3.0): 25 no base image and no extra variants: only the packages named here; 26 packages come only
+# from the archive (/work/archive) and the local package folder melange writes (/work/melange-repo), never a live
+# address; 19 each package is checked against its key (the Wolfi key for archive packages, the assembly key for
+# ours); 33 one run builds linux/amd64 and linux/arm64; 34 no shell, no shell-fragment, no sh path; 38 a nonroot
+# user (65532) owns /home/nonroot.
+# The package versions are pinned by the lock files (build/locks/*.base.lock.json), not here; @FSCACHE_VERSION@ is
+# replaced by bin/assemble-image.sh.
 contents:
   repositories:
     - /work/archive

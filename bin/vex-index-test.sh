@@ -306,9 +306,39 @@ def hx(d):
     return d.split(":", 1)[1]
 
 
+def ref_scout(vex_obj):
+    """the predicate an attestation carries: the VEX file in the form Docker Scout applies. Scout's own `docker scout attestation add` stores a statement whose products
+    are the vulnerable PACKAGES (the image is the in-toto subject): a product that names the attested image (its purl, as @id or identifiers.purl) and lists subcomponents
+    is replaced by them, in order, once each; every other product stays whole.
+    (Oct 23 2026, rescan run 39978435878: the same document embedded verbatim, product = image purl with the package as a subcomponent, was read by Scout and not applied.)"""
+    o = json.loads(json.dumps(vex_obj))
+    for st in o.get("statements", []):
+        out, seen = [], set()
+        for prod in st.get("products", []):
+            subs = prod.get("subcomponents")
+            names_image = SUBJECT_NAME in (prod.get("@id"), (prod.get("identifiers") or {}).get("purl"))
+            for q in (subs if names_image and isinstance(subs, list) and subs else [prod]):
+                k = cj(q)
+                if k not in seen:
+                    seen.add(k)
+                    out.append(q)
+        st["products"] = out
+    return o
+
+
+def ref_att_verbatim(pdigest, vex_obj):
+    """the attestation as it was before Oct 23 2026: the VEX file embedded as it is (kept for the test that the verifier refuses it)"""
+    saved = ref_scout
+    globals()["ref_scout"] = lambda o: json.loads(json.dumps(o))
+    try:
+        return ref_att(pdigest, vex_obj)
+    finally:
+        globals()["ref_scout"] = saved
+
+
 def ref_att(pdigest, vex_obj):
     stmt = cj({"_type": STMT_TYPE, "predicateType": PRED,
-               "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(pdigest)}}], "predicate": vex_obj})
+               "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(pdigest)}}], "predicate": ref_scout(vex_obj)})
     layer = {"mediaType": "application/vnd.in-toto+json", "digest": dg(stmt), "size": len(stmt),
              "annotations": {"in-toto.io/predicate-type": PRED}}
     cfg = cj({"architecture": "unknown", "created": "1970-01-01T00:00:00Z", "os": "unknown",
@@ -417,7 +447,7 @@ def mk_fx(kind="oci", plats=(("amd64", None), ("arm64", None)), indent=2, no_mt=
     return f
 
 
-VEX_REAL = rd(os.path.join(ROOT, ".vex", "fosterstack-cache.openvex.json")) if os.path.isfile(os.path.join(ROOT, ".vex", "fosterstack-cache.openvex.json")) else None
+VEX_REAL = rd(os.path.join(ROOT, "test-evidence", "vex-scope", "busybox.openvex.json")) if os.path.isfile(os.path.join(ROOT, "test-evidence", "vex-scope", "busybox.openvex.json")) else None
 VEX_MIN = ('{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.test/vex","author":"Example Co",'
            '"timestamp":"2026-01-01T00:00:00Z","version":1,"statements":[{"vulnerability":{"name":"CVE-2000-0001"},'
            '"products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}],"status":"not_affected",'
@@ -426,7 +456,7 @@ VEX_MIN = ('{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.t
 
 def vex_real():
     if VEX_REAL is None:
-        raise Fail("the repository's VEX file .vex/fosterstack-cache.openvex.json is missing")
+        raise Fail("the multi-statement fixture VEX test-evidence/vex-scope/busybox.openvex.json is missing")
     return VEX_REAL
 
 
@@ -1262,6 +1292,18 @@ def _():
     assert_refused(fx.bytes, vb, "VEX naming the built index")
 
 
+@case("AC1", "two statements that name the image in two forms (@id, identifiers.purl) and become the same in Scout's form are refused by compute (verify would refuse the duplicate) and nothing is written (round 1, Opus F1)")
+def _():
+    fx = mk_fx()
+    def twice(o):
+        o["statements"].append(json.loads(json.dumps(o["statements"][0])))
+        prod = o["statements"][1]["products"][0]
+        del prod["@id"]
+        prod["identifiers"] = {"purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}   # the image named by identifiers.purl instead of @id
+    vb = vex_with(twice, base=BASE_VEX)
+    assert_refused(fx.bytes, vb, "statements identical in Scout's form")
+
+
 @param("AC2", "a half-unknown platform (unknown/amd64, linux/unknown) is refused; unknown/unknown is passed through", [("unknown/amd64", ("unknown", "amd64")), ("linux/unknown", ("linux", "unknown")), ("unknown/arm64/v8", ("unknown", "arm64"))])
 def _(osarch):
     fx = mk_fx()
@@ -1449,6 +1491,104 @@ def _():
     ok(v.rc == 0, "verify rejected: " + v.err.strip()[:200])
 
 
+# What `docker scout attestation add` actually produced (rescan run 39945154746, scout-root-cause artifact, Docker Scout 1.26.0): the input was a statement whose product is our published
+# image purl with the package as its subcomponent; the stored attestation's statement has the package as its product. The comparison ignores what Scout rewrites on its own (@id, the
+# in-toto subject name). This is the fixture the derived predicate is held to.
+SCOUT_PKG = "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"
+SCOUT_IN = {"@context": PRED, "@id": "https://openvex.dev/docs/public/vex-scout-root-cause", "author": "FosterStack LLC", "timestamp": "2026-10-03T00:00:00Z", "version": 1,
+            "statements": [{"vulnerability": {"name": "CVE-2023-4911"}, "timestamp": "2026-10-03T00:00:00Z", "status": "not_affected", "justification": "vulnerable_code_not_in_execute_path",
+                            "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": SCOUT_PKG}]}]}]}
+SCOUT_OUT_STATEMENTS = [{"vulnerability": {"name": "CVE-2023-4911"}, "products": [{"@id": SCOUT_PKG}], "status": "not_affected",
+                         "justification": "vulnerable_code_not_in_execute_path", "timestamp": "2026-10-03T00:00:00Z"}]
+
+
+@case("AC3", "the attested predicate is the form Docker Scout itself stores: a product's subcomponents become the statement's products (golden from docker scout attestation add)")
+def _():
+    fx = mk_fx()
+    r = do_compute(fx.bytes, json.dumps(SCOUT_IN).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    n = 0
+    for e in f["manifests"]:
+        if (e.get("annotations") or {}).get("vnd.docker.reference.type") != "attestation-manifest":
+            continue
+        m = json.loads(rd(os.path.join(bdir, hx(e["digest"]))))
+        st = json.loads(rd(os.path.join(bdir, hx(m["layers"][0]["digest"]))))
+        eq(st["predicate"]["statements"], SCOUT_OUT_STATEMENTS, "statements as Scout stored them")
+        eq(sorted(k for k in st["predicate"] if k != "@id"), sorted(k for k in SCOUT_IN if k != "@id"), "document keys other than @id")
+        n += 1
+    ok(n >= 1, "no attestation found")
+
+
+@case("AC3", "a statement whose product has no subcomponents is attested unchanged; the image's product with several subcomponents becomes several products, once each, in order; another product (cache-x) stays whole")
+def _():
+    fx = mk_fx()
+    vex = json.loads(json.dumps(SCOUT_IN))
+    vex["statements"] = [{"vulnerability": {"name": "CVE-2024-1"}, "status": "not_affected", "justification": "vulnerable_code_not_present", "products": [{"@id": "pkg:golang/github.com/fosterstack/cache"}]},
+                         {"vulnerability": {"name": "CVE-2024-2"}, "status": "not_affected", "justification": "vulnerable_code_not_present",
+                          "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": "pkg:generic/b@1"}, {"@id": "pkg:generic/a@2"}]},
+                                       {"@id": "pkg:oci/cache-x?repository_url=ghcr.io/fosterstack/cache-x", "subcomponents": [{"@id": "pkg:generic/b@1"}]}]}]
+    r = do_compute(fx.bytes, json.dumps(vex).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    e = [x for x in f["manifests"] if (x.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"][0]
+    st = json.loads(rd(os.path.join(bdir, hx(json.loads(rd(os.path.join(bdir, hx(e["digest"]))))["layers"][0]["digest"]))))
+    eq([x["products"] for x in st["predicate"]["statements"]],
+       [[{"@id": "pkg:golang/github.com/fosterstack/cache"}],
+        [{"@id": "pkg:generic/b@1"}, {"@id": "pkg:generic/a@2"},
+         {"@id": "pkg:oci/cache-x?repository_url=ghcr.io/fosterstack/cache-x", "subcomponents": [{"@id": "pkg:generic/b@1"}]}]], "products after the derivation")
+
+
+@case("AC3", "only the image's own product is replaced by its subcomponents: another image, a platform digest form and cache-candidates stay whole; an empty list stays; a package in two statements stays in both")
+def _():
+    fx = mk_fx()
+    IMG = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    vex = json.loads(json.dumps(SCOUT_IN))
+    def stmt(name, products):
+        return {"vulnerability": {"name": name}, "status": "not_affected", "justification": "vulnerable_code_not_present", "products": products}
+    A = {"@id": "pkg:generic/a@1"}
+    CAND = {"@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates", "subcomponents": [A]}
+    OTHER = {"@id": "pkg:oci/other", "subcomponents": [A]}
+    DIGEST = {"@id": "pkg:oci/cache@sha256:" + "a" * 64 + "?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [A]}
+    EMPTY = {"@id": IMG, "subcomponents": []}
+    vex["statements"] = [stmt("CVE-2024-1", [CAND]), stmt("CVE-2024-2", [OTHER, DIGEST]), stmt("CVE-2024-3", [EMPTY]),
+                         stmt("CVE-2024-4", [{"@id": IMG, "subcomponents": [A]}]), stmt("CVE-2024-5", [{"@id": IMG, "subcomponents": [A]}])]
+    r = do_compute(fx.bytes, json.dumps(vex).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    e = [x for x in f["manifests"] if (x.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"][0]
+    st = json.loads(rd(os.path.join(bdir, hx(json.loads(rd(os.path.join(bdir, hx(e["digest"]))))["layers"][0]["digest"]))))
+    eq([x["products"] for x in st["predicate"]["statements"]], [[CAND], [OTHER, DIGEST], [EMPTY], [A], [A]], "products after the derivation")
+
+
+@case("AC3", "verify refuses an attestation that carries the VEX file verbatim instead of Scout's applied form")
+def _():
+    fx = mk_fx()
+    vb = json.dumps(SCOUT_IN).encode("utf-8")
+    r = do_compute(fx.bytes, vb)
+    ok(r.rc == 0, "compute failed")
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    ok(verify(rd(os.path.join(r.dir, "index.json")), vb, base=fx.bytes, blobs=os.path.join(r.dir, "blobs")).rc == 0, "the derived final index does not verify")
+    # rebuild every attestation with the verbatim document as its predicate: it must be refused (the old form Scout does not apply)
+    nf, blobs_root = json.loads(json.dumps(f)), os.path.join(TMP, "verbatim-root", "blobs")
+    shutil.rmtree(os.path.dirname(blobs_root), ignore_errors=True)
+    shutil.copytree(os.path.join(r.dir, "blobs"), blobs_root)
+    for i, e in enumerate(nf["manifests"]):
+        if (e.get("annotations") or {}).get("vnd.docker.reference.type") != "attestation-manifest":
+            continue
+        desc, parts = ref_att_verbatim(e["annotations"]["vnd.docker.reference.digest"], SCOUT_IN)
+        nf["manifests"][i] = desc
+        for b in parts.values():
+            with open(os.path.join(blobs_root, "sha256", hx(dg(b))), "wb") as fh:
+                fh.write(b)
+    v = verify(cj(nf), vb, base=fx.bytes, blobs=blobs_root)
+    ok(v.rc != 0 and "predicate" in v.err, "the verbatim form was not refused: rc=%s %s" % (v.rc, v.err.strip()[:160]))
+
+
 @case("AC3", "removing the attestation children from F gives back the built index's entries, field for field")
 def _():
     fx = mk_fx(unknown=True, **EXTRAS)
@@ -1497,7 +1637,7 @@ def _(name):
         eq(st["_type"], STMT_TYPE, "statement _type")
         eq(st["predicateType"], PRED, "predicateType")
         eq(st["subject"], [{"name": SUBJECT_NAME, "digest": {"sha256": hx(pd)}}], "subject is the platform digest")
-        eq(st["predicate"], vex, "predicate is the VEX file's content")
+        eq(st["predicate"], ref_scout(vex), "predicate is the VEX file in Scout's applied form")
         eq(sbts, cj(st), "statement bytes are canonical (sorted keys, compact, raw UTF-8, no trailing newline)")
         ok(not sbts.endswith(b"\n"), "trailing newline")
         seen.add(pd)
@@ -1836,7 +1976,7 @@ def build_custom(fx, vb, edits=None, fedit=None, s=None, extra=None, only=0, fra
         pi += 1
         ctx = {"base": base, "pdigest": e["digest"], "other": [x for x in plat_digests if x != e["digest"]][0] if len(plat_digests) > 1 else "sha256:" + "77" * 32, "vex": vex}
         ap = lambda k, o: ed[k](o, ctx) if k in ed else None
-        stmt = {"_type": STMT_TYPE, "predicateType": PRED, "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(e["digest"])}}], "predicate": json.loads(json.dumps(vex))}
+        stmt = {"_type": STMT_TYPE, "predicateType": PRED, "subject": [{"name": SUBJECT_NAME, "digest": {"sha256": hx(e["digest"])}}], "predicate": ref_scout(vex)}
         ap("stmt", stmt)
         sb_ = ed["stmt_raw"](stmt) if "stmt_raw" in ed else cj(stmt)
         layer = {"mediaType": "application/vnd.in-toto+json", "digest": dg(sb_), "size": len(sb_), "annotations": {"in-toto.io/predicate-type": PRED}}
@@ -2049,6 +2189,18 @@ def set_prop(o, path, key, val):
     return o
 
 
+# In the attested predicate (Scout's applied form) a subcomponent has become a product of its statement, so the sub-level paths of the input document name statements[0].products[0] there.
+PRED_PATHS = dict(PATHS)
+PRED_PATHS.update({"product": lambda o: o["statements"][0]["products"][0], "sub": lambda o: o["statements"][0]["products"][0],
+                   "product.identifiers": lambda o: o["statements"][0]["products"][0]["identifiers"], "sub.identifiers": lambda o: o["statements"][0]["products"][0]["identifiers"],
+                   "product.hashes": lambda o: o["statements"][0]["products"][0]["hashes"], "sub.hashes": lambda o: o["statements"][0]["products"][0]["hashes"]})
+
+
+def set_pred_prop(o, path, key, val):
+    PRED_PATHS[path](o)[key] = val
+    return o
+
+
 def schema_vex(path, key, val):
     return json.dumps(set_prop(base_vex_obj(), path, key, val)).encode()
 
@@ -2096,7 +2248,7 @@ def _(arg):
 
 def schema_edit(arg):
     pa, k, val = arg
-    return {"stmt": lambda o, c: set_prop(o["predicate"], pa, k, json.loads(json.dumps(val)))}
+    return {"stmt": lambda o, c: set_pred_prop(o["predicate"], pa, k, json.loads(json.dumps(val)))}
 
 
 @param("AC3", "verify --blobs rejects an attestation whose predicate has a wrong-typed OpenVEX property or an unknown one, with every digest refreshed", SCHEMA_REHASH_ALL)
@@ -3479,11 +3631,192 @@ def _(suffix):
 
 
 
+SHARDS = 4   # an unsharded run (no ONLY, no VEXIDX_SHARD, no VEXIDX_SERIAL) runs this many shard processes at the same time
+
+
+def shard_sizes(total, n):
+    return [len([k for k in range(total) if k % n == i]) for i in range(n)]
+
+
+def judge_shards(expected, results, n):
+    """expected: [(tag, name)] in registry order; results: [(rc, text)] one per shard, shard i running the registry indices k with k % n == i.
+    Returns the list of problems; empty only if every shard exited 0, printed its own summary with the size of its class, and the
+    ok lines of all shards together name every registry case exactly once, with no FAIL line and nothing else counted."""
+    bad = []
+    if len(results) != n:
+        return ["%d shard results for %d shards" % (len(results), n)]
+    sizes = shard_sizes(len(expected), n)
+    want = {}
+    for k, (tag, name) in enumerate(expected):
+        want.setdefault("ok   [%s] %s" % (tag, name), []).append(k % n)
+    seen = {}
+    for i, (rc, text) in enumerate(results):
+        lines = text.split("\n")
+        if rc != 0:
+            bad.append("shard %d exited %s" % (i, rc))
+        summ = [l for l in lines if re.fullmatch(r"\d+ passed, \d+ failed, \d+ cases", l)]
+        if len(summ) != 1:
+            bad.append("shard %d printed %d summary lines" % (i, len(summ)))
+        else:
+            p, fl, c = [int(x) for x in re.findall(r"\d+", summ[0])]
+            if fl != 0 or c != sizes[i] or p != sizes[i]:
+                bad.append("shard %d summary %r, want %d passed, 0 failed, %d cases" % (i, summ[0], sizes[i], sizes[i]))
+        for l in lines:
+            if l.startswith("FAIL"):
+                bad.append("shard %d: %s" % (i, l[:200]))
+            if l.startswith("ok   ["):
+                seen.setdefault(l, []).append(i)
+    for line, shards in want.items():
+        got = seen.get(line, [])
+        if sorted(got) != sorted(shards):
+            bad.append("%s: ran in shards %s, want %s" % (line[:150], got, shards))
+    for line in seen:
+        if line not in want:
+            bad.append("an ok line that is not a registry case: %s" % line[:150])
+    return bad
+
+
+def _fake_run(expected, n, drop=None, dup=None, fail=None, rc=None, summary=None, extra=None, empty=None):
+    """What n shards would print for `expected`, with one fault injected."""
+    outs = []
+    for i in range(n):
+        lines, k = [], 0
+        for j, (tag, name) in enumerate(expected):
+            if j % n != i:
+                continue
+            k += 1
+            if drop == j:
+                k -= 1
+                continue
+            if fail == j:
+                lines.append("FAIL [%s] %s: boom" % (tag, name))
+            else:
+                lines.append("ok   [%s] %s" % (tag, name))
+            if dup == j:
+                lines.append("ok   [%s] %s" % (tag, name))
+        size = len([j for j in range(len(expected)) if j % n == i])
+        if empty == i:
+            lines = []
+        if extra == i:
+            lines.append("ok   [AC1] a case nobody registered")
+        lines.append("")
+        if summary is None or summary != i:
+            lines.append("%d passed, %d failed, %d cases" % (size - (1 if fail is not None and fail % n == i else 0), 1 if fail is not None and fail % n == i else 0, size))
+        outs.append((rc[1] if rc and rc[0] == i else 0, "\n".join(lines)))
+    return outs
+
+
+_EXP = [("AC1", "case %d" % k) for k in range(10)]
+
+
+@case("AC1", "the shard merge judge accepts four complete shards (each registry case once, summaries match their class sizes)")
+def _j_ok():
+    eq(judge_shards(_EXP, _fake_run(_EXP, 4), 4), [], "a complete run")
+
+
+@case("AC1", "the shard merge judge refuses a case that no shard ran")
+def _j_drop():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, drop=5), 4), "a dropped case must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a case that ran twice")
+def _j_dup():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, dup=3), 4), "a doubled case must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a FAIL line")
+def _j_fail():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, fail=2), 4), "a failed case must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a shard that exited non-zero after complete output")
+def _j_rc():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, rc=(1, 7)), 4), "a non-zero shard exit must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a shard without its summary line, and an empty shard")
+def _j_summary():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, summary=2), 4), "a missing summary must be reported")
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, empty=1), 4), "an empty shard must be reported")
+
+
+@case("AC1", "the shard merge judge refuses an ok line for a case that is not in the registry, and the wrong number of shards")
+def _j_extra():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, extra=0), 4), "an unregistered ok line must be reported")
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4)[:3], 4), "three results for four shards must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a FAIL line even when every ok record and every summary is complete and valid")
+def _j_fail_alone():
+    outs = _fake_run(_EXP, 4)
+    outs[2] = (0, outs[2][1].replace("\n\n", "\nFAIL [AC1] stray: boom\n\n", 1))
+    ok(judge_shards(_EXP, outs, 4), "a FAIL line must be reported on its own")
+
+
+@case("AC1", "the shard merge judge refuses a summary whose counts do not match the class size even when every ok record is complete")
+def _j_summary_alone():
+    outs = _fake_run(_EXP, 4)
+    outs[1] = (0, outs[1][1].replace(" cases", " cases extra") if False else outs[1][1].rsplit("\n", 1)[0] + "\n1 passed, 0 failed, 1 cases")
+    ok(judge_shards(_EXP, outs, 4), "a wrong summary count must be reported on its own")
+
+
+@case("AC1", "the shard merge judge refuses a case that ran in a shard other than its own")
+def _j_wrongshard():
+    outs = _fake_run(_EXP, 4)
+    moved = outs[0][1].split("\n")[0]
+    outs[0] = (0, outs[0][1].replace(moved + "\n", "", 1))
+    outs[1] = (0, moved + "\n" + outs[1][1])
+    ok(judge_shards(_EXP, outs, 4), "a case run by the wrong shard must be reported")
+
+
 def main():
     only = os.environ.get("ONLY")
+    shard = os.environ.get("VEXIDX_SHARD")
+    if shard:
+        m = re.fullmatch(r"(\d+)/([1-9]\d*)", shard)
+        if not m or int(m.group(1)) >= int(m.group(2)):
+            print("FAIL: VEXIDX_SHARD must be <i>/<n> with 0 <= i < n, got %r" % shard)
+            sys.exit(2)
+        si, sn = int(m.group(1)), int(m.group(2))
+    elif not only and not os.environ.get("VEXIDX_SERIAL"):
+        # the parent: the whole registry is known here, so every case can be accounted for by name
+        procs = []
+        results, errs = [], []
+        try:
+            for i in range(SHARDS):
+                env = dict(os.environ, VEXIDX_SHARD="%d/%d" % (i, SHARDS))
+                procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+            for p in procs:
+                out, err = p.communicate()
+                results.append((p.returncode, out))
+                errs.append(err)
+        finally:
+            for p in procs:           # an error or an interrupt in the parent never leaves a started shard running
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+        for i, (rc, out) in enumerate(results):
+            sys.stdout.write(out)       # only the harness's own lines are judged: a tool's stderr never splits an ok line
+        for err in errs:
+            sys.stderr.write(err)
+        problems = judge_shards([(t, nm) for t, nm, _f, _a in CASES], results, SHARDS)
+        by = {}
+        for tag, name, f, arg in CASES:
+            by[tag] = by.get(tag, 0) + 1
+        print("")
+        print("cases by AC: " + ", ".join("%s=%d" % (k, by[k]) for k in sorted(by)))
+        for pr in problems:
+            print("FAIL: " + pr)
+        print("%d shards; %d cases in the registry" % (SHARDS, len(CASES)))
+        print("%d passed, %d failed, %d cases" % (sum(out.count("\nok   [") + out.startswith("ok   [") for _rc, out in results), len(problems), len(CASES)))
+        sys.exit(1 if problems else 0)
+    else:
+        si, sn = 0, 1
     passed, failed, fails, selected = 0, 0, [], 0
-    for tag, name, f, arg in CASES:
+    for k, (tag, name, f, arg) in enumerate(CASES):
         if only and only not in name:
+            continue
+        if k % sn != si:
             continue
         selected += 1
         try:
@@ -3510,7 +3843,6 @@ def main():
         print("FAIL: no case was selected")
         sys.exit(1)
     sys.exit(1 if failed else 0)
-
 
 main()
 PYEOF
