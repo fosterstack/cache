@@ -587,5 +587,10 @@ case_conc ci-live-test-cancels bad ci "d['jobs']['live-test']['concurrency']['ca
 case_conc ci-live-test-group-changed bad ci "d['jobs']['live-test']['concurrency']['group'] = 'other'"
 case_conc ci-live-test-group-dropped bad ci "d['jobs']['live-test'].pop('concurrency')"
 
+# The fixer is retired (row 76): no job in ci.yml dispatches it.
+if grep -q "drift-fixer-dispatch" "$root/.github/workflows/ci.yml"; then
+  echo "FAIL: ci.yml holds the retired drift-fixer-dispatch job"; failn=$((failn+1))
+else echo "ok: ci.yml has no drift-fixer-dispatch job"; pass=$((pass+1)); fi
+
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
