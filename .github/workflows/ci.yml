@@ -936,33 +936,6 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
           python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
 
-  drift-fixer-dispatch:
-    name: dispatch the fixer for required-check drift
-    needs: required-check-guard
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}
-    runs-on: ubuntu-latest
-    environment: agent
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
-      - name: dispatch
-        env:
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
-          ISSUE: ${{ needs.required-check-guard.outputs.drift_issue }}
-        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
-
   requirements:
     name: requirements
     runs-on: ubuntu-latest

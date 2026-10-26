@@ -107,8 +107,6 @@ bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
     "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
-    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
-                             "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
     "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
 }
@@ -175,7 +173,6 @@ case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
-case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
