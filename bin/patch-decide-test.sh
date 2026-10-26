@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15, REQ-CHAIN-001-AC6
+# Rules 61 and 65 (advisor Oct 12): there is no Dockerfile; the base inputs are the committed apko base locks, the melange lock and the archive records listed in
+# .github/policy/base-inputs.json (one list, read by the decide job and by this script); a change in them is the "base input changed" signal, fix-class.
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
 # classified fix-class / neutral / not patch-clean by the files they change (a patch-fix label admits a source change);
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
@@ -18,18 +20,21 @@ def check(name, ok, got=""):
 
 def c(sha, files, labels=(), diffs=None):
     """diffs: {path: the commit's changed lines ("-old" / "+new")}"""
-    return {"sha": sha, "files": list(files), "labels": list(labels), "diffs": dict(diffs or {})}
+    return {"sha": sha, "files": list(files), "labels": list(labels), "diffs": dict(diffs or {}), "modes": {f: "100644" for f in files}}   # git always gives a mode
 BUMP = {"go.mod": " require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n",
         "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n+golang.org/x/sys v0.47.0 h1:b=\n"}
 NEWMOD = {"go.mod": "+\tgithub.com/evil/new v1.0.0\n"}
-DIGEST = {"build/docker/Dockerfile.production": "-FROM gcr.io/distroless/static@sha256:" + "a" * 64 + "\n+FROM gcr.io/distroless/static@sha256:" + "b" * 64 + "\n"}
-RUNLINE = {"build/docker/Dockerfile.production": "+RUN echo hi\n"}
+LOCK = {"build/locks/apko.base.lock.json": '-    "version": "1.2.3-r0"\n+    "version": "1.2.4-r0"\n'}
+BASE_INPUTS = ["build/locks/apko.base.lock.json", "build/locks/apko-fips.base.lock.json", "build/locks/melange.lock", "build/locks/archive-keys.sha256",
+               "build/locks/archive-index.sha256", "build/locks/fips-module.txt"]
 # --- AC1: classification by changed files
 for files, diff, want in [
     (["go.mod", "go.sum"], BUMP, "fix"),
     (["go.mod"], NEWMOD, "dirty"),                           # a new module is not a version-pin fix
-    (["build/docker/Dockerfile.production"], DIGEST, "fix"), # the base-image digest pin only
-    (["build/docker/Dockerfile.production"], RUNLINE, "dirty"),
+    (["build/locks/apko.base.lock.json"], LOCK, "fix"),      # a base lock moved: the "base input changed" signal (rules 61, 65)
+    (BASE_INPUTS, {}, "fix"),                                # the daily refresh PR changes exactly these
+    (["build/apko.yaml"], {}, "dirty"),                      # a recipe is a build input, not a base signal
+    (["build/docker/Dockerfile.production"], {}, "dirty"),   # there is no Dockerfile any more: a file by that name is shipped configuration, not a base signal
     ([".vex/fosterstack-cache.openvex.json"], {}, "fix"),
     ([".snyk", "osv-scanner.toml", ".auditor/accepted-items.json"], {}, "fix"),
     ([".github/workflows/ci.yml", "docs/x.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml"], {}, "neutral"),
@@ -76,7 +81,7 @@ A64, B64 = "a" * 64, "b" * 64
 # B01: a changed go.mod or Dockerfile without diff evidence is never fix-class
 check("B01 go.mod without a diff -> not patch-clean", P.classify(c("x", ["go.mod"]))[0] == "dirty")
 check("B01 go.mod with an empty diff -> not patch-clean", P.classify(c("x", ["go.mod"], diffs={"go.mod": ""}))[0] == "dirty")
-check("B01 Dockerfile without a diff -> not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"]))[0] == "dirty")
+check("B01 a base lock without a diff is fix-class (the whole file is the signal; no line parsing)", P.classify(c("x", ["build/locks/melange.lock"]))[0] == "fix")
 # B02: only require-version changes (with context) and the go/toolchain line; never replace, exclude or a checksum rewrite
 REQ_CTX = {"go.mod": " module x\n \n require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n"}
 check("B02 a require-block version bump with context is a fix", P.classify(c("x", ["go.mod"], diffs=REQ_CTX))[0] == "fix")
@@ -92,19 +97,18 @@ SUMONLY = {"go.sum": "-example.org/m v1.0.0 h1:" + "a" * 43 + "=\n+example.org/m
 check("B02 a go.sum checksum rewrite of the same version is not patch-clean", P.classify(c("x", ["go.sum"], diffs=SUMONLY))[0] == "dirty")
 BUMP_CTX = {"go.mod": REQ_CTX["go.mod"], "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n-golang.org/x/sys v0.46.0/go.mod h1:b=\n+golang.org/x/sys v0.47.0 h1:c=\n+golang.org/x/sys v0.47.0/go.mod h1:d=\n"}
 check("B02 go.mod + go.sum moving one module's version together is a fix", P.classify(c("x", ["go.mod", "go.sum"], diffs=BUMP_CTX))[0] == "fix")
-# B03: a Dockerfile change is fix-class only when each FROM keeps its image, tag, alias and flags and only the digest moves
-def df(old, new):
-    return {"build/docker/Dockerfile.production": "-" + old + "\n+" + new + "\n"}
-ok_df = df("FROM gcr.io/distroless/static:nonroot@sha256:%s AS runtime" % A64, "FROM gcr.io/distroless/static:nonroot@sha256:%s AS runtime" % B64)
-check("B03 the same image, tag and alias with a new digest is a fix", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=ok_df))[0] == "fix")
-for name, old, new in [
-    ("a different image", "FROM gcr.io/distroless/static@sha256:" + A64, "FROM example.org/different-os@sha256:" + B64),
-    ("a renamed stage", "FROM gcr.io/distroless/static@sha256:%s AS runtime" % A64, "FROM gcr.io/distroless/static@sha256:%s AS replaced" % B64),
-    ("a changed tag", "FROM gcr.io/distroless/static:nonroot@sha256:" + A64, "FROM gcr.io/distroless/static:debug@sha256:" + B64),
-]:
-    check("B03 %s is not patch-clean" % name, P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=df(old, new)))[0] == "dirty")
-added = {"build/docker/Dockerfile.production": "+FROM example.org/new-final@sha256:" + B64 + "\n"}
-check("B03 an added stage is not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=added))[0] == "dirty")
+# B03 (rules 61, 65): the base inputs are the committed locks and records of .github/policy/base-inputs.json and nothing else
+for f in BASE_INPUTS:
+    check("B03 %s alone is a fix (a base input moved)" % f, P.classify(c("x", [f], diffs={f: "-a\n+b\n"}))[0] == "fix")
+for name, f in [("a backup of a lock", "build/locks/apko.base.lock.json.bak"), ("another file of the directory", "build/locks/other.json"),
+                ("a lock of another directory", "locks/apko.base.lock.json"), ("a recipe", "build/melange.yaml"), ("the fips recipe", "build/apko-fips.yaml"),
+                ("the melange template", "build/melange.yaml.tmpl")]:
+    check("B03 %s (%s) is no base signal: not patch-clean" % (f, name), P.classify(c("x", [f], diffs={f: "-a\n+b\n"}))[0] == "dirty")
+for mode, what in (("100755", "executable"), ("120000", "a symlink"), ("000000", "deleted")):
+    cm = {"sha": "x", "files": [BASE_INPUTS[0]], "labels": [], "diffs": {BASE_INPUTS[0]: "-a\n+b\n"}, "modes": {BASE_INPUTS[0]: mode}}
+    check("B03 a base lock that is %s is not a refresh: not patch-clean" % what, P.classify(cm)[0] == "dirty")
+check("B03 the list itself is read by the release chain: changing it is not patch-clean (a patch cannot widen its own signal)",
+      P.classify(c("x", [".github/policy/base-inputs.json"], diffs={".github/policy/base-inputs.json": "+x\n"}))[0] == "dirty")
 # B04: the release chain's build workflows shape the shipped image: never neutral
 for f in (".github/workflows/stage-image.yml", ".github/workflows/stage-build.yml", ".github/workflows/release.yml",
           ".goreleaser.yaml"):
@@ -147,7 +151,7 @@ OTHER_MOD = {"go.mod": REQ_CTX["go.mod"], "go.sum": "-golang.org/x/sys v0.46.0 h
 check("B02 go.sum lines for a module whose version did not move are not patch-clean", P.classify(c("x", ["go.mod", "go.sum"], diffs=OTHER_MOD))[0] == "dirty")
 MOVED = ("@@ -1,4 +1,4 @@\n FROM example.org/base:stable@sha256:%s AS build\n-FROM example.org/base:stable@sha256:%s AS runtime\n"
          " USER 65532\n+FROM example.org/base:stable@sha256:%s AS runtime\n COPY fscache /usr/local/bin/fscache\n") % (A64, A64, B64)
-check("B03 a FROM moved past another instruction is not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs={"build/docker/Dockerfile.production": MOVED}))[0] == "dirty")
+check("B03 a file named like the removed Dockerfile with a moved FROM is not a base signal: not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs={"build/docker/Dockerfile.production": MOVED}))[0] == "dirty")
 for f in (".github/agent/bin/auditor-release-authz.py", ".github/policy/scanners.json", ".github/policy/allowed_signers",
           ".github/actions/x/action.yml"):
     check("B04 %s (read by the release chain, or not reviewed) is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
@@ -275,6 +279,62 @@ with contextlib.redirect_stdout(io.StringIO()):
     P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 raw = open(out).read()
 check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
+# --- rules 61 and 65: the base inputs are ONE committed list, read by the decide job and by this script (advisor Oct 12)
+real_list = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", ".github", "policy", "base-inputs.json")
+check("the committed list names exactly the base locks, the melange lock, the archive records and the fips module record (cache-ce's names)",
+      sorted(P.load_base_inputs(real_list)) == sorted(BASE_INPUTS), P.load_base_inputs(real_list) if os.path.exists(real_list) else "no file")
+bi = tempfile.mkdtemp()
+def bil(obj, raw=None):
+    f = os.path.join(bi, "l%d.json" % len(os.listdir(bi)))
+    open(f, "w").write(raw if raw is not None else json.dumps(obj))
+    return f
+def refused(f):
+    try:
+        P.load_base_inputs(f)
+    except ValueError:
+        return True
+    return False
+check("B07 a list file that is not there is refused (no patch decision on an unreadable list)", refused(os.path.join(bi, "absent.json")))
+for what, f in [("not JSON", bil(None, raw="{")), ("no base_inputs key", bil({"x": []})), ("an empty list", bil({"base_inputs": []})),
+                ("a duplicate", bil({"base_inputs": ["a/b", "a/b"]})), ("an absolute path", bil({"base_inputs": ["/etc/passwd"]})),
+                ("a parent segment", bil({"base_inputs": ["build/../x"]})), ("a glob", bil({"base_inputs": ["build/locks/*"]})),
+                ("a directory", bil({"base_inputs": ["build/locks/"]})), ("a non-string", bil({"base_inputs": [1]})),
+                ("a backslash", bil({"base_inputs": ["build\\locks"]})), ("a leading dot segment", bil({"base_inputs": ["./build/locks/a"]}))]:
+    check("B07 a list with %s is refused (fail closed)" % what, refused(f))
+check("B07 a well-formed list is read", P.load_base_inputs(bil({"base_inputs": ["build/locks/a.lock"]})) == ["build/locks/a.lock"])
+# classification follows the list handed in, not a copy kept in the code
+L2 = P.load_base_inputs(bil({"base_inputs": ["locks/only.txt"]}))
+check("B07 the classifier reads the list it is given (a path in it is fix-class, a real lock not in it is not)",
+      P.classify(c("x", ["locks/only.txt"]), base_inputs=L2)[0] == "fix" and P.classify(c("x", ["build/locks/melange.lock"]), base_inputs=L2)[0] == "dirty")
+# base-moved: the decide job's read of the same list since the latest release
+bm = tempfile.mkdtemp(); g(bm, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(bm, "build", "locks")); open(os.path.join(bm, "build/locks/melange.lock"), "w").write("1\n"); open(os.path.join(bm, "build/locks/apko.base.lock.json"), "w").write("1\n")
+g(bm, "add", "build"); g(bm, "commit", "-q", "-m", "locks"); g(bm, "tag", "v0.2.1")
+lst = bil({"base_inputs": ["build/locks/apko.base.lock.json", "build/locks/melange.lock", "build/locks/not-there.txt"]})
+def bmoved(*extra):
+    r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", lst, "--since", "v0.2.1", "--repo", bm] + list(extra), capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+rc_, so_, se_ = bmoved()
+check("base-moved: nothing moved since the release is said so", rc_ == 0 and "no base input moved since v0.2.1" in so_, (rc_, so_, se_))
+open(os.path.join(bm, "build/locks/melange.lock"), "w").write("2\n"); os.makedirs(os.path.join(bm, "docs")); open(os.path.join(bm, "docs/x.md"), "w").write("x\n")
+g(bm, "add", "build", "docs"); g(bm, "commit", "-q", "-m", "refresh")
+rc_, so_, se_ = bmoved()
+check("base-moved: a moved lock is named, an unrelated file is not", rc_ == 0 and "build/locks/melange.lock" in so_ and "docs/x.md" not in so_ and "apko.base" not in so_, (rc_, so_, se_))
+rc_, so_, se_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", os.path.join(bi, "absent.json"), "--since", "v0.2.1", "--repo", bm],
+                               capture_output=True, text=True).returncode, "", ""
+check("base-moved: an unreadable list is exit 2 (the job stops; no fallback)", rc_ == 2, rc_)
+rc_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", lst, "--since", "v9.9.9", "--repo", bm], capture_output=True, text=True).returncode
+check("base-moved: a release that is not a tag here is exit 2, never 'nothing moved'", rc_ == 2, rc_)
+dd = tempfile.mkdtemp(); outd = os.path.join(dd, "d.json")
+RLd = os.path.join(dd, "rel.json"); json.dump(["v0.2.1"], open(RLd, "w"))
+rc_ = subprocess.run([sys.executable, sys.argv[1], "decide", "--event", "schedule", "--repo", bm, "--cut-today", "false", "--released", RLd,
+                      "--base-inputs", lst, "--out", outd], capture_output=True, text=True)
+dec_ = json.load(open(outd)) if os.path.exists(outd) else {}
+check("decide: a moved base lock (and a neutral file) is a patch-clean fix that cuts v0.2.2", rc_.returncode == 0 and dec_.get("cut") and dec_.get("version") == "v0.2.2" and dec_.get("not_clean") == [], (rc_.returncode, rc_.stdout, rc_.stderr, dec_))
+os.remove(outd)
+rc_ = subprocess.run([sys.executable, sys.argv[1], "decide", "--event", "schedule", "--repo", bm, "--cut-today", "false", "--released", RLd,
+                      "--base-inputs", os.path.join(bi, "absent.json"), "--out", outd], capture_output=True, text=True)
+check("decide: an unreadable base list is exit 2 and no decision file", rc_.returncode == 2 and not os.path.exists(outd), (rc_.returncode, rc_.stderr))
 # --- `removed`: from grype's JSON for the release and the new base image, and HEAD's go.mod
 def gm(id_, name, ver, fix, sev, typ):
     return {"vulnerability": {"id": id_, "severity": sev, "fix": {"versions": [fix] if fix else []}},
@@ -547,6 +607,33 @@ check("AC8w VEX: added, changed and removed statements, unchanged ones left out"
     {"cve": "CVE-9", "status": "not_affected", "change": "removed"}], vc)
 check("AC8w VEX: no old document (first patch) lists every statement as added",
       [v["change"] for v in P.vex_changes(None, vdoc(("CVE-1", "affected")))] == ["added"])
+# round 1 (Codex A, R2): the statement's scope and fields are compared, not only the CVE's status
+def sdoc(*st):
+    return {"statements": [dict({"vulnerability": {"name": n}, "status": stt, "products": [{"@id": pid}]}, **extra) for n, stt, pid, extra in st]}
+A_ = "pkg:oci/cache@sha256:" + "a" * 64; B_ = "pkg:oci/cache@sha256:" + "b" * 64
+vs = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: the same CVE and status for another product is a change, not lost (main's AC8 form: the changed field is named, products)",
+      [(v["cve"], v["change"]) for v in vs] == [("CVE-1", "changed: products")], vs)
+vj = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"justification": "vulnerable_code_not_present"})),
+                   sdoc(("CVE-1", "not_affected", A_, {"justification": "component_not_present"})))
+check("R2 VEX: a changed justification is a change (main's AC8 form)", [v["change"] for v in vj] == ["changed: justification"], vj)
+vi = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "x"})), sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "y"})))
+check("R2 VEX: a changed impact statement is a change (main's AC8 form)", [v["change"] for v in vi] == ["changed: impact_statement"], vi)
+vm = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "affected", B_, {})), sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: two statements for one CVE are both kept (one does not overwrite the other): the changed one is named with its product",
+      [(v["change"], v.get("products")) for v in vm] == [("changed from affected", [B_])], vm)
+def adoc(assoc):   # one statement whose products each carry subcomponents: assoc = {product: [subcomponent, ...]}
+    return {"statements": [{"vulnerability": {"name": "CVE-1"}, "status": "affected",
+                            "products": [{"@id": p, "subcomponents": [{"@id": c} for c in cs]} for p, cs in assoc.items()]}]}
+vsw = P.vex_changes(adoc({"P": ["A"], "Q": ["B"]}), adoc({"P": ["B"], "Q": ["A"]}))
+check("R2 VEX: moving subcomponents between products is a scope change (the product and its subcomponents stay associated)", vsw != [], vsw)
+vco = P.vex_changes(adoc({"P": ["urn:a,urn:b"]}), adoc({"P": ["urn:a", "urn:b"]}))
+check("R2 VEX: one component id that contains a comma is not two components", vco != [], vco)
+vdual = P.vex_changes({"statements": adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]},
+                      {"statements": [dict(s_, status="not_affected") for s_ in adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]]})
+check("R2 VEX: two scopes that differ only by how ids are split are displayed as two different scopes", len(vdual) == 2 and vdual[0]["products_shown"] != vdual[1]["products_shown"], vdual)
+vu = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", A_, {})))
+check("R2 VEX: an identical statement is no change", vu == [], vu)
 # AC8 (handoff 0389 (d); rule 0254 "names the statements that changed"): a statement changed in any field, not only its
 # status, is a changed statement; the notes name the CVE and which fields changed; two statements for one CVE stay two
 VS = {"vulnerability": {"name": "CVE-7"}, "status": "not_affected", "justification": "component_not_present",
@@ -2053,6 +2140,92 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# Codex 4b-4 r1 (A B3, B B2): a rename of a listed base input is the deletion of its source and the addition of a destination; rename detection must not hide the
+# deletion (the classifier and base-moved both read the history without it)
+rn = tempfile.mkdtemp(); g(rn, "init", "-q", "-b", "main"); os.makedirs(os.path.join(rn, "build/locks")); os.makedirs(os.path.join(rn, "docs"))
+open(os.path.join(rn, "build/locks/melange.lock"), "w").write("lock content that is long enough to be recognised as a rename %s\n" % ("x" * 200))
+open(os.path.join(rn, "build/locks/apko.base.lock.json"), "w").write("1\n")
+g(rn, "add", "-A"); g(rn, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "locks"); g(rn, "tag", "v0.2.1")
+g(rn, "mv", "build/locks/melange.lock", "docs/retired-lock.json"); g(rn, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename a base input away")
+rlist = bil({"base_inputs": ["build/locks/apko.base.lock.json", "build/locks/melange.lock"]})
+gcr = P.gather_commits("v0.2.1", cwd=rn)
+got = P.classify(gcr[0], base_inputs=P.load_base_inputs(rlist)) if gcr else None
+check("B3 a listed base input renamed to a data file is a deletion: the commit is not patch-clean", gcr and gcr[0].get("modes", {}).get("build/locks/melange.lock") == "000000" and got and got[0] == "dirty", (gcr, got))
+r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn], capture_output=True, text=True)
+check("B3 base-moved names the listed source of a rename away, not only a destination", r.returncode == 0 and "build/locks/melange.lock" in r.stdout, (r.returncode, r.stdout, r.stderr))
+rn2 = tempfile.mkdtemp(); g(rn2, "init", "-q", "-b", "main"); os.makedirs(os.path.join(rn2, "build/locks"))
+open(os.path.join(rn2, "build/locks/melange.lock"), "w").write("lock content that is long enough to be recognised as a rename %s\n" % ("y" * 200))
+g(rn2, "add", "-A"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "locks"); g(rn2, "tag", "v0.2.1")
+g(rn2, "mv", "build/locks/melange.lock", "build/locks/apko.base.lock.json"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename between two listed inputs")
+r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn2], capture_output=True, text=True)
+check("B3 a rename between two listed base inputs names both the source and the destination in base-moved", r.returncode == 0 and "build/locks/melange.lock" in r.stdout and "build/locks/apko.base.lock.json" in r.stdout, (r.returncode, r.stdout, r.stderr))
+# Codex 4b-4 r2 (A M1, B R2): the patch-fix label upgrades a not-clean commit, but it never upgrades a deleted, executable or symlinked base input (a base input
+# removed is an image change, not "no behavior change"), and a base input with no mode evidence is not a refresh
+for mode in ("000000", "100755", "120000"):
+    got = P.classify(dict(c("x", ["build/locks/melange.lock"], labels=["patch-fix"]), modes={"build/locks/melange.lock": mode}), base_inputs=P.load_base_inputs(rlist))
+    check("M1 a labelled commit that makes the base input %s is still dirty" % mode, got[0] == "dirty", got)
+got = P.classify({"sha": "x", "files": ["build/locks/melange.lock"], "labels": [], "diffs": {}, "modes": {}}, base_inputs=P.load_base_inputs(rlist))
+check("M1 a base input with no mode evidence is dirty, never a refresh", got[0] == "dirty" and "mode" in got[1], got)
+got = P.classify(dict(c("x", ["build/locks/melange.lock", "docs/a.md"], labels=["patch-fix"]), modes={"build/locks/melange.lock": "100644", "docs/a.md": "100644"}), base_inputs=P.load_base_inputs(rlist))
+check("M1 an ordinary refresh with its mode stays fix-class", got[0] == "fix", got)
+got = P.classify(dict(c("x", ["bin/x.sh"], labels=["patch-fix"], diffs={"bin/x.sh": "+echo\n"}), modes={"bin/x.sh": "100644"}), base_inputs=P.load_base_inputs(rlist))
+check("M1 the label still upgrades a not-clean commit that touches no base input (the owner's override is unchanged)", got[0] == "fix", got)
+# a merge commit is read against its first parent (the same three reads), so a base input refreshed on a side branch is judged with its mode
+mg = tempfile.mkdtemp(); g(mg, "init", "-q", "-b", "main"); os.makedirs(os.path.join(mg, "build/locks"))
+open(os.path.join(mg, "build/locks/melange.lock"), "w").write("1\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(mg, "tag", "v0.2.1")
+g(mg, "checkout", "-q", "-b", "side"); open(os.path.join(mg, "build/locks/melange.lock"), "w").write("2\n"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "refresh on a side branch")
+g(mg, "checkout", "-q", "main"); open(os.path.join(mg, "docs.md"), "w").write("d\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge side", "side")
+gm = P.gather_commits("v0.2.1", cwd=mg)
+msha = subprocess.run(["git", "-C", mg, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+mrec = [x for x in gm if x["sha"] == msha]
+# the merge's own record: it changes the lock relative to its first parent? no: the first parent (main) did not have the side branch's refresh, so the merge brings it in
+check("M1 the merge commit is its own record, with its changed path, its mode and its classification (read against the first parent)",
+      len(mrec) == 1 and mrec[0]["files"] == ["build/locks/melange.lock"] and mrec[0]["modes"] == {"build/locks/melange.lock": "100644"}
+      and P.classify(mrec[0], base_inputs=P.load_base_inputs(rlist))[0] == "fix", (msha, mrec))
+# --- AC3 (immediate cut): the images of the latest release are the ones that exist for its version (v0.3.0 dropped the debug variant)
+import subprocess
+def variants(ver):
+    r = subprocess.run([sys.executable, sys.argv[1], "variants", "--version", ver], capture_output=True, text=True); return r.returncode, r.stdout.split()
+for ver, want in (("0.2.2", ["0.2.2", "0.2.2-debug", "0.2.2-fips"]), ("0.1.0", ["0.1.0", "0.1.0-debug", "0.1.0-fips"]), ("0.3.0", ["0.3.0", "0.3.0-fips"]), ("0.3.1", ["0.3.1", "0.3.1-fips"]),
+                  ("0.10.0", ["0.10.0", "0.10.0-fips"]), ("1.0.0", ["1.0.0", "1.0.0-fips"]), ("0.2.10", ["0.2.10", "0.2.10-debug", "0.2.10-fips"])):
+    rc, got = variants(ver); check("AC3 the images scanned for release %s are exactly %s" % (ver, want), rc == 0 and got == want, (rc, got))
+for bad in ("v0.3.0", "0.3", "0.3.0-rc1", "", "0.3.0 -debug", "x.y.z"):
+    rc, got = variants(bad); check("AC3 a version that is not X.Y.Z (%r) is refused and prints nothing" % bad, rc != 0 and got == [], (rc, got))
+# --- REQ-CHAIN-001-AC6 (advisor Oct 12): the decide job refuses, naming the marker, unless .github/policy/rc-proof.json validates for the commit being tagged
+import shutil
+rp = tempfile.mkdtemp(prefix="rcproof-")
+bindir = os.path.dirname(os.path.abspath(sys.argv[1]))
+def rg(*a): return subprocess.run(["git", "-C", rp, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + list(a), check=True, capture_output=True, text=True).stdout.strip()
+rg("init", "-q", "-b", "main")
+for d in (".github/workflows", ".github/policy", "bin"): os.makedirs(os.path.join(rp, d))
+open(os.path.join(rp, ".github/workflows/release.yml"), "w").write("name: Release\n")
+if os.path.exists(os.path.join(bindir, "chain-bytes-sha.py")): shutil.copy(os.path.join(bindir, "chain-bytes-sha.py"), os.path.join(rp, "bin/chain-bytes-sha.py"))
+else: open(os.path.join(rp, "bin/chain-bytes-sha.py"), "w").write("x\n")
+open(os.path.join(rp, ".github/policy/chain-scripts.json"), "w").write('{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n')
+rg("add", "-A"); rg("commit", "-q", "-m", "chain"); rg("tag", "v0.3.0-rc1"); rc_commit = rg("rev-parse", "HEAD")
+bs = subprocess.run([sys.executable, os.path.join(bindir, "chain-bytes-sha.py"), "sha", "--commit", rc_commit, "--repo", rp], capture_output=True, text=True).stdout.strip() or "0" * 64
+keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+good = {"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": bs, "records": {k: "0" * 64 for k in keys}}
+marker = os.path.join(rp, ".github/policy/rc-proof.json")
+def put(m): open(marker, "w").write(m if isinstance(m, str) else json.dumps(m))
+put(good); rg("add", "-A"); rg("commit", "-q", "-m", "marker"); head = rg("rev-parse", "HEAD")
+def rcp(commit=None, mpath=None, extra=()):
+    r = subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", mpath or marker, "--commit", commit or head, "--repo", rp] + list(extra), capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+rc, msg = rcp(); check("AC6 decide: a marker for the bytes of the commit, with an rc tag that is an ancestor, lets the decision proceed (exit 0)", rc == 0, (rc, msg))
+rc, msg = rcp(mpath=os.path.join(rp, "no-such-marker.json"))
+check("AC6 decide: a missing marker is refused (exit 1), naming the marker, never skipped", rc == 1 and "marker" in msg and "missing" in msg, (rc, msg))
+put("{not json"); rc, msg = rcp(); check("AC6 decide: an unreadable marker is refused", rc == 1 and "marker" in msg, (rc, msg)); put(good)
+open(os.path.join(rp, ".github/workflows/release.yml"), "a").write("# edited\n"); rg("add", "-A"); rg("commit", "-q", "-m", "edit"); edited = rg("rev-parse", "HEAD")
+rc, msg = rcp(edited); check("AC6 decide: a marker for other bytes (a chain file changed since the proof) is refused, naming the bytes", rc == 1 and "marker" in msg and "bytes" in msg, (rc, msg))
+rg("checkout", "-q", "-b", "side", rc_commit); rg("commit", "-q", "--allow-empty", "-m", "side"); rg("tag", "v0.3.0-rc2"); rg("checkout", "-q", "main")
+put(dict(good, rc_tag="v0.3.0-rc2")); rc, msg = rcp(head)
+check("AC6 decide: an rc tag that is not an ancestor of the commit is refused", rc == 1 and "ancestor" in msg, (rc, msg)); put(good)
+put(dict(good, rc_tag="v0.3.0")); rc, msg = rcp(head); check("AC6 decide: a final tag as the rc tag is refused", rc == 1 and "rc_tag" in msg, (rc, msg)); put(good)
+rc, msg = rcp(); check("AC6 decide: the check does not change the repository (the marker file is unchanged)", rc == 0 and json.load(open(marker)) == good, (rc, msg))
+check("AC6 decide: the subcommand refuses without a commit (usage, never a default)", subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", marker], capture_output=True).returncode == 2)
+shutil.rmtree(rp, ignore_errors=True)
 # ===== REQ-REL-009-AC14 (advisor step 5, Oct 11; owner rule 5 engineering AC): the notes sources are refused outright,
 # never decoded, escaped or rewritten, when a line holds (1) '<' before a letter (any Unicode letter), '/', '!' or '?';
 # (2) a link-reference-definition shape; (3) a character reference; (4) '-----BEGIN '; and (5) two entries whose published
@@ -3063,8 +3236,8 @@ check("r12 R12-3: a vendor name is still redacted to the visible marker in a quo
 check("r12 R12-3: 'redacted' alone, 'redacted>' and '<redacted' are not marker forms: printed as before",
       all(P._lit(v_) == old_lit_(v_) for v_ in ("redacted", "redacted>", "<redacted", "(redacted", "redacted)", "<redacted)")),
       [P._lit(v_) for v_ in ("redacted", "<redacted)")])
-# R12-4 the real .vex document: the notes are byte-identical to the pre-cut printer's in every scenario
-REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".vex", "fosterstack-cache.openvex.json")))
+# R12-4 the multi-statement fixture document (the retired real one): the notes are byte-identical to the pre-cut printer's in every scenario
+REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", "test-evidence", "vex-scope", "busybox.openvex.json")))
 def real_scenarios_():
     out_ = [P.notes("v0.2.3", [], P.vex_changes(None, REAL12_))]
     for i_ in range(len(REAL12_["statements"])):
@@ -3083,7 +3256,7 @@ try:
     was_ = refused(real_scenarios_)
 finally:
     P._lit = real_lit_
-check("r12 R12-4: the real .vex document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
+check("r12 R12-4: the multi-statement fixture document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
       % (len(now_) if isinstance(now_, list) else 0), isinstance(now_, list) and now_ == was_ and len(now_) > 4, (now_, was_))
 # R12-5 the round trip property with marker forms: random documents whose printed values sometimes hold a marker form are
 # refused exactly then (naming the statement or document field); every other one prints and reads back as before
@@ -3200,6 +3373,186 @@ check("r14 R14-3: the refusal and the readers share one definition of the readin
       names_(P._marker_form.__code__) >= {"_readings"} and names_(P._marked.__code__) >= {"_readings"}
       and "_own_form" in names_(P._clean_free.__code__), None)
 shutil.rmtree(r8_)
+# --- REQ-REL-009-AC15 (advisor 0254, 0257; text approved in #212): the auditor's own data and .vex/README.md are neutral, only as data
+def ac15_():
+    # neutral-path commits carry the data they commit: a neutral path is neutral only when the committed content is data
+    def nc(f, body=None, mode="100644", old_mode=None, labels=()):
+        body = body if body is not None else ("{}\n" if f.endswith(".json") else "# notes\n")
+        d = dict(c("n", [f], labels=labels, diffs={f: "".join("+%s\n" % l for l in body.split("\n")[:-1])} if mode != "000000" else {f: ""}), modes={f: mode})
+        old_mode = old_mode or ("100644" if mode != "000000" else None)
+        if old_mode:
+            d["old_modes"] = {f: old_mode}
+        d["contents"] = {f: {"old": None if old_mode in (None, "000000") else "# notes\n", "new": None if mode == "000000" else body}}
+        return d
+    VEXF = ".vex/fosterstack-cache.openvex.json"
+    VEXC = c("v1", [VEXF])
+    check("AC15 auditor work classifies neutral, one by one",
+          all(P.classify(nc(f))[0] == "neutral" for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json")),
+          [P.classify(nc(f)) for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json")])
+    check("AC15 a range of only auditor work ships no bytes", not P.ships_bytes([nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md"), nc(".auditor/proposals/p1.json")]))
+    D = P.decide("schedule", [nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md")], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 decide: nothing shipped, no cut, no issue", not D["cut"] and not D["not_clean"] and "nothing shipped" in D["reason"], D)
+    check("AC15 the suppression file .auditor/accepted-items.json stays fix-class", P.classify(c("a", [".auditor/accepted-items.json"]))[0] == "fix")
+    check("AC15 an auditor script is never data: still not patch-clean", P.classify(c("a", [".auditor/run.sh"]))[0] == "dirty")
+    D = P.decide("schedule", [nc(".auditor/panel-state.json"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 auditor work beside a VEX change does not block that patch", D["cut"] and not D["not_clean"], D)
+    # AC15: the neutral auditor set is exactly three names; the neutral .vex file is only its README
+    for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json", ".vex/README.md"):
+        check("AC15 %s is neutral" % f, P.classify(nc(f))[0] == "neutral", P.classify(nc(f)))
+    for f, want in ((".auditor/accepted-items.json", "fix"), (".auditor/gate.json", "fix"), (".auditor/notes.md", "fix"), (".auditor/proposals/sub/x.json", "fix"),
+                    (".auditor/proposals/README.md", "fix"), (".vex/fosterstack-cache.openvex.json", "fix"), (".vex/other.json", "fix"), (".vex/sub/README.md", "fix"),
+                    (".auditor/proposals/hook.sh", "dirty"), (".auditor/run.sh", "dirty"), (".auditor/proposals/p_test.go", "dirty"), (".auditor/proposals/test_p.py", "dirty"),
+                    (".auditor/panel-state.sh", "dirty")):
+        check("AC15 %s keeps its classification: %s" % (f, want), P.classify(c("n", [f]))[0] == want, P.classify(c("n", [f])))
+    for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".vex/README.md"):
+        for mode in ("100755", "120000"):
+            got = P.classify(dict(c("n", [f], diffs={f: "+x\n"}), modes={f: mode}))
+            check("AC15 %s with mode %s is dirty" % (f, mode), got[0] == "dirty", got)
+        got = P.classify(c("n", [f], diffs={f: "+#!/bin/sh\n+echo x\n"}))
+        check("AC15 %s carrying a script is dirty" % f, got[0] == "dirty", got)
+    check("AC15 a range of README-only .vex changes ships no bytes", not P.ships_bytes([nc(".vex/README.md")]))
+    D = P.decide("schedule", [nc(".vex/README.md")], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a .vex README edit alone cuts no patch", not D["cut"] and not D["not_clean"], D)
+    D = P.decide("schedule", [nc(".vex/README.md"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a .vex README edit beside the VEX file does not block that patch", D["cut"], D)
+    D = P.decide("schedule", [c("a", [".auditor/proposals/hook.sh"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a script under .auditor/proposals beside a VEX change blocks the patch (named)", not D["cut"] and D["not_clean"] and ".auditor/proposals/hook.sh" in D["not_clean"][0], D)
+    def put_(r_, files):
+        for path, (content, mode) in files.items():
+            full = os.path.join(r_, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+            if os.path.lexists(full): os.remove(full)
+            if mode == "120000": os.symlink(content, full)
+            else:
+                open(full, "w").write(content); os.chmod(full, 0o755 if mode == "100755" else 0o644)
+    def mv_(r_, a, b):
+        os.makedirs(os.path.dirname(os.path.join(r_, b)), exist_ok=True); g(r_, "mv", a, b)
+    def gitrepo(base):
+        r_ = tempfile.mkdtemp(); g(r_, "init", "-q", "-b", "main"); put_(r_, base)
+        g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "base"); g(r_, "tag", "v0.1.0"); return r_
+    def verdict_(base, act, labels=()):
+        r_ = gitrepo(base); act(r_); g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "range")
+        cs_ = P.gather_commits("v0.1.0", cwd=r_, labels=lambda sha: list(labels))
+        return P.classify(cs_[-1]), cs_[-1]
+    KN, PS, PJ, RD = ".auditor/knowledge.md", ".auditor/panel-state.json", ".auditor/proposals/p.json", ".vex/README.md"
+    BASE0 = {"docs/keep.md": ("x\n", "100644")}
+    def verdict_new(path, content, mode="100644"):
+        return verdict_(BASE0, lambda r_: put_(r_, {path: (content, mode)}))[0][0]
+    for path, good in ((PS, '{"a": 1}\n'), (PS, "[1, 2]\n"), (PJ, '{"a": 1}\n'), (PJ, "[]\n"), (KN, "# knowledge\ntext\n"), (RD, "# readme\n")):
+        check("AC15 git: a new %s with data content is neutral" % path, verdict_new(path, good) == "neutral", verdict_new(path, good))
+    for path in (PS, PJ):
+        for bad in ("#!/bin/sh\necho x\n",):
+            check("AC15 git: a new %s holding %r is not data: dirty" % (path, bad[:12]), verdict_new(path, bad) == "dirty", verdict_new(path, bad))
+        for odd in ("{", "3\n", "null\n", "", "print('x')\n"):
+            check("AC15 git: a new %s holding %r is data (AC15 names scripts, executables and shebang lines, not content shapes): neutral" % (path, odd[:12]), verdict_new(path, odd) == "neutral", verdict_new(path, odd))
+    for path in (KN, RD):
+        check("AC15 git: a new %s starting with a shebang line is dirty" % path, verdict_new(path, "#!/bin/sh\necho x\n") == "dirty")
+        check("AC15 git: a new %s with a NUL byte is dirty" % path, verdict_new(path, "text\0binary\n") == "dirty")
+        base = dict(BASE0, **{path: ("#!/bin/sh\nold body\n", "100644")})
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nnew body\n", "100644")}))[0][0]
+        check("AC15 git: %s whose first line is an unchanged shebang and whose body is edited is dirty" % path, got == "dirty", got)
+        base = dict(BASE0, **{path: ("plain\nold body\n", "100644")})
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("plain\nnew body\n", "100644")}))[0][0]
+        check("AC15 git: an ordinary edit of %s is neutral" % path, got == "neutral", got)
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nplain\nnew body\n", "100644")}))[0][0]
+        check("AC15 git: an edit of %s that makes line 1 a shebang is dirty" % path, got == "dirty", got)
+    for path in (PS, PJ, KN, RD):
+        good = '{"a": 1}\n' if path.endswith(".json") else "text\n"
+        for mode in ("100755", "120000"):
+            got = verdict_new(path, good if mode == "100755" else "docs/keep.md", mode)
+            check("AC15 git: a new %s with mode %s is dirty" % (path, mode), got == "dirty", got)
+            base = dict(BASE0, **{path: (good if mode == "100755" else "docs/keep.md", mode)})
+            got = verdict_(base, lambda r_, path=path: (os.remove(os.path.join(r_, path))))[0][0]
+            check("AC15 git: deleting %s whose old mode was %s is dirty" % (path, mode), got == "dirty", got)
+        base = dict(BASE0, **{path: (good, "100755")})
+        got = verdict_(base, lambda r_, path=path: os.chmod(os.path.join(r_, path), 0o644))[0][0]
+        check("AC15 git: taking the executable bit off %s is not a clean data change: dirty" % path, got == "dirty", got)
+        base = dict(BASE0, **{path: (good, "100755")})
+        got = verdict_(base, lambda r_, path=path: (put_(r_, {path: (good + ("\n" if path.endswith(".json") else "more text\n"), "100644")})))[0][0]
+        check("AC15 git: an executable %s turned into a data file with new content in one commit is dirty (its old mode)" % path, got == "dirty", got)
+        base = dict(BASE0, **{path: (good, "100644")})
+        got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+        check("AC15 git: deleting an ordinary %s is neutral" % path, got == "neutral", got)
+    check("AC15 git: renaming an executable neutral-named file away is dirty",
+          verdict_(dict(BASE0, **{KN: ("x\n", "100755")}), lambda r_: mv_(r_, KN, "docs/y.md"))[0][0] == "dirty")
+    check("AC15 git: renaming source code onto a neutral path is dirty (the deleted source shows)",
+          verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[0][0] == "dirty")
+    check("AC15 git: renaming the production Dockerfile onto a proposals path is dirty",
+          verdict_(dict(BASE0, **{"build/docker/Dockerfile.production": ("FROM x@sha256:" + "a" * 64 + "\nCOPY a b\n", "100644")}),
+                   lambda r_: mv_(r_, "build/docker/Dockerfile.production", PJ))[0][0] == "dirty")
+    check("AC15 git: renaming a docs file onto a neutral path is neutral",
+          verdict_(dict(BASE0, **{"docs/a.md": ("text\n", "100644")}), lambda r_: mv_(r_, "docs/a.md", KN))[0][0] == "neutral")
+    rn_commit = verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[1]
+    check("AC15 gather_commits lists the deleted source of a rename", "internal/cache/store.go" in rn_commit["files"] and KN in rn_commit["files"], rn_commit["files"])
+    check("AC15 gather_commits records the old mode of every path", rn_commit.get("old_modes", {}).get("internal/cache/store.go") == "100644", rn_commit.get("old_modes"))
+    # the patch-fix label never makes a non-data neutral path fix-class
+    for mode in ("120000", "100755"):
+        d_ = nc(PS, mode=mode, labels=("patch-fix",))
+        check("AC15 the patch-fix label does not clear a mode-%s change at a neutral path" % mode, P.classify(d_)[0] == "dirty", P.classify(d_))
+        got = verdict_(BASE0, lambda r_, mode=mode: put_(r_, {KN: ("docs/keep.md" if mode == "120000" else "x\n", mode)}), labels=("patch-fix",))[0][0]
+        check("AC15 git: the label does not clear a mode-%s new neutral file" % mode, got == "dirty", got)
+    check("AC15 unit: a neutral path without a mode is not proven data: dirty", P.classify(dict(c("n", [PS], diffs={PS: "+{}"}), modes={}))[0] == "dirty")
+    check("AC15 unit: mode 100664 is not 100644: dirty", P.classify(nc(PS, mode="100664"))[0] == "dirty")
+    check("AC15 unit: a deletion whose old mode is unknown is dirty (fail closed)", P.classify(nc(PS, mode="000000"))[0] == "dirty")
+    check("AC15 unit: a deletion of an ordinary file is neutral", P.classify(nc(PS, mode="000000", old_mode="100644"))[0] == "neutral")
+    D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: ("#!/bin/sh\nold\n", "100644")}), lambda r_: put_(r_, {KN: ("#!/bin/sh\nnew\n", "100644")}))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 an edited script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+    SHEBANG_SCRIPT = "#!/bin/sh\necho run\n"
+    PY_NO_SHEBANG = "import os\nprint(os.getcwd())\n\ndef main():\n    pass\n"
+    for path in (KN, RD):
+        got = verdict_new(path, PY_NO_SHEBANG)
+        check("AC15 git: %s holding script-looking text without any shebang line is data (neutral, documented rule)" % path, got == "neutral", got)
+        for label, body in (("a shebang after a comment line", "# a comment\n#!/bin/sh\necho x\n"), ("a shebang in the middle", "intro\ntext\n#!/usr/bin/env python3\nmore\n"),
+                            ("a shebang on the last line", "text\n#!/bin/sh")):
+            got = verdict_new(path, body)
+            check("AC15 git: a new %s with %s is dirty" % (path, label), got == "dirty", got)
+        base = dict(BASE0, **{path: (SHEBANG_SCRIPT, "100644")})
+        got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+        check("AC15 git: deleting %s whose removed lines hold a shebang line is dirty" % path, got == "dirty", got)
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}))[0][0]
+        check("AC15 git: replacing the shebang script %s by ordinary text is dirty (the removed lines held a shebang)" % path, got == "dirty", got)
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}), labels=("patch-fix",))[0][0]
+        check("AC15 git: the patch-fix label does not clear the replacement of the shebang script %s" % path, got == "dirty", got)
+        got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)), labels=("patch-fix",))[0][0]
+        check("AC15 git: the patch-fix label does not clear the deletion of the shebang script %s" % path, got == "dirty", got)
+        got = verdict_(dict(BASE0, **{path: (PY_NO_SHEBANG, "100644")}), lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+        check("AC15 git: deleting a text file with script-looking lines but no shebang is neutral", got == "neutral", got)
+        big = "#!/bin/sh\n" + "".join("line %d\n" % i for i in range(150000))
+        bigger = big.replace("line 140000\n", "line 140000 edited\n")
+        got = verdict_(dict(BASE0, **{path: (big, "100644")}), lambda r_, path=path: put_(r_, {path: (bigger, "100644")}))[0][0]
+        check("AC15 git: %s of 150k lines with an unchanged shebang first line, edited far from line 1, is dirty" % path, got == "dirty", got)
+        bigt = "plain\n" + "".join("line %d\n" % i for i in range(150000))
+        got = verdict_(dict(BASE0, **{path: (bigt, "100644")}), lambda r_, path=path: put_(r_, {path: (bigt.replace("line 140000\n", "line 140000 edited\n"), "100644")}))[0][0]
+        check("AC15 git: the same 150k-line file without a shebang is neutral", got == "neutral", got)
+    D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: (SHEBANG_SCRIPT, "100644")}), lambda r_: os.remove(os.path.join(r_, KN)))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a deleted shebang script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+    # fail closed on missing evidence about the OLD file (Codex #425 r1, seat B, P2): a neutral path is data only when its old and new file types are known and every blob that exists was read
+    check("AC15 unit: a replacement without the old file type is dirty", P.classify(dict(nc(PS), old_modes={}))[0] == "dirty")
+    check("AC15 unit: a replacement whose old file type is a submodule (160000) is dirty", P.classify(nc(PS, old_mode="160000"))[0] == "dirty")
+    check("AC15 unit: a deletion with an unreadable or missing old file type is dirty even with the label", P.classify(nc(PS, mode="000000", labels=("patch-fix",)))[0] == "dirty")
+    cd_ = dict(nc(KN), contents={KN: {"old": None, "new": "text\n"}})
+    check("AC15 unit: a replacement whose old blob was not read is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN, mode="000000", old_mode="100644"), contents={KN: {"old": None, "new": None}})
+    check("AC15 unit: a deletion whose old blob was not read is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN), contents={KN: {"old": "\0unreadable", "new": "text\n"}})
+    check("AC15 unit: an old blob that failed to read (not text) is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN, mode="000000", old_mode="100644"), contents={KN: {"old": "plain\n", "new": None}})
+    check("AC15 unit: a deletion of a text file whose old blob was read is neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
+    cd_ = dict(nc(KN, old_mode="000000"), contents={KN: {"old": None, "new": ""}})
+    check("AC15 unit: a new empty Markdown file is data: neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
+    D = P.decide("schedule", [nc(PS, body="null\n"), c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a JSON value that is not an object beside an accepted-items fix does not block the patch", D["cut"] and not D["not_clean"], D)
+    # the classifier asks for whole-blob evidence itself (Codex #425 r2, both seats): a record without `contents` is not proven data
+    check("AC15 unit: a replacement record without blob contents is dirty", P.classify({k: v for k, v in nc(KN).items() if k != "contents"})[0] == "dirty")
+    check("AC15 unit: a deletion record without blob contents is dirty", P.classify({k: v for k, v in nc(KN, mode="000000", old_mode="100644").items() if k != "contents"})[0] == "dirty")
+    check("AC15 unit: a contents record without the old side is dirty", P.classify(dict(nc(KN), contents={KN: {"new": "text\n"}}))[0] == "dirty")
+    D = P.decide("schedule", [{k: v for k, v in nc(KN, mode="000000", old_mode="100644").items() if k != "contents"}, c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a deletion record without blob contents beside a fix blocks the patch", not D["cut"] and D["not_clean"], D)
+    # the VEX statement file under .vex/ is NOT neutral (advisor 0254/0257 read-back): a change to it is a fix and cuts a patch; only .vex/README.md is data
+    check("AC15 a change to the VEX statement file is a fix, never neutral", P.classify(nc(VEXF))[0] != "neutral" and P.classify(c("v", [VEXF]))[0] == "fix", [P.classify(nc(VEXF)), P.classify(c("v", [VEXF]))])
+    check("AC15 a change to the VEX statement file ships bytes and cuts a patch", P.ships_bytes([VEXC]) and P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=False, removed=None)["cut"])
+    check("AC15 a change to the VEX statement file with the patch-fix label is still fix, not neutral", P.classify(nc(VEXF, labels=("patch-fix",)))[0] == "fix", P.classify(nc(VEXF, labels=("patch-fix",))))
+
+ac15_()
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

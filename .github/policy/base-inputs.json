@@ -7,6 +7,8 @@
     "build and are build inputs, not base signals. A path listed here that is not on main yet is the cache lane's to land (known-red entry KR-BASE-LOCKS)."
   ],
   "base_inputs": [
+    "build/locks/apko.base.lock.json",
+    "build/locks/apko-fips.base.lock.json",
     "build/locks/melange.lock",
     "build/locks/archive-keys.sha256",
     "build/locks/archive-index.sha256",

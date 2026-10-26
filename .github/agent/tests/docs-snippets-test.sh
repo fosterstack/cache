@@ -16,8 +16,10 @@ set -uo pipefail
 cd "$(dirname "$0")/../../.."
 export DEPLOY_DOC="${DEPLOY_DOC:-docs/docker-deploy.md}" GRADLE_DOC="${GRADLE_DOC:-docs/gradle.md}" MAVEN_DOC="${MAVEN_DOC:-docs/maven.md}"
 export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
+export VERIFY_DOCS="${VERIFY_DOCS:-docs/install.md docs/using-our-vex.md docs/verify-images.md RELEASING.md}"
+export VERIFY_ONE="${VERIFY_ONE:-docs/verify-images.md}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
-export ACCEPTANCE="${ACCEPTANCE:-.github/workflows/acceptance.yml}"
+export ACCEPTANCE="${ACCEPTANCE:-bin/acceptance-maven.sh}"   # the Maven suite, moved unchanged from acceptance.yml (REQ-CHAIN-006-AC5, Q7)
 
 check() {  # prints one "ok:"/"FAIL:" line per assertion; exit code = number of failures
 python3 - <<'PY'
@@ -100,6 +102,15 @@ if rb:
         return next((i for i, c in enumerate(cmds) if sub in c), -1)
     i0, i1, i2, i3 = idx("--replicas=0"), idx("delete pvc fscache-data"), idx("kubectl apply"), idx("--replicas=1")
     ok(-1 < i0 < i1 < i2 < i3, "reset order is scale 0, delete the claim, re-apply the claim, scale 1 (positions %s)" % [i0, i1, i2, i3])
+# Verify steps (rule 6 of the simplest-correct-form rules): a fenced cosign step names the exact signing identity,
+# never a regexp over it.
+for path in os.environ["VERIFY_DOCS"].split():
+    # a fenced block, as in "```sh\ncosign verify ...\n```"; text between two blocks is not matched
+    fenced = "\n".join(re.findall(r"^```.*?^```", open(path).read(), re.S | re.M))
+    ok("--certificate-identity-regexp" not in fenced,
+       "%s: no fenced step matches the signing identity with a regexp" % path)
+    ok("--certificate-identity=" in fenced or "--certificate-identity " in fenced,
+       "%s: a fenced step names the exact signing identity" % path)
 sys.exit(fails)
 PY
 }
@@ -126,5 +137,8 @@ mutant "maven remote before configuration" MAVEN_DOC 'i=s.index("    <!-- Foster
 mutant "maven remote sibling of configuration" MAVEN_DOC 'i=s.index("    <!-- FosterStack Cache"); j=s.index("</remote>")+len("</remote>"); blk=s[i:j]; s=s[:i]+s[j:]; s=s.replace("  </configuration>\n","  </configuration>\n"+blk+"\n",1)'
 mutant "k8s reset without the re-apply"    DEPLOY_DOC 'import re; s=re.sub(r"kubectl apply -f fscache-pvc.yaml[^\n]*\n","",s)'
 mutant "maven server id mismatch"           MAVEN_DOC  's=s.replace("<id>fosterstack-cache</id>","<id>other</id>")'
+REVERT='s=s.replace("--certificate-identity=","--certificate-identity-regexp=",1)'
+REVERT="$REVERT"'.replace("--certificate-identity ","--certificate-identity-regexp ",1)'
+VERIFY_DOCS="$VERIFY_ONE" mutant "verify step back to an identity regexp" VERIFY_DOCS "$REVERT"
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]

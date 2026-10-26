@@ -1,135 +1,200 @@
-name: 'Stage: reproducibility'
-
-# Release-chain reproducibility stage (release-chain-design.md §2 Stage 4),
-# release mode. PR mode's equivalent lives in scan.yml's reproducibility job as the
-# two-assembly digest comparison; THIS stage is the tag chain's version:
-# verify the image-build predicate for the pushed candidate digests, then
-# repeat the assembly from the same verified dist/ on a fresh runner with
-# a local OCI output — no push — and assert the locally computed index
-# digests equal the verified pushed ones, variant for variant. If they
-# differ the release fails and we learn something; nothing papers over it.
-# Signs a reproducibility predicate naming the same digests.
-
+# The Rebuild stage of the v0.3.0 release chain (rules 54, 62, 64; REQ-CHAIN-005). Called only from release.yml, after Build, and, in snapshot mode, from scan.yml
+# (the PR gate keeps rule 31's two-assembly reproducibility check). `rapk` rebuilds the apks on fresh runners, `rebuild` rebuilds the images and archives and
+# compares EVERY item with Build's items.json. The only output is the verdict (witness-rebuild/verdict.json, or snapshot-verdict.json in snapshot mode, a product
+# of Rebuild's own record); nothing is published. `mode` works as in stage-build.yml (REQ-CHAIN-005-AC7).
+# The shape of this file is judged by bin/chain-build-wiring-test.sh (an exact grammar).
+name: 'Stage: rebuild'
 on:
   workflow_call:
     inputs:
-      dist-artifact:
-        description: 'name of the uploaded dist artifact to consume'
-        required: true
+      mode:
+        description: release or snapshot
         type: string
-      expected-checksums:
-        description: 'checksums.txt content from the build stage'
-        required: true
-        type: string
-      digests:
-        description: 'JSON {production, debug, fips} index digests from the image stage'
-        required: true
-        type: string
-
+        default: release
+    outputs:
+      records:
+        description: the sha256 of Rebuild's record, its verdict and each rapk record it consumed, for Sign
+        value: ${{ jobs.assemble.outputs.records }}
 permissions:
   contents: read
-
 jobs:
-  reproduce:
-    name: reproducibility
-    runs-on: ubuntu-latest
+  rapk:
+    runs-on: ubuntu-24.04
+    outputs:
+      records: ${{ steps.records.outputs.records }}
     permissions:
       contents: read
-      packages: read      # read the candidate digests' attestations
-      id-token: write     # sign the reproducibility predicate
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: log in to GHCR (private candidates package)
-        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
-
-      - name: verify the image-build predicate for every candidate digest
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
-            gh attestation verify "oci://${repo}@${d}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://fosterstack.com/attestations/image-build/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-image.yml" >/dev/null
-            echo "image-build predicate verified for ${v} at ${d}"
-          done
-
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - name: install melange (pinned by checksum)
+        run: bash bin/install-build-tools.sh melange
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ${{ inputs.dist-artifact }}
-          path: dist/
-
-      - name: verify the archives (checksums and signed build predicate)
+          name: ${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: build-in
+      - name: rapk under Witness
+        if: ${{ inputs.mode == 'release' }}
+        run: bash bin/witnessed-local.sh rapk bin/build-stage-rebuild-apk.sh
+      - name: snapshot-rapk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
+      - id: records
+        name: expose the record digests of this apk job as its output
+        if: ${{ inputs.mode == 'release' }}
+        run: r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rapk-ubuntu-24.04
+          path: out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04
+          path: witness-rapk
+  rapk-arm:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      records: ${{ steps.records.outputs.records }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
         env:
-          EXPECTED: ${{ inputs.expected-checksums }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
-          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
-          grep -oE '[^ ]+$' /tmp/expected-checksums.txt | while read -r f; do
-            gh attestation verify "dist/$f" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://fosterstack.com/attestations/build/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null
-          done
-          echo "all archives verified against the signed build predicate"
-
-      - name: extract the exact binaries into the build context
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/imgctx/binaries/amd64 /tmp/imgctx/binaries/arm64
-          tar xzf dist/fscache_*_linux_amd64.tar.gz  -C /tmp/imgctx/binaries/amd64 fscache
-          tar xzf dist/fscache_*_linux_arm64.tar.gz  -C /tmp/imgctx/binaries/arm64 fscache
-          tar xzf dist/fscache-fips_*_linux_amd64.tar.gz -C /tmp/imgctx/binaries/amd64 fscache-fips
-          tar xzf dist/fscache-fips_*_linux_arm64.tar.gz -C /tmp/imgctx/binaries/arm64 fscache-fips
-          cp build/docker/Dockerfile.* /tmp/imgctx/
-
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - name: install melange (pinned by checksum)
+        run: bash bin/install-build-tools.sh melange
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          # row 78: the BuildKit image the builder runs, by digest (its default is buildx-stable-1)
-          driver-opts: image=moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
-
-      - name: rebuild locally and assert digest equality against the verified push
-        id: rebuild
-        run: |
-          set -euo pipefail
-          SDE=$(git log -1 --format=%ct)
-          echo "buildkit/buildx material: $(docker buildx version)"
-          cd /tmp/imgctx
-          for v in production debug fips; do
-            SOURCE_DATE_EPOCH="${SDE}" docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              -f "Dockerfile.${v}" \
-              --provenance=false --sbom=false \
-              --output "type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true" \
-              --metadata-file "/tmp/${v}.json" . >/dev/null
-            local_d=$(jq -r '."containerimage.digest"' "/tmp/${v}.json")
-            pushed_d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            if [ "$local_d" != "$pushed_d" ]; then
-              echo "::error::${v} is NOT reproducible: pushed ${pushed_d}, rebuilt ${local_d}" >&2
-              exit 1
-            fi
-            echo "${v}: reproducible at ${local_d}"
-          done
-          jq -c . <<<'${{ inputs.digests }}' | while read -r d; do
-            jq -n --argjson digests "$d" --arg sha "${GITHUB_SHA}" --arg buildx "$(docker buildx version)" \
-              '{sha: $sha, index_digests: $digests, method: "independent local rebuild, oci output, digest equality", buildx: $buildx}'
-          done > /tmp/repro-predicate.json
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            echo "${d#sha256:}  cache-candidates-${v}"
-          done > /tmp/repro-subjects.txt
-
-      - name: sign the reproducibility predicate
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+          name: ${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          subject-checksums: /tmp/repro-subjects.txt
-          predicate-type: https://fosterstack.com/attestations/reproducibility/v1
-          predicate-path: /tmp/repro-predicate.json
+          name: digests
+          path: build-in
+      - name: rapk under Witness
+        if: ${{ inputs.mode == 'release' }}
+        run: bash bin/witnessed-local.sh rapk bin/build-stage-rebuild-apk.sh
+      - name: snapshot-rapk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
+      - id: records
+        name: expose the record digests of this apk job as its output
+        if: ${{ inputs.mode == 'release' }}
+        run: r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rapk-ubuntu-24.04-arm
+          path: out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk
+  assemble:
+    needs: [rapk, rapk-arm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      records: ${{ steps.records.outputs.records }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install apko (pinned by checksum)
+        run: bash bin/install-build-tools.sh apko
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: build-in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: build-in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04
+          path: rapk/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04-arm
+          path: rapk/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04
+          path: rec-rapk/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04-arm
+          path: rec-rapk/ubuntu-24.04-arm
+      - name: check the rapk records against their jobs' outputs
+        if: ${{ inputs.mode == 'release' }}
+        env:
+          RAPK_RECORDS: ${{ needs.rapk.outputs.records }}
+          RAPK_ARM_RECORDS: ${{ needs.rapk-arm.outputs.records }}
+        run: bash bin/rebuild-records-digests.sh --check "$RAPK_RECORDS" "$RAPK_ARM_RECORDS"
+      - name: rebuild under Witness
+        if: ${{ inputs.mode == 'release' }}
+        run: bash bin/witnessed-local.sh rebuild bin/build-stage-rebuild-assemble.sh
+      - name: snapshot-rebuild under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
+      - id: records
+        name: expose the record digests as the stage output
+        if: ${{ inputs.mode == 'release' }}
+        run: r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"
+      # always(): the verdict (snapshot-verdict.json in snapshot mode) is the only place the per-image digests and the differing items are readable, failed comparison or not
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: witness-rebuild
+          path: witness-rebuild

@@ -5,6 +5,7 @@ no per-scanner ignore files to cross-check."""
 import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+from auditorlib import reviewed
 from auditorlib import parsers as P
 
 
@@ -29,8 +30,12 @@ def main():
     problems = []
     vexf = os.path.join(d, "fosterstack-cache.openvex.json")
     vex_cves = set()
-    if os.path.exists(vexf):
-        for s in json.load(open(vexf)).get("statements", []):
+    try:
+        vex_doc = reviewed.read(vexf)             # a present VEX without its "statements" list is a stop, not "nothing to check" (rc-5b fix 13)
+    except reviewed.ReviewedInputInvalid as e:
+        sys.exit("consistency: %s" % e)
+    if vex_doc is not None:
+        for s in vex_doc["statements"]:
             cve = (s.get("vulnerability") or {}).get("name")
             vex_cves.add(cve)
             if cve not in live:
