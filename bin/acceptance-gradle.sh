@@ -2,10 +2,13 @@
 # bin/acceptance-gradle.sh: the Gradle remote-cache suite (REQ-GRADLE-001-AC1..AC4), extracted unchanged from acceptance.yml
 # (advisor ruling Q7; REQ-CHAIN-006-AC5). The server is already listening on localhost:18095: acceptance.yml starts it (from source,
 # or the candidate image), and in Check the Check acceptance wrapper starts the candidate from Build's tarball.
-# Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
+# Before the steps, the wrapper jar is checked (preamble, not from acceptance.yml). Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
+# the wrapper jar is the reviewed one before anything runs it (REQ-SUP-001-AC32): the expected file is exactly one line, the one for the jar, and the jar matches it; else refuse
+sed -n 1p .github/policy/gradle-wrapper-jar-sha256.txt | grep -qxE '[0-9a-f]{64}  bench/gradle-sample/gradle/wrapper/gradle-wrapper\.jar' && ! sed -n '2,$p' .github/policy/gradle-wrapper-jar-sha256.txt | grep '' > /dev/null \
+  && sha256sum -c --status .github/policy/gradle-wrapper-jar-sha256.txt || { echo "acceptance-gradle: gradle-wrapper.jar does not match .github/policy/gradle-wrapper-jar-sha256.txt" >&2; exit 1; }
 
 # acceptance.yml, job acceptance-gradle, step 6: gradlew build (cold — populates the remote cache) (working-directory bench/gradle-sample)
 # --info so Gradle logs each task's cache key: the assertions below

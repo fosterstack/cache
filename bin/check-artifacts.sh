@@ -44,16 +44,28 @@ shopt -s nullglob
 tmp=$(mktemp -d)
 mkdir -p "$out" "$tmp/bin"
 pids=()
-cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" > /dev/null 2>&1 || true; done; docker rm -f fscache-art-production fscache-art-fips > /dev/null 2>&1 || true; rm -rf "$tmp"; }
+# stop one of this check's servers and wait until it is gone, so a server never outlives the check (a dying server must not meet a later run)
+stop_pid() { local p=$1 _; kill "$p" > /dev/null 2>&1 || true; for _ in $(seq 40); do kill -0 "$p" > /dev/null 2>&1 || break; sleep 0.25; done; kill -9 "$p" > /dev/null 2>&1 || true; wait "$p" > /dev/null 2>&1 || true; }
+cleanup() { for p in ${pids[@]+"${pids[@]}"}; do stop_pid "$p"; done; docker rm -f fscache-art-production fscache-art-fips > /dev/null 2>&1 || true; rm -rf "$tmp"; }
 trap cleanup EXIT
 
 checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
-healthy() { for _ in $(seq 20); do lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
+# healthy PORT [PID]: /healthz answers within 20 tries (a refused try costs 0.5 s, a silent one up to 2.5 s);
+# with a PID, a server that is gone ends the wait at once
+healthy() {
+  local pid=${2:-}
+  for _ in $(seq 20); do
+    lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0
+    if [ -n "$pid" ] && ! kill -0 "$pid" > /dev/null 2>&1; then return 1; fi
+    sleep 0.5
+  done
+  return 1
+}
 roundtrip() { lg -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(lg -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
 # the posture as one string, boolean first: it is compared whole, so the boolean and the note are checked together (round 1 F5)
 posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
-stop_last() { kill "${pids[${#pids[@]}-1]}" > /dev/null 2>&1 || true; }
+stop_last() { stop_pid "${pids[${#pids[@]}-1]}"; }
 
 # the binaries of this architecture out of the archives (REQ-PLAT-001-AC1: each of the four archives must exist; this architecture's are executed)
 for n in fscache fscache-fips; do
@@ -65,24 +77,52 @@ for n in fscache fscache-fips; do
   tar -xzf "${sel[0]}" -C "$tmp/bin" "$n" || fail "the $arch archive of $n holds no binary named $n"
 done
 
-# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed.
-python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
+# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed; the bind also
+# lists the files of each layout docker may be given (REQ-SUP-001-AC33).
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
-FSCACHE_ADDR=":19101" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
-pids+=("$!")
-healthy 19101 || fail "fscache (linux/$arch) never answered /healthz: it does not execute"
-roundtrip 19101 std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
-note_std=$(posture 19101) || note_std=""
-FSCACHE_ADDR=":19102" FSCACHE_DATA_DIR="$tmp/data-fips" "$tmp/bin/fscache-fips" > "$tmp/log-fips" 2>&1 &
-pids+=("$!")
-healthy 19102 || fail "fscache-fips (linux/$arch) never answered /healthz: it does not execute"
-roundtrip 19102 fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
-note_fips=$(posture 19102) || note_fips=""
-FSCACHE_ADDR=":19103" FSCACHE_DATA_DIR="$tmp/data-forced" GODEBUG=fips140=on "$tmp/bin/fscache" > "$tmp/log-forced" 2>&1 &
-pids+=("$!")
-healthy 19103 || fail "fscache (linux/$arch, GODEBUG=fips140=on) never answered /healthz"
-note_forced=$(posture 19103) || note_forced=""
+# Each server asks the kernel for its own port (127.0.0.1:0) and the check reads the port from the server's "starting"
+# log line, so no port is guessed: another run's server, or a connection that is open on a port, can never be what a
+# server of this run fails to get.
+# bound_port PID LOG: the port the server reports; fails when the process is gone first or 80 looks (about 20 s)
+# see no line
+bound_port() {
+  local i addr
+  for i in $(seq 80); do
+    addr=$(jq -nRr 'first(inputs | fromjson? | select(.msg == "fscache: starting") | .addr) // empty' "$2")
+    if [ -n "$addr" ]; then
+      echo "${addr##*:}"
+      return 0
+    fi
+    kill -0 "$1" > /dev/null 2>&1 || return 1
+    sleep 0.25
+  done
+  return 1
+}
+last_output() { tail -n 3 "$1" | tr '\n' ' '; }
+# start_server NAME BINARY DESCRIPTION [GODEBUG]: runs one server of this run and sets $port. GODEBUG is always given
+# (empty when not asked), so a runner's own value never reaches the binary under test. A server that dies or never
+# answers fails the check with its last output.
+start_server() {
+  local log="$tmp/log-$1" pid
+  FSCACHE_ADDR=127.0.0.1:0 FSCACHE_DATA_DIR="$tmp/data-$1" GODEBUG="${4:-}" "$2" > "$log" 2>&1 &
+  pid=$!
+  pids+=("$pid")
+  port=$(bound_port "$pid" "$log") && healthy "$port" "$pid" ||
+    fail "$3 never answered /healthz: it does not execute; its last output: $(last_output "$log")"
+}
+start_server std "$tmp/bin/fscache" "fscache (linux/$arch)"
+port_std=$port
+roundtrip "$port_std" std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
+note_std=$(posture "$port_std") || note_std=""
+start_server fips "$tmp/bin/fscache-fips" "fscache-fips (linux/$arch)"
+port_fips=$port
+roundtrip "$port_fips" fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
+note_fips=$(posture "$port_fips") || note_fips=""
+start_server forced "$tmp/bin/fscache" "fscache (linux/$arch, GODEBUG=fips140=on)" fips140=on
+port_forced=$port
+note_forced=$(posture "$port_forced") || note_forced=""
 passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report
@@ -107,7 +147,7 @@ for v in production fips; do
   for want in linux/amd64 linux/arm64; do
     grep -qx "$want" <<< "$plats" || fail "the $v image archive has no $want platform entry"
   done
-  tar -C "$images/$v" -cf "$tmp/$v.tar" . || fail "the $v image layout could not be archived"
+  tar -C "$images/$v" -cf "$tmp/$v.tar" -T "$tmp/$v.members" || fail "the $v image layout could not be archived"
   loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"
