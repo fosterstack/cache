@@ -4437,6 +4437,162 @@ PP
 )"
 eq "$r15" "OK" && ok || no "rc-5b fix 15: five consecutive unsettled runs open one stable-titled issue, restart on settle, say a missing state, stop on a corrupt one" "$r15"
 
+echo "=== rc-5b item 9 (A6, A7): a major bump is held as a harness lane task; an open Dependabot PR \
+for the same bump is deferred to ==="
+# rc5b9_probe <shim log> <module> <from> <to>: _deliver_bumps over one row with the shim ledger; prints the row's action
+rc5b9_probe() {
+  AUDITOR_GIT_SHIM_LOG="$1" "$PY" - "$2" "$3" "$4" <<'PY'
+import importlib.util, io, contextlib, sys
+import os
+spec = importlib.util.spec_from_file_location("r", os.environ.get("RC5B9_BIN",
+    ".github/agent/bin") + "/auditor-run.py")
+R = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(R)
+row = {"id": "CVE-2099-9", "fix_bump": {"cve": "CVE-2099-9", "module": sys.argv[1], "from": sys.argv[2],
+    "to": sys.argv[3]}, "lift_note": ""}
+with contextlib.redirect_stdout(io.StringIO()):
+    errs = R._deliver_bumps([row], "2026-09-24", "abcdef1234567890", False, [])
+print("ACTION", row["action"].replace("\n", " "))
+print("ERRS", errs)
+PY
+}
+
+begin "rc5b9-major-transitions-are-recognised" \
+  "v0 -> v1, vN -> vN+1 (a /vN path change included) and an unreadable version are majors; a \
+minor, a patch, v0.x -> v0.y and +incompatible stay the same bump"
+mj="$("$PY" - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("r", ".github/agent/bin/auditor-run.py")
+R = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(R)
+table = [("example.org/m", "v0.9.0", "v1.0.0", True), ("example.org/m", "v1.4.2", "v2.0.0", True), ("example.org/m/v2",
+    "v2.1.0", "v3.0.0", True),
+         ("example.org/m", "v1.2.3", "v1.9.0", False), ("example.org/m", "v0.3.0", "v0.3.7", False), ("example.org/m",
+             "v0.9.0", "v0.10.0", False),
+         ("example.org/m", "v2.0.0+incompatible", "v2.1.0+incompatible", False), ("example.org/m", "0.3.0", "0.3.7",
+             False),
+         ("example.org/m", "v1.0.0", "garbage", True), ("example.org/m", "", "v1.0.0", True), ("example.org/m/v2",
+             "v1.9.0", "v2.0.0", True)]
+bad = [t for t in table if R._is_major_bump(t[0], t[1], t[2]) is not t[3]]
+print("OK" if not bad else "BAD %r" % bad)
+PY
+)"
+eq "$mj" "OK" && ok || no "major detection table" "$mj"
+
+begin "rc5b9-a-major-is-a-draft-held-as-a-lane-task-never-an-owner-issue" \
+  "a minor bump opens a draft PR and no issue; a major (v0.9 -> v1.0) opens the same draft \
+PR, never armed even with auto-merge on, plus ONE issue, a task for a harness lane (no \
+owner-decision label, no assignee) naming the PR; the row says it is held"
+sh1="$WORK/rc5b9-minor.shim"; sh2="$WORK/rc5b9-major.shim"; rm -f "$sh1" "$sh2"
+a1="$(AUDITOR_AUTOMERGE=on rc5b9_probe "$sh1" example.org/m v0.3.0 v0.3.7)";
+a2="$(AUDITOR_AUTOMERGE=on rc5b9_probe "$sh2" example.org/m v0.9.0 v1.0.0)"
+minor_issue="$(grep -c 'issue create' "$sh1")"; major_issue="$(grep -c '^gh issue create --title ' "$sh2")"
+owner_label="$(grep -c 'owner-decision\|--assignee' "$sh2")";
+drafts="$(grep -c '^gh pr create --draft .*auditor/bump-example.org-m-1.0.0' "$sh2")";
+armed="$(grep -c 'pr merge --auto' "$sh2")"
+held="$(printf '%s' "$a2" | grep -c 'held as a harness lane task')";
+titled="$(grep -c 'issue create --title .*major bump example.org/m' "$sh2")"
+{ eq "$minor_issue" "0" && eq "$major_issue" "1" && eq "$owner_label" "0" && eq "$drafts" "1" \
+    && eq "$armed" "0" && eq "$held" "1" && eq "$titled" "1" \
+    && printf '%s' "$a1" | grep -q 'opened draft bump PR'; } \
+   && ok  || \
+    no "minor: PR only; major: draft PR, one held-major issue (no owner label/assignee), never armed, \
+row says held" "minor_issues=$minor_issue major_issues=$major_issue owner_label_or_assignee=$owner_label \
+drafts=$drafts armed=$armed held=$held titled=$titled a1=[$a1] a2=[$a2]"
+
+begin "rc5b9-an-open-dependabot-pr-for-the-same-bump-is-deferred-to" \
+  "an open Dependabot PR whose title names the module and the target version is deferred to: \
+nothing is opened (no branch, no PR, no issue), the row says 'deferred to'; another \
+module, another version or a module that only contains the name is NOT a match; a failed \
+lookup delivers as today and says so"
+d1="$WORK/rc5b9-d1.shim"; d2="$WORK/rc5b9-d2.shim"; d3="$WORK/rc5b9-d3.shim"; rm -f "$d1" "$d2" "$d3"
+dep='[{"number":41,"title":"Bump example.org/m from 0.3.0 to 0.3.7"}]'
+x1="$(AUDITOR_SHIM_DEPENDABOT_PRS="$dep" rc5b9_probe "$d1" example.org/m v0.3.0 v0.3.7)"
+x2a="$WORK/rc5b9-d2a.shim"; rm -f "$x2a"
+near_miss='[{"number":42,"title":"Bump example.org/m from 0.3.0 to 0.3.6"},'
+near_miss+='{"number":43,"title":"Bump example.org/mm from 0.3.0 to 0.3.7"},'
+near_miss+='{"number":44,"title":"Bump other.org/example.org/m from 0.3.0 to 0.3.7"}]'
+x2="$(AUDITOR_SHIM_DEPENDABOT_PRS="$near_miss" rc5b9_probe "$x2a" example.org/m v0.3.0 v0.3.7)"
+x3="$(AUDITOR_SHIM_DEPENDABOT_FAIL=1 rc5b9_probe "$d3" example.org/m v0.3.0 v0.3.7)"
+deferred="$(printf '%s' "$x1" | grep -c 'deferred to Dependabot PR #41')";
+nothing="$(grep -c 'pr create\|issue create\|checkout -B' "$d1" 2>/dev/null || true)"; nothing="${nothing:-0}"
+nomatch="$(grep -c '^gh pr create --draft .*auditor/bump' "$x2a")";
+nodeferral="$(printf '%s' "$x2" | grep -c 'deferred')"
+failed_lookup="$(printf '%s' "$x3" | grep -c 'opened draft bump PR.*could not look at Dependabot')";
+failed_pr="$(grep -c '^gh pr create --draft .*auditor/bump' "$d3")"
+{ eq "$deferred" "1" && eq "$nothing" "0" && eq "$nomatch" "1" && eq "$nodeferral" "0" \
+    && eq "$failed_lookup" "1" && eq "$failed_pr" "1"; } \
+   && ok  || \
+    no "exact match defers and opens nothing; near-misses open the PR; a failed lookup delivers \
+and says so" "deferred=$deferred opened_when_deferred=$nothing near_miss_prs=$nomatch \
+near_miss_deferred=$nodeferral lookup_failed_row=$failed_lookup lookup_failed_pr=$failed_pr x1=[$x1] x3=[$x3]"
+
+begin "rc5b9-mutants-each-cut-of-the-new-code-is-caught" \
+  "with major detection, the Dependabot match or the no-owner-label rule cut out of a copy \
+of the driver, the matching case above fails"
+m9_ok=yes; m9_detail=""
+for m in "major|    f, t = _vmajor(frm), _vmajor(to)|    return False|    f, t = _vmajor(frm), \
+_vmajor(to)" \
+  "dependabot|    for pr in prs or []:|    return None|    for pr in prs or []:" \
+  "owner-label|    cmd = \"gh issue create --title %s\" % shlex.quote(title)|\
+    cmd = \"gh issue create --title %s --label owner-decision --assignee x\" % shlex.quote(title)|\
+    cmd = \"gh issue create --title %s\" % shlex.quote(title)";
+do
+  IFS='|' read -r name old new <<<"$m"
+  case "$name" in
+    major) old='    f, t = _vmajor(frm), _vmajor(to)';
+    new='    return False'$'\n''    f, t = _vmajor(frm), _vmajor(to)';;
+    dependabot) old='    for pr in prs or []:'; new='    return None'$'\n''    for pr in prs or []:';;
+    owner-label) old='    cmd = "gh issue create --title %s" % shlex.quote(title)'$'\n'\
+'    if dry:'$'\n''        _plan(would, "held-major issue';
+    new='    cmd = "gh issue create --title %s --label owner-decision --assignee x" % shlex.quote(title)'$'\n'\
+'    if dry:'$'\n''        _plan(would, "held-major issue';;
+
+  esac
+  mr="$WORK/rc5b9-mr-$name"; rm -rf "$mr"; mkdir -p "$mr/.github/agent"; cp -R "$BIN" "$mr/.github/agent/bin";
+  cp -R bin "$mr/bin"; mb="$mr/.github/agent/bin"
+  if ! "$PY" - "$mb/auditor-run.py" "$old" "$new" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+if src.count(sys.argv[2]) != 1:
+    sys.exit(1)
+open(sys.argv[1], "w").write(src.replace(sys.argv[2], sys.argv[3]))
+PY
+  then m9_ok=no; m9_detail="$m9_detail [$name: mutation site not found exactly once]"; continue; fi
+  ms1="$WORK/rc5b9-m-$name-1.shim"; ms2="$WORK/rc5b9-m-$name-2.shim"; rm -f "$ms1" "$ms2"
+  mj1="$(RC5B9_BIN="$mb" AUDITOR_GIT_SHIM_LOG="$ms1" "$PY" - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("r", os.environ["RC5B9_BIN"] + "/auditor-run.py")
+R = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(R); print("yes" if R._is_major_bump("example.org/m", "v0.9.0", "v1.0.0") is True else "no")
+except Exception as e:
+    print("no")
+PY
+)"
+  held1="no"; RC5B9_BIN="$mb" rc5b9_probe "$ms1" example.org/m v0.9.0 v1.0.0 >/dev/null 2>&1;
+  [ "$(grep -c '^gh issue create --title ' "$ms1" 2>/dev/null)" = 1 ]  && \
+    [ "$(grep -c 'owner-decision\|--assignee' "$ms1")" = 0 ]  && held1=yes
+  dep1="no";
+  AUDITOR_SHIM_DEPENDABOT_PRS="$dep" RC5B9_BIN="$mb" rc5b9_probe "$ms2" example.org/m v0.3.0 v0.3.7 2>/dev/null \
+    | grep -q 'deferred to Dependabot PR #41'  && \
+    dep1=yes
+  case "$name" in major) [ "$held1" = yes ]  && [ "$mj1" = yes ]  && \
+    { m9_ok=no; m9_detail="$m9_detail [major: mutant still passes]"; };; dependabot) [ "$dep1" = yes ]  && \
+    { m9_ok=no; m9_detail="$m9_detail [dependabot: mutant still passes]"; };; owner-label) [ "$held1" = yes ]  && \
+    { m9_ok=no; m9_detail="$m9_detail [owner-label: mutant still passes]"; };; esac
+done
+# the control: an uncut copy passes all three claims
+mr="$WORK/rc5b9-mr-control"; rm -rf "$mr"; mkdir -p "$mr/.github/agent"; cp -R "$BIN" "$mr/.github/agent/bin";
+cp -R bin "$mr/bin"; mb="$mr/.github/agent/bin"; cs1="$WORK/rc5b9-c1.shim"; cs2="$WORK/rc5b9-c2.shim";
+rm -f "$cs1" "$cs2"
+RC5B9_BIN="$mb" rc5b9_probe "$cs1" example.org/m v0.9.0 v1.0.0 >/dev/null 2>&1
+ctl="$( [ "$(grep -c '^gh issue create --title ' "$cs1" 2>/dev/null)" = 1 ] \
+  && AUDITOR_SHIM_DEPENDABOT_PRS="$dep" RC5B9_BIN="$mb" rc5b9_probe "$cs2" example.org/m v0.3.0 v0.3.7 2>/dev/null \
+  | grep -q 'deferred to Dependabot PR #41' && echo yes || echo no)"
+[ "$ctl" = yes ] || { m9_ok=no; m9_detail="$m9_detail [the uncut copy does not pass]"; }
+eq "$m9_ok" "yes" && ok || no "every mutant fails the matching case; the uncut copy passes" "$m9_detail"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 # rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
