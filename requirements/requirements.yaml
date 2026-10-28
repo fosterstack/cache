@@ -4934,3 +4934,22 @@ requirements:
         then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
         verification: { method: unit, release_blocking: false }
         status: approved
+
+  # owner RATIFIED Oct 24 2026 (ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md, item 2); kept as a rule, not built now; LLM-enforced
+  - id: REQ-CI-006
+    title: A sharded persona suite proves each case passed exactly once
+    statement: >
+      If the persona suite is split across cores, the run first lists every case and then proves each case passed exactly once across the shards: none skipped,
+      none doubled, none failed, no dead shard. The split is built only when the persona job is again the slowest CI job.
+    source: [ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md]
+    tier: community
+    introduced: v0.3.0
+    origin: owner Oct 24 2026 (kept REQ-CI-006 as a rule, not built now)
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-CI-006-AC1
+        given: "the persona suite split across cores"
+        when: "the run starts and then ends"
+        then: "it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard"
+        verification: { method: inspection, release_blocking: false }
+        status: approved

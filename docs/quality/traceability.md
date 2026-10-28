@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 102 |
-| Acceptance criteria | 505 |
+| Active requirements | 103 |
+| Acceptance criteria | 506 |
 | Release-blocking ACs | 131 |
-| ACs with mapped evidence | 495 |
+| ACs with mapped evidence | 496 |
 | Release-blocking ACs with mapped evidence | 131 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 48 |
+| Confidence: documented | 49 |
 | Confidence: implementation-only | 53 |
 
 ## Cache protocol
@@ -1591,3 +1591,13 @@ Every suite named in test-evidence/suite-floors.json is run once per workflow ru
 | REQ-CI-005-AC3 | Given a suite run by a counting step; when it loses cases (below its floor), prints no case count, or exits non-zero; then its step fails | unit |  | approved | 1 item(s) |
 | REQ-CI-005-AC4 | Given the suite guard's floors; when a pull request lowers or drops a floor; then the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised | unit |  | approved | 1 item(s) |
 | REQ-CI-005-AC5 | Given the committed ci.yml and floors file (Fable ruling on cache#695: PR 2 of the wrap left eight suites in `all`, PR 3 migrated five of them); when the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them; then it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here | unit |  | approved | 1 item(s) |
+
+### REQ-CI-006 — A sharded persona suite proves each case passed exactly once
+
+If the persona suite is split across cores, the run first lists every case and then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard. The split is built only when the persona job is again the slowest CI job.
+
+*Introduced v0.3.0 · tier community · confidence documented · source: ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CI-006-AC1 | Given the persona suite split across cores; when the run starts and then ends; then it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard | inspection |  | approved | 1 item(s) |

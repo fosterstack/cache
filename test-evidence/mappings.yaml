@@ -1804,3 +1804,6 @@ mappings:
   - ac: REQ-CI-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-006-AC1
+    evidence:
+      - { type: inspection, ref: "Rule only, not built (owner, Oct 24 2026): the persona suite is not sharded; ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md item 2." }
