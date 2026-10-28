@@ -2748,12 +2748,48 @@ replace "$work/caller.yml" "$work/c15.yml" "echo anything at all, including secr
 replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact" \
     "    runs-on: self-hosted\n    steps:\n      - uses: actions/download-artifact" \
   && expect ok "AC14 the scanner steps are cache's: a change there does not change the verdict" "" callers "$work/c16.yml"
+# ---- nosource: the build is the only step of Build and Rebuild that runs source code (sandboxed-build ratify Oct 27 2026, rule 1) -------------------------------------------
+# The fixture is a copy of exactly the scripts the stage scripts can start (the closure the judge reads) and chain-scripts.json; each mutation adds one step that could compile or run source.
+python3 - "$work/ns" "$root" "$shape" <<'PY'
+import importlib.util, os, shutil, sys
+dst, root, shape = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("shape", shape); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+seen, bad = S.ns_closure(root)
+assert seen and not bad, bad
+for p in seen + [".github/policy/chain-scripts.json"]:
+    os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
+    shutil.copy(os.path.join(root, p), os.path.join(dst, p))
+PY
+expect ok "nosource fixture: the scripts the stage scripts start compile and run nothing outside melange" "" nosource "$work/ns"
+nsm() { # nsm ID LABEL WORD FILE OLD NEW   (replace OLD by NEW in FILE of a fresh copy of the fixture, expect a refusal containing WORD)
+  rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"
+  replace "$work/ns/$4" "$work/nsm/$4" "$5" "$6" && expect caught "$2" "$3" nosource "$work/nsm"; return 0
+}
+nsm go1 "nosource a go build in a stage script" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n"$GO_TOOL" build ./cmd/fscache'
+nsm go2 "nosource go test in a stage script" "Go toolchain" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\ngo test ./...'
+nsm go3 "nosource go run through a path to the pinned toolchain" "Go toolchain" bin/build-stage-rebuild-apk.sh 'set -euo pipefail' 'set -euo pipefail\n/usr/local/bin/fscache-go/bin/go run ./tools/x'
+nsm go4 "nosource go generate after a semicolon" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'true; go generate ./...'
+nsm mk1 "nosource make in a stage script" "starts make" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nmake all'
+nsm mk2 "nosource a compiler behind sudo" "starts gcc" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nsudo gcc -o x x.c'
+nsm bin1 "nosource the produced binary run in a stage script" "fscache" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n./out/fscache.bin --version'
+nsm mel1 "nosource melange started outside build-apk.sh" "melange outside" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nmelange build x.yaml'
+nsm apk1 "nosource apko started outside assemble-image.sh" "apko outside" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n/usr/local/bin/apko build a b'
+nsm pyg1 "nosource a Go build started by a Python helper" "Go toolchain" bin/build-version-check.py '[GO_TOOL, "version", "-m", binary]' '[GO_TOOL, "build", "-o", binary]'
+nsm pym1 "nosource make started by a Python helper" "starts make" bin/build-archives.py 'import ' 'import subprocess as _sp; _sp.run(["make"])\nimport '
+nsm pysh "nosource a Python helper starting a program through a shell" "through a shell" bin/build-archives.py 'import ' 'import subprocess as _sp; _sp.run("echo", shell=True)\nimport '
+nsm pyos "nosource os.system in a Python helper" "through a shell" bin/build-archives.py 'import ' 'import os as _os; _os.system("true")\nimport '
+nsm pyin "nosource the interpreter started on inline code" "not a repository script" bin/build-archives.py 'import ' 'import subprocess as _sp, sys as _sys; _sp.run([_sys.executable, "-c", "pass"])\nimport '
+nsm row1 "nosource a script a stage script starts that is not a row" "not a row" .github/policy/chain-scripts.json '"path": "bin/oci-digest.py"' '"path": "bin/oci-digest-x.py"'
+rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"
+replace "$work/ns/bin/build-stage-apk.sh" "$work/nsm/bin/build-stage-apk.sh" 'unset GH_TOKEN' 'unset GH_TOKEN\n# never go build here; make is not used\n"$GO_TOOL" version -m out/x' \
+  && expect ok "nosource a comment naming go build and make, and go version -m, change nothing" "" nosource "$work/nsm"
 # ---- the real repository --------------------------------------------------------------------------------------------------------------------
 RAL="$root/.github/policy/allowed-actions.json"
 expect ok "AC1/AC2 the real stage-build.yml is exactly the Build grammar" "" stage "$root/.github/workflows/stage-build.yml" build "$RAL"
 expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild grammar" "" stage "$root/.github/workflows/stage-reproducibility.yml" \
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
+expect ok "nosource the real scripts the stage scripts start compile and run nothing outside melange" "" nosource "$root"
 expect ok "AC2 the real bin/witnessed.sh is exactly the canonical helper" "" helper "$root/bin/witnessed.sh"
 expect ok "AC2 no real stage file or stage script names witness run" "" directwitness "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
@@ -3091,7 +3127,7 @@ if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1061
+EXPECT=1079
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
