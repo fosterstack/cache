@@ -10,9 +10,9 @@ scanner makes or gates this file. The output has a fixed creation time, so two r
 
 NTIA minimum elements (0707 fix 3): the root package (the binary, SPDXRef-fscache) names its supplier (Organization: FosterStack); the document DESCRIBES the root package and the
 root DEPENDS_ON each embedded module; the creators are the organization and this tool. Which relationship SPDX wants for modules compiled into one binary: the specification text
-(read at v2.3.1, relationship type definitions) defines DEPENDS_ON as "A depends on B" and CONTAINS as "A contains B", gives STATIC_LINK for a file that statically links a binary
+(read in v2.3.1, relationship type definitions) defines DEPENDS_ON as "A depends on B" and CONTAINS as "A contains B", gives STATIC_LINK for a file that statically links a binary
 library, and states no rule for embedded modules; DEPENDS_ON is chosen because the NTIA element is a "dependency relationship". The created time stays the fixed epoch below: a
-real build time would make two builds of the same inputs differ, which the Rebuild comparison refuses. That is the one deviation from the NTIA timestamp element, and it is stated
+real build time would give two builds of the same inputs different bytes, which the Rebuild comparison refuses. That is the one deviation from the NTIA timestamp element, and it is stated
 here on purpose.
 """
 import argparse

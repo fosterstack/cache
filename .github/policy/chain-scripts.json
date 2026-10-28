@@ -2573,7 +2573,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
-      "sha256": "53c99dc251e3642d6ec328b11e530d5e198a98b3ba2676f9e8de3cba24c26e4c"
+      "sha256": "5b21f1f46b7b83878c57876136a3d554e1d532b17f329c7f3d451bb65904524d"
     },
     {
       "path": "bin/vendor-provenance.py",
