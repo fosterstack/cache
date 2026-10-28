@@ -269,6 +269,9 @@ ALLOW_PATTERNS=(
   '^build/melange-baselayout\.yaml$'
   '^build/baselayout/etc/(group|hosts|nsswitch\.conf|os-release|passwd|protocols|services)$'
   '^bin/baselayout-test\.sh$'
+  # the outbound-code check (0710 item 4): the module's non-test code has no HTTP client and dials nothing
+  '^bin/check-no-outbound\.py$'
+  '^bin/check-no-outbound-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
