@@ -2759,6 +2759,13 @@ assert seen and not bad, bad
 for p in seen + [".github/policy/chain-scripts.json"]:
     os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
     shutil.copy(os.path.join(root, p), os.path.join(dst, p))
+# the one known finding of the real tree (Build's admission step runs `go run` of tools/requirements, the decision of its own pull request) is replaced in the fixture,
+# so every mutation case below proves ITS finding and the known-good fixture is clean
+adm = dst + "/bin/build-admit.py"
+t = open(adm).read()
+old = '[ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base]'
+assert t.count(old) == 1, "the admission call changed: move this replacement with it"
+open(adm, "w").write(t.replace(old, '["git", "status"]'))
 PY
 expect ok "nosource fixture: the scripts the stage scripts start compile and run nothing outside melange" "" nosource "$work/ns"
 nsm() { # nsm ID LABEL WORD FILE OLD NEW   (replace OLD by NEW in FILE of a fresh copy of the fixture, expect a refusal containing WORD)
@@ -2778,7 +2785,7 @@ nsm pyg1 "nosource a Go build started by a Python helper" "Go toolchain" bin/bui
 nsm pym1 "nosource make started by a Python helper" "starts make" bin/build-archives.py 'import ' 'import subprocess as _sp; _sp.run(["make"])\nimport '
 nsm pysh "nosource a Python helper starting a program through a shell" "through a shell" bin/build-archives.py 'import ' 'import subprocess as _sp; _sp.run("echo", shell=True)\nimport '
 nsm pyos "nosource os.system in a Python helper" "through a shell" bin/build-archives.py 'import ' 'import os as _os; _os.system("true")\nimport '
-nsm pyin "nosource the interpreter started on inline code" "not a repository script" bin/build-archives.py 'import ' 'import subprocess as _sp, sys as _sys; _sp.run([_sys.executable, "-c", "pass"])\nimport '
+nsm pyin "nosource the interpreter started on inline code" "inline code" bin/build-archives.py 'import ' 'import subprocess as _sp, sys as _sys; _sp.run([_sys.executable, "-c", "pass"])\nimport '
 nsm row1 "nosource a script a stage script starts that is not a row" "not a row" .github/policy/chain-scripts.json '"path": "bin/oci-digest.py"' '"path": "bin/oci-digest-x.py"'
 # the gaps of the round-one ruling on #770 (allow-list, not block-list): each of these used to slip past a word scan
 nsm bp1 "nosource bash -c with a Go build inside" "inline code" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash -c "go build ./..."'
@@ -2790,7 +2797,7 @@ nsm bp6 "nosource time in front of go build" "Go toolchain" bin/build-stage-apk.
 nsm bp7 "nosource if go build" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nif go build ./...; then true; fi'
 nsm bp8 "nosource an alias for the Go tool" "alias" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nalias g=go'
 nsm bp9 "nosource python3 -c" "inline code" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 -c "import os"'
-nsm bp10 "nosource python3 on a file that is not a repository script" "not a script of the repository" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 /tmp/x.py'
+nsm bp10 "nosource python3 on a file that is not a repository script" "not a script of the closure" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 /tmp/x.py'
 nsm bp11 "nosource a program named by a variable" "named by the variable" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n"$TOOL" build ./...'
 nsm bp12 "nosource go build inside a substitution inside double quotes" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\necho "$(go build ./...)"'
 nsm bp13 "nosource eval" "eval" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\neval "go build"'
@@ -2800,29 +2807,46 @@ nsm bp16 "nosource a Python command line held in a variable" "starts make" bin/b
 nsm bp17 "nosource a Python command line that is a call" "list literal" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(str("x").split())\nimport '
 nsm bp18 "nosource os.execv" "os.execv" bin/build-archives.py 'import ' 'import os as _os\n_os.execv("/bin/sh", ["sh"])\nimport '
 nsm bp19 "nosource bash -c in a Python helper" "inline code" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["bash", "-c", "go build"])\nimport '
-nsm bp20 "nosource python3 -c in a Python helper" "something that is not a repository script" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["python3", "-c", "pass"])\nimport '
+nsm bp20 "nosource python3 -c in a Python helper" "inline code" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["python3", "-c", "pass"])\nimport '
 nsm bp21 "nosource the open exception does not travel: the same go run in another script" "Go toolchain" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["go", "-C", "tools/requirements", "run", ".", "verify-freeze", "x"])\nimport '
 nsm bp22 "nosource a script a closure script names but no runs row lists is read too" "not in the closure" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/chain-new-helper.sh'
-# the probe: the one other melange caller, only through the pinned sealed-call checker
-nsp() { # nsp LABEL WORD PROBE-TEXT: a fixture with bin/chain-sandbox-probe.sh (a row, named by build-stage-apk.sh) holding PROBE-TEXT
-  rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"
-  printf '%b' "$3" > "$work/nsm/bin/chain-sandbox-probe.sh"
-  python3 - "$work/nsm" <<'PY'
-import hashlib, json, sys
-r = sys.argv[1]; p = r + "/.github/policy/chain-scripts.json"
-d = json.load(open(p))
-d["scripts"].append({"path": "bin/chain-sandbox-probe.sh", "tools": [], "runs": [], "signs": False, "reason": "fixture", "sha256": hashlib.sha256(open(r + "/bin/chain-sandbox-probe.sh", "rb").read()).hexdigest()})
-json.dump(d, open(p, "w"))
-s = open(r + "/bin/build-stage-apk.sh").read().replace("unset GH_TOKEN", "unset GH_TOKEN\nbash bin/chain-sandbox-probe.sh", 1)
-open(r + "/bin/build-stage-apk.sh", "w").write(s)
-PY
-  if [ "$2" = ok ]; then expect ok "$1" "" nosource "$work/nsm"; else expect caught "$1" "$2" nosource "$work/nsm"; fi
-}
-nsp "nosource the probe may start melange when it judges its call with the pinned checker" ok 'set -euo pipefail\npython3 -I -B bin/build-apk-helper.py sealed-call --sealed-env build/sealed-env.json "${call[@]}"\n"$SUDO" "${call[@]}"\n"$MELANGE" build probe.yaml\n'
-nsp "nosource the probe is refused when it starts melange without judging the call" "does not judge its call" 'set -euo pipefail\n"$MELANGE" build probe.yaml\n'
-nsp "nosource the probe is still refused when it starts apko" "apko outside" 'set -euo pipefail\npython3 -I -B bin/build-apk-helper.py sealed-call --sealed-env build/sealed-env.json x\napko build a b\n'
-nsp "nosource the probe is still refused a compiler" "Go toolchain" 'set -euo pipefail\npython3 -I -B bin/build-apk-helper.py sealed-call --sealed-env build/sealed-env.json x\ngo build ./...\n'
 nsm bp24 "nosource an array expansion standing for the program" "named by the variable" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"${tool[@]}" build'
+# round-one ruling on #770 (fix it, items 1 and 2): the closure follows module loads; what the checker cannot parse it refuses; the Python side has a program list
+nsm cl1 "nosource a sibling module chain-verify.py loads (load_sibling) is read: a program started in chain_items.py" "starts make" bin/chain_items.py 'import ' 'import subprocess as _sp\n_sp.run(["make"])\nimport '
+nsm cl3 "nosource chain_common.py is read too" "starts make" bin/chain_common.py 'import ' 'import subprocess as _sp\n_sp.run(["make"])\nimport '
+nsm cl4 "nosource chain_hostile.py is read too" "starts make" bin/chain_hostile.py 'import ' 'import subprocess as _sp\n_sp.run(["make"])\nimport '
+rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"; printf 'x = 1\n' > "$work/nsm/bin/chain_zzz.py"
+python3 - "$work/nsm" <<'PY'
+import sys
+f = sys.argv[1] + "/bin/chain-verify.py"
+t = open(f).read()
+old = 'chain_items = load_sibling("chain_items")'
+assert t.count(old) == 1
+open(f, "w").write(t.replace(old, old + '\nchain_zzz = load_sibling("chain_zzz")', 1))
+PY
+expect caught "nosource a module chain-verify.py loads with load_sibling that is not a row of chain-scripts.json is refused" "not a row" nosource "$work/nsm"
+nsm sh1 "nosource a substitution inside an array assignment" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=("$(go build ./...)")'
+nsm sh2 "nosource a substitution inside a parameter expansion" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\necho ${y:-$(go build ./...)}'
+nsm sh3 "nosource a substitution inside [[ ]]" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n[[ $(go build ./...) ]]'
+nsm sh4 "nosource a computed command word" "cannot resolve" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n"${TOOL:-go}" build ./...'
+nsm sh5 "nosource a globbed command word" "cannot resolve" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n/usr/lo?al/bin/g? build'
+nsm sh6 "nosource trap -- with a build in the handler" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ntrap -- "go build ./..." EXIT'
+nsm sh7 "nosource find -exec" "starts a program" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nfind . -name x -exec go build {} \;'
+nsm sh8 "nosource awk system()" "awk with a program" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nawk "BEGIN{system(\\"go build\\")}"'
+nsm sh9 "nosource an interpreter variable with -c" "inline code" bin/build-apk.sh 'set -euo pipefail' 'set -euo pipefail\n"$PY3" -c "import os"'
+nsm sh10 "nosource an interpreter on a script that is not in the closure" "not in the closure" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/not-a-script-of-the-closure.py'
+nsm sh11 "nosource a process substitution" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ncat <(go build ./...)'
+nsm sh12 "nosource sed with the e flag" "sed with a script" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nsed -n "s/x/go build/e" f'
+nsm sh13 "nosource a substitution inside arithmetic" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(( $(go build ./...) ))'
+nsm py1 "nosource a Python program that is not on the script's list" "not on this script's list" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["curl", "x"])\nimport '
+nsm py2 "nosource executable= in a Python start" "executable=" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["git"], executable="/bin/sh")\nimport '
+nsm py3 "nosource exec() in a Python helper" "executes code" bin/build-archives.py 'import ' 'exec("x = 1")\nimport '
+nsm py4 "nosource a name bound to a program-starting function" "binds a program-starting function" bin/build-archives.py 'import ' 'import subprocess as _sp\nr = _sp.run\nimport '
+nsm py5 "nosource the interpreter on a file outside bin/ after an option" "not a repository script" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["python3", "-I", "tools/helper.py"])\nimport '
+nsm py6 "nosource exec() outside the reviewed loader function of chain-verify.py" "executes code" bin/chain-verify.py 'import ' 'import os\ndef _zz():\n    exec("x = 1")\nimport '
+nsm py7 "nosource the OPENSSL module constant is allowed only in chain_common.py" "not on this script's list" bin/chain-verify.py 'import ' 'import subprocess as _sp\nOPENSSL = "openssl"\n_sp.run([OPENSSL, "x"])\nimport '
+nsm py8 "nosource a program list is per script: git is not on build-archives.py's" "not on this script's list" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["git", "status"])\nimport '
+nsm pr1 "nosource melange is refused in any script but build-apk.sh (the probe has no allowance)" "melange outside" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"$MELANGE" build x.yaml'
 nsm bp23 "nosource melange started by a variable outside build-apk.sh" "melange outside" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"$MELANGE" build x.yaml'
 rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"
 replace "$work/ns/bin/build-stage-apk.sh" "$work/nsm/bin/build-stage-apk.sh" 'unset GH_TOKEN' 'unset GH_TOKEN\n# never go build here; make is not used\n"$GO_TOOL" version -m out/x' \
@@ -2833,9 +2857,7 @@ expect ok "AC1/AC2 the real stage-build.yml is exactly the Build grammar" "" sta
 expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild grammar" "" stage "$root/.github/workflows/stage-reproducibility.yml" \
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
-expect ok "nosource the real scripts the stage scripts start compile and run nothing outside melange" "" nosource "$root"
-nsout=$(judge nosource "$root" 2>&1) || true
-if grep -q '^NOTE open exception of rule 1 (bin/build-admit.py)' <<< "$nsout"; then ok "nosource the one open exception (the admission step's go run of tools/requirements) is named in every run"; else bad "nosource the open exception is not named in the judge's output"; fi
+expect caught "nosource the real tree: the admission step's go run of tools/requirements is REPORTED as a finding (rule 1 is not done until it moves out of Build)" "Go toolchain" nosource "$root"      # flips to ok in the pull request that moves it
 expect ok "AC2 the real bin/witnessed.sh is exactly the canonical helper" "" helper "$root/bin/witnessed.sh"
 expect ok "AC2 no real stage file or stage script names witness run" "" directwitness "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
@@ -3173,7 +3195,7 @@ if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1108
+EXPECT=1129
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
