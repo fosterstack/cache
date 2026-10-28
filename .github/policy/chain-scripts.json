@@ -2386,8 +2386,8 @@
         },
         {
           "rule": "deny",
-          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --signing-key \"$assembly_key\"",
-          "line_sha256": "15c3ae00acf6befcf023f19ef023d50948fc792321de98309406cfb4e3df4039",
+          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --namespace fosterstack --signing-key \"$assembly_key\"",
+          "line_sha256": "95d9b6925782623957ce098302010767251c2db7829d16a6f01d3cbad6843de1",
           "count": 1,
           "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
