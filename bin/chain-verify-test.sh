@@ -363,6 +363,10 @@ def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, ts
                     "material": [wrong, nm(P + "material/v0.1/file:digests.json"), subj[1]],
                     # the right file name but its digest set has only a gitoid, no sha256 key
                     "gitoidonly": [dict(subj[0], digest={k: v for k, v in subj[0]["digest"].items() if k != "sha256"}), subj[1]]}[coll_variant]
+        if not coll_variant:
+            idata = open(p("items.json"), "rb").read()
+            subj.append({"name": "https://witness.dev/attestations/product/v0.1/file:items.json",
+                         "digest": {"sha256": hashlib.sha256(idata).hexdigest(), "gitoid:sha1": "gitoid:blob:sha1:" + gitoid(idata, "sha1"), "gitoid:sha256": "gitoid:blob:sha256:" + gitoid(idata, "sha256")}})
         att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("environment", "git", "product", "command-run")]
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": coll_name or COLLECTION_NAME.get(wf, "build"), "attestations": att}, "subject": subj}).encode()
     if payload is None:
@@ -382,6 +386,10 @@ COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
 POLT = "https://witness.testifysec.com/policy/v0.1"
 D = {"image-production": "sha256:" + "a" * 64, "image-fips": "sha256:" + "b" * 64, "apk": "sha256:" + "c" * 64}
 def dj(name, d): json.dump(d, open(p(name), "w"))
+# items.json (a product of Build's record next to digests.json): the bind-items fixtures and, since 0707 fix 4, every normal Build record and Sign's byproducts use this one file
+ITEMS = {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "1" * 64,
+         "modules-sbom-fips": "sha256:" + "2" * 64, "modules-sbom-standard": "sha256:" + "3" * 64, "sbom-fips": "sha256:" + "4" * 64, "sbom-production": "sha256:" + "5" * 64}
+dj("items.json", ITEMS)
 dj("digests.json", D)
 dj("digests-other.json", dict(D, apk="sha256:" + "d" * 64))
 dj("digests-extra.json", dict(D, extra="sha256:" + "e" * 64))
@@ -895,13 +903,21 @@ dj("rekor-x3.json", {"entries": [entry("sign_" + n, 60 + i) for i, n in enumerat
 MAT = "https://witness.dev/attestations/material/v0.1/file:"
 PRD = "https://witness.dev/attestations/product/v0.1/file:"
 def _fsha(n): return hashlib.sha256(open(p(n), "rb").read()).hexdigest()
-dj("items.json", {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "1" * 64})
 dj("items-other.json", {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "2" * 64})
 def _prods(items_name, digests_name="digests.json"):
     return [{"name": PRD + "digests.json", "digest": {"sha256": _fsha(digests_name)}}, {"name": PRD + "items.json", "digest": {"sha256": _fsha(items_name)}},
             {"name": "https://witness.dev/attestations/git/v0.1/commithash:" + "f" * 40, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + "f" * 40}}]
 def _coll(step, subj): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": []}, "subject": subj}).encode()
 add("bi_ok", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+# 0707 fix 4: Build records that ARE bound to an items.json with one SBOM entry missing or malformed (so the refusal is about the entry, not about a hash mismatch)
+for _sb in ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production"):
+    dj("items-no-%s.json" % _sb, {k: v for k, v in ITEMS.items() if k != _sb})
+    add("si_no_" + _sb, STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-no-%s.json" % _sb)))
+dj("items-badsbom.json", dict(ITEMS, **{"sbom-fips": "sha256:" + "G" * 64}))
+add("si_bad", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-badsbom.json")))
+dj("items-dupkey.json", {})
+open(p("items-dupkey.json"), "w").write(json.dumps(ITEMS)[:-1] + ', "sbom-fips": "sha256:' + "4" * 64 + '"}')
+add("si_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-dupkey.json")))
 add("bi_otheritems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
 add("bi_noitems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
 add("bi_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
@@ -1436,6 +1452,84 @@ assert dep and dep[0]["digest"]["gitCommit"] == "0123456789abcdef0123456789abcde
 assert pr["runDetails"]["metadata"]["invocationId"].endswith("/fosterstack/cache/actions/runs/424242"), pr["runDetails"]
 assert pr["buildDefinition"]["externalParameters"]["workflow"].endswith("/.github/workflows/release.yml@refs/tags/v0.3.0"), pr["buildDefinition"]
 PY
+# 0707 fix 4: the signed provenance names the four SBOMs (byproducts), from items.json, which Sign binds to Build's verified record. This is an input Sign did not read before.
+python3 - "$work/sd/meta" "$work/items.json" <<'PY' 2> /dev/null && ok "0707-fix4 the provenance lists the four SBOMs of items.json as byproducts, sorted by name, with their sha256" || bad "0707-fix4 the byproducts of the provenance are not the four SBOM digests of items.json"
+import base64, json, os, sys
+st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
+items = json.load(open(sys.argv[2]))
+want = [{"name": n, "digest": {"sha256": items[n].split(":", 1)[1]}} for n in ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production")]
+assert st["predicate"]["runDetails"]["byproducts"] == want, st["predicate"]["runDetails"]
+PY
+# a copy of the fixtures' folder per refusal, changed in one way
+mkitems() { # mkitems NAME: $work/it-NAME/ holds digests.json and items.json copies
+  mkdir -p "$work/it-$1" && cp "$work/digests.json" "$work/it-$1/digests.json" && cp "$work/items.json" "$work/it-$1/items.json"; }
+SGI() { echo sign --check --signer cosign --build-record "$work/${2:-build_coll}.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/it-$1/digests.json" --out "$work/sd/$1"; }
+python3 - "$work/sd/ok" "$work/digests.json" <<'PY' 2> /dev/null && ok "001-AC2 sign writes SLSA provenance v1 whose subjects equal the digest list (names and values)" || bad "001-AC2 the provenance written by sign is missing or wrong"
+import base64, json, os, sys
+d, df = sys.argv[1], json.load(open(sys.argv[2]))
+env = json.load(open(os.path.join(d, "provenance.json")))
+st = json.loads(base64.b64decode(env["payload"]))
+assert st["_type"] == "https://in-toto.io/Statement/v1" and st["predicateType"] == "https://slsa.dev/provenance/v1", st
+assert {s["name"]: "sha256:" + s["digest"]["sha256"] for s in st["subject"]} == df and len(st["subject"]) == len(df)
+assert env["signatures"] and env["payloadType"] == "application/vnd.in-toto+json"
+# a real SLSA v1 predicate, not {}: buildDefinition and runDetails.builder.id (the Sign workflow identity)
+pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"), pr
+PY
+# rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before cosign is asked
+SGN() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
+GITHUB_SHA="" GITHUB_RUN_ID=424242 expect_refuse "R1a an empty GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-empty)
+[ ! -e "$work/sd/r1a-empty" ] && ok "R1a r1a-empty: no output folder was made" || bad "R1a r1a-empty: an output folder exists"
+GITHUB_SHA=0123456789abcdef GITHUB_RUN_ID=424242 expect_refuse "R1a a short GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-short)
+[ ! -e "$work/sd/r1a-short" ] && ok "R1a r1a-short: no output folder was made" || bad "R1a r1a-short: an output folder exists"
+GITHUB_SHA=0123456789ABCDEF0123456789ABCDEF01234567 GITHUB_RUN_ID=424242 expect_refuse "R1a an upper-case GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-upper)
+[ ! -e "$work/sd/r1a-upper" ] && ok "R1a r1a-upper: no output folder was made" || bad "R1a r1a-upper: an output folder exists"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID="" expect_refuse "R1a an empty GITHUB_RUN_ID is refused by sign, naming it" "github_run_id" $(SGN r1a-noid)
+[ ! -e "$work/sd/r1a-noid" ] && ok "R1a r1a-noid: no output folder was made" || bad "R1a r1a-noid: an output folder exists"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=42a expect_refuse "R1a a GITHUB_RUN_ID that is not digits is refused by sign, naming it" "github_run_id" $(SGN r1a-badid)
+[ ! -e "$work/sd/r1a-badid" ] && ok "R1a r1a-badid: no output folder was made" || bad "R1a r1a-badid: an output folder exists"
+# the provenance says what was built from which source in which run (SLSA v1 buildDefinition / runDetails), from GitHub's own variables
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/meta" || true
+python3 - "$work/sd/meta" <<'PY' 2> /dev/null && ok "001-AC2 the provenance names the source commit and the run (resolvedDependencies gitCommit, invocationId = the run URL) and the Sign workflow as builder" || bad "001-AC2 the provenance lacks the commit or the run"
+import base64, json, os, sys
+st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
+pr = st["predicate"]
+dep = pr["buildDefinition"]["resolvedDependencies"]
+assert dep and dep[0]["digest"]["gitCommit"] == "0123456789abcdef0123456789abcdef01234567", dep
+assert pr["runDetails"]["metadata"]["invocationId"].endswith("/fosterstack/cache/actions/runs/424242"), pr["runDetails"]
+assert pr["buildDefinition"]["externalParameters"]["workflow"].endswith("/.github/workflows/release.yml@refs/tags/v0.3.0"), pr["buildDefinition"]
+PY
+# 0707 fix 4: the signed provenance names the four SBOMs (byproducts), from items.json, which Sign binds to Build's verified record. This is an input Sign did not read before.
+python3 - "$work/sd/meta" "$work/items.json" <<'PY' 2> /dev/null && ok "0707-fix4 the provenance lists the four SBOMs of items.json as byproducts, sorted by name, with their sha256" || bad "0707-fix4 the byproducts of the provenance are not the four SBOM digests of items.json"
+import base64, json, os, sys
+st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
+items = json.load(open(sys.argv[2]))
+want = [{"name": n, "digest": {"sha256": items[n].split(":", 1)[1]}} for n in ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production")]
+assert st["predicate"]["runDetails"]["byproducts"] == want, st["predicate"]["runDetails"]
+PY
+# a copy of the fixtures' folder per refusal, changed in one way
+mkitems() { # mkitems NAME: $work/it-NAME/ holds digests.json and items.json copies
+  mkdir -p "$work/it-$1" && cp "$work/digests.json" "$work/it-$1/digests.json" && cp "$work/items.json" "$work/it-$1/items.json"; }
+SGI() { echo sign --check --signer cosign --build-record "$work/${2:-build_coll}.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/it-$1/digests.json" --out "$work/sd/$1"; }
+mkdir -p "$work/it-none" && cp "$work/digests.json" "$work/it-none/digests.json"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 no items.json next to the digest list is refused by sign" "sign|items.json" $(SGI none)
+[ ! -e "$work/sd/none" ] && ok "0707-fix4 none: no output folder was made" || bad "0707-fix4 none: an output folder exists"
+mkitems changed; python3 - "$work/it-changed/items.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["sbom-production"] = "sha256:" + "9" * 64; json.dump(d, open(sys.argv[1], "w"))
+PY
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an items.json that is not the file Build's record holds is refused" "sign|not the file build" $(SGI changed)
+mkitems unbound
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 a Build record with no items.json product is refused" "sign|exactly one is required" $(SGI unbound bi_noitems)
+mkitems twice
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 a Build record with two items.json products is refused" "sign|exactly one is required" $(SGI twice bi_dup)
+for miss in modules-sbom-fips modules-sbom-standard sbom-fips sbom-production; do
+  mkitems "no-$miss"; cp "$work/items-no-$miss.json" "$work/it-no-$miss/items.json"
+  GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an items.json bound to Build's record but without $miss is refused, naming it" "sign|$miss" $(SGI "no-$miss" "si_no_$miss")
+done
+mkitems bad; cp "$work/items-badsbom.json" "$work/it-bad/items.json"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an SBOM entry that is not sha256:<64 lower-case hex> is refused, naming it" "sign|sbom-fips" $(SGI bad si_bad)
+mkitems dup; cp "$work/items-dupkey.json" "$work/it-dup/items.json"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an items.json with a duplicate key is refused" "sign|duplicate key" $(SGI dup si_dup)
 python3 - "$work/sd/ok" <<'PY' 2> /dev/null && ok "001-AC3 nothing Sign leaves in its output folder is key material (no PRIVATE KEY text, no .key/.pem/.p12 file)" || bad "001-AC3 key material, or no output folder, in what sign wrote"
 import os, re, sys
 n = 0
@@ -2404,7 +2498,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=878
+EXPECT=903
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

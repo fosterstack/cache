@@ -1198,6 +1198,12 @@ def make_policy_from_template(a, tpl_path):
 def check_build_record(a):
     """What Sign must establish before it signs anything: Build's record is genuine, the digest list is the one Build attested,
     and the list has the right format. Returns (policy, digest-object). Signs nothing and calls no tool."""
+    pol, obj, _stmt = _check_build(a)
+    return pol, obj
+
+
+def _check_build(a):
+    """check_build_record's work; also returns the verified statement of Build's record (cmd_sign binds items.json to it)."""
     # two clearly named inputs: --template makes the per-tag policy here (the production Sign job), --policy is a finished one
     # (the dry run's own policy.json); exactly one is given
     pol = make_policy_from_template(a, a.template) if a.template else load_json(a.policy, "policy")
@@ -1217,7 +1223,39 @@ def check_build_record(a):
         stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, None, now, tmp)
     if product_digest(typed_subjects("sign", stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
-    return pol, parse_digest_bytes(d_bytes)
+    return pol, parse_digest_bytes(d_bytes), stmt
+
+
+# The SBOMs the signed provenance names (0707 fix 4): their sha256 come from items.json, which Sign reads from the folder of --digests and binds to Build's verified record
+# exactly as Release does (ITEMS_PRODUCT). This is an input Sign did not read before; a missing, unbound or malformed one is a refusal, never a provenance without them.
+SBOM_ITEMS = ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production")      # sorted: the byproducts are written in this order
+
+
+def sbom_byproducts(stmt, digests_path):
+    items_path = os.path.join(os.path.dirname(os.path.abspath(digests_path)), "items.json")
+    try:
+        with open(items_path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        refuse("sign", "items.json (next to the digest list) is missing or unreadable: the provenance names the SBOMs and they are listed there")
+    hits = [x for x in typed_subjects("sign", stmt) if x["name"] == ITEMS_PRODUCT]
+    if len(hits) != 1:
+        refuse("sign", "items.json: Build's record holds %d product subjects named file:items.json, exactly one is required" % len(hits))
+    if hits[0]["digest"].get("sha256") != hashlib.sha256(raw).hexdigest():
+        refuse("sign", "items.json is not the file Build's record holds (its sha256 differs from the record's product subject)")
+    try:
+        items = strict_json(raw)
+    except ValueError as ex:
+        refuse("sign", "items.json: not UTF-8 JSON or has a duplicate key (%s)" % ex)
+    if not isinstance(items, dict):
+        refuse("sign", "items.json: must be a JSON object")
+    out = []
+    for name in SBOM_ITEMS:
+        v = items.get(name)
+        if not isinstance(v, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", v):
+            refuse("sign", "items.json: %s is missing or is not sha256:<64 lower-case hex>" % name)
+        out.append({"name": name, "digest": {"sha256": v.split(":", 1)[1]}})
+    return out
 
 
 def cmd_check_build_record(a):
@@ -1225,7 +1263,7 @@ def cmd_check_build_record(a):
     print("ok")
 
 
-def provenance_statement(pol, obj, dry):
+def provenance_statement(pol, obj, dry, byproducts=None):
     """The SLSA v1 provenance Sign signs: what was built (the digests), from which commit and run (GitHub's own variables)."""
     repo, ref = pol["repository"], pol.get("ref", "")
     run_url = "%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", "https://github.com"), repo, os.environ.get("GITHUB_RUN_ID", "0"))
@@ -1243,6 +1281,8 @@ def provenance_statement(pol, obj, dry):
             "runDetails": {"builder": {"id": pol["stages"]["sign"]["identity"]}, "metadata": {"invocationId": run_url}},
         },
     }
+    if byproducts:
+        statement["predicate"]["runDetails"]["byproducts"] = byproducts
     if dry:
         statement["predicate"]["dryRun"] = True
     return statement
@@ -1324,17 +1364,18 @@ def cmd_sign(a):
     if a.signer != "cosign":
         refuse("sign", "the only signer is cosign")
     require_fresh_out(a.out)
-    pol, obj = check_build_record(a)
+    pol, obj, build_stmt = _check_build(a)
     dry = bool(pol.get("dry_run"))
     # rc-2 R1a: GITHUB_SHA and GITHUB_RUN_ID are written into the signed provenance, so Sign refuses (before cosign is asked, before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number, rather than signing the defaults "" and "0"
     if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
         refuse("sign", "provenance: GITHUB_SHA is not a 40-hex commit")
     if not re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")):
         refuse("sign", "provenance: GITHUB_RUN_ID is not a run number (digits)")
+    byproducts = sbom_byproducts(build_stmt, a.digests)       # before cosign is asked and before an output folder is made
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
     with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
-        statement = provenance_statement(pol, obj, dry)
+        statement = provenance_statement(pol, obj, dry, byproducts)
         with open(sp, "w") as f:
             json.dump(statement, f, sort_keys=True)
         make_out(a.out)
