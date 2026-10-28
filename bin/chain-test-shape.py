@@ -655,6 +655,114 @@ def listed(path, root):
     return bad
 
 
+# ---- nosource: the build is the only step that runs source code (sandboxed-build ratify, Oct 27 2026, rule 1) ------------------------
+# In Build and Rebuild the compile of our source and of its dependencies happens only inside melange's sandbox (bin/build-apk.sh); apko only lays packages down. This judge reads every
+# script the four stage scripts (and bin/witnessed-local.sh) can start, through the `runs` rows of chain-scripts.json, and refuses a step that could compile or run source code:
+#   * the Go toolchain with anything but `version` (`go version -m BINARY` reads the build information out of a file; it never runs it);
+#   * a compiler or build tool as a command word (NS_DENY);
+#   * the product binary itself (fscache, fscache.bin) as a command word;
+#   * melange outside bin/build-apk.sh, apko outside bin/assemble-image.sh and bin/apko-lock.sh.
+# Shell files are read line by line at the COMMAND position (after ; && || | ( ` $( then do sudo env exec and NAME=value words); Python files by their syntax tree: every call whose first argument
+# is a list literal is a program start, as is a call of os.system or os.popen or one with shell=True. A text scan over-reports by design (finite lists, no shell analysis; advisor decision b).
+# bin/install-scanner.sh is not read: the stage files pin which installs run (PRE_INSTALLS: witness, go, crane, melange, apko), and the compile branch of that script (govulncheck) is not one of them.
+NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh")
+NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+NS_DENY = ("make|cargo|npm|npx|yarn|pnpm|gcc|g\\+\\+|cc|clang|rustc|javac|mvn|gradle|pip3?|cmake|ninja|node|ruby|perl|java|fscache|fscache\\.bin")
+NS_PRE = r"""(?:^|[;&|({`]|\$\(|\bthen\b|\bdo\b|\bsudo\b|\benv\b|\bexec\b)\s*(?:\w+=\S*\s+)*["']?"""
+NS_GO = re.compile(NS_PRE + r"""(?:\$\{?GO_TOOL\}?|[\w$\{\}./-]*/go|go)["']?\s+(?!version\b)(\S+)""")
+NS_WORD = re.compile(NS_PRE + r"""(?:[\w$\{\}./-]*/)?(%s)["']?(?=\s|$)""" % NS_DENY)
+NS_ENGINE = re.compile(NS_PRE + r"""(?:\$\{?(?:MELANGE|APKO|melange_bin)\}?|[\w$\{\}./-]*/)?(melange|apko)["']?(?=\s|$)|""" + NS_PRE + r"""\$\{?(MELANGE|APKO|melange_bin)\}?""")
+NS_ENGINE_OK = {"melange": ("bin/build-apk.sh",), "apko": ("bin/assemble-image.sh", "bin/apko-lock.sh"), "MELANGE": ("bin/build-apk.sh",), "melange_bin": ("bin/build-apk.sh",), "APKO": ("bin/assemble-image.sh", "bin/apko-lock.sh")}
+NS_STARTS = {"run", "Popen", "check_output", "check_call", "call", "system", "popen", "execv", "execvp", "execve", "execl", "execlp", "spawnv"}
+
+
+def ns_closure(root):
+    import glob
+    try:
+        rows = {r.get("path"): r for r in json.load(open(root + "/.github/policy/chain-scripts.json")).get("scripts", [])}
+    except (OSError, ValueError):
+        return None, ["chain-scripts.json is unreadable"]
+    todo = [os.path.relpath(f, root) for g in NS_ROOTS for f in sorted(glob.glob(root + "/" + g))]
+    seen, bad = [], []
+    while todo:
+        p = todo.pop()
+        if p in seen or p in NS_SKIP:
+            continue
+        seen.append(p)
+        if p not in rows:
+            bad.append("%s is started by a stage script but is not a row of chain-scripts.json" % p)
+            continue
+        todo += rows[p].get("runs", [])
+    return sorted(seen), bad
+
+
+def ns_shell(path, text):
+    bad = []
+    for n, ln in enumerate(text.split("\n"), 1):
+        if ln.lstrip().startswith("#"):
+            continue
+        m = NS_GO.search(ln)
+        if m:
+            bad.append("%s:%d runs the Go toolchain with %s (only `version` reads without running)" % (path, n, m.group(1)))
+        m = NS_WORD.search(ln)
+        if m:
+            bad.append("%s:%d starts %s, which compiles or runs source code" % (path, n, m.group(1)))
+        m = NS_ENGINE.search(ln)
+        if m:
+            word = m.group(1) or m.group(2)
+            if path not in NS_ENGINE_OK.get(word, ()):
+                bad.append("%s:%d starts %s outside %s" % (path, n, word, " and ".join(NS_ENGINE_OK.get(word, ("its one script",)))))
+    return bad
+
+
+def ns_python(path, text):
+    import ast
+    bad = []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ["%s does not parse" % path]
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+        if any(k.arg == "shell" and not (isinstance(k.value, ast.Constant) and k.value.value is False) for k in node.keywords):
+            bad.append("%s:%d starts a program through a shell" % (path, node.lineno))
+        if name in ("system", "popen") and isinstance(f, ast.Attribute):      # whatever name the os module was imported under
+            bad.append("%s:%d starts a program through a shell (.%s)" % (path, node.lineno, name))
+        a = node.args[0] if node.args else None
+        if not isinstance(a, (ast.List, ast.Tuple)) or not a.elts or (name not in NS_STARTS and not (isinstance(f, ast.Name) and f.id.startswith("run"))):
+            continue
+        e0, e1 = a.elts[0], (a.elts[1] if len(a.elts) > 1 else None)
+        first = e0.value if isinstance(e0, ast.Constant) and isinstance(e0.value, str) else (e0.id if isinstance(e0, ast.Name) else None)
+        word = os.path.basename(first) if first else None
+        arg1 = e1.value if isinstance(e1, ast.Constant) else None
+        if word in ("go", "GO_TOOL") and arg1 != "version":
+            bad.append("%s:%d runs the Go toolchain with %r (only `version` reads without running)" % (path, node.lineno, arg1))
+        elif word and re.fullmatch(NS_DENY, word):
+            bad.append("%s:%d starts %s, which compiles or runs source code" % (path, node.lineno, word))
+        elif word in ("melange", "apko") and path not in NS_ENGINE_OK[word]:
+            bad.append("%s:%d starts %s outside %s" % (path, node.lineno, word, " and ".join(NS_ENGINE_OK[word])))
+        elif first is None and isinstance(e0, ast.Attribute) and e0.attr == "executable" and not (isinstance(arg1, str) and arg1.startswith("bin/")):
+            bad.append("%s:%d starts the interpreter on something that is not a repository script" % (path, node.lineno))
+    return bad
+
+
+def nosource(root):
+    seen, bad = ns_closure(root)
+    if seen is None:
+        return bad
+    for p in seen:
+        try:
+            text = open(root + "/" + p).read()
+        except OSError:
+            bad.append("%s is listed but missing" % p)
+            continue
+        bad += ns_python(p, text) if p.endswith(".py") else ns_shell(p, text)
+    return bad
+
+
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml",
          "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml", "sign-check": "stage-sign.yml", "release": "stage-promote.yml"}
@@ -971,7 +1079,7 @@ if __name__ == "__main__":
            "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2]),
            "listed": lambda: listed(sys.argv[2], sys.argv[3]), "archive-listed": lambda: archive_listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "localhelper": lambda: localhelper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
             "callers": lambda: callers(sys.argv[2]),
-            "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
+            "directwitness": lambda: directwitness(sys.argv[2:]), "nosource": lambda: nosource(sys.argv[2])}[cmd]()
     if bad and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py)
         print("FINDINGS-JSON " + json.dumps(bad), file=sys.stderr)
     print("; ".join(bad) or "ok")
