@@ -20,7 +20,48 @@ ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
+# The three long cases (about 130 of 146 seconds) start in the background at once; bg_collect prints each one's
+# line, in launch order, before the summary. <&0 keeps the heredoc a background check is given (a background job
+# would otherwise read /dev/null).
+BG_N=0
+check_bg() {
+  local n=$((BG_N+1))
+  BG_N=$n; BG_CASE[$n]=$CASE
+  ( "$@" >/dev/null 2>&1; echo $? >"$work/bg.$n.rc.tmp" && mv "$work/bg.$n.rc.tmp" "$work/bg.$n.rc" ) <&0 &
+  BG_PID[$n]=$!
+}
+bg_collect() {
+  local i
+  for ((i = 1; i <= BG_N; i++)); do
+    wait "${BG_PID[$i]}" 2>/dev/null || true
+    if [ "$(cat "$work/bg.$i.rc" 2>/dev/null)" = 0 ]; then ok "${BG_CASE[$i]}"; else bad "${BG_CASE[$i]}"; fi
+  done
+}
 none_match() { local fl=-E; if [ "$1" = -i ]; then fl=-iE; shift; fi; local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -r -q $fl "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
+# --- the background helper (CI speed, advisor 0693): check_bg starts a check, bg_collect prints its line later ---
+bgprobe() { # runs the helper in a subshell so its counters and output are the probe's own
+  ( BG_N=0
+    CASE="p1"; check_bg true
+    CASE="p2"; check_bg false
+    CASE="p3"; check_bg sh -c 'sleep 1; exit 0'
+    CASE="p4"; check_bg sh -c 'kill -9 $$'
+    CASE="p5"; check_bg bash -s <<'X'
+exit 3
+X
+    CASE="p6"; check_bg bash -s <<'X'
+exit 0
+X
+    bg_collect )
+}
+bgout=$(bgprobe 2>/dev/null) || true
+CASE="background checks: one line each in launch order; exit 0 is ok, any other exit (failure, killed) is FAIL"
+want=$(printf 'ok   p1\nFAIL p2\nok   p3\nFAIL p4\nFAIL p5\nok   p6')
+check test "$bgout" = "$want"
+CASE="background checks: a heredoc given to the check reaches it (a script that exits 3 is FAIL, not /dev/null)"
+check grep -qx 'FAIL p5' <<<"$bgout"
+CASE="background checks: a check that never reports is FAIL, not skipped (one line per launch)"
+check test "$(printf '%s\n' "$bgout" | grep -c '^\(ok  \|FAIL\) p')" -eq 6
+
 NOW="2026-10-05T12:00:00Z"
 dago() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40))
@@ -1017,7 +1058,7 @@ PY
 # --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
 # new tree re-reads only the files that changed. The verdicts must not move: byte-identical items, a changed callee invalidates its caller, a raise is never cached. ---
 CASE="file memo: over a real slice of this repository's history the memoised inventories equal the unmemoised ones, field for field, in history order and in a scrambled order"
-check python3 - "$aud" "$here/../../.." <<'PY'
+check_bg python3 - "$aud" "$here/../../.." <<'PY'
 import importlib.util, json, random, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 inv, root = pa.inv, sys.argv[2]
@@ -1173,7 +1214,7 @@ for _ in range(3):
         pass
 PY
 CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
-check python3 - "$aud" "$here/../../.." <<'PY'
+check_bg python3 - "$aud" "$here/../../.." <<'PY'
 import importlib.util, json, subprocess, sys, tempfile, os
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 inv, root = pa.inv, sys.argv[2]
@@ -1547,7 +1588,7 @@ for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
     must_refuse(("hub next", nxt), lambda: age._registry_push(img))
 PY
 CASE="structural closure: an unexpected AttributeError/KeyError/TypeError/IndexError/ValueError while reading an answer ends the daily audit with exit 2, 'cannot do its job' and no 'as of' sentence"
-check python3 - "$aud" "$root" "$work" <<'PY'
+check_bg python3 - "$aud" "$root" "$work" <<'PY'
 import contextlib, importlib.util, io, json, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 fx = sys.argv[3] + "/struct-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
@@ -1881,5 +1922,8 @@ for fn in dict.fromkeys(CASES.values()):
     net = pa.LiveNet(["gh"], ".")      # a fresh object per case: no stub leaks from one to the next
     fn()
 PY
+bg_collect
+CASE="background checks: the three long cases were each started once and each reported once"
+check test "$BG_N" -eq 3
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

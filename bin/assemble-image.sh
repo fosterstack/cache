@@ -216,7 +216,7 @@ sealed build "$(basename "$rendered")" "$pkg:$version" "$tmp/$variant.tar" --off
 # ---- 6. the layout directory, the digests and the SBOM ----
 "$PY3" -I -B bin/oci-digest.py unpack "$tmp/$variant.tar" "$out/$variant" "$out/$variant.digest" "$out/$variant.manifests" || die "the image layout is unusable (see above)" 1
 # the chain's table has ONE image SBOM per variant, <variant>-sbom/sbom.json: the one file apko wrote, or the multi-architecture index SBOM
-# (sbom-index.spdx.json) when it wrote one per architecture too; anything else cannot be told apart, so it is refused (TO-VERIFY against a real apko run)
+# (sbom-index.spdx.json) when it wrote one per architecture too; anything else cannot be told apart, so it is refused
 shopt -s nullglob
 sbomfiles=("$tmp/sbom"/*)
 shopt -u nullglob

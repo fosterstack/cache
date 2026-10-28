@@ -1211,7 +1211,7 @@ requirements:
     statement: >
       Every release shall ship three image variants — production, -debug,
       -fips — each a multi-arch manifest for linux/amd64 and linux/arm64.
-    source: [README.md "Image variants", docs/verify-images.md, .goreleaser.yaml]
+    source: [README.md "Image variants", docs/verify-images.md]
     tier: community
     introduced: v0.1.0
     confidence: documented
@@ -1328,7 +1328,7 @@ requirements:
       build can enable FIPS mode at runtime (GODEBUG=fips140=on) without
       containing the frozen validated module, so evidence must establish
       the module identity, not just the mode.
-    source: [README.md "Image variants", docs/install.md FIPS section, .goreleaser.yaml fscache-fips]
+    source: [README.md "Image variants", docs/install.md FIPS section]
     tier: community
     introduced: v0.1.0
     confidence: documented
@@ -3362,7 +3362,7 @@ requirements:
     title: Build runs sealed, under Witness, after admission, and hands Sign only a digest list
     statement: >
       The Build stage shall be one workflow file and one identity holding two jobs, an apk matrix job (one runner per native architecture) and one assemble job, each directly on a GitHub-hosted VM and never in a container, in which Witness is installed first (pinned by checksum) and everything else runs as one committed script under Witness; that script first admits the tagged commit with every check the old admission stage made, then builds the package and the images with the cache lane's two scripts inside a network-less namespace, checks the built server reports its real version, and writes digests.json, the only thing Sign accepts; Witness records each Build step inside the Build job with a throwaway key that the job generates and discards, so that signature carries no trust and no verifier accepts it; the Sign stage checks the record's product digests against the artifacts it receives and signs the record keyless under its own identity with the Sigstore timestamp; the record never contains the job's identity-token variables; Build holds no secret, no registry credential and no identity token.
-    source: [.github/workflows/stage-build.yml, bin/build-stage.sh, bin/build-admit.py, bin/build-version-check.py]
+    source: [.github/workflows/stage-build.yml, bin/build-stage-apk.sh, bin/build-stage-assemble.sh, bin/build-admit.py, bin/build-version-check.py]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 58, 62, 63, 68 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0338); snapshot mode (AC12 to AC14), advisor-approved read-back Oct 9 (snapshot callers); the AC13 closed-name extension and the strike of the clause that said bind has no snapshot-rapk step were accepted by the advisor (Oct 9 night); the AC7 always-upload clause and the GITHUB_ACTIONS guard sentence, advisor confirmed Oct 10 (lane AC, not owner rule text)
@@ -3387,7 +3387,7 @@ requirements:
       probe `sudo unshare -n python3 bin/net-probe.py` exits 101) and any other failure is non-zero and not 4; the image digest is the OCI index digest as
       the registry shows it, written by assemble-image.sh as OUT/<variant>.digest next to OUT/<variant>.tar and OUT/<variant>.manifests (one line per
       platform manifest), checked by bin/oci-digest.py; apko is always run with the lock and from the fixed relative config paths build/apko.yaml and
-      build/apko-fips.yaml (the scripts' defaults; no stage passes --apko-config). PROPOSED/UNVERIFIED in the tests (no cache test fixes them): the archive
+      build/apko-fips.yaml (the scripts' defaults; no stage passes --apko-config). Not fixed by any cache test: the archive
       layout constants, the apkindex, inputs-manifest, SBOM and binary item layouts (bin/chain-test-harness.py documents the oracle), the binary path inside
       the fips apk, bin/build-archives.py, whether sudo's PATH finds melange and apko on a runner, and the linux arm64 pin of Witness. Stated deviation:
       digests.json and items.json sit at the repository root (not under witness-build/) so that Witness, which names product subjects relative to the
@@ -3398,7 +3398,7 @@ requirements:
       with bin/chain-verify.py bind --step apk|rapk --record R --dir D --as out (tested against the real subcommand in bin/chain-bind-test.sh); (f) the apk
       digest is cache's `apk-tool.py digest` BY NAME in its sha256:<hex> form, and the tests do not hard-code which sections it covers (cache is changing it
       from data only to control plus data, signature excluded): they only require that it differs from the whole-file sha256 and ignores the signature; (g)
-      digests.json adds the four Linux archives (PROPOSED, advisor to confirm); (h) release candidate tags (PROPOSED/UNVERIFIED until cache confirms,
+      digests.json adds the four Linux archives; (h) release candidate tags (PROPOSED/UNVERIFIED until cache confirms,
       cache-3f): the stage passes --version = the tag minus the leading v (0.3.0-rc.1, never stripped of -rc), cache's driver accepts X.Y.Z and X.Y.Z-rc.N
       and names the apk fscache-0.3.0_rc1-r0.apk, and the stage names no apk file, so both forms run in the behaviour cases; (i) the consumer of record-env
       is bin/chain-verify.py verify for build, rebuild and check records: PR 1 FOLLOW-UP (PR 1's engine learns it at merge on chain-v030; until then record-
@@ -3424,7 +3424,7 @@ requirements:
       `!inputs.dry-run && ...` conjuncts on other jobs and `if: ${{ inputs.dry-run }}` on sign, which are replaced by G at the merge of PR 1 into chain-v030
       (flagged to the advisor); (t) the helper also unsets ACTIONS_RUNTIME_TOKEN and ACTIONS_RUNTIME_URL; (u) KNOWN LIMIT, advisor's call, pinned lines
       unchanged: the outer step shell still holds ACTIONS_ID_TOKEN_REQUEST_* in /proc/<pid>/environ and the runner user has passwordless sudo, so the
-      protection is the network cut plus reviewed scripts; PROPOSED: the Witness step starts with `exec bash bin/witnessed.sh ...`, advisor to decide.
+      protection is the network cut plus reviewed scripts.
       STATUS: the 17 ACs of REQ-CHAIN-004 and REQ-CHAIN-005 are `approved` in this pull request, because the requirements validator requires every AC of a
       requirement introduced under an approved baseline to carry that status; the rules they serve were RATIFIED by the owner Oct 9 2026
       (ops/docs/ratify/2026-10-09-v030-rules.md, rule 50 shape included) and the advisor validated the ACs at step 5 (handoffs 0338 and 0341). Still marked
@@ -3433,7 +3433,7 @@ requirements:
       CHAIN-005-AC5).
       Snapshot mode (AC12 to AC14; advisor-approved read-back Oct 9 (snapshot callers), 2026-10-09-pipeline-readback-snapshot-callers.md): the proof
       workflows used to build through the OLD stage-build.yml (mode: snapshot) and stage-image.yml; PR 2 deletes stage-image.yml, so they call the new Build
-      in snapshot mode and take the images from its assemble job. PROPOSED/UNVERIFIED, cache owns the scanner steps and must change these (this lane does
+      in snapshot mode and take the images from its assemble job. Cache owns the scanner steps and changes these (this lane does
       not edit them): (1) scan.yml: drop the jobs assemble and assemble-b (stage-image.yml) and rewrite `reproducibility`, which compares their
       outputs.digests, to compare Build's own digests.json against Rebuild-style second assembly or drop it (a decision for cache and the owner: Rebuild is
       never called in snapshot mode); (2) scan.yml `scanner` and main-candidate-rescan.yml `panel-grype`, `panel-scout`, `panel-inspector`, `panel-google`
@@ -3507,7 +3507,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC3
-        given: "bin/build-stage.sh"
+        given: "the four committed scripts bin/build-stage-apk.sh, bin/build-stage-assemble.sh, bin/build-stage-rebuild-apk.sh and bin/build-stage-rebuild-assemble.sh"
         when: "its commands are read in order"
         then: "in each of the four committed scripts bin/build-stage-apk.sh, -assemble.sh, -rebuild-apk.sh and -rebuild-assemble.sh every line is exactly the line the grammar names (no dispatch, no extra command, no suffix, no option the grammar does not spell out, no control character other than tab and newline, so no carriage return either); a long line may be broken after a space with a trailing backslash on a command line (a comment is never continued, and a backslash anywhere else at the end of a line is refused). The apk script's first command is the admission script, followed by unset GH_TOKEN so that cache's scripts never see the token; then SOURCE_DATE_EPOCH is assigned from the digits cache's bin/build-apk.sh --print-source-date-epoch prints for the tagged commit and exported on a second line (so a failing print stops the job); then cache's bin/build-apk.sh runs for each variant with --version the tag minus the leading v, and the version check runs on each variant's apk (it finds the apk itself and extracts its binary); then the items fragment is written to out/items-apk.json. The assemble script makes the tag's policy, verifies the signed Witness record of each architecture's apk job, binds every file of each downloaded apk artifact to the product the record holds under the same name BEFORE it assembles the melange repository, exports SOURCE_DATE_EPOCH, runs bin/assemble-image.sh for each variant, builds the four Linux archives and merges the items, which writes digests.json and items.json at the repository root; no script contains a network fetch, a failure-ignoring step, a sudo, sysctl or unshare of its own, a direct melange or apko call, a proxy or module-fetch setting, or a signing-key variable or flag; and each script is a row of .github/policy/chain-scripts.json with its sha256; in the stage file the apk job installs melange only and the assemble job apko only, each by the pinned installer line (`bash bin/install-build-tools.sh melange` or `bash bin/install-build-tools.sh apko`) as one step right after the Witness (and Go) install and so before admission, with no env and no secret"
         verification: { method: unit, release_blocking: true }
@@ -3519,7 +3519,7 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC5
-        given: "the list of checks and steps in stage-admission.yml at main"
+        given: "the list of checks and steps of the old admission stage, kept in bin/chain-admission-old-steps.txt"
         when: "bin/build-admit.py is compared with it"
         then: "every check has a named counterpart in build-admit.py list-checks, and the only steps with no counterpart are the custom source-admission predicate and its upload, replaced by Witness's own signed record because rule 63 allows no FosterStack record type; a check added to the old stage without a counterpart fails the comparison"
         verification: { method: unit, release_blocking: true }
@@ -3545,7 +3545,7 @@ requirements:
       - id: REQ-CHAIN-004-AC9
         given: "the digests.json that Build writes and the signed Witness record"
         when: "bin/chain-verify.py sign --check reads them"
-        then: "digests.json and items.json are written at the repository root, so Witness records the product subjects file:digests.json (the subject PR 1's sign --check reads, REQ-CHAIN-001-AC2: PR 1 owns the schema) and file:items.json (the subject rebuild-compare reads); digests.json holds exactly ten digests (PROPOSED, advisor to confirm): the two image index digests, the four apk digests as cache's apk-tool.py digest gives them (by name, so the sections it covers are cache's to change; they are not the whole-file sha256 and they ignore the signature, because Release compares package contents and re-signs, rule 22) and the four Linux archives (archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64, archive-fips-linux-arm64), so that Sign's provenance covers everything Release publishes (rules 35 and 51); each is exactly what the oracle computes from the scripts' outputs, equal to the same item in items.json, and passes PR 1's schema (names of lower-case letters, digits and hyphens, values sha256 and 64 lower-case hex); a digests.json forged by any other write, or with any other name, extra field or code, is refused"
+        then: "digests.json and items.json are written at the repository root, so Witness records the product subjects file:digests.json (the subject PR 1's sign --check reads, REQ-CHAIN-001-AC2: PR 1 owns the schema) and file:items.json (the subject rebuild-compare reads); digests.json holds exactly ten digests: the two image index digests, the four apk digests as cache's apk-tool.py digest gives them (by name, so the sections it covers are cache's to change; they are not the whole-file sha256 and they ignore the signature, because Release compares package contents and re-signs, rule 22) and the four Linux archives (archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64, archive-fips-linux-arm64), so that Sign's provenance covers everything Release publishes (rules 35 and 51); each is exactly what the oracle computes from the scripts' outputs, equal to the same item in items.json, and passes PR 1's schema (names of lower-case letters, digits and hyphens, values sha256 and 64 lower-case hex); a digests.json forged by any other write, or with any other name, extra field or code, is refused"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC10
@@ -3563,7 +3563,7 @@ requirements:
       - id: REQ-CHAIN-004-AC12
         given: "the Build stage file and bin/witnessed.sh"
         when: "they are read, and the snapshot scripts run against the fakes of bin/chain-build-wiring-test.sh"
-        then: "stage-build.yml takes exactly one more input, mode (type string, default release; release or snapshot), and a guard step right after the checkout refuses any other value (a third value would skip both Witness steps and upload nothing, green); each of its two jobs has two Witness steps, one per mode and each gated by if on the mode: the release step is exactly what it is today (admission, the tag, the version check), the snapshot step runs bin/witnessed.sh with the closed step name snapshot-apk (job apk) or snapshot-build (job assemble) and the scripts bin/build-stage-snapshot-apk.sh and bin/build-stage-snapshot-assemble.sh, with no GH_TOKEN; the helper writes a snapshot record to the same directory as a release record (witness-apk, witness-build) under the name STEP-collection.json, so the name inside it carries the snapshot marker; in snapshot mode there is no tag check and no admission (bin/build-admit.py is not run), no version check, no policy and no verify (a snapshot record is refused by them), no Sign (no caller of snapshot mode calls it), no publish, no GitHub attestation and no hostile hook (callers pass no hostile input); the snapshot scripts pass cache's scripts the fixed version 0.0.0-rc.1 (PROPOSED/UNVERIFIED: cache confirms that build-apk.sh and assemble-image.sh accept it), bind the downloaded apk directories to the snapshot-apk records (chain-verify.py bind --step snapshot-apk), and write digests.json and items.json like a release; because cache's driver (rule 24) accepts a binary only when its Go build stamp is exactly v<version> and vcs.revision is the source HEAD, bin/build-stage-snapshot-apk.sh makes a LOCAL lightweight tag v0.0.0-rc.1 at HEAD in the job's own checkout (git tag --force) before any cache script and never pushes it; a v* tag that HEAD already carries (scan.yml also runs on a push of a v* tag) is ACCEPTED (advisor ruling, Oct 9) but Go stamps the highest semver tag at HEAD, and cache's driver reads the buildinfo mod line, so the script first REFUSES, before any git tag, to run outside GitHub Actions (GITHUB_ACTIONS must be exactly true, else it exits 2 naming the reason: deleting tags is destructive on a developer's clone, where an unpushed local tag would be lost, and a local run belongs in a throwaway clone), then DELETES every other local v* tag that points at HEAD (git tag -d in the job's own checkout; nothing is pushed or fetched, no ref of the remote is touched) and then makes v0.0.0-rc.1, and fails the job naming the tag if HEAD still carries any tag other than v0.0.0-rc.1 (a non-v* tag is not ours to delete; nothing is restored); the version stays 0.0.0-rc.1, and the resulting record is refused by release verification as a snapshot record or a snapshot version (AC13, AC15); no snapshot script ever pushes a tag; snapshot apks are signed with the assembly key only (no --signing-key, and cache's driver refuses the release key if a runner holds it, so Build never holds it); no snapshot script or step reads from GitHub (no gh, no admission): the snapshot Witness steps carry no GH_TOKEN, the scripts never call gh or bin/build-admit.py, and a run with a fake gh on the path records zero calls, so the checks, statuses and pull-requests read grants that the called stage requests (they are static job permissions) are unused in snapshot mode; Rebuild's snapshot mode is REQ-CHAIN-005-AC7; release.yml never passes mode to either stage (its build call passes exactly hostile and its rebuild call passes no input), so the live chain on a tag push is unchanged"
+        then: "stage-build.yml takes exactly one more input, mode (type string, default release; release or snapshot), and a guard step right after the checkout refuses any other value (a third value would skip both Witness steps and upload nothing, green); each of its two jobs has two Witness steps, one per mode and each gated by if on the mode: the release step is exactly what it is today (admission, the tag, the version check), the snapshot step runs bin/witnessed.sh with the closed step name snapshot-apk (job apk) or snapshot-build (job assemble) and the scripts bin/build-stage-snapshot-apk.sh and bin/build-stage-snapshot-assemble.sh, with no GH_TOKEN; the helper writes a snapshot record to the same directory as a release record (witness-apk, witness-build) under the name STEP-collection.json, so the name inside it carries the snapshot marker; in snapshot mode there is no tag check and no admission (bin/build-admit.py is not run), no version check, no policy and no verify (a snapshot record is refused by them), no Sign (no caller of snapshot mode calls it), no publish, no GitHub attestation and no hostile hook (callers pass no hostile input); the snapshot scripts pass cache's scripts the fixed version 0.0.0-rc.1, bind the downloaded apk directories to the snapshot-apk records (chain-verify.py bind --step snapshot-apk), and write digests.json and items.json like a release; because cache's driver (rule 24) accepts a binary only when its Go build stamp is exactly v<version> and vcs.revision is the source HEAD, bin/build-stage-snapshot-apk.sh makes a LOCAL lightweight tag v0.0.0-rc.1 at HEAD in the job's own checkout (git tag --force) before any cache script and never pushes it; a v* tag that HEAD already carries (scan.yml also runs on a push of a v* tag) is ACCEPTED (advisor ruling, Oct 9) but Go stamps the highest semver tag at HEAD, and cache's driver reads the buildinfo mod line, so the script first REFUSES, before any git tag, to run outside GitHub Actions (GITHUB_ACTIONS must be exactly true, else it exits 2 naming the reason: deleting tags is destructive on a developer's clone, where an unpushed local tag would be lost, and a local run belongs in a throwaway clone), then DELETES every other local v* tag that points at HEAD (git tag -d in the job's own checkout; nothing is pushed or fetched, no ref of the remote is touched) and then makes v0.0.0-rc.1, and fails the job naming the tag if HEAD still carries any tag other than v0.0.0-rc.1 (a non-v* tag is not ours to delete; nothing is restored); the version stays 0.0.0-rc.1, and the resulting record is refused by release verification as a snapshot record or a snapshot version (AC13, AC15); no snapshot script ever pushes a tag; snapshot apks are signed with the assembly key only (no --signing-key, and cache's driver refuses the release key if a runner holds it, so Build never holds it); no snapshot script or step reads from GitHub (no gh, no admission): the snapshot Witness steps carry no GH_TOKEN, the scripts never call gh or bin/build-admit.py, and a run with a fake gh on the path records zero calls, so the checks, statuses and pull-requests read grants that the called stage requests (they are static job permissions) are unused in snapshot mode; Rebuild's snapshot mode is REQ-CHAIN-005-AC7; release.yml never passes mode to either stage (its build call passes exactly hostile and its rebuild call passes no input), so the live chain on a tag push is unchanged"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC13
@@ -3608,7 +3608,7 @@ requirements:
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
     statement: >
       The Rebuild stage shall be one workflow file and one identity (an apk job on each native architecture, rapk on ubuntu-24.04 and rapk-arm on ubuntu-24.04-arm, and an assemble job that needs both) on fresh GitHub-hosted VMs that first verifies Build's record as Sign signed it, then builds the same commit with the same pinned tools, the same two scripts and the same build date, compares every digest with Build's record, and records only a verdict naming each differing item (the Rebuild job's Witness record is made under a throwaway key and trusted by nobody; the second job of the Sign stage signs it keyless), and runs alongside Check after Sign, needing Build and Sign.
-    source: [.github/workflows/stage-reproducibility.yml, bin/build-stage.sh, bin/chain-verify.py, .github/workflows/release.yml]
+    source: [.github/workflows/stage-reproducibility.yml, bin/build-stage-rebuild-apk.sh, bin/build-stage-rebuild-assemble.sh, bin/chain-verify.py, .github/workflows/release.yml]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 31, 54, 58, 59, 62, 64, 70 (owner RATIFIED Oct 9 2026; advisor read-back approved, handoff 0338)
@@ -3629,7 +3629,7 @@ requirements:
       # owner's Oct 13 latitude. Earlier wording, kept here:
       #   then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against"
       - id: REQ-CHAIN-005-AC2
-        given: "bin/build-stage.sh run in Rebuild"
+        given: "the Rebuild scripts bin/build-stage-rebuild-apk.sh and bin/build-stage-rebuild-assemble.sh run in Rebuild"
         when: "it rebuilds"
         then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against; the assemble script copies the digest list it verified (build-in/digests.json, the file stage-start checked against Build's record) byte for byte to digests.json at the repository root, as its last line before the comparison, so that Rebuild's own signed record carries the product file:digests.json with the same bytes as Build's and Release's stage-start for Rebuild (--previous rebuild --digests witness-build/digests.json) accepts it; Rebuild writes no other digest list"
         verification: { method: unit, release_blocking: true }
@@ -3653,7 +3653,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-005-AC6
-        given: "the Rebuild stage file and bin/build-stage.sh"
+        given: "the Rebuild stage file and the Rebuild scripts bin/build-stage-rebuild-apk.sh and bin/build-stage-rebuild-assemble.sh"
         when: "they are read next to Build's"
         then: "Rebuild assembles each image variant with the same script, the same arguments, the same lock flow and the same exported SOURCE_DATE_EPOCH as Build, so a digest that differs is a real difference; it never runs apko directly or from another directory or config path (the same rule as REQ-CHAIN-004-AC11)"
         verification: { method: ci-workflow, release_blocking: true }
@@ -4547,7 +4547,7 @@ requirements:
       - id: REQ-REFRESH-001-AC23
         given: "bin/refresh-inputs.sh"
         when: "it is read and run"
-        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it ONLY in occurrences of those ten fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it ONLY in occurrences of those ten fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 16, 32; same form as REQ-BUILDAPK-001-AC3)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC24
@@ -4653,7 +4653,7 @@ requirements:
     origin: v0.3.0 rules 26, 27, 29, 30, 44 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md) and the advisor's Oct 9 ruling (option A) as read back in ops/handoffs/outbox/2026-10-09-cache-readback-archive-tooling.md (approved by handoff 0423 item 1)
     confidence: implementation-only
     notes: >
-      PROPOSED by the helper: every AC of this requirement is new English and needs the owner's ratification (AC9 is the tool-path convention, the same form as REQ-BUILDAPK-001-AC3). Not in this change: the refresh job's workflow edit, the real archive contents (the first refresh run creates them), registry deletion and retention, and any crane install beyond the version pinned in stage-promote.yml (the fixed path of crane is /usr/local/bin/crane, a TEST-SUBST line). Symlinks are refused by the push and by verify, and the refresh layout does not use one (advisor 0425, amended REQ-REFRESH-001-AC13): <arch>/APKINDEX.tar.gz is a regular-file COPY of index/APKINDEX-<sha256>.tar.gz, so the same sha256 is listed in the pointer under both names (archive-test covers a directory holding both). The refresh job writes build/archive.json from archive-push.sh's printed digest plus the sorted file list, with no new script. Crane (advisor 0425): installed at /usr/local/bin/crane with stage-promote.yml's exact pin (go install github.com/google/go-containerregistry/cmd/crane@v0.22.1); no workflow edit in this change. The version annotation of a layer is parsed from an apk file name (<name>-<version>-r<N>.apk) and is empty for other files.
+      Every AC of this requirement is new English (AC9 is the tool-path convention, the same form as REQ-BUILDAPK-001-AC3). Not in this change: the refresh job's workflow edit, the real archive contents (the first refresh run creates them), registry deletion and retention, and any crane install beyond the version pinned in stage-promote.yml (the fixed path of crane is /usr/local/bin/crane, a TEST-SUBST line). Symlinks are refused by the push and by verify, and the refresh layout does not use one (advisor 0425, amended REQ-REFRESH-001-AC13): <arch>/APKINDEX.tar.gz is a regular-file COPY of index/APKINDEX-<sha256>.tar.gz, so the same sha256 is listed in the pointer under both names (archive-test covers a directory holding both). The refresh job writes build/archive.json from archive-push.sh's printed digest plus the sorted file list, with no new script. Crane (advisor 0425): installed at /usr/local/bin/crane with stage-promote.yml's exact pin (go install github.com/google/go-containerregistry/cmd/crane@v0.22.1); no workflow edit in this change. The version annotation of a layer is parsed from an apk file name (<name>-<version>-r<N>.apk) and is empty for other files.
     acceptance_criteria:
       - id: REQ-ARCHIVE-001-AC1
         given: "a directory in the refresh job's archive layout (keys/, <arch>/<name>-<version>.apk, <arch>/index/), holding only regular files"
@@ -4706,7 +4706,7 @@ requirements:
       - id: REQ-ARCHIVE-001-AC9
         given: "bin/archive-push.sh, bin/archive-pull.sh and bin/archive-verify.py"
         when: "they are read and run"
-        then: "the shell scripts name crane, python3, mktemp and rm by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path, also not inside nested substitutions or quoted words), every python3 runs as python3 -I -B, there is no test hook (no test-mode variable), and bin/archive-test.sh runs a copy that differs from each file ONLY in occurrences of those four fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 27, 44; same form as REQ-BUILDAPK-001-AC3 and REQ-REFRESH-001-AC23; PROPOSED by the helper: this AC needs the owner's ratification)"
+        then: "the shell scripts name crane, python3, mktemp and rm by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path, also not inside nested substitutions or quoted words), every python3 runs as python3 -I -B, there is no test hook (no test-mode variable), and bin/archive-test.sh runs a copy that differs from each file ONLY in occurrences of those four fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 27, 44; same form as REQ-BUILDAPK-001-AC3 and REQ-REFRESH-001-AC23)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-IMAGE-001
@@ -4942,4 +4942,23 @@ requirements:
         when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
         then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
         verification: { method: unit, release_blocking: false }
+        status: approved
+
+  # owner RATIFIED Oct 24 2026 (ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md, item 2); kept as a rule, not built now; LLM-enforced
+  - id: REQ-CI-006
+    title: A sharded persona suite proves each case passed exactly once
+    statement: >
+      If the persona suite is split across cores, the run first lists every case and then proves each case passed exactly once across the shards: none skipped,
+      none doubled, none failed, no dead shard. The split is built only when the persona job is again the slowest CI job.
+    source: [ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md]
+    tier: community
+    introduced: v0.3.0
+    origin: owner Oct 24 2026 (kept REQ-CI-006 as a rule, not built now)
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-CI-006-AC1
+        given: "the persona suite split across cores"
+        when: "the run starts and then ends"
+        then: "it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard"
+        verification: { method: inspection, release_blocking: false }
         status: approved

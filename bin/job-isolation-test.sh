@@ -12,7 +12,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0
+mkdir "$work/r"; seq=0
 judge() { python3 - "$1" <<'PY'
 import glob, json, os, re, sys, yaml
 wf = sys.argv[1]
@@ -263,9 +263,16 @@ PY
 }
 check() { local name=$1 want=$2 dir=$3 out rc=0
   out=$(judge "$dir" 2>&1) || rc=$?
-  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } || { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }; then pass=$((pass+1)); echo "ok   $name"
-  else failn=$((failn+1)); echo "FAIL $name (want $want, rc=$rc): $out"; fi; }
-mutate() { local name=$1 py=$2 dir="$work/$1"
+  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } ||
+     { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }
+  then echo "ok   $name"
+  else echo "FAIL $name (want $want, rc=$rc): $out"; fi; }
+# The cases do not depend on each other (each mutates its own copy), so they run four at a time. A case writes its one
+# result file; the end prints the files in call order and counts each once, so a case that died without a line failed.
+slot() { seq=$((seq+1)); "$@" > "$work/r/$(printf %04d "$seq")" 2>&1 &
+  while [ "$(jobs -r | wc -l)" -ge "${JI_JOBS:-4}" ]; do sleep 0.2; done; }
+mutate() { slot mutate_one "$@"; }
+mutate_one() { local name=$1 py=$2 dir="$work/$1"
   rm -rf "$dir"; mkdir -p "$dir"; cp "$root"/.github/workflows/*.y*ml "$dir/"
   python3 - "$dir" <<PY
 import os, re, sys, yaml
@@ -279,7 +286,7 @@ PY
   check "$name" "${mwant:-bad}" "$dir"; }
 
 export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the pr_gate check reads (mutated copies of the workflows keep the real one)
-check "the real workflows" ok "$root/.github/workflows"
+slot check "the real workflows" ok "$root/.github/workflows"
 # AC1: a build added to a job that holds a credential
 # rc-5a F: a non-grype matrix leg must fail
 mutate "scan.yml scanner job: the refusal of a non-grype matrix leg removed (rc-5a F)" '
@@ -449,8 +456,13 @@ edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scan
 mutate "pr_gate-driven matrix job loses its exclusion (scan.yml reads another key)" '
 edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scanners.json", "jq -c \x27.scanners\x27 .github/policy/scanners.json", 1))'
 echo '{"scanners": ["grype"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "govulncheck"]}' > "$work/sc-bad.json"
-out=$(ISO_SCANNERS="$work/sc-bad.json" judge "$root/.github/workflows" 2>&1) && rc=0 || rc=$?
-if [ "$rc" != 0 ] && grep -Fq "pr_gate holds govulncheck" <<< "$out"; then pass=$((pass+1)); echo "ok   a pr_gate list that holds govulncheck is refused (the matrix job would build it)"; else failn=$((failn+1)); echo "FAIL a pr_gate list holding govulncheck passed or was mis-reported: rc=$rc $out"; fi
+prgate_case() { local out rc
+  out=$(ISO_SCANNERS="$work/sc-bad.json" judge "$root/.github/workflows" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" != 0 ] && grep -Fq "pr_gate holds govulncheck" <<< "$out"; then
+    echo "ok   a pr_gate list that holds govulncheck is refused (the matrix job would build it)"
+  else echo "FAIL a pr_gate list holding govulncheck passed or was mis-reported: rc=$rc $out"; fi
+}
+slot prgate_case
 # the Check stage hand-over: the build job, the output, and download-artifact's digest check left on
 mutate "the Check job stops needing govulncheck-build" '
 edit("stage-verify.yml", lambda s: s.replace("    needs: govulncheck-build\n", "", 1))'
@@ -514,5 +526,13 @@ edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda 
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
 edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n"))'
 
+wait
+pass=0 failn=0
+for f in "$work"/r/*; do
+  cat "$f"
+  case $(head -n 1 "$f") in "ok   "*) pass=$((pass+1)) ;; *) failn=$((failn+1)) ;; esac
+done
+files=$(ls "$work/r" | wc -l)
+[ "$files" -eq "$seq" ] || { echo "FAIL $files result files for $seq cases"; failn=$((failn+1)); }
 echo "job-isolation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
