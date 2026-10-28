@@ -40,7 +40,10 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # token (contents + pull-requests) to open the changelog PR after that tag — both deliberate, reviewed
            # consumers of that credential (Sonnet #158 r3, REL-DECIDE-01: the earlier comment wrongly said decide
            # never touches the App's secrets)
-           ("release.yml", "decide"), ("release.yml", "patch-notes")}
+           ("release.yml", "decide"), ("release.yml", "patch-notes"),
+           # REQ-DEP-005-AC3: queue-publish mints the App token with checks:write only to publish the merge-queue verdict
+           # (queue-judge holds no credential) - a new consumer, reviewed and listed here
+           ("agent-review-gate.yml", "queue-publish")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)
