@@ -11,6 +11,7 @@ NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go 
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
+import copy
 import fnmatch
 import hashlib
 import shlex
@@ -242,6 +243,8 @@ def _exempt_local_call(raw, job):
     """REQ-SUP-001-AC19 (the closed form, orchestrator Oct 14): a job calling exactly ./.github/workflows/<plain name>.yml, a workflow of this tree with a
     workflow_call trigger and jobs, with NO with: block (absent or empty: no caller can hand it anything), is no item: the called file is inventoried itself.
     Any with: value, any other local form, a step, keeps the call an item that cannot pass."""
+    if _LOCAL_CALL.fullmatch(raw):
+        _READS[0].append((raw[2:], raw[2:] in _TREE[0], _FILES[0].get(raw[2:], "") if raw[2:] in _TREE[0] else ""))   # what this answer read outside the file (_memo_file_items)
     if not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0] or job.get("with"):
         return False
     try:
@@ -470,6 +473,10 @@ _INPUT_CTX = [""]   # a composite action's input definitions: part of a release 
 _TREE = [frozenset()]   # the paths of the tree being inventoried that are read as workflows: a local reusable-workflow call is judged against it (REQ-SUP-001-AC19)
 _FILES = [{}]           # and their text
 _JOB_SUMS = [[]]
+_READS = [[]]           # the (path, in the workflow set, text) of every other file one file's analysis looked at: only a local workflow call does (REQ-SUP-001-AC30)
+_FILE_MEMO = {}         # (path, text) -> [(reads, items)]: a file's items are worked out once however many revisions hold its bytes (REQ-SUP-001-AC30)
+_FILE_RUNS = [0]        # how many files were worked out (a test counts them)
+_MEMO_ON = [True]       # a test turns the reuse off to compare
 
 
 _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
@@ -692,90 +699,115 @@ def _walk(node, out, labels, path="", in_step=False):
             _walk(v, out, labels, path, in_step=in_step)
 
 
+def _file_items(path, text):
+    """The items one file yields, from its path and bytes and, for a workflow that calls a workflow of the same tree, that called file's bytes (_FILES, _TREE)."""
+    found = []
+    if path == "bin/install-scanner.sh":
+        found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
+        found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
+        found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
+        found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
+        sjoined, sraw = _script_lines(text)
+        sctx = _assign_context(sjoined, sraw)
+        for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
+            before = len(found)
+            _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
+            for it in found[before:]:
+                it.src = (path, lid)
+    elif path == PERSONA_TOOLS:
+        found = _persona_tool_items(path, text)
+    elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
+        found = [Item("tool", "file:" + path, "(file)")]
+        found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
+        found[0].step = "content:" + hashlib.sha256((path + "\0" + text).encode("utf-8", "replace")).hexdigest()      # what an installer's *-version-file selects: a changed content is a changed key
+    elif path.endswith(".sh"):
+        found = []
+        joined = re.sub(r"\\\n\s*", " ", text).split("\n")
+        if len(joined) > MAX_LINES_PER_FILE:
+            raise RuntimeError(f"{path} has {len(joined)} lines: more than the {MAX_LINES_PER_FILE} this check reads")
+        assigns = {}
+        for ln in joined:
+            am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
+            if am:
+                assigns[am.group(1)] = am.group(2)
+        _j2, _raw2 = _script_lines(text)
+        gctx = _assign_context(_j2, _raw2) if len(_j2) == len(joined) else [[ln for ln in joined]] * len(joined)   # a line count that differs is read whole: fail closed
+        graw = _raw2 if len(_raw2) == len(joined) else joined
+        for ln, lid, actx, rawln in zip(joined, _line_ids(text), gctx, graw):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
+            refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
+            before = len(found)
+            node = {"run": ln, "env": refs} if refs else {"run": ln}
+            node["_raw"] = rawln
+            if actx:
+                node["_assign"] = actx
+            _step(node, found, {})
+            for it in found[before:]:
+                it.src = (path, lid)
+            if len(found) > MAX_ITEMS_PER_FILE:
+                raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
+    elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
+        found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
+        for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
+            body = ln.split("#", 1)[0].strip()
+            if not body or body.startswith("--hash="):
+                continue
+            if _REQ_PIN.match(body):
+                continue                      # name==version (with its --hash options)
+            found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest() + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
+    else:
+        labels = {}
+        for m in re.finditer(r"uses:\s*([^\s#'\"]+)\s*#\s*(\S+)", text):
+            labels[m.group(1)] = m.group(2)
+        try:
+            nodes = 0
+            for ev in yaml.parse(text, Loader=yaml.BaseLoader):  # events, not expanded nodes: an alias bomb is refused before anything is built
+                if isinstance(ev, yaml.AliasEvent):
+                    raise RuntimeError(f"{path} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
+                nodes += 1
+                if nodes > 200000:
+                    raise RuntimeError(f"{path} is too large to read safely")
+            doc = yaml.load(text, Loader=yaml.BaseLoader)
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
+            raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
+        if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
+            _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
+        try:
+            _walk(doc, found, labels, "")
+        finally:
+            _INPUT_CTX[0] = ""
+        for it in found:
+            if it.src is None:
+                it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
+    return found
+
+
+def _memo_file_items(path, text):
+    """_file_items, reused: the same path and bytes give the same items unless a local workflow call read another file whose bytes or presence differ now. Each
+    answer is stored with what it read outside the file and is used only when every one of those reads gives the same today; a copy is handed out, the callers change items (REQ-SUP-001-AC30)."""
+    if _MEMO_ON[0]:
+        for reads, items in _FILE_MEMO.get((path, text), ()):
+            if all((n in _TREE[0]) == tree and (_FILES[0].get(n, "") if tree else "") == t for n, tree, t in reads):
+                return copy.deepcopy(items)
+    _READS[0] = []
+    _FILE_RUNS[0] += 1
+    try:
+        found = _file_items(path, text)
+        reads = tuple(_READS[0])
+    finally:
+        _READS[0] = []
+    if _MEMO_ON[0]:
+        _FILE_MEMO.setdefault((path, text), []).append((reads, copy.deepcopy(found)))
+    return found
+
+
 def inventory(files):
     """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
     items = {}
     _TREE[0] = frozenset(n for n in files if any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS))
     _FILES[0] = files
     for path, text in sorted(files.items()):
-        found = []
-        if path == "bin/install-scanner.sh":
-            found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
-            found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
-            found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
-            found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
-            sjoined, sraw = _script_lines(text)
-            sctx = _assign_context(sjoined, sraw)
-            for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
-                before = len(found)
-                _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
-                for it in found[before:]:
-                    it.src = (path, lid)
-        elif path == PERSONA_TOOLS:
-            found = _persona_tool_items(path, text)
-        elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
-            found = [Item("tool", "file:" + path, "(file)")]
-            found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
-            found[0].step = "content:" + hashlib.sha256((path + "\0" + text).encode("utf-8", "replace")).hexdigest()      # what an installer's *-version-file selects: a changed content is a changed key
-        elif path.endswith(".sh"):
-            found = []
-            joined = re.sub(r"\\\n\s*", " ", text).split("\n")
-            if len(joined) > MAX_LINES_PER_FILE:
-                raise RuntimeError(f"{path} has {len(joined)} lines: more than the {MAX_LINES_PER_FILE} this check reads")
-            assigns = {}
-            for ln in joined:
-                am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
-                if am:
-                    assigns[am.group(1)] = am.group(2)
-            _j2, _raw2 = _script_lines(text)
-            gctx = _assign_context(_j2, _raw2) if len(_j2) == len(joined) else [[ln for ln in joined]] * len(joined)   # a line count that differs is read whole: fail closed
-            graw = _raw2 if len(_raw2) == len(joined) else joined
-            for ln, lid, actx, rawln in zip(joined, _line_ids(text), gctx, graw):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
-                refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
-                before = len(found)
-                node = {"run": ln, "env": refs} if refs else {"run": ln}
-                node["_raw"] = rawln
-                if actx:
-                    node["_assign"] = actx
-                _step(node, found, {})
-                for it in found[before:]:
-                    it.src = (path, lid)
-                if len(found) > MAX_ITEMS_PER_FILE:
-                    raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
-        elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
-            found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
-            for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
-                body = ln.split("#", 1)[0].strip()
-                if not body or body.startswith("--hash="):
-                    continue
-                if _REQ_PIN.match(body):
-                    continue                      # name==version (with its --hash options)
-                found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest() + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
-        else:
-            labels = {}
-            for m in re.finditer(r"uses:\s*([^\s#'\"]+)\s*#\s*(\S+)", text):
-                labels[m.group(1)] = m.group(2)
-            try:
-                nodes = 0
-                for ev in yaml.parse(text, Loader=yaml.BaseLoader):  # events, not expanded nodes: an alias bomb is refused before anything is built
-                    if isinstance(ev, yaml.AliasEvent):
-                        raise RuntimeError(f"{path} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
-                    nodes += 1
-                    if nodes > 200000:
-                        raise RuntimeError(f"{path} is too large to read safely")
-                doc = yaml.load(text, Loader=yaml.BaseLoader)
-            except yaml.YAMLError as e:
-                mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
-                raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
-            if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
-                _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
-            try:
-                _walk(doc, found, labels, "")
-            finally:
-                _INPUT_CTX[0] = ""
-            for it in found:
-                if it.src is None:
-                    it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
+        found = _memo_file_items(path, text)
         nfile = 0
         for it in found:
             if ("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid:
