@@ -1030,10 +1030,10 @@ jobs:
       - name: the merge queue's base and head are named (REQ-DEP-005-AC2)
         if: github.event_name == 'merge_group'
         env:
-          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
-          [ -n "$QUEUE_BASE" ] && [ -n "$QUEUE_HEAD" ] || { echo "::error::the merge queue named no base or head commit: nothing to compare, so this check fails"; exit 1; }
+          [ -n "$QUEUE_BASE_SHA" ] && [ -n "$QUEUE_HEAD" ] || { echo "::error::the merge queue named no base or head commit: nothing to compare, so this check fails"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:

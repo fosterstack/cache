@@ -92,7 +92,7 @@ step "match opens nothing"                            "$w/match.json"   "$w/no-i
 # marker check as the second listed exception"): it is a pull-request-only check, so it carries a job-level `if` and
 # reports skipped, which GitHub counts as success, on
 # the queue. The review gate's check (REQ-DEP-005-AC3) is not excepted: the App publishes it on the queue's head from
-# agent-review-gate.yml's `queue-judge` job, which runs
+# agent-review-gate.yml's `queue-publish` job (after the secret-free `queue-judge` job), which run
 # on the workflow_run event from the default branch's copy (not on merge_group) and fails closed; the dedicated checks
 # below pin that wiring.
 mq="$(python3 -I - "$repo" <<'PY'
@@ -104,13 +104,18 @@ req = [c["context"] for c in json.load(open(repo + "/.github/policy/required-che
 TABLE = {"analyze (go)": ("codeql.yml", "analyze"), "acceptance-gradle": ("acceptance.yml", "acceptance-gradle"),
          "acceptance-maven (1.2.0)": ("acceptance.yml", "acceptance-maven"), "acceptance-maven (1.2.3)": ("acceptance.yml", "acceptance-maven"),
          "reproducibility": ("scan.yml", "reproducibility"), "scan": ("scan.yml", "scan"), "pin-age": ("supply-chain.yml", "pin-age")}
-TABLE["auditor-review-gate"] = ("agent-review-gate.yml", "queue-judge")
-for c in ("test", "lint", "gosec", "govulncheck", "allowlist", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor", "dependency-review", "fips140-only", "requirements", "coverage", "vendor"):
-    TABLE[c] = ("ci.yml", c)
+TABLE["auditor-review-gate"] = ("agent-review-gate.yml", "queue-publish")
+# a required context that is the name or the key of a job in ci.yml maps to that job; none is listed by hand
+for jk, jb in (wf["ci.yml"].get("jobs") or {}).items():
+    for c in {jk, (jb or {}).get("name")} - {None, "marker-gate"}:
+        TABLE.setdefault(c, ("ci.yml", jk))
 EXCEPT = {"marker-gate"}
 out = []
 def res(ok, label): out.append(("ok   " if ok else "FAIL ") + label)
-unknown = sorted(set(req) - set(TABLE) - EXCEPT)
+def unknown_of(contexts): return sorted(set(contexts) - set(TABLE) - EXCEPT)
+unknown = unknown_of(req)
+res(unknown_of(req + ["made-up-context"]) == ["made-up-context"] and "made-up-context" not in TABLE,
+    "a required context found neither in the table nor as a ci.yml job is reported unknown (fixture)")
 res(set(req) - set(TABLE) == EXCEPT, "every required context is known to the merge-queue table (unknown: %s)" % unknown)
 res(EXCEPT == {"marker-gate"} and "auditor-review-gate" in TABLE and "auditor-review-gate" in req,
     "the one merge-queue exception is marker-gate (pull requests only); the review gate's check has a table row")
@@ -145,7 +150,7 @@ sc = json.dumps(wf["supply-chain.yml"]["jobs"]["pin-age"]); dr = json.dumps(wf["
 res("merge_group.base_sha" in sc and "merge_group.head_sha" in sc, "pin-age reads the queue's base_sha and head_sha")
 res("merge_group.base_sha" in dr and "merge_group.head_sha" in dr, "dependency-review reads the queue's base_sha and head_sha")
 for nm, blob in (("pin-age", sc), ("dependency-review", dr)):
-    res("merge_group" in blob and re.search(r"_SHA:\?|QUEUE_BASE.*QUEUE_HEAD|\[ -n ", blob) is not None, "%s: a queue run with an empty base or head fails (a refusal step names it)" % nm)
+    res("merge_group" in blob and re.search(r"_SHA:\?|QUEUE_BASE_SHA.*QUEUE_HEAD|\[ -n ", blob) is not None, "%s: a queue run with an empty base or head fails (a refusal step names it)" % nm)
 
 # REQ-DEP-005-AC1: marker-gate is pull-request-only by a job-level condition; ci.yml's triggers carry no filter (a
 # filtered workflow leaves the required check Pending and blocks the queue)
@@ -177,10 +182,15 @@ res(isinstance(ron, dict) and "merge_group" not in ron,
     "agent-review-gate.yml has no merge_group trigger (a queue ref is not the default branch; "
     "no job here runs the group's copy)")
 qj = rg["jobs"].get("queue-judge")
+qp = rg["jobs"].get("queue-publish")
 res(qj is not None, "agent-review-gate.yml has the job queue-judge")
-qj = qj or {}
-res("github.event.workflow_run.event == 'merge_group'" in str(qj.get("if")),
+res(qp is not None, "agent-review-gate.yml has the job queue-publish")
+qj = qj or {}; qp = qp or {}
+MQ_COND = "github.event.workflow_run.event == 'merge_group'"
+res(MQ_COND in str(qj.get("if")),
     "queue-judge runs only if github.event.workflow_run.event == 'merge_group' (%r)" % qj.get("if"))
+res(MQ_COND in str(qp.get("if")) and "!cancelled()" in str(qp.get("if")),
+    "queue-publish runs only for a merge_group CI run and not on cancellation (%r)" % qp.get("if"))
 for jn, jb in rg["jobs"].items():
     if is_agent(jb):
         res(isinstance(ron, dict) and "merge_group" not in ron,
@@ -188,9 +198,33 @@ for jn, jb in rg["jobs"].items():
     blob = json.dumps(jb)
     if "create-github-app-token" in blob or "AUDITOR_APP_PRIVATE_KEY" in blob:
         res(is_agent(jb), "job %s mints or reads the App token only inside environment: agent" % jn)
-res(is_agent(qj),
-    "queue-judge is an environment: agent job (it holds the App token; main's copy, so the "
-    "environment's default-branch rule is met)")
+# the split: queue-judge judges only (no environment, no secret, no token); queue-publish holds the App token
+qjtxt = json.dumps(qj); qptxt = json.dumps(qp)
+res("environment" not in qj and not is_agent(qj), "queue-judge has no environment (it holds no secret)")
+res(qj.get("permissions") == {"contents": "read"}, "queue-judge permissions are contents: read only (%r)" % qj.get("permissions"))
+res("secrets." not in qjtxt and "create-github-app-token" not in qjtxt and "AUDITOR_APP" not in qjtxt and "permission-checks" not in qjtxt,
+    "queue-judge names no secret and mints no App token")
+res("verdict" in (qj.get("outputs") or {}), "queue-judge exports its verdict as a job output (%r)" % (qj.get("outputs"),))
+res(is_agent(qp), "queue-publish is an environment: agent job (it holds the App token; main's copy)")
+res(qp.get("needs") == "queue-judge" or qp.get("needs") == ["queue-judge"], "queue-publish needs queue-judge (%r)" % qp.get("needs"))
+res(qp.get("permissions") == {}, "queue-publish has permissions: {} (%r)" % qp.get("permissions"))
+qtok = [st for st in qp.get("steps") or [] if str(st.get("uses", "")).startswith("actions/create-github-app-token")]
+res(len(qtok) == 1 and {k for k in (qtok[0].get("with") or {}) if k.startswith("permission-")} == {"permission-checks"}
+    and (qtok[0].get("with") or {}).get("permission-checks") == "write",
+    "queue-publish mints one App token, checks:write only")
+res("actions/checkout" not in qptxt, "queue-publish does not check anything out")
+for st in qp.get("steps") or []:
+    nm = st.get("name") or st.get("uses") or st.get("run", "")[:30]
+    r = st.get("run") or ""
+    res(not re.search(r"(^|[\s;&|(])git\s", r), "queue-publish step %r runs no git" % nm)
+    res(not re.search(r"\$\{\{[^}]*workflow_run", r),
+        "queue-publish step %r never inlines workflow_run fields into the script (env vars only)" % nm)
+res("github.event.workflow_run.head_sha" in qptxt and "^[0-9a-f]{40}$" in qptxt,
+    "queue-publish takes the head from workflow_run.head_sha and validates it as 40 lowercase hex")
+res("needs.queue-judge.outputs.verdict" in qptxt and "success" in qptxt,
+    "queue-publish reads the verdict from needs.queue-judge.outputs.verdict")
+res("auditor-review-gate" in qptxt and "check-runs" in qptxt,
+    "queue-publish publishes the auditor-review-gate check run on that head")
 for st in qj.get("steps") or []:
     w = st.get("with") or {}
     nm = st.get("name") or st.get("uses") or st.get("run", "")[:30]
@@ -203,11 +237,22 @@ for st in qj.get("steps") or []:
         "queue-judge step %r checks nothing of the group out" % nm)
     res(not re.search(r"\$\{\{[^}]*workflow_run", r),
         "queue-judge step %r never inlines workflow_run fields into the script (env vars only)" % nm)
-qtxt = json.dumps(qj)
-res("agent/bin/queue-gate-judge.sh" in qtxt, "queue-judge runs main's agent/bin/queue-gate-judge.sh")
-res("github.event.workflow_run.head_sha" in qtxt, "queue-judge takes the queue head from workflow_run.head_sha")
-res("auditor-review-gate" in qtxt and "check-runs" in qtxt,
-    "queue-judge publishes the auditor-review-gate check run on that head")
+res("agent/bin/queue-gate-judge.sh" in qjtxt, "queue-judge runs main's agent/bin/queue-gate-judge.sh")
+res("github.event.workflow_run.head_sha" in qjtxt, "queue-judge takes the queue head from workflow_run.head_sha")
+# pin-age refuses an env var named *_BASE, *_BASE_URL or *_URL whose value is an expression (a "download source"):
+# the new and changed queue steps use other names (RUN_LINK, QUEUE_BASE_SHA)
+SRC = re.compile(r"^[A-Z][A-Z0-9_]*_(BASE_URL|BASE|URL)$")
+def src_envs(job):
+    bad = []
+    for e in [job.get("env") or {}] + [st.get("env") or {} for st in job.get("steps") or []]:
+        bad += [k for k, v in e.items() if SRC.match(k) and "${{" in str(v)]
+    return bad
+for nm, jb in (("queue-judge", qj), ("queue-publish", qp), ("ci.yml dependency-review", wf["ci.yml"]["jobs"]["dependency-review"]),
+               ("supply-chain.yml pin-age", wf["supply-chain.yml"]["jobs"]["pin-age"])):
+    res(src_envs(jb) == [], "%s: no env var named like *_BASE, *_BASE_URL or *_URL takes an expression (%s)" % (nm, src_envs(jb)))
+res(src_envs({"env": {"X_URL": "${{ a }}"}}) == ["X_URL"] and src_envs({"env": {"RUN_LINK": "${{ a }}"}}) == [],
+    "the download-source name check fires on a *_URL expression and not on RUN_LINK")
+res("RUN_URL" not in qjtxt and "RUN_URL" not in qptxt, "the queue jobs name their run link RUN_LINK, not RUN_URL")
 
 # the sweep also covers the queue's refs and posts at most once per head
 sws = "\n".join(st.get("run", "") for st in rg["jobs"]["sweep"]["steps"])
