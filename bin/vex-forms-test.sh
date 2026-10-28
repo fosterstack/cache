@@ -175,8 +175,9 @@ check("all three variants' digests are required", ok)
 real = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
 check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]) == len(real["statements"]))
 rc = V.csaf(real, IMAGES, "v0.3.0")
-check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
-      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"]["relationships"]))
+# each package statement stays scoped to the one component version it names: busybox 1.37.0 and the Go standard library 1.27.2 (GO-2026-6809)
+check("the real file's CSAF passes the loader's checks; its package statements stay scoped to busybox 1.37.0 and the Go standard library 1.27.2",
+      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-busybox@1.37.0", "component-stdlib@1.27.2"})
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
