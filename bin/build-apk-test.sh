@@ -163,6 +163,13 @@ ordered "rule 38a" "sysctl first, then the sealed melange call" '^sudo sysctl -w
 sd "rule 38a" "melange runs directly under sudo unshare -n (the network cut at the kernel)" '^sudo .*unshare -n .*melange build ' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sn "rule 38a" "no docker, podman, kubectl, --privileged or container image anywhere in the calls" 'docker|podman|kubectl|--privileged|cgr\.dev|@sha256' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sd "rule 38a" "melange uses the bubblewrap runner" '^melange build .*--runner bubblewrap' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"   # melange pkg/cli/build.go:68, pkg/container/bubblewrap_runner.go:43
+sd "0707-fix2" "melange gets the namespace fosterstack (the supplier and package URL of the apk's own SBOM read fosterstack, not unknown)" '^melange build .*--namespace fosterstack( |$)' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
+sn "0707-fix2" "melange gets the namespace exactly once and never another" '--namespace (unknown|wolfi|alpine)|--namespace fosterstack .*--namespace' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
+sbo=$(mo); run_s "${bae[@]}" "$BA" "${ba_args[@]}" --out "$sbo"
+t "0707-fix3" "build-apk.sh writes the module SBOM with the shipped package and its apk version as the root package" python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1] + '/fscache-modules.spdx.json')); r = [p for p in d['packages'] if p['SPDXID'] == 'SPDXRef-fscache'][0]
+assert (r['name'], r['versionInfo'], r['supplier']) == ('fscache', '0.3.0-r0', 'Organization: FosterStack'), r" "$sbo"
 sn "rule 38a" "no network address in the melange call, no proxy" '://|[Pp][Rr][Oo][Xx][Yy]' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sd "rule 12" "the Go tarball is pre-seeded in the cache dir as sha256:<hex> (melange --cache-dir, fetch finds it offline)" "^melange build .*--cache-dir " "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"   # build.go:1028-1040 mounts it at /var/cache/melange; pipelines/fetch.yaml:85-90
 gohex=$(python3 -c "import hashlib;print(hashlib.sha256(open('$fx/archive/go/go1.27.2.linux-amd64.tar.gz','rb').read()).hexdigest())")
@@ -1307,18 +1314,20 @@ import sys
 src = open(sys.argv[1]).read()
 CALL = 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")'
 M = {
- "sc-no-runner":   [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --signing-key')],
- "sc-docker":      [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner docker --signing-key')],
- "sc-runner-eq":   [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner=bubblewrap --signing-key')],
- "sc-two-runners": [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --runner docker --signing-key')],
+ "sc-no-runner":   [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --namespace fosterstack --signing-key')],
+ "sc-docker":      [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --runner docker --namespace fosterstack --signing-key')],
+ "sc-runner-eq":   [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --runner=bubblewrap --namespace fosterstack --signing-key')],
+ "sc-two-runners": [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --runner bubblewrap --runner docker --namespace fosterstack --signing-key')],
  "sc-no-unshare":  [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$melange_bin" "${margs[@]}")')],
  "sc-unshare-r":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -r "$melange_bin" "${margs[@]}")')],
  "sc-no-env-i":    [(CALL, 'call=("$ENVBIN" "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-not-build":   [('margs=(build ', 'margs=(sign ')],
- "sc-short-runner": [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" -r bubblewrap --signing-key')],
- "sc-config":      [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --config /tmp/x.yaml --signing-key')],
- "sc-extra-flag":  [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --extra-packages x --signing-key')],
- "sc-dup-arch":    [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --arch aarch64 --runner bubblewrap --signing-key')],
+ "sc-no-namespace": [('--runner bubblewrap --namespace fosterstack --signing-key', '--runner bubblewrap --signing-key')],
+ "sc-other-namespace": [('--namespace fosterstack', '--namespace wolfi')],
+ "sc-short-runner": [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" -r bubblewrap --namespace fosterstack --signing-key')],
+ "sc-config":      [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --runner bubblewrap --config /tmp/x.yaml --namespace fosterstack --signing-key')],
+ "sc-extra-flag":  [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --runner bubblewrap --extra-packages x --namespace fosterstack --signing-key')],
+ "sc-dup-arch":    [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --arch aarch64 --runner bubblewrap --namespace fosterstack --signing-key')],
  "sc-env-extra":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" EXTRA=1 "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-env-less":    [(CALL, 'call=("$ENVBIN" -i "${sealed[@]:1}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-bare-melange": [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n melange "${margs[@]}")')],
@@ -1346,6 +1355,8 @@ rp_callcheck sc-no-unshare "unshare -n" "a melange call without unshare is refus
 rp_callcheck sc-unshare-r "unshare -n" "unshare with another option instead of -n is refused"
 rp_callcheck sc-no-env-i "env and -i" "a melange call without env -i is refused (the environment is not closed)"
 rp_callcheck sc-not-build "melange build" "a melange call that is not the build subcommand is refused"
+rp_callcheck sc-no-namespace "--namespace fosterstack" "a melange call without the namespace is refused (the apk's SBOM would read unknown)"
+rp_callcheck sc-other-namespace "--namespace fosterstack" "a melange call with another namespace is refused"
 rp_callcheck sc-short-runner "not one of the sealed call's options" "a short runner flag is not one of the sealed call's options"
 rp_callcheck sc-config "not one of the sealed call's options" "a config file option is refused"
 rp_callcheck sc-extra-flag "not one of the sealed call's options" "any other melange option is refused"
@@ -1362,7 +1373,7 @@ d = json.load(open(sys.argv[1]))
 assert d == {"closed": {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C"}, "from_environment": ["SOURCE_DATE_EPOCH"]}, d
 PY
 H="$root/bin/build-apk-helper.py"
-t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items, unshare -n, melange build, one --runner bubblewrap)" python3 -I -B "$H" sealed-call /usr/bin/env -i A=1 B=2 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64
+t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items, unshare -n, melange build, one --runner bubblewrap)" python3 -I -B "$H" sealed-call /usr/bin/env -i A=1 B=2 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --namespace fosterstack --arch x86_64
 t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap --arch x86_64 2>/dev/null"
 t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call env -i 2>/dev/null"
 t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner --arch bubblewrap 2>/dev/null"

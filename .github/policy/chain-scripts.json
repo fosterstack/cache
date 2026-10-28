@@ -2144,7 +2144,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "ebdc5d8d9844107e40767c9766c8abc3887161dba185bf568222bdb3e4f7db4b"
+      "sha256": "503b1400324ab99fdd320313e5177391d536a93ff372d79b0a9ce0d66389934b"
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2239,7 +2239,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "46a6124af1bd913ac7a2323c318f4837f2e48a66478bd07bcdc7c2e62914749c",
+      "sha256": "9d16065219f3e54428cc750a0836570889f99d73a2c45737829586e6827b2daf",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2573,7 +2573,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
-      "sha256": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26"
+      "sha256": "53c99dc251e3642d6ec328b11e530d5e198a98b3ba2676f9e8de3cba24c26e4c"
     },
     {
       "path": "bin/vendor-provenance.py",
