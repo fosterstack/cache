@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-005-AC3
-# Offline fixture and mutation suite for .github/agent/bin/queue-gate-judge.sh (cache#542): the judge that the review gate runs, from
+# Offline fixture and mutation suite for .github/agent/bin/queue-gate-judge.sh (cache#542): the judge that the review
+# gate runs, from
 # the default branch's copy, over a merge queue's temporary branch, and that must fail closed. (The AC name AC3 is
 # added to requirements.yaml later by the lead; it does not exist there yet.)
 #
@@ -26,7 +27,8 @@
 #     PYTHONPATH=<dir holding yaml -> .github/agent/fixtures/testlib/pyyaml> PIN_WIRING_JUDGE_GIT=HEAD_SHA
 #         bash .github/agent/tests/pin-wiring-test.sh
 #     PYTHONPATH=<same> SCAN_GUARD_JUDGE_GIT=HEAD_SHA bash bin/scan-no-workflow-call-test.sh
-#   The suite builds a fixture tree in a temp dir (.github/agent/bin/queue-gate-judge.sh copied in, STUBS at those literal paths) and
+#   The suite builds a fixture tree in a temp dir (.github/agent/bin/queue-gate-judge.sh copied in, STUBS at those
+#   literal paths) and
 #   runs the script with that tree as the current directory. A missing judge file is a refusal (exit 1), never 126/127.
 # Environment: GH_TOKEN, GITHUB_REPOSITORY go to the record judge. Two test seams, both plain VALUES used as data:
 #   QUEUE_GATE_GIT_DIR            the git directory holding the group's objects (default: the current repository's)
@@ -34,7 +36,8 @@
 #                                 refs/remotes/origin/main); the walk is `rev-list --first-parent BASE..HEAD`
 #   There is no seam that names a program. A `gh` on PATH is what the real record judge uses; the suite puts a stub
 #   there, so the network is never touched.
-# The suite also runs the repo's pin checker over a tree holding the script and a workflow step that runs it: no finding.
+# The suite also runs the repo's pin checker over a tree holding the script and a workflow step that runs it: no
+# finding.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
@@ -85,11 +88,13 @@ echo "allow $GITHUB_BASE_REF $ALLOWLIST_NUL $ALLOWLIST_HEAD_REV" >> "$QG_MAIN_LO
 exit "$(cat "$QG_MRC/allow" 2>/dev/null || echo 0)"
 EOF
 cat > "$root/.github/agent/tests/pin-wiring-test.sh" <<'EOF'
-echo "wiring $PIN_WIRING_JUDGE_GIT yaml=$([ -e "${PYTHONPATH:-/nonexistent}/yaml" ] && echo 1 || echo 0)" >> "$QG_MAIN_LOG"
+echo "wiring $PIN_WIRING_JUDGE_GIT yaml=$([ -e "${PYTHONPATH:-/nonexistent}/yaml" ] && echo 1 || echo 0)" \
+  >> "$QG_MAIN_LOG"
 exit "$(cat "$QG_MRC/wiring" 2>/dev/null || echo 0)"
 EOF
 cat > "$root/bin/scan-no-workflow-call-test.sh" <<'EOF'
-echo "scan $SCAN_GUARD_JUDGE_GIT yaml=$([ -e "${PYTHONPATH:-/nonexistent}/yaml" ] && echo 1 || echo 0)" >> "$QG_MAIN_LOG"
+echo "scan $SCAN_GUARD_JUDGE_GIT yaml=$([ -e "${PYTHONPATH:-/nonexistent}/yaml" ] && echo 1 || echo 0)" \
+  >> "$QG_MAIN_LOG"
 exit "$(cat "$QG_MRC/scan" 2>/dev/null || echo 0)"
 EOF
 chmod +x "$root/bin/audit-record-judge.sh"
@@ -129,7 +134,8 @@ need() { # need NAME PATTERN FILE: the file must hold a line matching the patter
   grep -qE "$2" "$3" && ok "$1" || bad "$1 (no /$2/ in $3)"
 }
 
-[ -f "$sut" ] && ok ".github/agent/bin/queue-gate-judge.sh exists" || bad ".github/agent/bin/queue-gate-judge.sh does not exist"
+[ -f "$sut" ] && ok ".github/agent/bin/queue-gate-judge.sh exists" \
+  || bad ".github/agent/bin/queue-gate-judge.sh does not exist"
 
 # the good case first: if this fails, every refusal below is only a missing script, not a verdict
 run "a two-merge group on main, every record good, main's judges good -> exit 0" 0 "$G2" "$REF"

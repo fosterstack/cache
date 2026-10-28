@@ -156,7 +156,9 @@ class Main(unittest.TestCase):
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n",
                   ".github/agent/bin/check-action-pins.py": "",
                   "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
-                  "bin/scan-no-workflow-call-test.sh": "", QJ_REL: _qj(), "bin/audit-record-judge.sh": "", "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""})   # the gate's committed programs
+                  "bin/scan-no-workflow-call-test.sh": "", QJ_REL: _qj(), "bin/audit-record-judge.sh": "",
+                  "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""})
+                  # the gate's committed programs
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
                  {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}}
         with open(GATE) as fh:  # the gate's own pins answer truthfully too

@@ -110,7 +110,8 @@ MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as i
     "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
                              "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
+    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None,
+                          "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():

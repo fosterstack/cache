@@ -3511,7 +3511,8 @@ import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
 src=open(".github/workflows/agent-review-gate.yml").read(); d=yaml.safe_load(src)
 on=d.get("on") or d.get(True) or {}
-J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{}); q=J.get("queue-judge",{}); qp=J.get("queue-publish",{})
+J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{})
+q=J.get("queue-judge",{}); qp=J.get("queue-publish",{})
 runs=lambda job: "\n".join(x.get("run","") for x in job.get("steps",[]))
 jr, pr, wr = runs(j), runs(p), runs(w)
 co=[x for x in j.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
@@ -3520,23 +3521,31 @@ tok=lambda job: [x for x in job.get("steps",[]) if str(x.get("uses","")).startsw
 main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
 def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.startswith("permission-")}=={"permission-checks"} and t[0]["with"]["permission-checks"]=="write"
 qco=[x for x in q.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
-ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch"} and "edited" in on["pull_request_target"]["types"]
+ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch"}
+    and "edited" in on["pull_request_target"]["types"]
     and d.get("permissions")=={} and set(J)=={"judge","publish","record","queue-judge","queue-publish","sweep"}
-    # queue-judge: a workflow_run job (the default branch's copy), never a pull_request_target job; NO environment, no secret,
-    # no App token (contents: read only); fires only for a merge_group CI run; the default branch's checkout; judged by main's
+    # queue-judge: a workflow_run job (the default branch's copy), never a pull_request_target job; NO environment,
+    # no secret,
+    # no App token (contents: read only); fires only for a merge_group CI run; the default branch's checkout;
+    # judged by main's
     # script; its verdict is a job output
-    and on["workflow_run"].get("workflows")==["CI"] and set(on["workflow_run"].get("types",[]))=={"requested","completed"}
+    and on["workflow_run"].get("workflows")==["CI"]
+    and set(on["workflow_run"].get("types",[]))=={"requested","completed"}
     and "environment" not in q and q.get("permissions")=={"contents":"read"}
     and "secrets." not in yaml.safe_dump(q) and not tok(q) and "verdict" in (q.get("outputs") or {})
     and q.get("if")=="github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'"
     and "pull_request_target" not in str(q.get("if")) and "pull_request" not in yaml.safe_dump(q.get("steps",[]))
-    and len(qco)==1 and (qco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (qco[0].get("with") or {})
+    and len(qco)==1 and (qco[0].get("with") or {}).get("persist-credentials") is False
+    and "ref" not in (qco[0].get("with") or {})
     and "bash .github/agent/bin/queue-gate-judge.sh" in runs(q) and "checkout" not in runs(q)
-    # queue-publish: needs queue-judge, agent environment, permissions {}, a checks-only App token, no checkout and no git,
-    # a 40-hex head, success only when the judge's verdict output is success; RUN_LINK (not a *_URL name) for the run link
+    # queue-publish: needs queue-judge, agent environment, permissions {}, a checks-only App token, no checkout and
+    # no git,
+    # a 40-hex head, success only when the judge's verdict output is success; RUN_LINK (not a *_URL name) for the
+    # run link
     and qp.get("needs")=="queue-judge" and qp.get("environment")=="agent" and qp.get("permissions")=={}
     and "!cancelled()" in str(qp.get("if")) and "github.event.workflow_run.event == 'merge_group'" in str(qp.get("if"))
-    and scoped(tok(qp)) and "actions/checkout" not in yaml.safe_dump(qp) and "git " not in runs(qp) and "refs/pull" not in runs(qp)
+    and scoped(tok(qp)) and "actions/checkout" not in yaml.safe_dump(qp) and "git " not in runs(qp)
+    and "refs/pull" not in runs(qp)
     and "[0-9a-f]{40}" in runs(qp) and "github.event.workflow_run.head_sha" in yaml.safe_dump(qp)
     and "needs.queue-judge.outputs.verdict" in yaml.safe_dump(qp) and "-f name=auditor-review-gate" in runs(qp)
     and "RUN_LINK" in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(q)

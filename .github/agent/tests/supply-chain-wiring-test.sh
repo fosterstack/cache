@@ -88,7 +88,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
         bad.append("pin-age stops at the first failure: the age check and the advisory audit must both run, and the job fails if either did")
-    if "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" not in runs or "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" not in runs:
+    if ("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" not in runs
+            or "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" not in runs):
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
     j = jobs["daily-audit"]
@@ -148,7 +149,8 @@ def judge_wf(d, real=False):
         tw, pw = t.get("with") or {}, pr_.get("with") or {}
         if set(tw) != {"ref", "path", "persist-credentials"} or set(pw) != {"path", "fetch-depth", "persist-credentials"}:
             bad.append("pin-age's checkouts take inputs other than the ratified ones (e.g. sparse-checkout would empty the trusted checker)")
-        if tw.get("ref") != "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false":
+        if (tw.get("ref") != "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
+                or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false"):
             bad.append("pin-age's trusted checkout is not the BASE sha at path trusted with persist-credentials false")
         if "ref" in pw or pw.get("path") != "pr" or pw.get("fetch-depth") != "0" or str(pw.get("persist-credentials")).lower() != "false":
             bad.append("pin-age's PR checkout is not the default (merge) ref at path pr, full depth, persist-credentials false")

@@ -85,8 +85,10 @@ grep -qx "issue=7" "$w/out" 2>/dev/null && { echo "ok: the updated issue's numbe
 step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'
 step "match opens nothing"                            "$w/match.json"   "$w/no-issues.json"  '^gh api ' '^gh issue (create|edit)'
 
-# REQ-DEP-005 (merge queue, owner ratified Oct 22): every required context runs on the merge_group event on the queue's commit, and none of its jobs or steps is skipped there.
-# The table names, for each context in .github/policy/required-checks.json, the workflow and job that produces it; a context the table does not know fails, so a required
+# REQ-DEP-005 (merge queue, owner ratified Oct 22): every required context runs on the merge_group event on the
+# queue's commit, and none of its jobs or steps is skipped there.
+# The table names, for each context in .github/policy/required-checks.json, the workflow and job that produces it;
+# a context the table does not know fails, so a required
 # check added later cannot be missed. The one listed exception is marker-gate (REQ-DEP-005-AC1;
 # ops/docs/ratify/2026-10-22-merge-queue-checks.md, owner: "add the landing
 # marker check as the second listed exception"): it is a pull-request-only check, so it carries a job-level `if` and
@@ -102,8 +104,10 @@ repo = sys.argv[1]
 wf = {os.path.basename(f): yaml.safe_load(open(f)) for f in glob.glob(repo + "/.github/workflows/*.yml")}
 req = [c["context"] for c in json.load(open(repo + "/.github/policy/required-checks.json"))["required_checks"]]
 TABLE = {"analyze (go)": ("codeql.yml", "analyze"), "acceptance-gradle": ("acceptance.yml", "acceptance-gradle"),
-         "acceptance-maven (1.2.0)": ("acceptance.yml", "acceptance-maven"), "acceptance-maven (1.2.3)": ("acceptance.yml", "acceptance-maven"),
-         "reproducibility": ("scan.yml", "reproducibility"), "scan": ("scan.yml", "scan"), "pin-age": ("supply-chain.yml", "pin-age")}
+         "acceptance-maven (1.2.0)": ("acceptance.yml", "acceptance-maven"),
+         "acceptance-maven (1.2.3)": ("acceptance.yml", "acceptance-maven"),
+         "reproducibility": ("scan.yml", "reproducibility"), "scan": ("scan.yml", "scan"),
+         "pin-age": ("supply-chain.yml", "pin-age")}
 TABLE["auditor-review-gate"] = ("agent-review-gate.yml", "queue-publish")
 # a required context that is the name or the key of a job in ci.yml maps to that job; none is listed by hand
 for jk, jb in (wf["ci.yml"].get("jobs") or {}).items():
@@ -138,19 +142,29 @@ for c in req:
         res(job is not None and has_event(d, "merge_group"),
             "%s: %s job %s runs on merge_group (the workflow lists the event)" % (c, f, j))
     if not job: continue
-    res(not skips(job.get("if")), "%s: the job has no condition that names an event without merge_group (%r)" % (c, job.get("if")))
+    res(not skips(job.get("if")),
+        "%s: the job has no condition that names an event without merge_group (%r)" % (c, job.get("if")))
     for st in job.get("steps") or []:
-        res(not skips(st.get("if")) and not ("github.base_ref" in str(st.get("if")) and "merge_group" not in str(st.get("if"))), "%s: step %r is not skipped on merge_group (%r)" % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30], st.get("if")))
+        res(not skips(st.get("if"))
+            and not ("github.base_ref" in str(st.get("if")) and "merge_group" not in str(st.get("if"))),
+            "%s: step %r is not skipped on merge_group (%r)"
+            % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30], st.get("if")))
         blob = json.dumps(st)
-        res("github.event.pull_request" not in blob or "github.event.merge_group" in blob or re.search(r"pull_request\.head\.repo\.(fork|full_name)", blob) is not None,
-            "%s: step %r reads the pull request only where the queue's commits are read too" % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
-        res("github.base_ref" not in blob or "merge_group.base_ref" in blob, "%s: step %r names the queue's base wherever it names the pull request's base" % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
+        res("github.event.pull_request" not in blob or "github.event.merge_group" in blob
+            or re.search(r"pull_request\.head\.repo\.(fork|full_name)", blob) is not None,
+            "%s: step %r reads the pull request only where the queue's commits are read too"
+            % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
+        res("github.base_ref" not in blob or "merge_group.base_ref" in blob,
+            "%s: step %r names the queue's base wherever it names the pull request's base"
+            % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
 # pin age and dependency review read the queue's two commits and refuse an empty one
 sc = json.dumps(wf["supply-chain.yml"]["jobs"]["pin-age"]); dr = json.dumps(wf["ci.yml"]["jobs"]["dependency-review"])
 res("merge_group.base_sha" in sc and "merge_group.head_sha" in sc, "pin-age reads the queue's base_sha and head_sha")
-res("merge_group.base_sha" in dr and "merge_group.head_sha" in dr, "dependency-review reads the queue's base_sha and head_sha")
+res("merge_group.base_sha" in dr and "merge_group.head_sha" in dr,
+    "dependency-review reads the queue's base_sha and head_sha")
 for nm, blob in (("pin-age", sc), ("dependency-review", dr)):
-    res("merge_group" in blob and re.search(r"_SHA:\?|QUEUE_BASE_SHA.*QUEUE_HEAD|\[ -n ", blob) is not None, "%s: a queue run with an empty base or head fails (a refusal step names it)" % nm)
+    res("merge_group" in blob and re.search(r"_SHA:\?|QUEUE_BASE_SHA.*QUEUE_HEAD|\[ -n ", blob) is not None,
+        "%s: a queue run with an empty base or head fails (a refusal step names it)" % nm)
 
 # REQ-DEP-005-AC1: marker-gate is pull-request-only by a job-level condition; ci.yml's triggers carry no filter (a
 # filtered workflow leaves the required check Pending and blocks the queue)
@@ -201,12 +215,16 @@ for jn, jb in rg["jobs"].items():
 # the split: queue-judge judges only (no environment, no secret, no token); queue-publish holds the App token
 qjtxt = json.dumps(qj); qptxt = json.dumps(qp)
 res("environment" not in qj and not is_agent(qj), "queue-judge has no environment (it holds no secret)")
-res(qj.get("permissions") == {"contents": "read"}, "queue-judge permissions are contents: read only (%r)" % qj.get("permissions"))
-res("secrets." not in qjtxt and "create-github-app-token" not in qjtxt and "AUDITOR_APP" not in qjtxt and "permission-checks" not in qjtxt,
+res(qj.get("permissions") == {"contents": "read"},
+    "queue-judge permissions are contents: read only (%r)" % qj.get("permissions"))
+res("secrets." not in qjtxt and "create-github-app-token" not in qjtxt and "AUDITOR_APP" not in qjtxt
+    and "permission-checks" not in qjtxt,
     "queue-judge names no secret and mints no App token")
-res("verdict" in (qj.get("outputs") or {}), "queue-judge exports its verdict as a job output (%r)" % (qj.get("outputs"),))
+res("verdict" in (qj.get("outputs") or {}),
+    "queue-judge exports its verdict as a job output (%r)" % (qj.get("outputs"),))
 res(is_agent(qp), "queue-publish is an environment: agent job (it holds the App token; main's copy)")
-res(qp.get("needs") == "queue-judge" or qp.get("needs") == ["queue-judge"], "queue-publish needs queue-judge (%r)" % qp.get("needs"))
+res(qp.get("needs") == "queue-judge" or qp.get("needs") == ["queue-judge"],
+    "queue-publish needs queue-judge (%r)" % qp.get("needs"))
 res(qp.get("permissions") == {}, "queue-publish has permissions: {} (%r)" % qp.get("permissions"))
 qtok = [st for st in qp.get("steps") or [] if str(st.get("uses", "")).startswith("actions/create-github-app-token")]
 res(len(qtok) == 1 and {k for k in (qtok[0].get("with") or {}) if k.startswith("permission-")} == {"permission-checks"}
@@ -247,9 +265,11 @@ def src_envs(job):
     for e in [job.get("env") or {}] + [st.get("env") or {} for st in job.get("steps") or []]:
         bad += [k for k, v in e.items() if SRC.match(k) and "${{" in str(v)]
     return bad
-for nm, jb in (("queue-judge", qj), ("queue-publish", qp), ("ci.yml dependency-review", wf["ci.yml"]["jobs"]["dependency-review"]),
+for nm, jb in (("queue-judge", qj), ("queue-publish", qp),
+               ("ci.yml dependency-review", wf["ci.yml"]["jobs"]["dependency-review"]),
                ("supply-chain.yml pin-age", wf["supply-chain.yml"]["jobs"]["pin-age"])):
-    res(src_envs(jb) == [], "%s: no env var named like *_BASE, *_BASE_URL or *_URL takes an expression (%s)" % (nm, src_envs(jb)))
+    res(src_envs(jb) == [],
+        "%s: no env var named like *_BASE, *_BASE_URL or *_URL takes an expression (%s)" % (nm, src_envs(jb)))
 res(src_envs({"env": {"X_URL": "${{ a }}"}}) == ["X_URL"] and src_envs({"env": {"RUN_LINK": "${{ a }}"}}) == [],
     "the download-source name check fires on a *_URL expression and not on RUN_LINK")
 res("RUN_URL" not in qjtxt and "RUN_URL" not in qptxt, "the queue jobs name their run link RUN_LINK, not RUN_URL")
