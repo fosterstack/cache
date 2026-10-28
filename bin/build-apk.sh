@@ -177,7 +177,6 @@ for p in /archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /
   fi
 done
 # tree-exclude end
-"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns (not needed off Ubuntu 24.04)" >&2
 margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"
   --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"
   --cache-dir "$tmp/cache" --source-dir "$src" --out-dir "$out")
@@ -191,8 +190,13 @@ melange_bin=$MELANGE; [ -x "$melange_bin" ] || die "melange is not installed (th
 sealed=()
 while read -r -d '' item; do sealed+=("$item"); done < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV") || true
 [ "${#sealed[@]}" -ge 4 ] || die "the sealed environment could not be made (build/sealed-env.json, SOURCE_DATE_EPOCH)" 1
+# the call is built ONCE and the pinned helper judges that same array before it runs (sandboxed-build rule 2): a call without the bubblewrap runner, without the cut network
+# namespace or with a loose environment stops the stage here, before sysctl, before melange, before anything is produced
+call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")
+why=$("$PY3" -I -B bin/build-apk-helper.py sealed-call "${call[@]}" 2>&1) || die "refusing the melange call: $why"
+"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns (not needed off Ubuntu 24.04)" >&2
 set +e
-( cd "$rdir" && "$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}" 2>"$tmp/melange.err" )
+( cd "$rdir" && "$SUDO" "${call[@]}" 2>"$tmp/melange.err" )
 rc=$?
 set -e
 cat "$tmp/melange.err" >&2   # complete once the command has exited; no race with a process substitution

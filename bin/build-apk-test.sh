@@ -1162,7 +1162,7 @@ python3 - "$BA_PROD" "$work" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
 open(sys.argv[2] + "/mut-go.sh", "w").write(src.replace('"$GO_TOOL" version -m', 'go version -m'))
-open(sys.argv[2] + "/mut-env.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" env -i'))
+open(sys.argv[2] + "/mut-env.sh", "w").write(src.replace('call=("$ENVBIN" -i', 'call=(env -i'))
 open(sys.argv[2] + "/mut-sum.sh", "w").write(src.replace('got=$("$SHA256SUM" ', 'got=$(sha256sum '))
 open(sys.argv[2] + "/mut-melange.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n melange'))
 open(sys.argv[2] + "/mut-timeout.sh", "w").write(src.replace('"$GO_TOOL" version -m', 'timeout 30 go version -m'))
@@ -1186,7 +1186,7 @@ open(sys.argv[2] + "/mut-frag1.sh", "w").write(src.replace('"$UNSHARE" -n "$mela
 open(sys.argv[2] + "/mut-frag2.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n ${AUDIT_UNSET:-mela}nge'))
 open(sys.argv[2] + "/mut-frag3.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "${AUDIT_UNSET:-mela}nge"'))
 open(sys.argv[2] + "/mut-concat.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', 'A=mela; B=nge; "$UNSHARE" -n "$A$B"'))
-open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" nice -n 5 "$ENVBIN" -u X env -i'))
+open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "${call[@]}"', '"$SUDO" nice -n 5 "$ENVBIN" -u X env "${call[@]}"'))
 PY
 for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-brace mut-bracen mut-glob mut-hash mut-heredoc mut-frag1 mut-frag2 mut-frag3 mut-concat mut-chain; do
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
@@ -1253,8 +1253,8 @@ src = open(sys.argv[1]).read()
 UN = '"$UNSHARE" -n "$melange_bin"'
 M = {   # name -> [(old, new), ...]; each old must occur exactly once in the copy
  "ba-melange":    [(UN, '"$UNSHARE" -n melange')],
- "ba-sudo":       [('( cd "$rdir" && "$SUDO" "$ENVBIN" -i', '( cd "$rdir" && sudo "$ENVBIN" -i')],
- "ba-env-sudo":   [('"$SUDO" "$ENVBIN" -i', '"$SUDO" env -i')],
+ "ba-sudo":       [('( cd "$rdir" && "$SUDO" "${call[@]}"', '( cd "$rdir" && sudo "${call[@]}"')],
+ "ba-env-sudo":   [('call=("$ENVBIN" -i', 'call=(env -i')],
  "ba-unshare":    [('"$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n', '"$ENVBIN" -i "${sealed[@]}" unshare -n')],
  "ba-sha256sum":  [('got=$("$SHA256SUM" ', 'got=$(sha256sum ')],
  "ba-python3":    [('"$PY3" -I -B bin/build-apk-helper.py sealed-env', 'python3 -I -B bin/build-apk-helper.py sealed-env')],
@@ -1295,11 +1295,55 @@ rp_refused ba-sha256sum sha256sum "sha256sum called by bare name is not found"
 rp_refused ba-python3 python3 "python3 called by bare name is not found"
 rp_refused ba-openssl openssl "openssl called by bare name (inserted call) is not found"
 rp_refused ba-apko apko "apko called by bare name (inserted call) is not found"
-for m in ba-brace ba-brace-set ba-quote ba-ansic ba-printf ba-default ba-append ba-concat; do
+for m in ba-brace ba-quote ba-ansic ba-printf ba-default ba-append ba-concat; do
   rp_refused $m melange "melange assembled by $m is not found"; done
 # git: its own diagnostic is hidden by 2>/dev/null in the production line, so the mutant removes the redirect: the name is then reported
 rp_refused ba-git git "git called by bare name is not found"
 rp_refused ba-git-excl git "git called by bare name in the exclude-file lookup is not found"
+# --- build-apk.sh: the melange call is refused unless it is the sealed one (sandboxed-build ratify Oct 27 2026, rule 2). The driver builds the call once and the pinned helper judges that
+# same array before sysctl, before melange, before anything is produced: exit 2, the reason named, no tool run, nothing in the output directory.
+python3 - "$work/ba-copy.sh" "$rpm" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+CALL = 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")'
+M = {
+ "sc-no-runner":   [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --signing-key')],
+ "sc-docker":      [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner docker --signing-key')],
+ "sc-runner-eq":   [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner=bubblewrap --signing-key')],
+ "sc-two-runners": [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --runner docker --signing-key')],
+ "sc-no-unshare":  [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$melange_bin" "${margs[@]}")')],
+ "sc-unshare-r":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -r "$melange_bin" "${margs[@]}")')],
+ "sc-no-env-i":    [(CALL, 'call=("$ENVBIN" "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
+ "sc-not-build":   [('margs=(build ', 'margs=(sign ')],
+}
+for name, subs in M.items():
+    t = src
+    for old, new in subs:
+        assert t.count(old) == 1, (name, old, t.count(old))
+        t = t.replace(old, new)
+    open(sys.argv[2] + "/" + name + ".sh", "w").write(t)
+PY
+rp_callcheck() { local m=$1 why=$2 desc=$3 o; o=$(mo)
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_build "$rpm/$m.sh" "$o"
+  if [ "$(cat "$work/rp.rc")" = 2 ] && grep -Eq -- "refusing the melange call: .*$why" "$work/rp.log" && ! grep -Eq '^(sudo|unshare|sysctl|melange|apko) ' "$CALLS" && [ -z "$(find "$o" -type f)" ]; then ok
+  else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted 2 naming '$why', no tool run and nothing produced)"; fi; }
+rp_extra=("${RP_GO[@]}")
+rp_callcheck sc-no-runner "exactly one --runner bubblewrap" "a melange call without the bubblewrap runner is refused"
+rp_callcheck sc-docker "exactly one --runner bubblewrap" "a melange call with another runner is refused"
+rp_callcheck sc-runner-eq "exactly one --runner bubblewrap" "the --runner=VALUE spelling is refused (only the one exact form is read)"
+rp_callcheck sc-two-runners "exactly one --runner bubblewrap" "two --runner flags are refused"
+rp_callcheck sc-no-unshare "unshare -n" "a melange call without unshare is refused (the network namespace is not cut)"
+rp_callcheck sc-unshare-r "unshare -n" "unshare with another option instead of -n is refused"
+rp_callcheck sc-no-env-i "env -i" "a melange call without env -i is refused (the environment is not closed)"
+rp_callcheck sc-not-build "melange build" "a melange call that is not the build subcommand is refused"
+rp_callcheck ba-brace-set "melange build" "a brace set that expands the program name into two words is refused by the call check (it used to be found missing at run time)"
+H="$root/bin/build-apk-helper.py"
+t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items, unshare -n, melange build, one --runner bubblewrap)" python3 -I -B "$H" sealed-call /usr/bin/env -i A=1 B=2 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64
+t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap 2>/dev/null"
+t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call env -i 2>/dev/null"
+t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash -c "! python3 -I -B '$H' sealed-call env -i A=1 unshare -n melange build --runner --arch bubblewrap 2>/dev/null"
+t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call env -i A=1 unshare -n melange build x --runner 2>/dev/null"
 # go and env at the go call site: the production line captures the diagnostic into a file and treats exit 127 as "no toolchain on PATH". In CI that
 # is fatal, outside CI the run says 'not verified': either way the stub go is never reached and the run is not the control's.
 for m in ba-go ba-env-go; do
@@ -1325,7 +1369,7 @@ SDE = '"$GIT" -C "$src" log -1 --format=%ct 2>/dev/null |'
 RM = '|| "$SUDO" rm -rf "$tmp" >/dev/null 2>&1;'
 PR = '"$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1;'
 SYS = '"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 ||'
-ENVI = '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE"'
+ENVI = '"$ENVBIN" -i "${sealed[@]}" "$UNSHARE"'
 M = {
  "ba-sde-git":      [(SDE, 'git -C "$src" log -1 --format=%ct |')],
  "ba-sde-assembled": [(SDE, 'g=gi; g+=t; "$g" -C "$src" log -1 --format=%ct |')],
@@ -1340,9 +1384,9 @@ M = {
  "ba-probe-sudo-py": [(PR, 'p=py; p+=thon3; "$SUDO" "$p" -I -B bin/net-probe.py;')],
  "ba-probe-basename": [(PR, '"$(basename "$SUDO")" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
  "ba-sysctl-sudo":  [(SYS, 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||')],
- "ba-env-opt":      [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -n env -i')],
- "ba-env-dashes":   [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -- env -i')],
- "ba-env-after-i":  [(ENVI, '"$SUDO" "$ENVBIN" -i "${sealed[@]}" env "$UNSHARE"')],
+ "ba-env-opt":      [('"$SUDO" "${call[@]}"', '"$SUDO" -n env "${call[@]:1}"')],
+ "ba-env-dashes":   [('"$SUDO" "${call[@]}"', '"$SUDO" -- env "${call[@]:1}"')],
+ "ba-env-after-i":  [(ENVI, '"$ENVBIN" -i "${sealed[@]}" env "$UNSHARE"')],
 }
 for name, pairs in M.items():
     t = src
@@ -1353,7 +1397,8 @@ for name, pairs in M.items():
     open("%s/%s.sh" % (out, name), "w").write(t)
 PYM
 # 1. env named by bare name after sudo's options, after --, and after env -i: not found (the stub resolves a command operand under the script's path)
-for m in ba-env-opt ba-env-dashes ba-env-after-i; do rp_extra=("${RP_GO[@]}"); rp_refused $m env "env by bare name ($m) is not found"; done
+for m in ba-env-opt ba-env-dashes; do rp_extra=("${RP_GO[@]}"); rp_refused $m env "env by bare name ($m) is not found"; done
+rp_extra=("${RP_GO[@]}"); rp_callcheck ba-env-after-i "unshare -n" "a second env between the closed environment and unshare is refused by the call check (it used to be found missing at run time)"
 # 2a. --print-source-date-epoch reaches git
 rp_extra=(); rp_ba "$work/ba-copy.sh" --print-source-date-epoch --source-dir "$src"
 t "AC9" "build-apk.sh: --print-source-date-epoch with PATH holding only the coreutils prints the commit time (reaches the git site)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -qx '$SDE' '$work/rp.log'"
