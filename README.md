@@ -166,11 +166,10 @@ unit: **[docs/install.md](docs/install.md)**.
 
 ## Debugging a running container
 
-The production and `-fips` images contain only the `fscache` binary, with no
-shell, so you debug them from the outside by attaching a second container that
-carries the tools. Three ways below. The two Docker ones were run against this
-image on Oct 9 2026; `kubectl debug` was checked against the Kubernetes
-documentation only (details at the end of this section).
+The production and `-fips` images have no shell, so you debug them from the
+outside by attaching a second container that carries the tools. Three ways
+below. None of them has been run against a v0.3 image yet (details at the end
+of this section).
 
 **Kubernetes: `kubectl debug`.** An ephemeral debug container joins the running
 pod (stable since Kubernetes v1.25):
@@ -187,8 +186,8 @@ its processes (the container runtime has to support that). The pod's network is
 shared, so `127.0.0.1:8080` is the cache. Use any image that already has the
 tools you need. The debug container inherits the pod's security context: with
 the Deployment in [docs/kubernetes.md](docs/kubernetes.md) (`runAsNonRoot`, user
-65532) it runs as that non-root user, so it cannot install packages (an image
-such as `wolfi-base` with `apk add` needs a pod that allows root). An ephemeral container
+65532) it runs as that non-root user, so it cannot install packages (a tools
+image that installs packages needs a pod that allows root). An ephemeral container
 cannot be changed or removed once added; it goes away with the pod. To debug a
 modified copy instead, use `kubectl debug <pod> -it --copy-to=<new-name>
 --image=...`, and for the node itself `kubectl debug node/<node> -it
@@ -215,17 +214,14 @@ namespaces. (This is the no-shell route; the images have no shell of their own.)
 
 ```sh
 docker run --rm -it --network=container:<name> --pid=container:<name> \
-  cgr.dev/chainguard/wolfi-base sh
-# inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
+  busybox:1.37 sh
+# inside it: wget -qO- http://127.0.0.1:8080/healthz, then ps
 ```
 
-What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47 <!-- pinned: upstream -->) gave a
-root shell on a running `fscache` container; the plain-Docker command above
-reached `/healthz` (HTTP 200) on `127.0.0.1:8080` and listed `fscache` as PID 1;
-`wolfi-base` runs as root and `apk add curl` works in it; `busybox:1.37` run as user 65532 (as the pod's security context would) read `/healthz` with `wget` and listed `fscache`. The tool images in the
-examples are not pinned; pin them by digest in anything you automate.
-`kubectl debug` was checked against the Kubernetes documentation but not run
-against a cluster here.
+The tool images in the examples are not pinned; pin them by digest in anything
+you automate. These commands were written for the v0.3 images and have not been
+run against one here; `kubectl debug` was checked against the Kubernetes
+documentation only.
 
 ## Build and run from source
 

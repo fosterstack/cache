@@ -26,7 +26,8 @@ signing key or `packages: write`.
   ancestry of `main`, required checks, approved requirements baseline), builds
   the apks on two native runners (amd64 and arm64) and assembles the images
   and archives. Witness (pinned by checksum, set up first) wraps every step
-  and writes Build's record; Build does not sign it (Sign does, below);
+  and writes Build's record; Build signs its records only with a throwaway key
+  that nothing trusts, and Sign signs them (below);
   `digests.json` is the list of everything Build made. Before
   `digests.json`, Build makes each image's final index from the built index
   and the committed VEX file: the platform manifests plus one VEX attestation
@@ -90,7 +91,8 @@ from GitHub OIDC, entry in Rekor; no signing key exists to steal, except the
 apk release key, which only Release's `release-apks` step reads):
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
-  `linux/arm64` index on the unmodified distroless base with one binary added,
+  `linux/arm64` index holding the `fscache` binary and a few packages (base layout, CA
+  certificates, time zone data), with no base image,
   at `ghcr.io/fosterstack/cache` and mirrored, same digests, at
   `docker.io/fosterstack/cache`. Tags: `:X.Y.Z` and `:X.Y.Z-fips` exactly;
   `:X.Y` moves to every final release of that line; `:X` and `:latest` move

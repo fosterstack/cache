@@ -35,7 +35,8 @@ scanned by both tools' Go-module vulnerability catalogers directly.
 
 ## Package-DB asymmetry — expect this, it isn't a bug
 
-A scratch/distroless image has no package database. That has an
+Our images have no package manager and only a handful of packages in the
+package database (base layout, CA certificates, time zone data). That has an
 asymmetric effect on checks:
 
 - **"Is forbidden package X present?"** checks — pass vacuously. There's no
@@ -47,16 +48,15 @@ asymmetric effect on checks:
 If you run a benchmark or policy pack written for a full-OS image (Debian,
 Ubuntu, etc.) against ours, expect confusing partial results — not a
 finding, just a mismatch between the benchmark's assumptions and a
-minimal image. `sprint4_scanner_input.md`'s source material for this page
-also notes there is often no genuine OS/platform gating in scanner content
-by default: a scanner may happily score a scratch image against a full
+minimal image. Scanner content often has no genuine OS/platform gating by
+default: a scanner may happily score a minimal image against a full
 distro benchmark and produce results that don't mean what they look like
-they mean. Don't over-read a scratch image's score against a
+they mean. Don't over-read a minimal image's score against a
 Debian-shaped policy without checking what each rule verifies.
 
 ## Exit codes: don't gate on the raw process exit code
 
-Trivy and Grype's exit codes conflate "ran and found something above your
+Scanner exit codes (Grype's among them) conflate "ran and found something above your
 threshold" with "could not run at all" in ways that are easy to miss.
 **Read per-rule verdicts from the results document (JSON/SARIF), never
 gate a pipeline purely on the raw exit code** — a broken scan and a clean
@@ -89,8 +89,8 @@ the set of published VEX statements, which is how you audit them.
 
 ## Marketing claim, with the receipt
 
-"Every scanner in the repo's list runs on every release, verdicts in the
-public CI run" is not a claim we're asking you to take on faith — the scan
-IS the CI run, public, in this repo's Actions tab. See
-[Verify our images](verify-images.md) for how to confirm the exact image
-you pulled came from that same run.
+"Every scanner in the repo's list runs on every release" is not a claim we're
+asking you to take on faith — each scanner's verdict is in the release's signed
+Check records, bound to the image digests. See
+[Verify our images](verify-images.md#2b-verify-the-whole-chain) for how to
+check them against the image you pulled.

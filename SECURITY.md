@@ -59,7 +59,7 @@ registry and signing secrets; they push the same image bytes by digest to the
 public registries and read each registry back, and the release stops if a digest read back differs
 from the attested one. The scan verdict attaches to the published digests because they are the
 scanned digests. Each scanner's verdict is in the release's signed Check records, bound to the image digests (see
-[the signed evidence files](docs/verify-images.md#the-signed-evidence-files)), and the daily rescan
+[the signed evidence files](docs/verify-images.md#2b-verify-the-whole-chain)), and the daily rescan
 re-checks the current release's published digests against newly disclosed CVEs.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
@@ -153,8 +153,9 @@ client address.
 
 ## The apk release key
 
-The apks of every release are signed with one release key; its public half is committed at
-[`build/keys/release.rsa.pub`](build/keys/release.rsa.pub).
+The apks of every release are signed with one release key; its public half will be committed at
+[`build/keys/release.rsa.pub`](build/keys/release.rsa.pub) when the owner sets the
+key (the file there today is a placeholder, not a key).
 
 - The key is rotated every year.
 - A suspected leak is not waited out: the key is rotated at once.
