@@ -193,7 +193,7 @@ while read -r -d '' item; do sealed+=("$item"); done < <("$PY3" -I -B bin/build-
 # the call is built ONCE and the pinned helper judges that same array before it runs (sandboxed-build rule 2): a call without the bubblewrap runner, without the cut network
 # namespace or with a loose environment stops the stage here, before sysctl, before melange, before anything is produced
 call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")
-why=$("$PY3" -I -B bin/build-apk-helper.py sealed-call "${call[@]}" 2>&1) || die "refusing the melange call: $why"
+why=$("$PY3" -I -B bin/build-apk-helper.py sealed-call --sealed-env "$SEALED_ENV" "${call[@]}" 2>&1) || die "refusing the melange call: $why"
 "$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns (not needed off Ubuntu 24.04)" >&2
 set +e
 ( cd "$rdir" && "$SUDO" "${call[@]}" 2>"$tmp/melange.err" )
