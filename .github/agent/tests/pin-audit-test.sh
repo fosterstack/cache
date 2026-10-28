@@ -1058,5 +1058,71 @@ else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
 PY
 
+# --- the inventory reuses a file's result across revisions (draft REQ-SUP-001-AC30, orchestrator Oct 28): the same items with and without reuse, each file version worked out once ---------------------
+INV="$here/../supply-chain/pin-inventory.py"
+MEMOPY='
+import importlib.util, json, os, subprocess, sys, tempfile
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+W = tempfile.mkdtemp()
+def sh(*a): subprocess.run(a, cwd=W, check=True, capture_output=True)
+def put(path, text):
+    os.makedirs(os.path.dirname(os.path.join(W, path)) or W, exist_ok=True)
+    open(os.path.join(W, path), "w").write(text)
+def rm(path): os.remove(os.path.join(W, path))
+sh("git", "init", "-q"); sh("git", "config", "user.email", "t@x"); sh("git", "config", "user.name", "t")
+A, B = "a" * 40, "b" * 40
+def caller(sha): return "on: push\njobs:\n  call:\n    uses: ./.github/workflows/lib.yml\n  other:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@%s # v1\n" % sha
+def lib(trigger): return "on: %s\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: curl -fsSL https://example.org/x.sh | sh\n" % trigger
+REVS = []
+def commit(msg):
+    sh("git", "add", "-A"); sh("git", "commit", "-q", "-m", msg, "--allow-empty")
+    REVS.append(subprocess.run(["git", "rev-parse", "HEAD"], cwd=W, capture_output=True, text=True).stdout.strip())
+put(".github/workflows/ci.yml", caller(A)); put(".github/workflows/lib.yml", lib("workflow_call")); put("bin/install-scanner.sh", "TRIVY_VER=0.74.0\n"); put("req/requirements.txt", "requests==2.32.0\n"); commit("1 call is exempt")
+put(".github/workflows/lib.yml", lib("push")); commit("2 the target stops being callable, the caller is the same bytes")
+put(".github/workflows/lib.yml", lib("workflow_call")); commit("3 callable again")
+put(".github/workflows/ci.yml", caller(B)); commit("4 the caller changes")
+put("bin/install-scanner.sh", "TRIVY_VER=0.75.0\n"); put("bin/x.sh", "pip install foo\n"); commit("5 scripts")
+rm(".github/workflows/lib.yml"); commit("6 the target is gone")
+put(".github/workflows/lib.yml", lib("workflow_call")); put("req/requirements.txt", "requests==2.33.0\n"); commit("7 back, a requirement moves")
+def fresh(r):
+    inv._MEMO_ON[0] = False
+    try: return inv.inventory(inv.tree_files(W, r))
+    finally: inv._MEMO_ON[0] = True
+def dump(items): return json.dumps(sorted((k, i.step, repr(i.src), i.version) for k, i in items.items()))
+def shared(order):
+    inv._FILE_MEMO.clear(); inv._FILE_RUNS[0] = 0
+    return {r: dump(inv.inventory(inv.tree_files(W, r))) for r in order}
+want = {r: dump(fresh(r)) for r in REVS}
+'
+CASE="inventory reuse: the items of every revision are byte-identical with and without reuse, oldest first, newest first and shuffled, including a revision where only the target of a local call changed"
+check python3 -c "$MEMOPY
+for order in (REVS, REVS[::-1], [REVS[i] for i in (3, 0, 6, 1, 5, 2, 4)]):
+    got = shared(order)
+    assert got == want, [r[:7] for r in REVS if got[r] != want[r]]
+assert want[REVS[0]] != want[REVS[1]], 'the fixture must make the local call matter'
+assert want[REVS[0]] == want[REVS[2]]
+" "$INV"
+CASE="inventory reuse: each file version is worked out once (the counter), a caller again when the file it calls differs, and never fewer times than the distinct inputs"
+check python3 -c "$MEMOPY
+shared(REVS)
+files = [inv.tree_files(W, r) for r in REVS]
+total = sum(len(f) for f in files)
+plain = {(p, t) for f in files for p, t in f.items() if p != '.github/workflows/ci.yml'}
+callers = {(t, f.get('.github/workflows/lib.yml')) for f in files for p, t in f.items() if p == '.github/workflows/ci.yml'}
+assert inv._FILE_RUNS[0] == len(plain) + len(callers), (inv._FILE_RUNS[0], len(plain), len(callers))
+assert inv._FILE_RUNS[0] < total, (inv._FILE_RUNS[0], total)
+shared(REVS); runs = inv._FILE_RUNS[0]
+for r in REVS: inv.inventory(inv.tree_files(W, r))
+assert inv._FILE_RUNS[0] == runs, 'a second pass over the same revisions worked out a file again'
+" "$INV"
+CASE="inventory reuse: the caller of the items handed out is not the stored copy (changing a returned item changes nothing for the next revision)"
+check python3 -c "$MEMOPY
+inv._FILE_MEMO.clear()
+a = inv.inventory(inv.tree_files(W, REVS[0]))
+for it in a.values(): it.step = 'changed'; it.version = 'changed'
+b = inv.inventory(inv.tree_files(W, REVS[0]))
+assert dump(b) == want[REVS[0]]
+" "$INV"
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
