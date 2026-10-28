@@ -19,10 +19,11 @@ interpreter run on a variable path).
       ASCII, exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> (no leading zeros) and a plain newline; exit 1 for anything else
       (REQ-BUILDAPK-001-AC4).
 
-  build-apk-helper.py sealed-call ARG...
-      judges the argument list of the privileged melange call, as the driver will run it after `sudo` (sandboxed-build ratify Oct 27 2026, rule 2): `env -i`, then
-      NAME=value items only, then `unshare -n`, then melange, then `build` with exactly one `--runner` and its value `bubblewrap`. Prints the first reason on standard
-      error and exits 1 for anything else (a call without the bubblewrap runner, without the cut network namespace, or with an environment that is not closed).
+  build-apk-helper.py sealed-call [--sealed-env FILE] ARG...
+      judges the argument list of the privileged melange call, as the driver will run it with raised rights (sandboxed-build ratify Oct 27 2026, rule 2): an ABSOLUTE `env` and
+      `-i`, then NAME=value items only (with --sealed-env: exactly the items FILE yields, in order), then an absolute `unshare -n`, then an absolute melange and `build`, the
+      recipe file, and only the options of MELANGE_FLAGS, each once with one value, `--runner` being `bubblewrap`. Prints the first reason on standard error and exits 1 for
+      anything else (a call without the bubblewrap runner, without the cut network namespace, with a bare program name, another option or an environment that is not the file's).
 
 Exit codes: 0 ok | 1 failed | 2 usage.
 """
@@ -85,6 +86,22 @@ def sealed_env(datafile):
     return 0
 
 
+def sealed_env_items(datafile):
+    """The NAME=value items sealed_env prints, as a list (None when the file is refused)."""
+    try:
+        d = json.load(open(datafile))
+        if not isinstance(d, dict) or set(d) != {"closed", "from_environment"}:
+            return None
+        out = ["%s=%s" % kv for kv in d["closed"].items()]
+        for name in d["from_environment"]:
+            if name not in os.environ:
+                return None
+            out.append("%s=%s" % (name, os.environ[name]))
+        return out
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
 def fips_module(path):
     try:
         # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle: the shell pre-check of the
@@ -107,25 +124,54 @@ def fips_module(path):
     return 0
 
 
-def sealed_call(call):
-    """None when the call is the sealed one, else the first reason."""
-    if len(call) < 6 or os.path.basename(call[0]) != "env" or call[1] != "-i":
-        return "the call does not start with env -i"
+MELANGE_FLAGS = ("--arch", "--runner", "--signing-key", "--keyring-append", "--repository-append", "--build-date", "--cache-dir", "--source-dir", "--out-dir", "--apk-cache-dir")      # the closed set of the driver's melange call, each once, each with one value
+
+
+def sealed_call(call, expected_env=None):
+    """None when the call is the sealed one, else the first reason. expected_env: the NAME=value items the sealed environment file yields, in order (None: only their form is judged)."""
+    if len(call) < 6 or os.path.basename(call[0]) != "env" or not os.path.isabs(call[0]) or call[1] != "-i":
+        return "the call does not start with an absolute path to env and -i"
     i = 2
     while i < len(call) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", call[i], re.S):
         i += 1
-    if i + 3 >= len(call) or os.path.basename(call[i]) != "unshare" or call[i + 1] != "-n":
-        return "the call is not run under unshare -n (the network namespace is not cut)"
-    if os.path.basename(call[i + 2]) != "melange" or call[i + 3] != "build":
-        return "the program under unshare -n is not melange build"
+    if expected_env is not None and call[2:i] != expected_env:
+        return "the environment of the call is not exactly the items of the sealed environment file"
+    if i + 3 >= len(call) or os.path.basename(call[i]) != "unshare" or not os.path.isabs(call[i]) or call[i + 1] != "-n":
+        return "the call is not run under an absolute unshare -n (the network namespace is not cut)"
+    if os.path.basename(call[i + 2]) != "melange" or not os.path.isabs(call[i + 2]) or call[i + 3] != "build":
+        return "the program under unshare -n is not an absolute path to melange build"
     args = call[i + 4:]
-    runners = [k for k, a in enumerate(args) if a == "--runner" or a.startswith("--runner=")]
-    if len(runners) != 1 or args[runners[0]] != "--runner" or runners[0] + 1 >= len(args) or args[runners[0] + 1] != "bubblewrap":
+    if not args or args[0].startswith("-"):
+        return "melange build is not given the recipe file first"
+    seen, k = {}, 1
+    while k < len(args):
+        flag = args[k]
+        if flag not in MELANGE_FLAGS:
+            return "melange option %r is not one of the sealed call's options" % flag
+        if flag in seen:
+            return "melange option %s is given twice" % flag
+        if k + 1 >= len(args) or args[k + 1].startswith("-"):
+            return "melange option %s has no value" % flag
+        seen[flag] = args[k + 1]
+        k += 2
+    if seen.get("--runner") != "bubblewrap":
         return "melange is not run with exactly one --runner bubblewrap"
+    if seen.get("--arch") not in ("x86_64", "aarch64"):
+        return "melange is not given --arch x86_64 or aarch64"
     return None
 
 
 def main(argv):
+    if len(argv) >= 5 and argv[1] == "sealed-call" and argv[2] == "--sealed-env":
+        got = sealed_env_items(argv[3])
+        if got is None:
+            print("the sealed environment file cannot be read", file=sys.stderr)
+            return 1
+        why = sealed_call(argv[4:], got)
+        if why:
+            print(why, file=sys.stderr)
+            return 1
+        return 0
     if len(argv) >= 3 and argv[1] == "sealed-call":
         why = sealed_call(argv[2:])
         if why:

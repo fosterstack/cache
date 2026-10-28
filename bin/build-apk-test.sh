@@ -1285,7 +1285,7 @@ PY
 rp_refused() { local m=$1 tool=$2 desc=$3; shift 3; local o; o=$(mo)
   t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
   rp_build "$rpm/$m.sh" "$o"
-  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)" "$work/rp.log"; then ok; else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found)"; fi; }
+  if [ "$(cat "$work/rp.rc")" != 0 ] && { grep -Eqi -- "$tool.*(not found|No such file or directory)" "$work/rp.log" || { grep -Eq -- "refusing the melange call: " "$work/rp.log" && ! grep -Eq '^(melange|apko) ' "$CALLS"; }; }; then ok; else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found)"; fi; }
 rp_extra=("${RP_GO[@]}")
 rp_refused ba-melange melange "melange called by bare name in the privileged call is not found"
 rp_refused ba-sudo sudo "sudo called by bare name is not found"
@@ -1315,6 +1315,15 @@ M = {
  "sc-unshare-r":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -r "$melange_bin" "${margs[@]}")')],
  "sc-no-env-i":    [(CALL, 'call=("$ENVBIN" "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-not-build":   [('margs=(build ', 'margs=(sign ')],
+ "sc-short-runner": [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" -r bubblewrap --signing-key')],
+ "sc-config":      [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --config /tmp/x.yaml --signing-key')],
+ "sc-extra-flag":  [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --extra-packages x --signing-key')],
+ "sc-dup-arch":    [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --arch aarch64 --runner bubblewrap --signing-key')],
+ "sc-env-extra":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" EXTRA=1 "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
+ "sc-env-less":    [(CALL, 'call=("$ENVBIN" -i "${sealed[@]:1}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
+ "sc-bare-melange": [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n melange "${margs[@]}")')],
+ "sc-bare-unshare": [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" unshare -n "$melange_bin" "${margs[@]}")')],
+ "sc-bare-env":    [(CALL, 'call=(env -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
 }
 for name, subs in M.items():
     t = src
@@ -1331,19 +1340,33 @@ rp_callcheck() { local m=$1 why=$2 desc=$3 o; o=$(mo)
 rp_extra=("${RP_GO[@]}")
 rp_callcheck sc-no-runner "exactly one --runner bubblewrap" "a melange call without the bubblewrap runner is refused"
 rp_callcheck sc-docker "exactly one --runner bubblewrap" "a melange call with another runner is refused"
-rp_callcheck sc-runner-eq "exactly one --runner bubblewrap" "the --runner=VALUE spelling is refused (only the one exact form is read)"
-rp_callcheck sc-two-runners "exactly one --runner bubblewrap" "two --runner flags are refused"
+rp_callcheck sc-runner-eq "not one of the sealed call's options" "the --runner=VALUE spelling is refused (only the one exact form is read)"
+rp_callcheck sc-two-runners "given twice" "two --runner flags are refused"
 rp_callcheck sc-no-unshare "unshare -n" "a melange call without unshare is refused (the network namespace is not cut)"
 rp_callcheck sc-unshare-r "unshare -n" "unshare with another option instead of -n is refused"
-rp_callcheck sc-no-env-i "env -i" "a melange call without env -i is refused (the environment is not closed)"
+rp_callcheck sc-no-env-i "env and -i" "a melange call without env -i is refused (the environment is not closed)"
 rp_callcheck sc-not-build "melange build" "a melange call that is not the build subcommand is refused"
+rp_callcheck sc-short-runner "not one of the sealed call's options" "a short runner flag is not one of the sealed call's options"
+rp_callcheck sc-config "not one of the sealed call's options" "a config file option is refused"
+rp_callcheck sc-extra-flag "not one of the sealed call's options" "any other melange option is refused"
+rp_callcheck sc-dup-arch "given twice" "an option given twice is refused"
+rp_callcheck sc-env-extra "sealed environment file" "an environment item the file does not hold is refused"
+rp_callcheck sc-env-less "sealed environment file" "an environment missing an item of the file is refused"
+rp_callcheck sc-bare-melange "absolute path to melange" "melange by a bare name is refused (a search path decides what runs)"
+rp_callcheck sc-bare-unshare "absolute unshare" "unshare by a bare name is refused"
+rp_callcheck sc-bare-env "absolute path to env" "env by a bare name is refused"
 rp_callcheck ba-brace-set "melange build" "a brace set that expands the program name into two words is refused by the call check (it used to be found missing at run time)"
+t "AC9" "build/sealed-env.json is exactly the reviewed sealed environment (a change to it is a reviewed change to this test: no secret name, no inherited name but SOURCE_DATE_EPOCH)" python3 - "$root/build/sealed-env.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d == {"closed": {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C"}, "from_environment": ["SOURCE_DATE_EPOCH"]}, d
+PY
 H="$root/bin/build-apk-helper.py"
 t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items, unshare -n, melange build, one --runner bubblewrap)" python3 -I -B "$H" sealed-call /usr/bin/env -i A=1 B=2 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64
-t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap 2>/dev/null"
+t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap --arch x86_64 2>/dev/null"
 t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call env -i 2>/dev/null"
-t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash -c "! python3 -I -B '$H' sealed-call env -i A=1 unshare -n melange build --runner --arch bubblewrap 2>/dev/null"
-t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call env -i A=1 unshare -n melange build x --runner 2>/dev/null"
+t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner --arch bubblewrap 2>/dev/null"
+t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner 2>/dev/null"
 # go and env at the go call site: the production line captures the diagnostic into a file and treats exit 127 as "no toolchain on PATH". In CI that
 # is fatal, outside CI the run says 'not verified': either way the stub go is never reached and the run is not the control's.
 for m in ba-go ba-env-go; do
