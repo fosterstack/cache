@@ -3,7 +3,7 @@
   "@id": "https://fosterstack.com/vex/cache/openvex",
   "author": "FosterStack LLC",
   "role": "vendor",
-  "timestamp": "2026-10-28T12:00:00-04:00",
+  "timestamp": "2026-10-28T06:51:43-04:00",
   "version": 7,
   "statements": [
     {
@@ -148,7 +148,7 @@
           "GO-2026-6809"
         ]
       },
-      "timestamp": "2026-10-28T12:00:00-04:00",
+      "timestamp": "2026-10-28T06:51:43-04:00",
       "products": [
         {
           "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
@@ -164,8 +164,8 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Scoped to the published repository ghcr.io/fosterstack/cache and to the Go standard library 1.27.2 as a subcomponent, the version the v0.2.2 binaries were built with; a build with another Go version is not covered and re-trips the scanner. The advisory's vulnerable symbol is crypto/x509 Certificate.Verify. The FosterStack v0.2.2 server imports neither crypto/tls nor crypto/x509 in its own non-test code, has no HTTP client there and serves plain HTTP (ListenAndServe), so nothing in it verifies a certificate chain; crypto/x509 is linked only through net/http (vulnerable_code_not_in_execute_path). Independently reproducible: build govulncheck v1.9.0 with Go 1.27.2, check out tag v0.2.2 (commit 0ac0586dc1b2de70318b82469fa5b35bfa090068) and run `govulncheck -mode=source ./...`: it reports 0 vulnerabilities affecting the code and lists GO-2026-6809 only as a vulnerability in an imported package that the code does not call. In binary mode on the released fscache binaries it reports the symbol Certificate.Verify as present in the binary; binary mode has no call graph and shows no call path. Assessed 2026-10-28 against the vulnerability database updated 2026-10-27. This is a claim about this artifact's execution path, not about crypto/x509 in general, and it needs re-checking whenever the call graph changes.",
-      "action_statement": "No action is required for the v0.2.2 images. The fix ships in a Go 1.27.3 build; main builds with Go 1.27.3."
+      "impact_statement": "Scoped to the published repository ghcr.io/fosterstack/cache and to the Go standard library 1.27.2 as a subcomponent, the version the v0.2.2 binaries were built with; a build with another Go version is not covered and re-trips the scanner. The advisory's vulnerable symbol is crypto/x509 Certificate.Verify. The FosterStack v0.2.2 server imports neither crypto/tls nor crypto/x509 in its own non-test code, has no HTTP client there and serves plain HTTP (ListenAndServe), so nothing in it verifies a certificate chain; crypto/x509 is linked only through net/http (vulnerable_code_not_in_execute_path). Independently reproducible: build govulncheck v1.9.0 with Go 1.27.2, check out tag v0.2.2 (commit 0ac0586dc1b2de70318b82469fa5b35bfa090068) and run `govulncheck -mode=source ./...`: it reports 0 vulnerabilities affecting the code and lists GO-2026-6809 only as a vulnerability in an imported package that the code does not call. The evidence is the source at tag v0.2.2, analysed with the call graph; it is not a scan of the released binaries. Assessed 2026-10-28 against the vulnerability database updated 2026-10-27. This is a claim about this artifact's execution path, not about crypto/x509 in general, and it needs re-checking whenever the call graph changes.",
+      "action_statement": "No action is required: the vulnerable function is not called by this product. A build with Go 1.27.3 or later removes the finding; the v0.2.2 images were built with Go 1.27.2."
     }
   ]
 }
