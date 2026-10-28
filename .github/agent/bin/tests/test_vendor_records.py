@@ -1,5 +1,4 @@
-# (no AC is registered for the sweep's library yet: the ACs REQ-VEND-001-AC16.. are drafted for the owner's
-# ratification, see the PR)
+# proves: REQ-VEND-001-AC16, REQ-VEND-001-AC17, REQ-VEND-001-AC18, REQ-VEND-001-AC20
 """auditorlib.vendor_records: what the records sweep may write to a dependency-bump branch and when it must leave the
 branch alone.
 Real git repositories in a temporary directory (an origin and a clone); a fake GitHub API; the Go steps are a function

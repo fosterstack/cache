@@ -1,5 +1,4 @@
-# (no AC is registered for the sweep yet: the ACs REQ-VEND-001-AC16.. are drafted for the owner's ratification, see the
-# PR)
+# proves: REQ-VEND-001-AC16, REQ-VEND-001-AC17, REQ-VEND-001-AC21
 """auditor-vendor-records.py: which branches the sweep visits and what its exit code says. The per-branch work is
 auditorlib.vendor_records (its own tests)."""
 import importlib.util, io, os, subprocess, sys, unittest

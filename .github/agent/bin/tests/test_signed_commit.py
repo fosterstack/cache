@@ -1,4 +1,5 @@
-# (no AC is registered for the auditor's signed-delivery helper: the guarantees are advisor 0209 / REQ-AUD-17, held in ops; this file is covered by the auditor coverage gate)
+# proves: REQ-VEND-001-AC16, REQ-VEND-001-AC19, REQ-VEND-001-AC20
+# (the file's other, older guarantees are advisor 0209 / REQ-AUD-17, held in ops; the file is covered by the auditor coverage gate)
 """auditorlib.signed_commit: the exact REST and GraphQL calls, the base64 file changes, the create-or-reset branch path, and every way the
 delivery must fail closed (an API error, no oid, an unsigned or unverifiable commit, a file over 5 MB, a branch outside auditor/). A recording
 fake `gh`; nothing touches the network."""
