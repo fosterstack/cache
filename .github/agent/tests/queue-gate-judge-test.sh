@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-005-AC3
-# Offline fixture and mutation suite for bin/queue-gate-judge.sh (cache#542): the judge that the review gate runs, from
+# Offline fixture and mutation suite for .github/agent/bin/queue-gate-judge.sh (cache#542): the judge that the review gate runs, from
 # the default branch's copy, over a merge queue's temporary branch, and that must fail closed. (The AC name AC3 is
 # added to requirements.yaml later by the lead; it does not exist there yet.)
 #
-# THE CONTRACT this suite pins (the coder writes bin/queue-gate-judge.sh to it):
-#   bin/queue-gate-judge.sh HEAD_SHA REF
+# THE CONTRACT this suite pins (the coder writes .github/agent/bin/queue-gate-judge.sh to it):
+#   .github/agent/bin/queue-gate-judge.sh HEAD_SHA REF
 #     HEAD_SHA  the queue head (workflow_run.head_sha): exactly 40 lower-case hex.
 #     REF       the queue ref (workflow_run.head_branch): exactly ^gh-readonly-queue/main/pr-[0-9]+-[0-9a-f]{40}$
 #   Exit 0 only when ALL hold: both arguments valid; the objects of HEAD_SHA are readable; the first-parent history
@@ -16,21 +16,29 @@
 #   the record judge reports a GitHub API error (the audit-record-judge.sh exit-3 meaning). 126 and 127 (a missing
 #   command leaking out) are not acceptable verdicts here.
 #   Nothing is checked out and nothing of the group is executed: git objects are read only.
-# Environment (the test seams; production sets only the first two):
-#   GH_TOKEN, GITHUB_REPOSITORY   passed through to the record judge
+# Programs: the script names NO program through a variable (the repo's pin checker refuses that). It runs from the
+#   repository root (the current directory, as the workflows run it) and calls, as literal command lines, the same
+#   ones the judge job of agent-review-gate.yml runs:
+#     bash bin/audit-record-judge.sh PR_HEAD_SHA main                       (once per second parent)
+#     python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git HEAD_SHA
+#     git ls-tree -r -z --name-only HEAD_SHA | GITHUB_BASE_REF=main ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV=HEAD_SHA
+#         bash bin/check-file-allowlist.sh
+#     PYTHONPATH=<dir holding yaml -> .github/agent/fixtures/testlib/pyyaml> PIN_WIRING_JUDGE_GIT=HEAD_SHA
+#         bash .github/agent/tests/pin-wiring-test.sh
+#     PYTHONPATH=<same> SCAN_GUARD_JUDGE_GIT=HEAD_SHA bash bin/scan-no-workflow-call-test.sh
+#   The suite builds a fixture tree in a temp dir (.github/agent/bin/queue-gate-judge.sh copied in, STUBS at those literal paths) and
+#   runs the script with that tree as the current directory. A missing judge file is a refusal (exit 1), never 126/127.
+# Environment: GH_TOKEN, GITHUB_REPOSITORY go to the record judge. Two test seams, both plain VALUES used as data:
 #   QUEUE_GATE_GIT_DIR            the git directory holding the group's objects (default: the current repository's)
 #   QUEUE_GATE_BASE_REF           the ref naming the default branch's tip, the group's base (default
 #                                 refs/remotes/origin/main); the walk is `rev-list --first-parent BASE..HEAD`
-#   QUEUE_GATE_RECORD_JUDGE       the record judge, called as `$QUEUE_GATE_RECORD_JUDGE PR_HEAD_SHA main`
-#                                 (default: bin/audit-record-judge.sh beside the script)
-#   QUEUE_GATE_MAIN_JUDGES        one command that runs main's five judges (check-action-pins --git,
-#                                 check-file-allowlist, pin-wiring, scanner guard, and the record set) over a sha,
-#                                 called as `$QUEUE_GATE_MAIN_JUDGES HEAD_SHA`; any non-zero exit fails the verdict
-#                                 (default: the real commands, in the script)
-#   A `gh` on PATH is what the default record judge uses; the suite puts a stub there, so the network is never touched.
+#   There is no seam that names a program. A `gh` on PATH is what the real record judge uses; the suite puts a stub
+#   there, so the network is never touched.
+# The suite also runs the repo's pin checker over a tree holding the script and a workflow step that runs it: no finding.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-sut="$here/queue-gate-judge.sh"
+repo="$(cd "$here/../../.." && pwd)"
+sut="$repo/.github/agent/bin/queue-gate-judge.sh"
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 pass=0; fail=0
 ok()  { echo "ok: $1"; pass=$((pass+1)); }
@@ -56,32 +64,51 @@ GT="$(mk 'merge pr2' "$GO" "$P2")"                # an octopus below the head
 GL="$(mk 'linear on top' "$G2")"                  # a one-parent commit at the head
 REF="gh-readonly-queue/main/pr-12-$G2"
 
-# stubs: the record judge answers per head from files; the main judges from one file
-cat > "$w/record-judge" <<'EOF'
+# the fixture tree: the script under test and STUBS at the literal paths it calls, run with the tree as cwd
+root="$w/root"
+mkdir -p "$root/bin" "$root/.github/agent/bin" "$root/.github/agent/tests" "$root/.github/agent/fixtures/testlib/pyyaml"
+[ -f "$sut" ] && cp "$sut" "$root/.github/agent/bin/queue-gate-judge.sh"
+cat > "$root/bin/audit-record-judge.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "$1 $2" >> "$QG_LOG"
 f="$QG_RC/$1"; [ -f "$f" ] && exit "$(cat "$f")"; exit 0
 EOF
-cat > "$w/main-judges" <<'EOF'
-#!/usr/bin/env bash
-echo "$1" >> "$QG_MAIN_LOG"
-exit "$(cat "$QG_MAIN_RC" 2>/dev/null || echo 0)"
+cat > "$root/.github/agent/bin/check-action-pins.py" <<'EOF'
+import os, sys
+open(os.environ["QG_MAIN_LOG"], "a").write("pins " + " ".join(sys.argv[1:]) + "\n")
+f = os.path.join(os.environ["QG_MRC"], "pins")
+sys.exit(int(open(f).read()) if os.path.exists(f) else 0)
 EOF
-chmod +x "$w/record-judge" "$w/main-judges"
+cat > "$root/bin/check-file-allowlist.sh" <<'EOF'
+cat >/dev/null
+echo "allow $GITHUB_BASE_REF $ALLOWLIST_NUL $ALLOWLIST_HEAD_REV" >> "$QG_MAIN_LOG"
+exit "$(cat "$QG_MRC/allow" 2>/dev/null || echo 0)"
+EOF
+cat > "$root/.github/agent/tests/pin-wiring-test.sh" <<'EOF'
+echo "wiring $PIN_WIRING_JUDGE_GIT yaml=$([ -e "${PYTHONPATH:-/nonexistent}/yaml" ] && echo 1 || echo 0)" >> "$QG_MAIN_LOG"
+exit "$(cat "$QG_MRC/wiring" 2>/dev/null || echo 0)"
+EOF
+cat > "$root/bin/scan-no-workflow-call-test.sh" <<'EOF'
+echo "scan $SCAN_GUARD_JUDGE_GIT yaml=$([ -e "${PYTHONPATH:-/nonexistent}/yaml" ] && echo 1 || echo 0)" >> "$QG_MAIN_LOG"
+exit "$(cat "$QG_MRC/scan" 2>/dev/null || echo 0)"
+EOF
+chmod +x "$root/bin/audit-record-judge.sh"
 mkdir -p "$w/gh-down"
 cat > "$w/gh-down/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh: HTTP 500: server error" >&2; exit 1
 EOF
 chmod +x "$w/gh-down/gh"
+variant() { # variant NAME: a copy of the fixture tree to damage; prints its path
+  rm -rf "$w/v-$1"; cp -a "$root" "$w/v-$1"; echo "$w/v-$1"
+}
 
-# exec_sut HEAD REF [ENV=VAL...]: the judge under a clean environment with the stubs; sets LAST_RC and LAST_OUT
+# exec_sut HEAD REF [ENV=VAL...]: the judge under a clean environment, cwd = the fixture tree ($ROOT, default $root)
 exec_sut() {
   local head=$1 ref=$2; shift 2
-  LAST_OUT="$(cd "$w" && env -i PATH="$PATH" HOME="$w" GH_TOKEN=x GITHUB_REPOSITORY=o/r \
-    QUEUE_GATE_GIT_DIR="$w/repo.git" QUEUE_GATE_RECORD_JUDGE="$w/record-judge" \
-    QUEUE_GATE_MAIN_JUDGES="$w/main-judges" QG_LOG="$w/log" QG_RC="$w/rc" \
-    QG_MAIN_LOG="$w/mainlog" QG_MAIN_RC="$w/main.rc" "$@" bash "$sut" "$head" "$ref" 2>&1)"
+  LAST_OUT="$(cd "${ROOT:-$root}" && env -i PATH="$PATH" HOME="$w" GH_TOKEN=x GITHUB_REPOSITORY=o/r \
+    QUEUE_GATE_GIT_DIR="$w/repo.git" QG_LOG="$w/log" QG_RC="$w/rc" \
+    QG_MAIN_LOG="$w/mainlog" QG_MRC="$w/mrc" "$@" bash .github/agent/bin/queue-gate-judge.sh "$head" "$ref" 2>&1)"
   LAST_RC=$?
 }
 verdict() { # verdict NAME WANT(0|nz|3): judge LAST_RC against the contract
@@ -93,7 +120,7 @@ verdict() { # verdict NAME WANT(0|nz|3): judge LAST_RC against the contract
     nz) if [ "$LAST_RC" -ge 1 ] && [ "$LAST_RC" -le 3 ]; then ok "$name"; else bad "$name ($why)"; fi ;;
   esac
 }
-reset() { rm -rf "$w/rc"; mkdir -p "$w/rc"; : > "$w/log"; : > "$w/mainlog"; rm -f "$w/main.rc"; }
+reset() { rm -rf "$w/rc" "$w/mrc"; mkdir -p "$w/rc" "$w/mrc"; : > "$w/log"; : > "$w/mainlog"; ROOT=; }
 run() { # run NAME WANT HEAD REF [ENV=VAL...]: a fresh state for each case
   local name=$1 want=$2 head=$3 ref=$4; shift 4
   reset; exec_sut "$head" "$ref" "$@"; verdict "$name" "$want"
@@ -102,13 +129,16 @@ need() { # need NAME PATTERN FILE: the file must hold a line matching the patter
   grep -qE "$2" "$3" && ok "$1" || bad "$1 (no /$2/ in $3)"
 }
 
-[ -f "$sut" ] && ok "bin/queue-gate-judge.sh exists" || bad "bin/queue-gate-judge.sh does not exist"
+[ -f "$sut" ] && ok ".github/agent/bin/queue-gate-judge.sh exists" || bad ".github/agent/bin/queue-gate-judge.sh does not exist"
 
 # the good case first: if this fails, every refusal below is only a missing script, not a verdict
 run "a two-merge group on main, every record good, main's judges good -> exit 0" 0 "$G2" "$REF"
 need "each pull request head (second parent) went to the record judge with base main (pr1)" "^$P1 main\$" "$w/log"
 need "each pull request head (second parent) went to the record judge with base main (pr2)" "^$P2 main\$" "$w/log"
-need "main's judges ran over the queue head" "^$G2\$" "$w/mainlog"
+need "main's pin checker ran over the queue head (--verify-tags --git)" "^pins --verify-tags --git $G2\$" "$w/mainlog"
+need "main's allowlist guard ran over the queue head (NUL list, head rev, base main)" "^allow main 1 $G2\$" "$w/mainlog"
+need "main's pin-wiring judge ran over the queue head, with the yaml shim" "^wiring $G2 yaml=1\$" "$w/mainlog"
+need "main's scanner guard ran over the queue head, with the yaml shim" "^scan $G2 yaml=1\$" "$w/mainlog"
 run "a one-merge group is good too" 0 "$G1" "gh-readonly-queue/main/pr-3-$G1"
 
 # argument validation
@@ -154,17 +184,26 @@ run_rc "a record judge exiting 2 (any other non-zero) -> refused" nz "$P2" 2
 run_rc "a record judge exiting 127 -> refused" nz "$P1" 127
 
 # the judges themselves
-run "a judge stub that is missing -> refused" nz "$G2" "$REF" QUEUE_GATE_RECORD_JUDGE="$w/no-such-judge"
-run "a record judge that is not executable -> refused" nz "$G2" "$REF" QUEUE_GATE_RECORD_JUDGE="$w/main.rc"
-run "main's judges missing -> refused" nz "$G2" "$REF" QUEUE_GATE_MAIN_JUDGES="$w/no-such-main-judges"
-reset; echo 1 > "$w/main.rc"; exec_sut "$G2" "$REF"
-verdict "main's judges failing over the head, every record good -> refused" nz
+reset; ROOT="$(variant norecord)"; rm -f "$ROOT/bin/audit-record-judge.sh"; exec_sut "$G2" "$REF"
+verdict "a record judge that is missing from the tree -> refused" nz
+reset; ROOT="$(variant dirrecord)"; rm -f "$ROOT/bin/audit-record-judge.sh"; mkdir "$ROOT/bin/audit-record-judge.sh"
+exec_sut "$G2" "$REF"; verdict "a record judge that is not a file (a directory) -> refused, not 126" nz
+reset; ROOT="$(variant nowiring)"; rm -f "$ROOT/.github/agent/tests/pin-wiring-test.sh"; exec_sut "$G2" "$REF"
+verdict "a main judge (pin-wiring) missing from the tree -> refused" nz
+run_main() { # run_main NAME JUDGE: that one main judge exits 1, every record good
+  reset; echo 1 > "$w/mrc/$2"; exec_sut "$G2" "$REF"; verdict "$1" nz
+}
+run_main "main's pin checker failing over the head, every record good -> refused" pins
+run_main "main's allowlist guard failing over the head -> refused" allow
+run_main "main's pin-wiring judge failing over the head -> refused" wiring
+run_main "main's scanner guard failing over the head -> refused" scan
 
 # GitHub API unreadable: the real record judge with a gh that always errors (HTTP 500) exits 3, so does the verdict
-reset; exec_sut "$G2" "$REF" PATH="$w/gh-down:$PATH" QUEUE_GATE_RECORD_JUDGE="$here/audit-record-judge.sh"
+reset; ROOT="$(variant realrecord)"
+cp "$repo/bin/audit-record-judge.sh" "$repo/bin/audit-record.py" "$ROOT/bin/"
+exec_sut "$G2" "$REF" PATH="$w/gh-down:$PATH"
 verdict "GitHub API unreadable (gh errors, the real record judge) -> refused" nz
-reset; exec_sut "$G2" "$REF" PATH="$w/gh-down:$PATH" QUEUE_GATE_RECORD_JUDGE="$here/audit-record-judge.sh" \
-  GH_TOKEN= GITHUB_REPOSITORY=
+exec_sut "$G2" "$REF" PATH="$w/gh-down:$PATH" GH_TOKEN= GITHUB_REPOSITORY=
 verdict "no token and no repository name in the environment (real record judge) -> refused" nz
 
 # text-level: the script reads git objects only
@@ -175,6 +214,35 @@ if [ -f "$sut" ]; then
   grep -qE 'set -[a-z]*u' "$sut" && ok "the judge runs with set -u" || bad "the judge runs with set -u"
 else
   bad "the judge checks nothing out and evals nothing (no script)"; bad "the judge runs with set -u (no script)"
+fi
+
+# the script names no program through a variable: the repo's own pin checker, run over a tree holding the script, the
+# files it calls (the real ones) and a workflow step that runs it, finds nothing (the gate workflow itself is not in
+# this tree; its "missing" line is the one finding allowed)
+pt="$w/pintree"; rm -rf "$pt"
+mkdir -p "$pt/.github/workflows" "$pt/.github/agent/bin" "$pt/.github/agent/tests" "$pt/bin"
+cat > "$pt/.github/workflows/queue.yml" <<'EOF'
+name: queue
+on: workflow_dispatch
+permissions: {}
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash .github/agent/bin/queue-gate-judge.sh "$HEAD_SHA" "$HEAD_BRANCH"
+EOF
+if [ -f "$sut" ]; then
+  cp "$sut" "$pt/.github/agent/bin/"
+  cp "$repo/.github/agent/bin/check-action-pins.py" "$pt/.github/agent/bin/"
+  cp "$repo/.github/agent/tests/pin-wiring-test.sh" "$pt/.github/agent/tests/"
+  cp "$repo/bin/audit-record-judge.sh" "$repo/bin/audit-record.py" "$repo/bin/check-file-allowlist.sh" \
+     "$repo/bin/scan-no-workflow-call-test.sh" "$pt/bin/"
+  pins_out="$(cd "$pt" && python3 -I "$repo/.github/agent/bin/check-action-pins.py" . 2>&1)"
+  pins_find="$(grep -vE '^check-action-pins:|^\.github/workflows/agent-review-gate\.yml: missing' <<<"$pins_out")"
+  if [ -z "$pins_find" ]; then ok "the repo's pin checker finds nothing in the script (no program named by a variable)"
+  else bad "the repo's pin checker refuses the script: $(head -c 300 <<<"$pins_find" | tr '\n' ' ')"; fi
+else
+  bad "the repo's pin checker finds nothing in the script (no script)"
 fi
 
 echo "----"

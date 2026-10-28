@@ -630,6 +630,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/audit-record-test.sh"
   },
   {
+   "name": "the review gate in the merge queue \u2014 the judge of a queue's temporary branch, from main's copy, fails closed (REQ-DEP-005-AC3)",
+   "run": "bash .github/agent/tests/queue-gate-judge-test.sh"
+  },
+  {
    "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
    "run": "bash bin/admission-tag-signer-test.sh"
   },

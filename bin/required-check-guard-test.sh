@@ -204,7 +204,7 @@ for st in qj.get("steps") or []:
     res(not re.search(r"\$\{\{[^}]*workflow_run", r),
         "queue-judge step %r never inlines workflow_run fields into the script (env vars only)" % nm)
 qtxt = json.dumps(qj)
-res("queue-gate-judge.sh" in qtxt, "queue-judge runs main's bin/queue-gate-judge.sh")
+res("agent/bin/queue-gate-judge.sh" in qtxt, "queue-judge runs main's agent/bin/queue-gate-judge.sh")
 res("github.event.workflow_run.head_sha" in qtxt, "queue-judge takes the queue head from workflow_run.head_sha")
 res("auditor-review-gate" in qtxt and "check-runs" in qtxt,
     "queue-judge publishes the auditor-review-gate check run on that head")
@@ -215,7 +215,7 @@ res("gh-readonly-queue" in sws, "the sweep script lists the queue refs (gh-reado
 res("matching-refs" in sws or "ls-remote" in sws or "git/refs" in sws,
     "the sweep reads the queue refs through the refs API or the remote, read-only")
 res("pr-[0-9]+-[0-9a-f]{40}" in sws, "the sweep validates a queue ref against pr-N-<40 hex> before using it")
-res("queue-gate-judge.sh" in sws, "the sweep judges a queue head with main's bin/queue-gate-judge.sh")
+res("agent/bin/queue-gate-judge.sh" in sws, "the sweep judges a queue head with main's agent/bin/queue-gate-judge.sh")
 posts = len(re.findall(r"-f name=auditor-review-gate", sws))
 looks = len(re.findall(r"check_name=auditor-review-gate", sws))
 res(posts >= 1 and looks >= posts,

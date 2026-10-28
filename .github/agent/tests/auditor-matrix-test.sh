@@ -3466,6 +3466,7 @@ try:
     open(gh, "w").write('#!/bin/sh\n'
         'case "$1 $2" in\n'
         '"pr list") echo "7 %s feature owner/repo" ;;\n'
+        '"api --paginate") ;;\n'   # the sweep's list of merge queue refs: none
         '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo none ;;\n'
         '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
         '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
@@ -3510,7 +3511,7 @@ import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
 src=open(".github/workflows/agent-review-gate.yml").read(); d=yaml.safe_load(src)
 on=d.get("on") or d.get(True) or {}
-J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{})
+J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{}); q=J.get("queue-judge",{})
 runs=lambda job: "\n".join(x.get("run","") for x in job.get("steps",[]))
 jr, pr, wr = runs(j), runs(p), runs(w)
 co=[x for x in j.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
@@ -3518,8 +3519,17 @@ wco=[x for x in w.get("steps",[]) if str(x.get("uses","")).startswith("actions/c
 tok=lambda job: [x for x in job.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
 main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
 def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.startswith("permission-")}=={"permission-checks"} and t[0]["with"]["permission-checks"]=="write"
-ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited" in on["pull_request_target"]["types"]
-    and d.get("permissions")=={} and set(J)=={"judge","publish","record","sweep"}
+qco=[x for x in q.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
+ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch"} and "edited" in on["pull_request_target"]["types"]
+    and d.get("permissions")=={} and set(J)=={"judge","publish","record","queue-judge","sweep"}
+    # queue-judge: a workflow_run job (the default branch's copy), never a pull_request_target job; the agent environment;
+    # fires only for a merge_group CI run; the default branch's checkout; judged by main's script; the App token is checks-only
+    and on["workflow_run"].get("workflows")==["CI"] and set(on["workflow_run"].get("types",[]))=={"requested","completed"}
+    and q.get("environment")=="agent" and q.get("permissions")=={"contents":"read"}
+    and q.get("if")=="github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'"
+    and "pull_request_target" not in str(q.get("if")) and "pull_request" not in yaml.safe_dump(q.get("steps",[]))
+    and len(qco)==1 and (qco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (qco[0].get("with") or {})
+    and scoped(tok(q)) and "bash .github/agent/bin/queue-gate-judge.sh" in runs(q) and "checkout" not in runs(q)
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
     and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
@@ -3613,6 +3623,7 @@ try:
     open(gh, "w").write('#!/bin/sh\n'
         'case "$1 $2" in\n'
         '"pr list") echo "7 %s feature owner/repo" ;;\n'
+        '"api --paginate") ;;\n'   # the sweep's list of merge queue refs: none
         '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo "$STUB_LAST" ;;\n'
         '"api repos/o/r/git/ref/heads/audit/%s") [ "$STUB_REC" = 1 ] || exit 1 ;;\n'
         '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
