@@ -19,6 +19,11 @@ interpreter run on a variable path).
       ASCII, exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> (no leading zeros) and a plain newline; exit 1 for anything else
       (REQ-BUILDAPK-001-AC4).
 
+  build-apk-helper.py sealed-call ARG...
+      judges the argument list of the privileged melange call, as the driver will run it after `sudo` (sandboxed-build ratify Oct 27 2026, rule 2): `env -i`, then
+      NAME=value items only, then `unshare -n`, then melange, then `build` with exactly one `--runner` and its value `bubblewrap`. Prints the first reason on standard
+      error and exits 1 for anything else (a call without the bubblewrap runner, without the cut network namespace, or with an environment that is not closed).
+
 Exit codes: 0 ok | 1 failed | 2 usage.
 """
 import datetime
@@ -102,7 +107,31 @@ def fips_module(path):
     return 0
 
 
+def sealed_call(call):
+    """None when the call is the sealed one, else the first reason."""
+    if len(call) < 6 or os.path.basename(call[0]) != "env" or call[1] != "-i":
+        return "the call does not start with env -i"
+    i = 2
+    while i < len(call) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", call[i], re.S):
+        i += 1
+    if i + 3 >= len(call) or os.path.basename(call[i]) != "unshare" or call[i + 1] != "-n":
+        return "the call is not run under unshare -n (the network namespace is not cut)"
+    if os.path.basename(call[i + 2]) != "melange" or call[i + 3] != "build":
+        return "the program under unshare -n is not melange build"
+    args = call[i + 4:]
+    runners = [k for k, a in enumerate(args) if a == "--runner" or a.startswith("--runner=")]
+    if len(runners) != 1 or args[runners[0]] != "--runner" or runners[0] + 1 >= len(args) or args[runners[0] + 1] != "bubblewrap":
+        return "melange is not run with exactly one --runner bubblewrap"
+    return None
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[1] == "sealed-call":
+        why = sealed_call(argv[2:])
+        if why:
+            print(why, file=sys.stderr)
+            return 1
+        return 0
     if len(argv) == 3 and argv[1] == "build-date":
         return build_date(argv[2])
     if len(argv) == 5 and argv[1] == "recipe-facts":
@@ -111,7 +140,7 @@ def main(argv):
         return sealed_env(argv[2])
     if len(argv) == 3 and argv[1] == "fips-module":
         return fips_module(argv[2])
-    print("usage: build-apk-helper.py build-date EPOCH | recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | fips-module FILE", file=sys.stderr)
+    print("usage: build-apk-helper.py build-date EPOCH | recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | sealed-call ARG... | fips-module FILE", file=sys.stderr)
     return 2
 
 
