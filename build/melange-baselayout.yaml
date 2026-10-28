@@ -1,0 +1,77 @@
+# The FosterStack Cache base layout (melange recipe): the small package that replaces Wolfi's wolfi-baselayout in the images,
+# because wolfi-baselayout depends on ca-certificates-bundle (every r18..r30 in Wolfi's index) and the images carry no CA
+# bundle (docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1; handoff 0710).
+#
+# Rules (0710): the package holds only the files below, copied from build/baselayout/ in the source tree (real files, so a
+# reader sees every byte); no dependency, no provides, no shell, no shell path (root and nobody have /sbin/nologin);
+# /etc/os-release is Wolfi's own text so scanners identify the OS; version = fscache's version (@VERSION@ is replaced by
+# bin/build-apk.sh like the fscache recipe's); the build environment below is the SAME pinned list as build/melange.yaml
+# (bin/baselayout-test.sh fails when the two differ); no network and no fetch.
+package:
+  name: fscache-baselayout
+  version: "@VERSION@"
+  epoch: 0
+  description: the base layout of the FosterStack Cache image (no CA bundle)
+  copyright:
+    - license: MIT
+environment:
+  contents:
+    packages:
+      - busybox=1.38.0-r3
+      - ca-certificates-bundle=20260909-r3
+      - cyrus-sasl-heimdal-libs=2.1.28-r58
+      - gdbm=1.26-r7
+      - git=2.56.0-r3
+      - glibc-2.44-locale-posix=2.44-r9
+      - glibc-2.44=2.44-r9
+      - heimdal-libs=7.8.0-r54
+      - keyutils-libs=1.6.3-r41
+      - krb5-conf=1.0-r10
+      - krb5-libs=1.22.2-r5
+      - ld-linux-2.44=2.44-r9
+      - libbrotlicommon1=1.2.1-r1
+      - libbrotlidec1=1.2.1-r1
+      - libbrotlienc1=1.2.1-r1
+      - libcom_err=1.47.4-r3
+      - libcrypt1-2.44=2.44-r9
+      - libcurl-openssl4=8.23.0-r2
+      - libexpat1=2.9.0-r0
+      - libgcc=16.2.0-r1
+      - libidn2=2.3.8-r10
+      - libldap-2.7=2.7.2-r0
+      - libnghttp2-14=1.70.0-r5
+      - libpcre2-8-0=10.49-r1
+      - libpsl=0.23.3-r2
+      - libunistring=1.5-r0
+      - libverto=0.3.2-r9
+      - libxcrypt=4.5.2-r6
+      - ncurses-terminfo-base=6.6.20261017-r0
+      - ncurses=6.6.20261017-r0
+      - nghttp3=1.18.0-r1
+      - ngtcp2=1.25.0-r5
+      - openssl-4.0-libcrypto=4.0.3-r8
+      - openssl-4.0-libssl=4.0.3-r8
+      - openssl-provider-legacy-allowed=4.0.3-r1
+      - readline=8.3-r3
+      - sqlite-libs=3.54.1-r0
+      - wget=1.25.0-r20
+      - wolfi-baselayout=20230201-r30
+      - zlib=1.3.2.1_rc20260921-r0
+pipeline:
+  - runs: |
+      mkdir -p ${{targets.destdir}}/etc ${{targets.destdir}}/usr/bin ${{targets.destdir}}/usr/lib
+      mkdir -p ${{targets.destdir}}/dev ${{targets.destdir}}/proc ${{targets.destdir}}/sys ${{targets.destdir}}/run
+      mkdir -p ${{targets.destdir}}/home ${{targets.destdir}}/root ${{targets.destdir}}/tmp ${{targets.destdir}}/var/tmp
+      chmod 0700 ${{targets.destdir}}/root
+      chmod 1777 ${{targets.destdir}}/tmp ${{targets.destdir}}/var/tmp
+      ln -s usr/bin ${{targets.destdir}}/bin
+      ln -s usr/bin ${{targets.destdir}}/sbin
+      ln -s usr/lib ${{targets.destdir}}/lib
+      ln -s usr/lib ${{targets.destdir}}/lib64
+      ln -s bin ${{targets.destdir}}/usr/sbin
+      ln -s lib ${{targets.destdir}}/usr/lib64
+  - runs: |
+      cp build/baselayout/etc/group build/baselayout/etc/hosts build/baselayout/etc/nsswitch.conf ${{targets.destdir}}/etc/
+      cp build/baselayout/etc/os-release build/baselayout/etc/passwd build/baselayout/etc/protocols build/baselayout/etc/services ${{targets.destdir}}/etc/
+      chmod 0644 ${{targets.destdir}}/etc/group ${{targets.destdir}}/etc/hosts ${{targets.destdir}}/etc/nsswitch.conf
+      chmod 0644 ${{targets.destdir}}/etc/os-release ${{targets.destdir}}/etc/passwd ${{targets.destdir}}/etc/protocols ${{targets.destdir}}/etc/services
