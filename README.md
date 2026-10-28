@@ -8,11 +8,11 @@
 A self-hosted, drop-in remote build cache for **Gradle** — and for **Maven**
 through the Apache Maven Build Cache Extension (acceptance-tested on every
 push and release). Ships as
-a single static binary or a distroless container image, MIT-licensed, with
+a single static binary or a minimal container image (no shell, no base image), MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is keylessly signed (Sigstore); every binary archive is covered by a
-signed checksums file; both carry SLSA provenance naming the CI run that built
-them. ["Verifying a release"][releasing-verify] has the commands.
+signed checksums file; the release pipeline's Sign stage signs a SLSA
+provenance statement that names every image by digest. ["Verifying a release"][releasing-verify] has the commands.
 
 **Website:** [fosterstack.com](https://fosterstack.com) · **Docs:**
 [Install](docs/install.md) · [Docker](docs/docker-deploy.md) ·
@@ -55,7 +55,7 @@ Shipped:
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
-  (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
+  (production and `-fips`) on GHCR, plus bare binaries and a signed
   checksums file. Every release is built only by CI, once. The images are assembled
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
@@ -108,8 +108,8 @@ withheld from the free tier for security.
 The security evidence itself is public and free: SBOMs, SLSA provenance,
 signatures, VEX statements, and the FIPS 140-3 module certificate number are
 published with every release and verifiable by anyone, with no account and
-no purchase. Scan verdicts are visible in the public CI logs; they are not
-yet attached to releases as durable, digest-bound evidence. The FIPS-mode image is publicly pullable too.
+no purchase. The scan results are attached to each release as Check records,
+bound to the image digests they cover. The FIPS-mode image is publicly pullable too.
 What the Compliance tier sells is the authored analysis, the vendor signature,
 and the hours — never access to the bytes or the evidence.
 
@@ -139,23 +139,20 @@ run — there is no primary platform.
 |---|---|
 | Binaries (`fscache`) | `linux/amd64`, `linux/arm64` |
 | FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
-| Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
+| Container images (prod, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
 
 ### Image variants
 
 | Tag | Shell | Use |
 |---|---|---|
 | `X.Y.Z` | none | Production |
-| `X.Y.Z-debug` | busybox at `/busybox/sh` | Interactive troubleshooting |
 | `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
 
-Production and `-fips` are distroless: the `fscache` binary and nothing
-else, so there is no shell to exec into and no package manager to patch.
-`:debug` adds busybox for troubleshooting, and its shell is at
-**`/busybox/sh`** — distroless has no `/bin/sh`, unlike Debian, Alpine or
-Wolfi. See
-[the variant docs](docs/verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect)
-and [troubleshooting](docs/docker-deploy.md#troubleshooting-with-the-debug-image).
+Both images hold only the `fscache` binary and the few packages it needs
+(base layout, CA certificates, time zone data): there is no base image, no
+shell to exec into and no package manager. To troubleshoot, attach a second
+container from the outside ([below](#debugging-a-running-container)); see also
+[the variant docs](docs/verify-images.md).
 
 FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
 Linux, so a macOS FIPS build would double CI time for a configuration nobody
@@ -214,9 +211,7 @@ Desktop may still need one. See
 
 **Docker without `docker debug`** works on any Docker, with no plan or sign-in:
 start a tools container that shares the cache container's network and process
-namespaces. (This is the no-shell route; the `:debug` image variant and its
-`/busybox/sh` are described in the
-[troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image).)
+namespaces. (This is the no-shell route; the images have no shell of their own.)
 
 ```sh
 docker run --rm -it --network=container:<name> --pid=container:<name> \

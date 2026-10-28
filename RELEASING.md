@@ -26,18 +26,21 @@ signing key or `packages: write`.
   ancestry of `main`, required checks, approved requirements baseline), builds
   the apks on two native runners (amd64 and arm64) and assembles the images
   and archives. Witness (pinned by checksum, set up first) wraps every step
-  through `bin/witnessed.sh` and signs Build's record keyless under Build's
-  identity; `digests.json` is the list of everything Build made. Before
+  and writes Build's record; Build does not sign it (Sign does, below);
+  `digests.json` is the list of everything Build made. Before
   `digests.json`, Build makes each image's final index from the built index
   and the committed VEX file: the platform manifests plus one VEX attestation
   child per platform. The final index's digest is the one that is signed,
   attested, tested and promoted.
-- **Sign** (`stage-sign.yml`): its own job and workflow file; it receives only
-  Build's digest list, never runs code from the build, and writes and signs the
-  SLSA provenance keyless under its own identity.
+- **Sign** (`stage-sign.yml`): its own job and workflow file; it receives
+  Build's records and the artifacts they name, never runs code from the build,
+  checks the records against those artifacts, signs the records keyless under
+  its own identity, then checks Build's digest list against the signed record
+  and signs the SLSA provenance.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
-  machines and compares every item with Build's; any difference blocks the
-  release.
+  machines and compares its items with Build's; any difference blocks the
+  release. The apks are compared in the `compare` job of `stage-promote.yml`
+  (control and data sections, no key and no token), not in Rebuild.
 - **Check** (`stage-verify.yml`): runs every scanner of
   [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check

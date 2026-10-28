@@ -241,12 +241,16 @@ the Rekor log indexes.
 
 ## 3. Which tags to verify
 
-| Tag | Base image | Shell | What it is |
-|---|---|---|---|
-| `X.Y.Z` | `gcr.io/distroless/static:nonroot` | none | Production. Deploy this one. |
-| `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
-| `X.Y` | — | — | Floating: moves to every final release of that line |
-| `X` / `latest` | — | — | Floating: move only when the release is the highest released version |
+| Tag | Shell | What it is |
+|---|---|---|
+| `X.Y.Z` | none | Production. Deploy this one. |
+| `X.Y.Z-fips` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
+| `X.Y` | — | Floating: moves to every final release of that line |
+| `X` / `latest` | — | Floating: move only when the release is the highest released version |
+
+There is no base image from v0.3.0 on: each image holds only the packages named in
+[`build/apko.yaml`](../build/apko.yaml) (base layout, CA certificates, time zone data and `fscache`),
+pinned by the lock files in `build/locks/`.
 
 Both variants of every release are signed the same way. The `-fips` image has
 its exact tag only; it has no floating tags. Releases before v0.3.0 also had <!-- pinned: historical -->

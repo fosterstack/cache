@@ -1,8 +1,8 @@
 # Scanning FosterStack in your compliance pipeline
 
 Every scanner in [the repo's scanner list](../.github/policy/scanners.json)
-runs against a snapshot build of every release, and the current release's images are
-rescanned daily; [`RELEASING.md`](../RELEASING.md) states exactly what the
+runs in the release pipeline's Check stage against the exact image digests of every release,
+and the current release's images are rescanned daily; [`RELEASING.md`](../RELEASING.md) states exactly what the
 release scan does and does not attach to. This page is about what to expect
 when *you* scan our image, since a minimal image scans differently from a
 typical distro image in ways that surprise people the first time.
@@ -64,21 +64,13 @@ scan can both look like "exit 0" or both look like "exit 1" depending on
 flags, and conflating them ships a green gate that checks nothing. This
 failure mode has been observed in the field.
 
-## The `-debug` variant is different on purpose
-
-The `:debug` tag adds a busybox shell for interactive troubleshooting —
-it is not the image you deploy. Scanning it will show more than the
-production image (busybox itself carries a small package surface), and
-our own release pipeline documents any known, unfixable findings there as
-explicit VEX suppressions in [`.grype.yaml`](../.grype.yaml) rather than
-hiding them — see that file for the current reasoning on each entry.
-Production and `-fips` images never include busybox.
-
 ## Reproducing our own gate
 
-Our release pipeline's scan step is public —
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) — so
-the exact invocation we gate releases on is not a secret:
+Our release pipeline's scan step is public:
+[`bin/check-scan.sh`](../bin/check-scan.sh), run by the Check stage
+([`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml)),
+is the exact invocation we gate releases on. The scanners are the ones in
+[the scanner list](../.github/policy/scanners.json): Grype and OSV-Scanner.
 
 The gate's policy is every severity, with the published VEX applied — so
 a faithful reproduction uses the same. The VEX document ships with each
@@ -86,12 +78,7 @@ release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/):
 
 ```sh
-# Same severity policy and VEX as the release gate:
-trivy image --scanners vuln \
-  --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-  --vex fosterstack-cache.openvex.json \
-  ghcr.io/fosterstack/cache:X.Y.Z
-
+# Same severity policy and VEX as the release gate (Grype shown):
 grype ghcr.io/fosterstack/cache:X.Y.Z \
   --fail-on negligible --vex fosterstack-cache.openvex.json
 ```
