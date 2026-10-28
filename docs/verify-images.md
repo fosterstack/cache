@@ -259,13 +259,14 @@ not.
 
 ### The images have no shell
 
-Production and `-fips` contain the `fscache` binary and nothing else — no
+Production and `-fips` contain the `fscache` binary and a few packages
+(base layout, CA certificates, time zone data; see `build/apko.yaml`) — no
 shell, no package manager, no coreutils. `docker exec ... sh` into them
 fails, by design. What that buys, stated precisely: no shell and no package
 manager means an attacker who gains code execution has no on-image tooling
 to work with — no `sh` for a reverse shell one-liner, nothing to download
-or install helpers with — and there is no OS package surface to patch or
-drift. What it does not prevent: code execution itself, anything an
+or install helpers with — and the OS package surface is small: those few packages, which are patched by
+a new release, not on the running image. What it does not prevent: code execution itself, anything an
 attacker can do through the process's own capabilities and syscalls, or
 attacks that bring their own tooling. A minimal image narrows the toolbox;
 it is not a sandbox.

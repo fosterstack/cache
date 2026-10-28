@@ -108,8 +108,9 @@ withheld from the free tier for security.
 The security evidence itself is public and free: SBOMs, SLSA provenance,
 signatures, VEX statements, and the FIPS 140-3 module certificate number are
 published with every release and verifiable by anyone, with no account and
-no purchase. The scan results are attached to each release as Check records,
-bound to the image digests they cover. The FIPS-mode image is publicly pullable too.
+no purchase. Each release carries signed Check records that bind the scan
+results, by hash, to the image digests they cover; the results file itself is
+not attached. The FIPS-mode image is publicly pullable too.
 What the Compliance tier sells is the authored analysis, the vendor signature,
 and the hours — never access to the bytes or the evidence.
 

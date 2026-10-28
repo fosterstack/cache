@@ -40,8 +40,9 @@ signing key or `packages: write`.
   and signs the SLSA provenance.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
   machines and compares its items with Build's; any difference blocks the
-  release. The apks are compared in the `compare` job of `stage-promote.yml`
-  (control and data sections, no key and no token), not in Rebuild.
+  release. Its items include the apks' digests. The `compare` job of
+  `stage-promote.yml` compares the apks once more (control and data sections,
+  no key and no token).
 - **Check** (`stage-verify.yml`): runs every scanner of
   [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check

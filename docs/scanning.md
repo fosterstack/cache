@@ -9,29 +9,11 @@ typical distro image in ways that surprise people the first time.
 
 ## What to expect
 
-**The production and `-fips` images report as `debian` in scanner OS
-detection**, even though there's no shell, no package manager, and no way
-to `apt-get` anything. Confirmed directly against a real build:
-
-```
-$ trivy image ghcr.io/fosterstack/cache:${VER}
-...
-Detected OS   family="debian" version="13.6"
-...
-┌──────────────────────────────────┬──────────┬─────────────────┐
-│              Target               │   Type   │ Vulnerabilities │
-├──────────────────────────────────┼──────────┼─────────────────┤
-│ ghcr.io/fosterstack/cache (debian)│  debian  │        0        │
-├──────────────────────────────────┼──────────┼─────────────────┤
-│ usr/local/bin/fscache             │ gobinary │        0        │
-└──────────────────────────────────┴──────────┴─────────────────┘
-```
-
-Google's distroless base ships an intact `/etc/os-release` deliberately
-(that's exactly what scanners key OS detection on), and we never strip it
-— see the scanner-facts source for this page,
-`sprint4_scanner_input.md`. The `gobinary` row is our own compiled binary,
-scanned by both tools' Go-module vulnerability catalogers directly.
+The scanner output for a v0.3 image is not reproduced here. A minimal image
+with a handful of packages can report a different operating system, or none,
+depending on the scanner, and finds nothing for components it holds no package
+record of. Scan the exact digest you pull and read the result against
+[the packages the image holds](../build/apko.yaml).
 
 ## Package-DB asymmetry — expect this, it isn't a bug
 
@@ -39,11 +21,13 @@ Our images have no package manager and only a handful of packages in the
 package database (base layout, CA certificates, time zone data). That has an
 asymmetric effect on checks:
 
-- **"Is forbidden package X present?"** checks — pass vacuously. There's no
-  package manager, so nothing is "installed" in the sense those checks
-  look for.
-- **"Is required package X present?"** checks — fail or error, for the same
-  reason.
+- **"Is forbidden package X present?"** checks — pass, as long as X is not one
+  of the few packages the image holds.
+- **"Is required package X present?"** checks — pass only for the packages the
+  image holds (see `build/apko.yaml`) and fail for anything else, such as a
+  shell or a package manager.
+- A check that needs a package manager to list packages may error: there is
+  none in the image, only the package database a scanner can read.
 
 If you run a benchmark or policy pack written for a full-OS image (Debian,
 Ubuntu, etc.) against ours, expect confusing partial results — not a
@@ -80,7 +64,9 @@ release as `fosterstack-cache.openvex.json` and lives in-repo at
 ```sh
 # Same severity policy and VEX as the release gate (Grype shown):
 grype ghcr.io/fosterstack/cache:X.Y.Z \
-  --fail-on negligible --vex fosterstack-cache.openvex.json
+  --fail-on negligible --vex fosterstack-cache.openvex.json -o json > result.json
+# --fail-on does not fire on a finding of UNKNOWN severity; the gate judges the result instead:
+jq -e '(.matches | type) == "array" and (.matches | length) == 0' result.json
 ```
 
 Run without `--vex` to see raw findings including the ones we have
@@ -90,7 +76,8 @@ the set of published VEX statements, which is how you audit them.
 ## Marketing claim, with the receipt
 
 "Every scanner in the repo's list runs on every release" is not a claim we're
-asking you to take on faith — each scanner's verdict is in the release's signed
-Check records, bound to the image digests. See
+asking you to take on faith — the release's signed Check records bind each
+scanner's results file, by hash, to the image digests; the results file itself
+is not attached to the release. See
 [Verify our images](verify-images.md#2b-verify-the-whole-chain) for how to
 check them against the image you pulled.
