@@ -62,7 +62,8 @@ def stand_in(binroot, log, tlog=True, latest="v0.9.9", refuse_upload=False, rele
     w("cosign", '#!/bin/sh\necho "cosign $*" >> "%s"\nwhile [ $# -gt 0 ]; do [ "$1" = --bundle ] && b=$2; shift; done\n'
       'echo \'{"verificationMaterial":{"tlogEntries":%s}}\' > "$b"\n' % (log, "[{}]" if tlog else "[]"))
     w("gh", '#!/bin/sh\necho "gh $*" >> "%s"\ncase "$1 $2" in\n  "release view") echo %s ;;\n  "release upload") %s ;;\n'
-      '  "release list") cat "%s/releases.json" ;;\n  "release download") d=; while [ $# -gt 0 ]; do [ "$1" = --dir ] && d=$2; shift; done; mkdir -p "$d"; : > "$d/release-manifest.json" ;;\n'
+      '  "release list") cat "%s/releases.json" ;;\n  "api repos/fosterstack/cache/releases/tags/"*) echo \'{"assets":[{"id":11,"name":"release-manifest.json"},{"id":12,"name":"fosterstack-cache.openvex.json"},{"id":13,"name":"check-collection.json"},{"id":14,"name":"checksums.txt"}]}\' ;;\n'
+      '  "api repos/fosterstack/cache/releases/assets/"*) echo "asset ${2##*/}" ;;\n'
       '  "api repos/fosterstack/cache/security-advisories?state=published&per_page=100") cat "%s/advisories.json" ;;\n  api*) echo "{}" ;;\nesac\n'
       % (log, latest, "exit 1" if refuse_upload else "exit 0", binroot, binroot))
     open(os.path.join(binroot, "releases.json"), "w").write(releases)
@@ -99,6 +100,9 @@ check("AC10: the fetch takes the month's final releases and the latest one befor
       and got == ["v0.3.0", "v0.3.1", "v0.4.0"], (p.stderr, got))
 check("AC10: it writes release.json for each and the advisories as one list", all(os.path.isfile(t + "/out/rel/%s/release.json" % g) for g in got)
       and json.load(open(t + "/out/advisories.json")) == [{"ghsa_id": "GHSA-a", "published_at": "2026-11-09T00:00:00Z", "summary": "x"}])
+check("AC10: it fetches the three evidence files of each release through the API and no other asset, and never `gh release download` (the pin-age check cannot measure that form)",
+      all(sorted(os.listdir(t + "/out/rel/" + g)) == ["check-collection.json", "fosterstack-cache.openvex.json", "release-manifest.json", "release.json"] for g in got)
+      and open(t + "/out/rel/v0.3.0/release-manifest.json").read() == "asset 11\n" and not any("release download" in l for l in open(log).read().splitlines()))
 check("AC10: it only reads: no upload, no write call", not any(("upload" in l or "-X" in l or "--method" in l) for l in open(log).read().splitlines()))
 p = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-fetch.sh"), "2026-13", t + "/o2"], cwd=ROOT, env=env, capture_output=True, text=True)
 check("AC10: a bad month is refused", p.returncode == 2, p.stderr)

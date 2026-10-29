@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 102 |
-| Acceptance criteria | 510 |
+| Active requirements | 103 |
+| Acceptance criteria | 520 |
 | Release-blocking ACs | 131 |
-| ACs with mapped evidence | 500 |
+| ACs with mapped evidence | 510 |
 | Release-blocking ACs with mapped evidence | 131 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 49 |
+| Confidence: documented | 50 |
 | Confidence: implementation-only | 52 |
 
 ## Cache protocol
@@ -1596,3 +1596,26 @@ If the persona suite is split across cores, the run first lists every case and t
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-CI-006-AC1 | Given the persona suite split across cores; when the run starts and then ends; then it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard | inspection |  | approved | 1 item(s) |
+
+## Release evidence
+
+### REQ-REL-013 — The monthly signed evidence letter
+
+Once a month the release chain drafts one letter that rolls up that month's public evidence, checks every line of it against the release assets, signs it keylessly as a release artifact, and attaches it to a release; if any check fails, no letter is made and the job fails (owner DECIDED Oct 27 2026, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md, rules 1 to 8 and the 23:20 amendment: fully automated, no per-month approval, the owner's typed name and title). Every piece of evidence stays public at every tier, so the letter is a public release asset too; it states public facts about published evidence and makes no promise beyond them. It lists the releases published that month, the patch releases and why, the VEX statements added, the Check records of each release, any advisory, and one line binding it to the version of the controls document in force. It is made by a template, never by a model.
+
+*Introduced v0.3.0 · tier compliance · confidence documented · source: bin/evidence-letter.py; bin/evidence-letter-test.sh*
+
+> The site publication and the email to Compliance customers are other lanes' work (www; payments compliance-send). The signatory (the owner's typed name and title) is a named placeholder in docs/evidence-letter-signatory.txt until the advisor gives the exact words; while it is there the job refuses to make a letter.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-013-AC1 | Given a month and the assets of the releases published in it (release.json and the files of each release); when bin/evidence-letter.py runs for that month; then the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release still gets a letter, which says none was published and carries the Check records of the latest release; before any release exists there is no letter and the script says so | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC2 | Given a patch release (vX.Y.Z with Z above 0) in the month; when the letter is made; then it names the patch release and its reason, the first line of that release's notes quoted verbatim; a patch release with no notes line refuses | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC3 | Given a release's OpenVEX file whose hash is the one in its release manifest; when the letter is made; then it lists each statement of that file dated in the month by its CVE name and date; an OpenVEX file whose hash differs from the manifest's refuses | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC4 | Given the Check records of a release and the month's advisories file; when the letter is made; then it lists each Check record by name and hash, and either the month's advisories or that none was published; a missing Check record or a missing advisories file refuses | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC5 | Given a letter just made; when its lines are read back against the assets; then every fact in it is found again in the assets it came from; any mismatch, missing asset or malformed asset makes no letter, ends nonzero and says why in one line | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC6 | Given the controls document with its version history; when the letter is made; then it carries the one binding line naming the version in force and the date it was signed, 'unchanged this month' when it did not change, and when it changed names both versions and which releases fall under each | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC7 | Given any letter the script makes; when its text is read; then it holds none of the words warranty, certified, compliant, guarantee or SOC 2, and no email address; a quoted line that holds one of those words refuses | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC8 | Given the signatory text still holds the placeholder; when the script runs without --draft; then it makes no letter and ends nonzero naming the placeholder; with --draft it writes a file marked DRAFT that is never signed | unit |  | approved | 2 item(s) |
+| REQ-REL-013-AC9 | Given the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else); when its sign job runs on a letter that passed AC5; then the sign job is the only one with an identity token; it signs the letter keylessly with the signing call, the signing config and the transparency-log check of bin/release-sign.sh, so customers verify against the identity https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main, which docs/verify-release.md names; it signs nothing that did not pass AC5 | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-013-AC10 | Given a signed letter and its bundle; when bin/evidence-letter-publish.sh attaches them; then they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed | unit |  | approved | 2 item(s) |

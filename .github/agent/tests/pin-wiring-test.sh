@@ -406,6 +406,14 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-forms-test.sh"
   },
   {
+   "name": "the monthly evidence letter \u2014 made from the release assets, read back, refused on any mismatch (REQ-REL-013)",
+   "run": "bash bin/evidence-letter-test.sh"
+  },
+  {
+   "name": "the monthly evidence letter's jobs \u2014 identity, no overwrite, fail closed, placeholder refused (REQ-REL-013-AC9, AC10)",
+   "run": "bash bin/evidence-letter-job-test.sh"
+  },
+  {
    "name": "the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)",
    "run": "bash bin/scout-root-cause-test.sh"
   },
