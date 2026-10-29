@@ -1,97 +1,122 @@
 #!/usr/bin/env python3
-"""0710 item 4 (REQ-IMAGE-001-AC13, docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rules 1 and 2):
-the cache has no HTTP client and dials no outbound connection.
+"""0710 item 4: the cache has no HTTP client, dials nothing, runs no program and verifies no certificate (REQ-IMAGE-001-AC13).
 
   check-no-outbound.py [ROOT]      scan the non-test Go source under ROOT/cmd and ROOT/internal (ROOT: the repository)
-  check-no-outbound.py binary BIN  list the symbols of the linked program BIN (needs `go` on the search path)
+  check-no-outbound.py binary BIN  refuse BIN if it holds a listed symbol; the linker keeps only what main can reach, so `go tool nm` is the call graph
 
-Source scan: comments and string literals are blanked, then a use of an HTTP client or a dial name is refused (exit 1,
-file:line). The names are in BANNED below; import aliases are followed and a dot import is refused.
-
-Binary check: the Go linker drops every function main cannot reach, so a symbol of `go tool nm BIN` is code the
-program can run, dependencies included. The symbols in BANNED_SYMBOLS are refused (exit 1); each has a test program
-that uses it. Exit 2 when BIN or go cannot be used, or BIN has no symbols (a stripped binary would pass vacuously).
-
-Residual: net.(*Dialer).DialContext is in every net/http program, so it proves nothing. A dependency that dials
-through net.Dialer alone, or through a symbol not listed, is not caught by the binary check. The source scan covers
-our own code only.
+Exit 0: clean. Exit 1: a refusal, named. Exit 2: the check could not run. The residual is written in REQ-IMAGE-001-AC13.
 """
+import ast
 import os
 import re
 import subprocess
 import sys
 
+# package path -> the names of it that our own code may not use
 BANNED = {
     "net/http": {"Client", "DefaultClient", "Transport", "DefaultTransport", "Get", "Head", "Post", "PostForm",
                  "NewRequest", "NewRequestWithContext"},
     "net": {"Dial", "DialTimeout", "DialTCP", "DialUDP", "DialIP", "DialUnix", "Dialer", "LookupAddr", "LookupCNAME",
             "LookupHost", "LookupIP", "LookupMX", "LookupNS", "LookupPort", "LookupSRV", "LookupTXT", "Resolver",
-            "DefaultResolver"},
-    "crypto/tls": {"Dial", "DialWithDialer", "Dialer"},
+            "DefaultResolver", "ResolveIPAddr", "ResolveTCPAddr", "ResolveUDPAddr"},
+    "crypto/tls": {"Client", "Dial", "DialWithDialer", "Dialer"},
+    "crypto/x509": {"SystemCertPool"},
+    "syscall": {"Connect", "Exec", "ForkExec", "Socket", "StartProcess"},
+    "golang.org/x/sys/unix": {"Connect", "Socket"},
+    "os": {"StartProcess"},
 }
-BANNED_IMPORTS = {"net/http/httputil"}
+BANNED_IMPORTS = {"net/http/httputil", "os/exec"}
+# a UDP socket that is only listened on sends nothing; WriteTo on it sends without a dial
+UDP_LISTENS = ("ListenPacket", "ListenUDP")
+UDP_SENDS = ("WriteTo", "WriteToUDP", "WriteToUDPAddrPort", "WriteMsgUDP", "WriteMsgUDPAddrPort")
+# a symbol is listed only where a test program holds it and a plain net/http server and the real binaries do not
 BANNED_SYMBOLS = ["net/http.(*Client).do", "net/http.(*Transport).roundTrip", "net.Dial", "net.DialTimeout",
-                  "net.(*Resolver).LookupHost", "crypto/tls.Dial"]
-DOT_BANNED = set(BANNED)
+                  "net.(*Resolver).LookupHost", "net.ResolveIPAddr", "net.ResolveTCPAddr", "net.ResolveUDPAddr",
+                  "crypto/tls.Dial", "crypto/tls.(*Dialer).DialContext", "os/exec.(*Cmd).Start"]
+
+# One token: a comment, a raw string, a quoted string or rune, a name, or any other single character.
+# It reads `"net/\"x"` as one token and `// import "a"` as one comment; an unclosed `"abc` is not a string and falls to single characters.
+TOKEN = re.compile(r"""//[^\n]*|/\*.*?\*/|`[^`]*`|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\w+|\S""", re.S)
 
 
-def strip(src):
-    """The source with comments and string and rune literals blanked (newlines kept), so a name in text is not a use."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if src.startswith("//", i):
-            j = src.find("\n", i)
-            j = n if j < 0 else j
-            out.append(" " * (j - i)); i = j
-        elif src.startswith("/*", i):
-            j = src.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(re.sub(r"[^\n]", " ", src[i:j])); i = j
-        elif c == "`":
-            j = src.find("`", i + 1)
-            j = n if j < 0 else j + 1
-            out.append(re.sub(r"[^\n]", " ", src[i:j])); i = j
-        elif c in "\"'":
-            j = i + 1
-            while j < n and src[j] != c and src[j] != "\n":
-                j += 2 if src[j] == "\\" else 1
-            j = min(j + 1, n)
-            out.append(c + " " * (j - i - 2) + c if j - i >= 2 else c); i = j
-        else:
-            out.append(c); i += 1
-    return "".join(out)
+def tokens(src):
+    """[(text, line)] of the Go source, comments dropped; a string is one token, so no text in one can look like code."""
+    found, line, pos = [], 1, 0
+    for m in TOKEN.finditer(src):
+        line += src.count("\n", pos, m.start())
+        pos = m.start()
+        if not m.group().startswith(("//", "/*")):
+            found.append((m.group(), line))
+    return found
 
 
-def imports(src):
-    """[(alias or None, path, line)] of the imports, read before strip() because import paths are string literals."""
-    res = []
-    for m in re.finditer(r'^[ \t]*import[ \t]*\(([^)]*)\)', src, re.M):
-        base = src.count("\n", 0, m.start(1))
-        for k, line in enumerate(m.group(1).split("\n")):
-            g = re.match(r'\s*(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"]+)"', line)
-            if g:
-                res.append((g.group(1), g.group(2), base + k + 1))
-    for m in re.finditer(r'^[ \t]*import[ \t]+(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"]+)"', src, re.M):
-        res.append((m.group(1), m.group(2), src.count("\n", 0, m.start()) + 1))
-    return res
+def go_string(token):
+    """The text a Go string literal stands for: raw as written, quoted with its escapes read."""
+    if token[0] == "`":
+        return token[1:-1]
+    try:
+        return ast.literal_eval(token)
+    except (ValueError, SyntaxError):
+        return token
+
+
+def imports(toks):
+    """[(alias or None, path, line)] of the import declarations; an alias is a name, "." or "_"."""
+    words = [word for word, _ in toks]
+    found = []
+    for i, word in enumerate(words):
+        if word != "import":
+            continue
+        end = i + 3      # import [alias] "path"
+        if words[i + 1:i + 2] == ["("]:
+            end = len(words)
+            if ")" in words[i:]:
+                end = words.index(")", i)
+        for j in range(i + 1, min(end, len(words))):
+            if words[j][0] not in "\"`":
+                continue
+            before = words[j - 1]
+            has_alias = j - 1 > i and (before[0].isalpha() or before[0] in "._")
+            found.append((before if has_alias else None, go_string(words[j]), toks[j][1]))
+    return found
+
+
+def method_calls(toks):
+    """{name: line of its first use} for every `.name` in the source."""
+    calls = {}
+    for (dot, _), (name, line) in zip(toks, toks[1:]):
+        if dot == ".":
+            calls.setdefault(name, line)
+    return calls
 
 
 def check_file(path):
-    src = open(path, encoding="utf-8").read()
-    found, names = [], {}
-    for alias, imp, line in imports(src):
-        if imp in BANNED_IMPORTS:
-            found.append((line, "imports " + imp))
-        if alias == "." and imp in DOT_BANNED:
-            found.append((line, "dot import of " + imp))
-        if imp in BANNED and alias not in (".", "_"):
-            names[alias or imp.rsplit("/", 1)[-1]] = imp
-    body = strip(src)
-    for alias, imp in names.items():
-        for m in re.finditer(r"(?<![A-Za-z0-9_.])" + re.escape(alias) + r"\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)", body):
-            if m.group(1) in BANNED[imp]:
-                found.append((body.count("\n", 0, m.start()) + 1, "uses %s.%s" % (imp, m.group(1))))
+    """[(line, what)] this file does that the cache may not."""
+    with open(path, encoding="utf-8") as f:
+        toks = tokens(f.read())
+    found, names, packages = [], {}, set()
+    for alias, pkg, line in imports(toks):
+        packages.add(pkg)
+        if pkg in BANNED_IMPORTS:
+            found.append((line, "imports " + pkg))
+        if alias == "." and pkg in BANNED:
+            found.append((line, "dot import of " + pkg))
+        if pkg in BANNED and alias not in (".", "_"):
+            names[alias or pkg.rsplit("/", 1)[-1]] = pkg
+    words = [word for word, _ in toks]
+    for k in range(len(words) - 2):
+        alias, dot, name = words[k:k + 3]
+        pkg = names.get(alias)
+        selects_from_a_value = k > 0 and words[k - 1] == "."
+        if dot == "." and pkg and not selects_from_a_value and name in BANNED[pkg]:
+            found.append((toks[k][1], "uses %s.%s" % (pkg, name)))
+    calls = method_calls(toks)
+    listen = next((name for name in UDP_LISTENS if name in calls), None)
+    send = next((name for name in UDP_SENDS if name in calls), None)
+    if "net" in packages and listen and send:
+        found.append((calls[send], "net.%s and %s" % (listen, send)))
+    if "crypto/x509" in packages and "Verify" in calls:
+        found.append((calls["Verify"], "crypto/x509 and Verify"))
     return found
 
 
