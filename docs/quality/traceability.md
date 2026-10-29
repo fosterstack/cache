@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 103 |
-| Acceptance criteria | 506 |
+| Acceptance criteria | 507 |
 | Release-blocking ACs | 131 |
-| ACs with mapped evidence | 496 |
+| ACs with mapped evidence | 497 |
 | Release-blocking ACs with mapped evidence | 131 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 49 |
@@ -730,14 +730,15 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 
 ### REQ-DEP-005 — Every required check runs in the merge queue
 
-Every check the main branch requires shall also run in the merge queue, on the queue's own commit, with the same pass bar. A check that reads the pull request (pin age, dependency review, the review gate) shall read the queue's commits instead and fail if it cannot. No required check shall be skipped in the queue.
+Every check the main branch requires shall also run in the merge queue, on the queue's own commit, with the same pass bar. A check that reads the pull request (pin age, dependency review, the review gate) shall read the queue's commits instead and fail if it cannot. No required check shall be skipped in the queue, except the landing marker check.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json; .github/workflows/agent-review-gate.yml; .github/agent/bin/queue-gate-judge.sh*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-DEP-005-AC1 | Given any context in .github/policy/required-checks.json; when the merge queue tests a group; then the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, and a context the wiring test does not know fails the test, so a required check added later cannot be missed | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-005-AC1 | Given any context in .github/policy/required-checks.json; when the merge queue tests a group; then the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, except that marker-gate (the landing marker check) runs on the pull request only: its job has a job-level condition for the pull request event and no trigger of its workflow carries a path or branch filter; and a context the wiring test does not know fails the test, so a required check added later cannot be missed | ci-workflow |  | approved | 1 item(s) |
 | REQ-DEP-005-AC2 | Given a required check that reads the pull request (pin age and dependency review); when it runs on the merge_group event; then it reads the queue's base and head commits instead of the pull request's, and it fails, never passes, when either is empty or the difference cannot be read; every step that names the pull request's base branch names the queue's too | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-005-AC3 | Given the review gate (auditor-review-gate); when the merge queue tests a group; then its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request; it reads the queue's commits as git objects and runs nothing of them; it demands a two-parent merge for every group commit and the passed-audit record for the exact head of every pull request in the group; it fails, never passes, when any of these cannot be read or does not hold; and the App token is held only by a separate job that publishes the verdict on the queue's head | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-DEP-004 — A held bump or drift dispatches the fixer
 

@@ -1869,23 +1869,29 @@ requirements:
       on the queue's own commit, with the same pass bar. A check that reads the
       pull request (pin age, dependency review, the review gate) shall read the
       queue's commits instead and fail if it cannot. No required check shall be
-      skipped in the queue.
-    source: [.github/workflows/ci.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
+      skipped in the queue, except the landing marker check.
+    source: [.github/workflows/ci.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json, .github/workflows/agent-review-gate.yml, .github/agent/bin/queue-gate-judge.sh]
     tier: community
     introduced: v0.3.0
-    origin: owner RATIFIED Oct 22 2026, ops/docs/ratify/2026-10-22-merge-queue-checks.md
+    origin: 'owner RATIFIED Oct 22 2026, ops/docs/ratify/2026-10-22-merge-queue-checks.md; exception ruled by the owner Oct 28 2026 ("Yes: add the landing marker check as the second listed exception to my merge-queue rule.")'
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-DEP-005-AC1
         given: any context in .github/policy/required-checks.json
         when: the merge queue tests a group
-        then: the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, and a context the wiring test does not know fails the test, so a required check added later cannot be missed
+        then: "the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, except that marker-gate (the landing marker check) runs on the pull request only: its job has a job-level condition for the pull request event and no trigger of its workflow carries a path or branch filter; and a context the wiring test does not know fails the test, so a required check added later cannot be missed"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-005-AC2
         given: a required check that reads the pull request (pin age and dependency review)
         when: it runs on the merge_group event
         then: it reads the queue's base and head commits instead of the pull request's, and it fails, never passes, when either is empty or the difference cannot be read; every step that names the pull request's base branch names the queue's too
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-005-AC3
+        given: the review gate (auditor-review-gate)
+        when: the merge queue tests a group
+        then: its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request; it reads the queue's commits as git objects and runs nothing of them; it demands a two-parent merge for every group commit and the passed-audit record for the exact head of every pull request in the group; it fails, never passes, when any of these cannot be read or does not hold; and the App token is held only by a separate job that publishes the verdict on the queue's head
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
