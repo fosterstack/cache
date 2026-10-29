@@ -3777,7 +3777,7 @@ vfile outbound-check bin/check-no-outbound.py 'dirs[:] = sorted(x for x in dirs 
 CASE="the outbound check may name the vendored folder: it skips vendor/ by name (exit 0)"
 check test "$rc" -eq 0
 vfile outbound-test bin/check-no-outbound-test.sh 'mkdir -p "$root/internal/vendor/z"'
-CASE="the outbound check's test may name the vendored folder: it builds a vendor/ fixture to prove vendor/ is skipped (exit 0)"
+CASE="the outbound check's test may name the vendored folder: it builds a vendor/ fixture (exit 0)"
 check test "$rc" -eq 0
 python3 - "$root" <<'PY'
 import importlib.util, sys
