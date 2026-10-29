@@ -274,8 +274,9 @@ GO
   else
     echo "FAIL: the real binary does not build: $(head -c 300 "$tmp/real.err")"; fail=$((fail+1))
   fi
-  # the FIPS apk builds the same program with GOFIPS140 set (build/melange-fips.yaml)
-  if GOFIPS140=v1.0.0 GOFLAGS=-mod=vendor gobuild -o "$real-fips" ./cmd/fscache 2>"$tmp/real.err"; then
+  # the FIPS apk builds the same program with GOFIPS140 set; the version is the module's, without its hash suffix
+  fips_version=$(cut -d- -f1 build/locks/fips-module.txt)
+  if GOFIPS140=$fips_version GOFLAGS=-mod=vendor gobuild -o "$real-fips" ./cmd/fscache 2>"$tmp/real.err"; then
     run_binary "$real-fips"
     expect "the FIPS build has no HTTP client symbol and no dial symbol either" 0 -
   else
