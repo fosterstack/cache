@@ -556,7 +556,7 @@ GO
       expect "$desc was built without GOFIPS140" 1 -
     fi
   }
-  # the FIPS apk sets GOFIPS140=v1.0.0; the build info records the module version with its hash suffix
+  # the FIPS recipe builds with the module version without its hash suffix; the build info records it with the suffix
   fips_module=$(cat build/locks/fips-module.txt)
   fips_version=${fips_module%%-*}
   for arch in amd64 arm64; do
