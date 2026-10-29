@@ -2838,7 +2838,7 @@ nsm sh10 "nosource an interpreter on a script that is not in the closure" "not i
 nsm sh11 "nosource a process substitution" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ncat <(go build ./...)'
 nsm sh12 "nosource sed with the e flag" "sed with a script" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nsed -n "s/x/go build/e" f'
 nsm sh13 "nosource a substitution inside arithmetic" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(( $(go build ./...) ))'
-nsm py1 "nosource a Python program that is not on the script's list" "not on this script's list" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["true", "x"])\nimport '
+nsm py1 "nosource a Python program that is not on the script's list" "not on this script's list" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["curl", "x"])\nimport '
 nsm py2 "nosource executable= in a Python start" "executable=" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["git"], executable="/bin/sh")\nimport '
 nsm py3 "nosource exec() in a Python helper" "executes code" bin/build-archives.py 'import ' 'exec("x = 1")\nimport '
 nsm py4 "nosource a name bound to a program-starting function" "binds a program-starting function" bin/build-archives.py 'import ' 'import subprocess as _sp\nr = _sp.run\nimport '
@@ -2857,7 +2857,7 @@ expect ok "AC1/AC2 the real stage-build.yml is exactly the Build grammar" "" sta
 expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild grammar" "" stage "$root/.github/workflows/stage-reproducibility.yml" \
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
-expect caught "nosource the real tree: the admission step's run of the Go program in tools/requirements is REPORTED as a finding (rule 1 is not done until it moves out of Build)" "Go toolchain" nosource "$root"      # flips to ok in the pull request that moves it
+expect caught "nosource the real tree: the admission step's go run of tools/requirements is REPORTED as a finding (rule 1 is not done until it moves out of Build)" "Go toolchain" nosource "$root"      # flips to ok in the pull request that moves it
 expect ok "AC2 the real bin/witnessed.sh is exactly the canonical helper" "" helper "$root/bin/witnessed.sh"
 expect ok "AC2 no real stage file or stage script names witness run" "" directwitness "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
