@@ -27,6 +27,26 @@ case_() {
   run_scan "$root"
   expect "$desc" "$want" "$text"
 }
+# tree_case <expect-rc> <description> <text the output must hold> <file name> <contents> [<file name> <contents> ...]
+# the files of one package, each as printf %b text (so \n and \r can be written): for two files or a carriage return
+tree_case() {
+  local want=$1 desc=$2 text=$3 root
+  shift 3; n=$((n+1)); root="$tmp/t$n"
+  while [ $# -ge 2 ]; do
+    mkdir -p "$root/$(dirname "$1")"; printf '%b' "$2" >"$root/$1"; shift 2
+  done
+  run_scan "$root"
+  expect "$desc" "$want" "$text"
+}
+# every banned name has a case of its own, typed here: deleting one name from the checker turns its case red
+refused() { # <import path> <name>
+  local src; src=$(printf 'package y\n\nimport p "%s"\n\nvar _ = p.%s\n' "$1" "$2")
+  case_ 1 "$1.$2 is refused" "uses $1.$2" internal/y/b.go <<<"$src"
+}
+refused_call() { # <name>: a call of this name on any value
+  local src; src=$(printf 'package y\n\nfunc f(x any) { x.%s() }\n' "$1")
+  case_ 1 "a call of $1 is refused" "calls $1" internal/y/b.go <<<"$src"
+}
 case_ 0 "a server using net/http and net.Listen is allowed" "$CLEAN" cmd/x/a.go <<'GO'
 package main
 
@@ -149,7 +169,7 @@ import (
 var _ = fmt.Sprint
 var _ = h.Get
 GO
-case_ 1 "a block comment between the alias and the path does not hide the import" "uses net/http.Get" internal/y/b.go <<'GO'
+case_ 1 "a block comment between alias and path does not hide the import" "uses net/http.Get" internal/y/b.go <<'GO'
 package y
 
 import (
@@ -231,26 +251,24 @@ import "syscall"
 
 func f() { syscall.ForkExec("/bin/ls", nil, nil) }
 GO
-case_ 1 "a net.ListenPacket socket that sends with WriteTo is refused" "net.ListenPacket and WriteTo" internal/y/b.go <<'GO'
+# -- R2-2: a packet socket is refused outright, on any receiver, so a send in another file has nothing to send on --
+for name in ListenPacket ListenUDP ListenMulticastUDP ListenIP; do refused_call "$name"; done
+case_ 1 "a net.ListenConfig that listens for packets is refused" "calls ListenPacket" internal/y/b.go <<'GO'
 package y
 
-import "net"
+import (
+	"context"
+	"net"
+)
 
-func f(a net.Addr) {
-	c, _ := net.ListenPacket("udp", ":0")
-	c.WriteTo([]byte("x"), a)
-}
+func f() { var lc net.ListenConfig; lc.ListenPacket(context.Background(), "udp", ":0") }
 GO
-case_ 1 "a net.ListenUDP socket that sends with WriteToUDP is refused" "net.ListenUDP and WriteToUDP" internal/y/b.go <<'GO'
-package y
-
-import "net"
-
-func f(a *net.UDPAddr) {
-	c, _ := net.ListenUDP("udp", nil)
-	c.WriteToUDP([]byte("x"), a)
-}
-GO
+tree_case 1 "a UDP listen in one file and the send in another is refused" "calls ListenPacket" \
+  internal/y/listen.go 'package y\n\nimport "net"\n\nfunc listen() { net.ListenPacket("udp", ":0") }\n' \
+  internal/y/send.go 'package y\n\nimport "net"\n\nfunc send(c net.PacketConn, a net.Addr) { c.WriteTo(nil, a) }\n'
+tree_case 1 "a ListenUDP in one file and WriteToUDP in another is refused" "calls ListenUDP" \
+  internal/y/listen.go 'package y\n\nimport "net"\n\nfunc listen() { net.ListenUDP("udp", nil) }\n' \
+  internal/y/send.go 'package y\n\nimport "net"\n\nfunc send(c *net.UDPConn, a *net.UDPAddr) { c.WriteToUDP(nil, a) }\n'
 case_ 1 "net.ResolveUDPAddr is refused" "uses net.ResolveUDPAddr" internal/y/b.go <<'GO'
 package y
 
@@ -265,17 +283,12 @@ import "net"
 
 var _, _ = net.ResolveTCPAddr("tcp", "x:1")
 GO
-case_ 0 "a UDP socket that only reads, and syscall for errno and Statfs, are allowed" "$CLEAN" internal/y/b.go <<'GO'
+case_ 0 "syscall for errno and Statfs is allowed" "$CLEAN" internal/y/b.go <<'GO'
 package y
 
-import (
-	"net"
-	"syscall"
-)
+import "syscall"
 
 func f() error {
-	c, _ := net.ListenPacket("udp", ":0")
-	c.ReadFrom(nil)
 	var st syscall.Statfs_t
 	return syscall.Statfs("/", &st)
 }
@@ -299,12 +312,17 @@ import "crypto/x509"
 
 var _, _ = x509.SystemCertPool()
 GO
-case_ 1 "a Verify call in a file that imports crypto/x509 is refused" "crypto/x509 and Verify" internal/y/b.go <<'GO'
+case_ 1 "a Verify call in a file that imports crypto/x509 is refused" "crypto/x509 and Verify" \
+  internal/y/b.go <<'GO'
 package y
 
-import "crypto/x509"
+import (
+	"crypto/x509"
 
-func f(c *x509.Certificate) { c.Verify(x509.VerifyOptions{}) }
+	"example.com/dep"
+)
+
+func f(c *x509.Certificate) { c.Verify(dep.Options()) }
 GO
 case_ 1 "tls.Client is refused" "uses crypto/tls.Client" internal/y/b.go <<'GO'
 package y
@@ -330,6 +348,50 @@ import "crypto/tls"
 
 var _ = tls.DialWithDialer
 GO
+tree_case 1 "VerifyOptions built in one file and Verify called in another is refused" "uses crypto/x509.VerifyOptions" \
+  internal/y/cert.go 'package y\n\nimport "crypto/x509"\n\nfunc opts() any { return x509.VerifyOptions{} }\n' \
+  internal/y/check.go 'package y\n\nfunc check(c interface{ Verify(any) error }) error { return c.Verify(opts()) }\n'
+
+# -- R2-4: our code never asks for a client certificate (the server would verify it against system roots) --
+case_ 1 "ClientAuth set by constant is refused" "uses ClientAuth" internal/y/b.go <<'GO'
+package y
+
+import "crypto/tls"
+
+var _ = tls.Config{ClientAuth: tls.RequireAndVerifyClientCert}
+GO
+case_ 1 "ClientAuth set by number is refused" "uses ClientAuth" internal/y/b.go <<'GO'
+package y
+
+import "crypto/tls"
+
+var _ = tls.Config{ClientAuth: 4}
+GO
+case_ 1 "ClientAuth set on a config value is refused" "uses ClientAuth" internal/y/b.go <<'GO'
+package y
+
+import "crypto/tls"
+
+func f(c *tls.Config) { c.ClientAuth = 4 }
+GO
+
+# -- R2-1: Go drops a carriage return inside a raw string, so the import below is net --
+tree_case 1 "a raw-string import path with a carriage return inside is read as Go reads it" "uses net.Dialer" \
+  internal/y/b.go 'package y\n\nimport h `n\ret`\n\nvar _ h.Dialer\n'
+
+# -- one case per banned name (R2-5, R2-6) --
+for name in Client DefaultClient Transport DefaultTransport Get Head Post PostForm NewRequest \
+            NewRequestWithContext; do refused net/http "$name"; done
+for name in Dial DialTimeout DialTCP DialUDP DialIP DialUnix Dialer LookupAddr LookupCNAME LookupHost LookupIP \
+            LookupMX LookupNS LookupPort LookupSRV LookupTXT Resolver DefaultResolver \
+            ResolveIPAddr ResolveTCPAddr ResolveUDPAddr; do refused net "$name"; done
+for name in Client Dial DialWithDialer Dialer; do refused crypto/tls "$name"; done
+for name in SystemCertPool VerifyOptions; do refused crypto/x509 "$name"; done
+for name in Connect Exec ForkExec Socket StartProcess Syscall Syscall6 RawSyscall RawSyscall6; do
+  refused syscall "$name"
+done
+for name in Connect Exec Socket Syscall Syscall6 RawSyscall RawSyscall6; do refused golang.org/x/sys/unix "$name"; done
+refused os StartProcess
 case_ 0 "x509 parsing, with no Verify, is allowed" "$CLEAN" internal/y/b.go <<'GO'
 package y
 
@@ -449,7 +511,7 @@ func main() {
 	d.DialContext(context.Background(), "tcp", "x:1")
 }
 GO
-  # round 1, F2 and F3: a symbol is listed only where a program here holds it and the clean server and the real binaries do not
+  # a symbol is listed only where a program here holds it and the clean server and the real binaries do not
   bin_case 1 "a TLS dialer" 'crypto/tls.(*Dialer).DialContext' <<'GO'
 package main
 
@@ -488,7 +550,7 @@ import "net"
 
 func main() { net.ResolveIPAddr("ip", "x") }
 GO
-  # the residuals, written down as tests: a plain net/http server already holds these symbols, so none of them can be listed
+  # the residuals, written down as tests: a plain net/http server already holds these symbols, so none can be listed
   bin_case 0 "RESIDUAL: a TLS client handshake (tls.Client) is not caught by the binary check" "$BIN_CLEAN" <<'GO'
 package main
 
@@ -541,7 +603,7 @@ GO
   run_binary;                            expect "binary without a path is refused" 2 "usage"
   out=$(PATH=/nonexistent "$(command -v python3)" -I "$CHK" binary "$tmp/text-file" 2>&1); rc=$?
   expect "with no go on the search path the check exits 2 and never passes unchecked" 2 "go is not installed"
-  # real_case <description> <GOARCH> <GOFIPS140 value, empty for the plain build>: builds ./cmd/fscache as the recipes do
+  # real_case <description> <GOARCH> <GOFIPS140 value, empty for the plain build>: builds ./cmd/fscache like the recipes
   real_case() {
     local desc=$1 arch=$2 fips=$3 bin="$tmp/fscache-$2${3:+-fips}"
     if ! GOARCH=$arch GOFIPS140=$fips GOFLAGS=-mod=vendor gobuild -o "$bin" ./cmd/fscache 2>"$tmp/real.err"; then
