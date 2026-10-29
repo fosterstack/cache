@@ -1367,6 +1367,9 @@ t "AC9" "sealed-call refuses an empty environment list followed by a command tha
 t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call env -i 2>/dev/null"
 t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner --arch bubblewrap 2>/dev/null"
 t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner 2>/dev/null"
+t "AC9" "sealed-call refuses an architecture that is not x86_64 or aarch64" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch riscv64 2>/dev/null"
+t "AC9" "sealed-call refuses a melange option that is not in the closed set (--debug added to the call)" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64 --debug true 2>/dev/null"
+t "AC9" "sealed-call refuses an option of the closed set given twice (--arch twice)" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64 --arch aarch64 2>/dev/null"
 # go and env at the go call site: the production line captures the diagnostic into a file and treats exit 127 as "no toolchain on PATH". In CI that
 # is fatal, outside CI the run says 'not verified': either way the stub go is never reached and the run is not the control's.
 for m in ba-go ba-env-go; do
