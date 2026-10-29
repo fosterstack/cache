@@ -15,11 +15,11 @@
 #
 # In this order (the tests fix it):
 #   1. refusals, before any apko call: bad arguments, a live repository in the config, a package or an APKINDEX missing from the
-#      archive or a package whose bytes do not match the base lock (bin/apko-lock.sh verify-archive), our apk missing from the
+#      archive or a package whose bytes do not match the base lock (bin/apko-lock.sh verify-archive), our apks missing from the
 #      melange repository, a keyring dir without the two keys;
 #   2. render the config (@FSCACHE_VERSION@ replaced);
 #   3. make the FULL lock: sudo unshare -n apko lock (apko lock has no offline flag, so the namespace has no network);
-#   4. compare it with the committed base lock: the full lock must be the base lock plus our apk and nothing else, and every
+#   4. compare it with the committed base lock: the full lock must be the base lock plus our two apks and nothing else, and every
 #      package must resolve to the same version on both architectures (bin/apko-lock.sh compare, arch-check); verify the full
 #      lock against the archive and the melange repository;
 #   5. ONE apko build for both architectures: sudo unshare -n apko build --offline --lockfile FULL --sbom-path SBOM --build-date
@@ -120,7 +120,9 @@ idxrec=build/locks/archive-index.sha256
 "$PY3" -I -B bin/oci-digest.py check-index "$idxrec" "$archive" >/dev/null || exit 2
 "$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" --index-record "$idxrec" || die "the archive does not satisfy the base lock $baselock (see above)"
 for a in x86_64 aarch64; do
-  [ -f "$melrepo/$a/$pkg-$apkver-r0.apk" ] || die "the melange repository $melrepo has no $a/$pkg-$apkver-r0.apk (our apk)"
+  for own in "$pkg" fscache-baselayout; do
+    [ -f "$melrepo/$a/$own-$apkver-r0.apk" ] || die "the melange repository $melrepo has no $a/$own-$apkver-r0.apk (our apk)"
+  done
   [ -f "$melrepo/$a/APKINDEX.tar.gz" ] || die "the melange repository $melrepo has no $a/APKINDEX.tar.gz"
 done
 workdir=$WORKDIR
@@ -204,7 +206,7 @@ full=$tmp/$variant.full.lock.json
 sealed lock "$(basename "$rendered")" --cache-dir "$tmp/apko-cache" --output "$full"
 
 # ---- 4. the full lock must be the base lock plus our apk ----
-"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" || die "the full lock's package entries differ from the base lock (see above); not building" 2
+"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg,fscache-baselayout" || die "the full lock's package entries differ from the base lock (see above); not building" 2
 "$BASHBIN" bin/apko-lock.sh arch-check "$full" || die "the full lock resolves different versions per architecture (see above); not building" 2
 "$BASHBIN" bin/apko-lock.sh verify-archive --lock "$full" --archive "$archive" --melange-repo "$melrepo" --index-record "$idxrec" || die "the full lock does not verify against the archive and the melange repository (see above)" 2
 cp "$full" "$out/$variant.full.lock.json"

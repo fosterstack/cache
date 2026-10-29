@@ -219,21 +219,27 @@ for mut in "variable:not literal" "repovar:not literal" "mismatch:versions do no
 done
 
 # ===== apko-lock.sh: compare / arch-check / verify-archive / evidence (rules 28 29 33 37) ================================
-BL="$fx/base.lock.json" FL="$fx/full.lock.json"
-t "rule 37" "compare: full lock = base + our apk (reordered, other urls, other config checksum) -> equal" "$LK" compare "$BL" "$FL" --apk fscache
+BL="$fx/base.lock.json" FL="$fx/full.lock.json" OWN=fscache,fscache-baselayout   # our two apks (0710)
+t "rule 37" "compare: full lock = base + our apk (reordered, other urls, other config checksum) -> equal" "$LK" compare "$BL" "$FL" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-urls.json" urls-only
-t "rule 37" "compare: ignores url and config checksum (package entries only)" "$LK" compare "$BL" "$work/f-urls.json" --apk fscache
+t "rule 37" "compare: ignores url and config checksum (package entries only)" "$LK" compare "$BL" "$work/f-urls.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-sum.json" datasum tzdata
-fails "rule 37" "compare: a changed checksum fails and names the package" 'tzdata' "$LK" compare "$BL" "$work/f-sum.json" --apk fscache
+fails "rule 37" "compare: a changed checksum fails and names the package" 'tzdata' "$LK" compare "$BL" "$work/f-sum.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-extra.json" extra bash
-fails "rule 37" "compare: an extra package in the full lock fails and names it" 'bash' "$LK" compare "$BL" "$work/f-extra.json" --apk fscache
+fails "rule 37" "compare: an extra package in the full lock fails and names it" 'bash' "$LK" compare "$BL" "$work/f-extra.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-drop.json" drop tzdata
-fails "rule 37" "compare: a base package missing from the full lock fails and names it" 'tzdata' "$LK" compare "$BL" "$work/f-drop.json" --apk fscache
+fails "rule 37" "compare: a base package missing from the full lock fails and names it" 'tzdata' "$LK" compare "$BL" "$work/f-drop.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-noapk.json" drop fscache
-fails "rule 37" "compare: a full lock without our apk fails and names it" 'fscache' "$LK" compare "$BL" "$work/f-noapk.json" --apk fscache
+fails "rule 37" "compare: a full lock without our apk fails and names it" 'fscache' "$LK" compare "$BL" "$work/f-noapk.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-oneapk.json" dropone fscache
-fails "rule 37" "compare: our apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-oneapk.json" --apk fscache
-t "rule 37" "compare: a base lock that already holds our apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk fscache >/dev/null 2>&1; test \$? -eq 2"
+fails "rule 37" "compare: our apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-oneapk.json" --apk "$OWN"
+python3 "$work/lib.py" mutate "$FL" "$work/f-nobase.json" drop fscache-baselayout
+fails "rule 37" "compare: a full lock without our base-layout apk fails and names it" 'fscache-baselayout' "$LK" compare "$BL" "$work/f-nobase.json" --apk "$OWN"
+python3 "$work/lib.py" mutate "$FL" "$work/f-onebase.json" dropone fscache-baselayout
+fails "rule 37" "compare: our base-layout apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-onebase.json" --apk "$OWN"
+fails "rule 37" "compare: naming only fscache leaves the base-layout apk an unexpected extra, named" 'fscache-baselayout' "$LK" compare "$BL" "$FL" --apk fscache
+t "rule 37" "compare: a base lock that already holds our base-layout apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk '$OWN' >/dev/null 2>&1; test \$? -eq 2"
+t "rule 37" "compare: a base lock that already holds our apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk "$OWN" >/dev/null 2>&1; test \$? -eq 2"
 t "rule 33" "arch-check: both archs resolve the same versions -> pass" "$LK" arch-check "$BL"
 python3 "$work/lib.py" mutate "$BL" "$work/b-arch.json" archver
 fails "rule 33" "arch-check: a package whose version differs between archs fails and names it" 'tzdata' "$LK" arch-check "$work/b-arch.json"
@@ -253,7 +259,7 @@ n = 0
 for l in sys.stdin:
     h, p = l.rstrip('\n').split('  ', 1)
     assert hashlib.sha256(open(p, 'rb').read()).hexdigest() == h, p; n += 1
-assert n >= 10, n\""
+assert n >= 6, n\""
 rm -rf "$work/ev2"; mkdir -p "$work/ev2"; "$LK" evidence --lock "$BL" --archive "$fx/archive" --out "$work/ev2" >/dev/null 2>&1
 t "rule 29" "evidence: deterministic (two runs, same list)" bash -c "cmp '$ev/archive-checksums.txt' '$work/ev2/archive-checksums.txt'"
 fails "rule 29" "evidence: a lock package missing from the archive fails and names it" 'tzdata' "$LK" evidence --lock "$BL" --archive "$work/arch-m" --out "$work/ev3"
@@ -437,9 +443,10 @@ open(d + "/ctrlsign.apk", "wb").write(ctrl_with_sign + data)
 # apko-lock fixtures
 lk = json.load(open(bl))
 def w_(name, doc): json.dump(doc, open("%s/%s" % (d, name), "w"))
-x = json.loads(json.dumps(lk))
-x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "wolfi-baselayout" and e["architecture"] == "aarch64")]
+x = json.load(open(fx + "/full.lock.json"))   # the base lock holds one package, so a package on one architecture only is made from the full lock
+x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "fscache-baselayout" and e["architecture"] == "aarch64")]
 w_("arch-missing-pkg.json", x)
+x = json.loads(json.dumps(lk))
 x = json.loads(json.dumps(lk)); x["contents"]["packages"] = [e for e in x["contents"]["packages"] if e["architecture"] == "x86_64"]; w_("arch-one.json", x)
 x = json.loads(json.dumps(lk)); e0 = dict(x["contents"]["packages"][0]); e0["architecture"] = "riscv64"; x["contents"]["packages"].append(e0); w_("arch-riscv.json", x)
 x = json.loads(json.dumps(lk)); x["contents"]["packages"][0]["name"] = "../evil"; w_("name-dots.json", x)
@@ -463,7 +470,7 @@ r4="$work/r4"
 fails "rule 22" "apk-tool: stream 0 that holds a .PKGINFO and a .SIGN member is read as the CONTROL (first header), so a 'signed' mixed apk is not equal to the honest one" 'signature|control|stream' python3 "$AT" same "$r4/honest.apk" "$r4/mixed.apk"
 fails "rule 22" "apk-tool: a signature stream with any member besides the one .SIGN member is refused" 'signature' python3 "$AT" digest "$r4/sigextra.apk"
 fails "rule 22" "apk-tool: a control section that also holds a .SIGN member is refused" 'signature|\.SIGN' python3 "$AT" digest "$r4/ctrlsign.apk"
-fails "rule 33" "arch-check: a package present on one architecture only is refused" 'wolfi-baselayout' "$LK" arch-check "$r4/arch-missing-pkg.json"
+fails "rule 33" "arch-check: a package present on one architecture only is refused" 'fscache-baselayout' "$LK" arch-check "$r4/arch-missing-pkg.json"
 fails "rule 33" "arch-check: a lock with only x86_64 is refused (the set must be exactly x86_64 and aarch64)" 'architect' "$LK" arch-check "$r4/arch-one.json"
 fails "rule 33" "arch-check: a third architecture is refused" 'architect|riscv64' "$LK" arch-check "$r4/arch-riscv.json"
 fails "rule 37" "compare: a second entry for our apk (another version, other checksums) is refused" 'fscache' "$LK" compare "$BL" "$r4/full-dupe-ours.json" --apk fscache

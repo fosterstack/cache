@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # apko lock-file checks used by the image build (v0.3.0 rules 27, 28, 29, 33, 37, 44).
 #
-#   apko-lock.sh compare BASE FULL --apk NAME
-#       Rule 37. FULL (made at build time) must equal BASE plus our apk: compared by sorted package entries (name,
+#   apko-lock.sh compare BASE FULL --apk NAME[,NAME...]
+#       Rule 37. FULL (made at build time) must equal BASE plus our apks (the program and the base-layout package): compared by sorted package entries (name,
 #       version, architecture, control/data/signature checksums); url order and the config checksum are ignored.
-#       exit 0 equal | 1 differs (names the package or the arch) | 2 refused (BASE already holds our apk, bad input)
+#       exit 0 equal | 1 differs (names the package or the arch) | 2 refused (BASE already holds one of our apks, bad input)
 #   apko-lock.sh arch-check LOCK
 #       Rule 33. Every package resolves to the same version on every architecture in LOCK.
 #       exit 0 | 1 a package differs between architectures, or is locked for one only (names it) | 2 bad input, including a lock that does not
