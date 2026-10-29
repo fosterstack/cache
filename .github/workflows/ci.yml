@@ -22,8 +22,6 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -37,7 +35,7 @@ jobs:
       - name: static build (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
       - name: the cache's own code and the built binary have no HTTP client and no outbound dial (REQ-IMAGE-001-AC13)
-        run: bash bin/check-no-outbound-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-no-outbound-test.sh bin/check-no-outbound-test.sh
 
   # REQ-VEND-001-AC3: the vendored tree is what CI regenerates, on every pull request (Dependabot's included; no actor or branch
   # condition). It only compares: no token, no commit, no sumdb opt-out. The whole history is fetched so origin/main is readable:
