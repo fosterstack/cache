@@ -57,6 +57,7 @@
  "supply-chain-wiring-test.sh": 109,
  "verify-release-guide-test.sh": 69,
  "vex-both-scanners-test.sh": 47,
+ "evidence-letter-test.sh": 33,
  "vex-forms-test.sh": 64,
  "vex-index-test.sh": 1159,
  "vex-scope-test.sh": 21,

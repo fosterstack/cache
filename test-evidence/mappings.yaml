@@ -1823,3 +1823,38 @@ mappings:
   - ac: REQ-CI-006-AC1
     evidence:
       - { type: inspection, ref: "Rule only, not built (owner, Oct 24 2026): the persona suite is not sharded; ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md item 2." }
+  - ac: REQ-REL-013-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC9
+    evidence:
+      - { type: inspection, ref: "Not built yet: the signing job follows the letter script (read-back acked Oct 29); until it exists this AC is proposed only." }

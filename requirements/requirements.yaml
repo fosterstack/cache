@@ -4962,3 +4962,78 @@ requirements:
         then: "it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard"
         verification: { method: inspection, release_blocking: false }
         status: approved
+  - id: REQ-REL-013
+    title: The monthly signed evidence letter
+    statement: >
+      Once a month the release chain drafts one letter that rolls up that month's public evidence, checks every line of
+      it against the release assets, signs it keylessly as a release artifact, and attaches it to a release; if any
+      check fails, no letter is made and the job fails (owner DECIDED Oct 27 2026, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md,
+      rules 1 to 8 and the 23:20 amendment: fully automated, no per-month approval, the owner's typed name and title).
+      Every piece of evidence stays public at every tier, so the letter is a public release asset too; it states public facts
+      about published evidence and makes no promise beyond them. It lists the releases published that month, the patch
+      releases and why, the VEX statements added, the Check records of each release, any advisory, and one line binding it
+      to the version of the controls document in force. It is made by a template, never by a model.
+    source: [bin/evidence-letter.py, bin/evidence-letter-test.sh]
+    tier: compliance
+    introduced: v0.3.0
+    origin: monthly evidence letter (owner Oct 27 2026, with the Oct 27 23:20 amendment); advisor read-back acknowledged Oct 29 (handoffs/acks/2026-10-29-ack-cache3-readback-monthly-letter.md)
+    confidence: documented
+    notes: >
+      The site publication and the email to Compliance customers are other lanes' work (www; payments compliance-send).
+      The signatory (the owner's typed name and title) is a named placeholder in docs/evidence-letter-signatory.txt until the
+      advisor gives the exact words; while it is there the job refuses to make a letter.
+    acceptance_criteria:
+      - id: REQ-REL-013-AC1
+        given: "a month and the assets of the releases published in it (release.json and the files of each release)"
+        when: "bin/evidence-letter.py runs for that month"
+        then: "the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release makes no letter and says so"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC2
+        given: "a patch release (vX.Y.Z with Z above 0) in the month"
+        when: "the letter is made"
+        then: "it names the patch release and its reason, the first line of that release's notes quoted verbatim; a patch release with no notes line refuses"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC3
+        given: "a release's OpenVEX file whose hash is the one in its release manifest"
+        when: "the letter is made"
+        then: "it lists each statement of that file dated in the month by its CVE name and date; an OpenVEX file whose hash differs from the manifest's refuses"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC4
+        given: "the Check records of a release and the month's advisories file"
+        when: "the letter is made"
+        then: "it lists each Check record by name and hash, and either the month's advisories or that none was published; a missing Check record or a missing advisories file refuses"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC5
+        given: "a letter just made"
+        when: "its lines are read back against the assets"
+        then: "every fact in it is found again in the assets it came from; any mismatch, missing asset or malformed asset makes no letter, ends nonzero and says why in one line"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC6
+        given: "the controls document with its version history"
+        when: "the letter is made"
+        then: "it carries the one binding line naming the version in force and the date it was signed, 'unchanged this month' when it did not change, and when it changed names both versions and which releases fall under each"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC7
+        given: "any letter the script makes"
+        when: "its text is read"
+        then: "it holds none of the words warranty, certified, compliant, guarantee or SOC 2, and no email address; a quoted line that holds one of those words refuses"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC8
+        given: "the signatory text still holds the placeholder"
+        when: "the script runs without --draft"
+        then: "it makes no letter and ends nonzero naming the placeholder; with --draft it writes a file marked DRAFT that is never signed"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC9
+        given: "a letter that passed its checks"
+        when: "the signing job runs"
+        then: "it signs the letter keylessly by the same path as bin/release-sign.sh and attaches the letter and its bundle to a release; it signs nothing that did not pass AC5"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: proposed
