@@ -7,13 +7,23 @@ CHK=bin/check-no-outbound.py
 pass=0; fail=0
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 n=0
+run_scan() { out=$(python3 -I "$CHK" "$@" 2>&1); rc=$?; }
+# expect <description> <wanted exit code> <text the output must hold, or ->
+expect() {
+  local desc=$1 want=$2 text=$3
+  if [ "$rc" = "$want" ] && { [ "$text" = - ] || printf '%s' "$out" | grep -qF -- "$text"; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (exit $rc, wanted $want, text '$text'): $out"; fail=$((fail+1))
+  fi
+}
 # case <expect-rc> <description> <file name under cmd/x or internal/x> <<go source>>
 case_() {
-  local want=$1 desc=$2 name=$3 root rc out
+  local want=$1 desc=$2 name=$3 root
   n=$((n+1)); root="$tmp/t$n"; mkdir -p "$root/$(dirname "$name")"
   cat >"$root/$name"
-  out=$(python3 -I "$CHK" "$root" 2>&1); rc=$?
-  if [ "$rc" = "$want" ]; then echo "ok:   $desc"; pass=$((pass+1)); else echo "FAIL: $desc (rc $rc, wanted $want): $out"; fail=$((fail+1)); fi
+  run_scan "$root"
+  expect "$desc" "$want" -
 }
 case_ 0 "a server using net/http and net.Listen is allowed" cmd/x/a.go <<'GO'
 package main
@@ -129,26 +139,37 @@ n=$((n+1)); root="$tmp/t$n"; mkdir -p "$root/cmd/x" "$root/internal/vendor/z"
 printf 'package main\nimport "net/http"\nfunc f(){ http.Get("x") }\n' >"$root/cmd/x/a_test.go"
 printf 'package z\nimport "net/http"\nfunc f(){ http.Get("x") }\n' >"$root/internal/vendor/z/z.go"
 printf 'package main\nfunc main(){}\n' >"$root/cmd/x/a.go"
-if python3 -I "$CHK" "$root" >/dev/null 2>&1; then echo "ok:   test files and vendor/ are not read"; pass=$((pass+1)); else echo "FAIL: test files and vendor/ are not read"; fail=$((fail+1)); fi
+run_scan "$root";      expect "test files and vendor/ are not read" 0 -
 n=$((n+1)); root="$tmp/t$n"; mkdir -p "$root"
-python3 -I "$CHK" "$root" >/dev/null 2>&1; rc=$?
-if [ "$rc" = 2 ]; then echo "ok:   a tree with no Go files exits 2"; pass=$((pass+1)); else echo "FAIL: a tree with no Go files exits 2 (rc $rc)"; fail=$((fail+1)); fi
-out=$(python3 -I "$CHK" 2>&1); rc=$?
-if [ "$rc" = 0 ]; then echo "ok:   the real tree has no HTTP client and no outbound dial"; pass=$((pass+1)); else echo "FAIL: the real tree: $out"; fail=$((fail+1)); fi
+run_scan "$root";      expect "a tree with no Go files exits 2" 2 -
+run_scan;              expect "the real tree has no HTTP client and no outbound dial" 0 -
 
-# ---- the built binary (REQ-IMAGE-001-AC13): `go tool nm` is the call graph, the linker drops what main never reaches ----
-# Each banned symbol has a control here: a program that uses it must be refused, naming it. A missing go skips locally and fails in CI.
+# -- the built binary (REQ-IMAGE-001-AC13): `go tool nm` is the call graph, the linker drops what main cannot reach --
+# Each refused symbol has a program here that uses it. A missing go skips locally and fails in CI.
+run_binary() { run_scan binary "$@"; }
 if ! command -v go >/dev/null 2>&1; then
-  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "FAIL: go is not installed on this runner, the binary check cannot run"; fail=$((fail+1)); else echo "skip: needs go (the binary checks)"; fi
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "FAIL: go is not installed on this runner, the binary check cannot run"; fail=$((fail+1))
+  else
+    echo "skip: needs go (the binary checks)"
+  fi
 else
-  # bin_case <expect-rc> <description> <symbol the output must name, or -> <<go source of a main package>>
+  # the flags of build/melange.yaml: -trimpath, CGO_ENABLED=0, and nothing that strips the symbol table
+  gobuild() { GOPROXY=off CGO_ENABLED=0 go build -trimpath "$@"; }
+  # build_main <dir> [extra go build flags]: the main package on stdin becomes <dir>/prog
+  build_main() {
+    local dir=$1; shift
+    mkdir -p "$dir"; printf 'module fx\ngo 1.22\n' >"$dir/go.mod"; cat >"$dir/main.go"
+    (cd "$dir" && gobuild "$@" -o prog . 2>"$dir/build.err")
+  }
+  # bin_case <exit code> <description> <symbol the output must name, or -> <<go source>>
   bin_case() {
-    local want=$1 desc=$2 sym=$3 dir out rc
-    n=$((n+1)); dir="$tmp/b$n"; mkdir -p "$dir"
-    printf 'module fx\ngo 1.22\n' >"$dir/go.mod"; cat >"$dir/main.go"
-    if ! (cd "$dir" && GOFLAGS= GOPROXY=off go build -o prog . 2>"$dir/build.err"); then echo "FAIL: $desc (fixture does not build: $(head -c 200 "$dir/build.err"))"; fail=$((fail+1)); return; fi
-    out=$(python3 -I "$CHK" binary "$dir/prog" 2>&1); rc=$?
-    if [ "$rc" = "$want" ] && { [ "$sym" = - ] || printf '%s' "$out" | grep -qF -- "$sym"; }; then echo "ok:   $desc"; pass=$((pass+1)); else echo "FAIL: $desc (rc $rc, wanted $want, symbol $sym): $out"; fail=$((fail+1)); fi
+    local want=$1 desc=$2 text=$3 dir="$tmp/b$((n+=1))"
+    if ! build_main "$dir"; then
+      echo "FAIL: $desc (fixture does not build: $(head -c 200 "$dir/build.err"))"; fail=$((fail+1)); return
+    fi
+    run_binary "$dir/prog"
+    expect "$desc" "$want" "$text"
   }
   bin_case 0 "a server that only listens is allowed" - <<'GO'
 package main
@@ -170,7 +191,7 @@ import "net/http"
 
 func main() { http.Get("http://x") }
 GO
-  bin_case 1 "a Transport used directly puts net/http.(*Transport).roundTrip in the binary" 'net/http.(*Transport).roundTrip' <<'GO'
+  bin_case 1 "a Transport used directly puts roundTrip in the binary" 'net/http.(*Transport).roundTrip' <<'GO'
 package main
 
 import "net/http"
@@ -211,8 +232,8 @@ import "crypto/tls"
 
 func main() { tls.Dial("tcp", "x:443", nil) }
 GO
-  # the residual, written down as a test: net.(*Dialer).DialContext is in every net/http binary (its default transport keeps it), so it is no evidence
-  bin_case 0 "RESIDUAL: a dial through net.Dialer alone is not caught by the binary check (the source scan covers our own code)" - <<'GO'
+  # the residual, written down as a test: net.(*Dialer).DialContext is in every net/http binary, so it is no evidence
+  bin_case 0 "RESIDUAL: a dial through net.Dialer alone is not caught by the binary check" - <<'GO'
 package main
 
 import (
@@ -225,17 +246,31 @@ func main() {
 	d.DialContext(context.Background(), "tcp", "x:1")
 }
 GO
-  python3 -I "$CHK" binary "$tmp/no-such-binary" >/dev/null 2>&1; rc=$?
-  if [ "$rc" = 2 ]; then echo "ok:   a binary that does not exist exits 2"; pass=$((pass+1)); else echo "FAIL: a missing binary exits 2 (rc $rc)"; fail=$((fail+1)); fi
-  python3 -I "$CHK" binary >/dev/null 2>&1; rc=$?
-  if [ "$rc" = 2 ]; then echo "ok:   binary without a path exits 2"; pass=$((pass+1)); else echo "FAIL: binary without a path exits 2 (rc $rc)"; fail=$((fail+1)); fi
-  : >"$tmp/any-file"
-  out=$(PATH=/nonexistent "$(command -v python3)" -I "$CHK" binary "$tmp/any-file" 2>&1); rc=$?
-  if [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "go is not installed"; then echo "ok:   with no go on the search path the binary check exits 2 (it never passes unchecked)"; pass=$((pass+1)); else echo "FAIL: no go on the path (rc $rc): $out"; fail=$((fail+1)); fi
+  # fail closed: with no symbol table `go tool nm` lists nothing, and "nothing found" must not read as "clean"
+  stripped="$tmp/stripped"
+  build_main "$stripped" -ldflags=-s <<'GO'
+package main
+
+import "net/http"
+
+func main() { http.Get("http://x") }
+GO
+  run_binary "$stripped/prog"
+  expect "a stripped binary, even one with an HTTP client, is refused" 2 "symbol"
+  # a `go tool nm` that exits 0 with an empty list is no proof either (every Go program holds runtime.main)
+  mkdir -p "$tmp/fakego"; printf '#!/bin/sh\nexit 0\n' >"$tmp/fakego/go"; chmod +x "$tmp/fakego/go"
+  out=$(PATH="$tmp/fakego:$PATH" python3 -I "$CHK" binary "$stripped/prog" 2>&1); rc=$?
+  expect "an empty symbol list with exit 0 is refused" 2 "runtime.main"
+  printf 'not a program\n' >"$tmp/text-file"
+  run_binary "$tmp/text-file";           expect "a file that is not a Go program is refused" 2 -
+  run_binary "$tmp/no-such-binary";      expect "a binary that does not exist is refused" 2 "cannot read"
+  run_binary;                            expect "binary without a path is refused" 2 "usage"
+  out=$(PATH=/nonexistent "$(command -v python3)" -I "$CHK" binary "$tmp/text-file" 2>&1); rc=$?
+  expect "with no go on the search path the check exits 2 and never passes unchecked" 2 "go is not installed"
   real="$tmp/fscache"
-  if GOFLAGS=-mod=vendor GOPROXY=off go build -trimpath -o "$real" ./cmd/fscache 2>"$tmp/real.err"; then
-    out=$(python3 -I "$CHK" binary "$real" 2>&1); rc=$?
-    if [ "$rc" = 0 ]; then echo "ok:   the real fscache binary has no HTTP client symbol and no dial symbol"; pass=$((pass+1)); else echo "FAIL: the real binary: $out"; fail=$((fail+1)); fi
+  if GOFLAGS=-mod=vendor gobuild -o "$real" ./cmd/fscache 2>"$tmp/real.err"; then
+    run_binary "$real"
+    expect "the real fscache binary has no HTTP client symbol and no dial symbol" 0 -
   else
     echo "FAIL: the real binary does not build: $(head -c 300 "$tmp/real.err")"; fail=$((fail+1))
   fi

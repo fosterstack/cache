@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
-"""0710 item 4 (REQ-IMAGE-001, docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rules 1 and 2): the module's non-test Go
-code has no HTTP client and dials no outbound connection.
+"""0710 item 4 (REQ-IMAGE-001-AC13, docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rules 1 and 2):
+the cache has no HTTP client and dials no outbound connection.
 
-  check-no-outbound.py [ROOT]      ROOT defaults to the repository root (the folder above bin/)
+  check-no-outbound.py [ROOT]      scan the non-test Go source under ROOT/cmd and ROOT/internal (ROOT: the repository)
+  check-no-outbound.py binary BIN  list the symbols of the linked program BIN (needs `go` on the search path)
 
-Reads every non-test .go file under ROOT/cmd and ROOT/internal (never vendor/), takes out comments and string and rune
-literals, and refuses (exit 1, naming file:line and the thing) a use of
-  net/http: Client, DefaultClient, Transport, DefaultTransport, Get, Head, Post, PostForm, NewRequest, NewRequestWithContext
-  net: Dial, DialTimeout, DialTCP, DialUDP, DialIP, DialUnix, Dialer, the Lookup* functions, Resolver, DefaultResolver
-  crypto/tls: Dial, DialWithDialer, Dialer
-  an import of net/http/httputil, or a dot import of net/http, net or crypto/tls (a dot import hides the names).
-Import aliases are followed. Exit 0 when nothing is found, 2 when ROOT has no Go files or a file cannot be read.
-  check-no-outbound.py binary BIN  the linked program BIN (needs `go` on the search path)
+Source scan: comments and string literals are blanked, then a use of an HTTP client or a dial name is refused (exit 1,
+file:line). The names are in BANNED below; import aliases are followed and a dot import is refused.
 
-The source scan reads this module's own source only. The binary check is the call graph: the Go linker drops every function that
-main cannot reach, so a symbol of `go tool nm BIN` is code the program can run, dependencies included. It refuses (exit 1, naming
-the symbol) these, each proved present by a test program that uses it: net/http.(*Client).do, net/http.(*Transport).roundTrip,
-net.Dial, net.DialTimeout, net.(*Resolver).LookupHost, crypto/tls.Dial. Exit 2 when BIN or go cannot be used.
-Residual: net.(*Dialer).DialContext is in every net/http program (its default transport keeps it), so it proves nothing. A
-dependency that dials through net.Dialer alone, or through another symbol not listed above, is not caught by the binary check;
-the source scan covers our own code only.
-It runs with python3 -I, standard library only.
+Binary check: the Go linker drops every function main cannot reach, so a symbol of `go tool nm BIN` is code the
+program can run, dependencies included. The symbols in BANNED_SYMBOLS are refused (exit 1); each has a test program
+that uses it. Exit 2 when BIN or go cannot be used, or BIN has no symbols (a stripped binary would pass vacuously).
+
+Residual: net.(*Dialer).DialContext is in every net/http program, so it proves nothing. A dependency that dials
+through net.Dialer alone, or through a symbol not listed, is not caught by the binary check. The source scan covers
+our own code only.
 """
 import os
 import re
@@ -42,7 +36,7 @@ DOT_BANNED = set(BANNED)
 
 
 def strip(src):
-    """The source with comments, string literals and rune literals blanked (newlines kept), so a name in text is not a use."""
+    """The source with comments and string and rune literals blanked (newlines kept), so a name in text is not a use."""
     out, i, n = [], 0, len(src)
     while i < n:
         c = src[i]
@@ -70,7 +64,7 @@ def strip(src):
 
 
 def imports(src):
-    """[(alias or None, path, line)] from the raw source (import paths are string literals, so this reads before strip)."""
+    """[(alias or None, path, line)] of the imports, read before strip() because import paths are string literals."""
     res = []
     for m in re.finditer(r'^[ \t]*import[ \t]*\(([^)]*)\)', src, re.M):
         base = src.count("\n", 0, m.start(1))
@@ -145,6 +139,9 @@ def check_binary(path):
         return 2
     rows = [line.split(None, 2) for line in nm.stdout.splitlines()]      # each row: address, type letter, name
     symbols = {row[2] for row in rows if len(row) == 3}
+    if "runtime.main" not in symbols:      # every Go program has it; without it the list proves nothing
+        sys.stderr.write("check-no-outbound: %s has no readable symbols (no runtime.main): stripped or not Go\n" % path)
+        return 2
     found = [sym for sym in BANNED_SYMBOLS if sym in symbols]
     for sym in found:
         sys.stderr.write("%s: holds %s\n" % (path, sym))
