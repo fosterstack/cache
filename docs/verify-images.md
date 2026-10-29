@@ -241,12 +241,16 @@ the Rekor log indexes.
 
 ## 3. Which tags to verify
 
-| Tag | Base image | Shell | What it is |
-|---|---|---|---|
-| `X.Y.Z` | `gcr.io/distroless/static:nonroot` | none | Production. Deploy this one. |
-| `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
-| `X.Y` | — | — | Floating: moves to every final release of that line |
-| `X` / `latest` | — | — | Floating: move only when the release is the highest released version |
+| Tag | Shell | What it is |
+|---|---|---|
+| `X.Y.Z` | none | Production. Deploy this one. |
+| `X.Y.Z-fips` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
+| `X.Y` | — | Floating: moves to every final release of that line |
+| `X` / `latest` | — | Floating: move only when the release is the highest released version |
+
+There is no base image from v0.3.0 on: each image holds only the packages named in <!-- pinned: historical -->
+[`build/apko.yaml`](../build/apko.yaml) (base layout, CA certificates, time zone data and `fscache`),
+pinned by the lock files in `build/locks/`.
 
 Both variants of every release are signed the same way. The `-fips` image has
 its exact tag only; it has no floating tags. Releases before v0.3.0 also had <!-- pinned: historical -->
@@ -255,13 +259,14 @@ not.
 
 ### The images have no shell
 
-Production and `-fips` contain the `fscache` binary and nothing else — no
+Production and `-fips` contain the `fscache` binary and a few packages
+(base layout, CA certificates, time zone data; see `build/apko.yaml`) — no
 shell, no package manager, no coreutils. `docker exec ... sh` into them
 fails, by design. What that buys, stated precisely: no shell and no package
 manager means an attacker who gains code execution has no on-image tooling
 to work with — no `sh` for a reverse shell one-liner, nothing to download
-or install helpers with — and there is no OS package surface to patch or
-drift. What it does not prevent: code execution itself, anything an
+or install helpers with — and the OS package surface is small: those few packages, which are patched by
+a new release, not on the running image. What it does not prevent: code execution itself, anything an
 attacker can do through the process's own capabilities and syscalls, or
 attacks that bring their own tooling. A minimal image narrows the toolbox;
 it is not a sandbox.
@@ -269,26 +274,6 @@ it is not a sandbox.
 To troubleshoot, run a separate toolbox container that shares the server's
 network and process namespaces; see
 [Troubleshooting without a shell](docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
-Verify the difference yourself:
-
-```sh
-docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:${VER} -c 'echo reached'
-# error ... exec: "/busybox/sh": stat /busybox/sh: no such file or directory
-```
-
-The command failing is the point: the production image has no shell to exec.
-
-### The `-debug` image, before v0.3.0 <!-- pinned: historical -->
-
-Those releases also shipped `:X.Y.Z-debug` (and `:debug`) on Google's
-`gcr.io/distroless/static:debug-nonroot` base, which adds busybox under
-`/busybox/` (no `/bin/sh`, no package manager; the shell is `/busybox/sh`,
-uid 65532):
-
-```sh
-docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
-kubectl exec -it <pod> -- /busybox/sh      # a pod running the :debug tag
-```
 
 Each tag is a multi-arch manifest (`linux/amd64` + `linux/arm64`), and
 `cosign verify` above validates the **index digest** — which covers both
@@ -309,6 +294,18 @@ attestation child per platform (these list with the platform `unknown/unknown`,
 so the jq filter above also prints them, as the last two lines). Signatures and
 the other attestations are separate artifacts keyed to the index digest. The
 digests signed and attested for a release are the final index's digests.
+
+### The `-debug` image, before v0.3.0 <!-- pinned: historical -->
+
+Those releases also shipped `:X.Y.Z-debug` (and `:debug`) on Google's
+`gcr.io/distroless/static:debug-nonroot` base, which adds busybox under
+`/busybox/` (no `/bin/sh`, no package manager; the shell is `/busybox/sh`,
+uid 65532):
+
+```sh
+docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+kubectl exec -it <pod> -- /busybox/sh      # a pod running the :debug tag
+```
 
 ## 4. Verify the binary archives
 
