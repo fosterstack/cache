@@ -1,7 +1,7 @@
 # Scanning FosterStack in your compliance pipeline
 
 Every scanner in [the repo's scanner list](../.github/policy/scanners.json)
-runs in the release pipeline's Check stage against the exact image digests of every release,
+runs in the release pipeline's Check stage against the exact image digests of every release from v0.3.0 on, <!-- pinned: historical -->
 and the current release's images are rescanned daily; [`RELEASING.md`](../RELEASING.md) states exactly what the
 release scan does and does not attach to. This page is about what to expect
 when *you* scan our image, since a minimal image scans differently from a
@@ -18,7 +18,7 @@ record of. Scan the exact digest you pull and read the result against
 ## Package-DB asymmetry — expect this, it isn't a bug
 
 Our images have no package manager and only a handful of packages in the
-package database (base layout, CA certificates, time zone data). That has an
+package database (base layout, CA certificates, time zone data and `fscache`). That has an
 asymmetric effect on checks:
 
 - **"Is forbidden package X present?"** checks — pass, as long as X is not one
@@ -53,11 +53,15 @@ failure mode has been observed in the field.
 Our release pipeline's scan step is public:
 [`bin/check-scan.sh`](../bin/check-scan.sh), run by the Check stage
 ([`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml)),
-is the exact invocation we gate releases on. The scanners are the ones in
+is the gate itself. The scanners are the ones in
 [the scanner list](../.github/policy/scanners.json): Grype and OSV-Scanner.
 
-The gate's policy is every severity, with the published VEX applied — so
-a faithful reproduction uses the same. The VEX document ships with each
+The gate's policy is every severity, with the published VEX applied, and the
+example below uses the same policy. It is a simplified reproduction, not the exact
+invocation: the gate also runs Grype with an empty configuration file and refuses
+`GRYPE_*` and `OSV_SCANNER_*` variables (so a local setting cannot hide a finding),
+scans each platform of the index separately, and checks that every skipped
+finding was skipped by the VEX file. Read `bin/check-scan.sh` for the full set. The VEX document ships with each
 release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/):
 
@@ -76,8 +80,9 @@ the set of published VEX statements, which is how you audit them.
 ## Marketing claim, with the receipt
 
 "Every scanner in the repo's list runs on every release" is not a claim we're
-asking you to take on faith — the release's signed Check records bind each
-scanner's results file, by hash, to the image digests; the results file itself
-is not attached to the release. See
-[Verify our images](verify-images.md#2b-verify-the-whole-chain) for how to
-check them against the image you pulled.
+asking you to take on faith. From v0.3.0 the release's signed Check records bind <!-- pinned: historical -->
+the scan results file (`scan-results.json`, one file for all scanners), by hash,
+to the image digests; the results file itself is not attached to the release.
+The records are among the signed evidence files described in
+[Verify our images](verify-images.md#the-signed-evidence-files); that page does not
+yet give a command for checking the Check records themselves.

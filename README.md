@@ -23,10 +23,8 @@ provenance statement that names every image by digest. ["Verifying a release"][r
 
 ## Why this exists
 
-Gradle Inc. is discontinuing the free, standalone [Develocity Build Cache
-Node][bcn-eol] — no further distribution, support, or updates after
-**December 31, 2026**. Teams running the free cache node on open-source
-Gradle (no Develocity subscription) need a maintained, drop-in replacement.
+Teams that run a free, standalone build cache node for open-source Gradle need a
+maintained, drop-in replacement.
 FosterStack Cache speaks Gradle's documented [`HttpBuildCache`][gradle-http]
 protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
 Maven Build Cache Extension][maven-cache]'s remote HTTP mode
@@ -37,7 +35,6 @@ restores its second build from the remote cache with byte-identical jars,
 and wrong or missing credentials fail the documented way. The Maven suite is a
 release-blocking check.
 
-[bcn-eol]: https://docs.develocity.ai/bcn/21.2/
 [gradle-http]: https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote
 [maven-cache]: https://maven.apache.org/extensions/maven-build-cache-extension/
 
@@ -108,9 +105,9 @@ withheld from the free tier for security.
 The security evidence itself is public and free: SBOMs, SLSA provenance,
 signatures, VEX statements, and the FIPS 140-3 module certificate number are
 published with every release and verifiable by anyone, with no account and
-no purchase. Each release carries signed Check records that bind the scan
-results, by hash, to the image digests they cover; the results file itself is
-not attached. The FIPS-mode image is publicly pullable too.
+no purchase. From v0.3.0 each release carries signed Check records that bind the <!-- pinned: historical -->
+scan results, by hash, to the image digests they cover; the results file itself
+is not attached. The FIPS-mode image is publicly pullable too.
 What the Compliance tier sells is the authored analysis, the vendor signature,
 and the hours — never access to the bytes or the evidence.
 
@@ -292,7 +289,8 @@ before implementation. CI fails if the matrix drifts from its sources.
 
 ## Security
 
-- Static binary, zero CGO, no OS package surface to patch.
+- Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
+  time zone data), patched by a new image, not on a running one.
 - Approved-only cryptography is enforced by the validated module itself, not
   by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
   Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A

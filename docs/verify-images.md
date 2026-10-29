@@ -248,7 +248,7 @@ the Rekor log indexes.
 | `X.Y` | — | Floating: moves to every final release of that line |
 | `X` / `latest` | — | Floating: move only when the release is the highest released version |
 
-There is no base image from v0.3.0 on: each image holds only the packages named in
+There is no base image from v0.3.0 on: each image holds only the packages named in <!-- pinned: historical -->
 [`build/apko.yaml`](../build/apko.yaml) (base layout, CA certificates, time zone data and `fscache`),
 pinned by the lock files in `build/locks/`.
 
@@ -274,26 +274,6 @@ it is not a sandbox.
 To troubleshoot, run a separate toolbox container that shares the server's
 network and process namespaces; see
 [Troubleshooting without a shell](docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
-Verify the difference yourself:
-
-```sh
-docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:${VER} -c 'echo reached'
-# error ... exec: "/busybox/sh": stat /busybox/sh: no such file or directory
-```
-
-The command failing is the point: the production image has no shell to exec.
-
-### The `-debug` image, before v0.3.0 <!-- pinned: historical -->
-
-Those releases also shipped `:X.Y.Z-debug` (and `:debug`) on Google's
-`gcr.io/distroless/static:debug-nonroot` base, which adds busybox under
-`/busybox/` (no `/bin/sh`, no package manager; the shell is `/busybox/sh`,
-uid 65532):
-
-```sh
-docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
-kubectl exec -it <pod> -- /busybox/sh      # a pod running the :debug tag
-```
 
 Each tag is a multi-arch manifest (`linux/amd64` + `linux/arm64`), and
 `cosign verify` above validates the **index digest** — which covers both
@@ -314,6 +294,18 @@ attestation child per platform (these list with the platform `unknown/unknown`,
 so the jq filter above also prints them, as the last two lines). Signatures and
 the other attestations are separate artifacts keyed to the index digest. The
 digests signed and attested for a release are the final index's digests.
+
+### The `-debug` image, before v0.3.0 <!-- pinned: historical -->
+
+Those releases also shipped `:X.Y.Z-debug` (and `:debug`) on Google's
+`gcr.io/distroless/static:debug-nonroot` base, which adds busybox under
+`/busybox/` (no `/bin/sh`, no package manager; the shell is `/busybox/sh`,
+uid 65532):
+
+```sh
+docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+kubectl exec -it <pod> -- /busybox/sh      # a pod running the :debug tag
+```
 
 ## 4. Verify the binary archives
 

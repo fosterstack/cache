@@ -58,8 +58,9 @@ record of every earlier stage, and only the steps after that one read the
 registry and signing secrets; they push the same image bytes by digest to the
 public registries and read each registry back, and the release stops if a digest read back differs
 from the attested one. The scan verdict attaches to the published digests because they are the
-scanned digests. The release's signed Check records bind each scanner's results file, by hash, to the image digests
-(see [the signed evidence files](docs/verify-images.md#2b-verify-the-whole-chain)); the results file
+scanned digests. From v0.3.0 the release's signed Check records bind the scan results file (`scan-results.json`, one file for <!-- pinned: historical -->
+all scanners), by hash, to the image digests (see
+[the signed evidence files](docs/verify-images.md#the-signed-evidence-files)); the results file
 itself is not attached to the release. The daily rescan
 re-checks the current release's published digests against newly disclosed CVEs.
 
@@ -154,12 +155,14 @@ client address.
 
 ## The apk release key
 
-The apks of every release are signed with one release key; its public half will be committed at
-[`build/keys/release.rsa.pub`](build/keys/release.rsa.pub) when the owner sets the
-key (the file there today is a placeholder, not a key).
+The apks of a release are signed with one release key; its public half will be committed at
+[`build/keys/release.rsa.pub`](build/keys/release.rsa.pub) once the key is set
+(the file there today is a placeholder, not a key).
 
 - The key is rotated every year.
 - A suspected leak is not waited out: the key is rotated at once.
+- A retired key's public half stays published, so the apks it signed stay verifiable.
+- A leak is disclosed when the key is rotated, in the security advisory for the affected releases.
 
 ## Supported versions
 

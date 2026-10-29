@@ -9,7 +9,8 @@ laptop cannot forge a release that GitHub's own runners never built).
 ## Pipeline (`.github/workflows/release.yml`)
 
 From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
-own job and its own signing identity, on a fresh GitHub-hosted runner:
+own job on a fresh GitHub-hosted runner. Sign signs the records and the provenance of Build, Rebuild and
+Check under its own identity (`stage-sign.yml`); Release signs what it makes under its own:
 
 ```
 Build -> { Sign, Rebuild } ; { Build, Sign } -> Check ; { Check, Rebuild, Sign } -> Release
@@ -41,8 +42,8 @@ signing key or `packages: write`.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
   machines and compares its items with Build's; any difference blocks the
   release. Its items include the apks' digests. The `compare` job of
-  `stage-promote.yml` compares the apks once more (control and data sections,
-  no key and no token).
+  `stage-promote.yml` compares the apks once more (control and data sections;
+  the job has `contents: read` only: no key, no write token, no identity token).
 - **Check** (`stage-verify.yml`): runs every scanner of
   [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
@@ -192,7 +193,7 @@ a file that anyone could have written.
 | `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, keyless, per stage | the stage that made it |
+| Witness records | Witness envelope, keyless | `stage-sign.yml` for Build, Rebuild and Check; `stage-promote.yml` for Release's own |
 
 ### VEX statements
 

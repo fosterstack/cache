@@ -153,7 +153,7 @@ valid to execute. Probe `/healthz` from *outside* the container instead —
 your orchestrator's own HTTP healthcheck (Kubernetes `livenessProbe` with
 `httpGet`, an external monitoring check, or `curl -f
 http://localhost:8080/healthz` from the host/CI runner). This is a direct
-consequence of the zero-CVE-surface design — see
+consequence of the minimal-image design — see
 [Scanning FosterStack in your compliance pipeline](scanning.md) for why
 there's no shell in the image in the first place.
 
@@ -315,14 +315,15 @@ You can confirm that rather than take our word for it:
 
 ```sh
 docker manifest inspect ghcr.io/fosterstack/cache:latest \
-  | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"'
+  | jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"'
 # linux/amd64
 # linux/arm64
 ```
 
-Exactly two entries, both real platforms. Signatures and SBOM/provenance are
-stored as separate artifacts against each digest rather than as extra
-entries in this index, so nothing else should appear here — see
+Exactly two runnable platforms. The index also holds one VEX attestation child
+per platform; it lists as `unknown/unknown`, which the filter above leaves out.
+Signatures and SBOM/provenance are stored as separate artifacts against each
+digest rather than as entries in this index — see
 [Verify our images](verify-images.md).
 
 There are no darwin or windows images: containers on those platforms run a
