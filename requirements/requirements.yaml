@@ -4796,9 +4796,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-IMAGE-001-AC13
-        given: "the non-test Go code of the cache, and the linked fscache binary"
-        when: "bin/check-no-outbound.py reads the source, and lists the binary's symbols (go tool nm: the linker keeps only what main can reach)"
-        then: "the source imports no HTTP client and dials no address, and the binary holds none of net/http.(*Client).do, net/http.(*Transport).roundTrip, net.Dial, net.DialTimeout, net.(*Resolver).LookupHost or crypto/tls.Dial, and a binary with no symbols (stripped) is refused rather than passed, so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials through net.Dialer alone, or through a symbol not listed, is not caught by the binary check, and the source scan covers our own code only"
+        given: "the non-test Go code of the cache, and the linked fscache binaries (amd64 and arm64, plain and FIPS)"
+        when: "bin/check-no-outbound.py reads the source, and lists each binary's symbols (go tool nm: the linker keeps only what main can reach)"
+        then: "our own non-test code imports no HTTP client, dials no address (net, syscall, x/sys/unix, a crypto/tls client), runs no outside program and verifies no certificate; the amd64 and arm64 binaries, plain and FIPS, hold none of the listed symbols; a binary without runtime.main is refused; so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials or verifies a certificate through an unlisted symbol (net.Dialer is in every net/http binary) is not caught by the binary check, and the source scan covers our own code only"
         verification: { method: unit, release_blocking: true }
         status: approved
   - id: REQ-GUIDE-001
