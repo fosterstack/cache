@@ -4988,58 +4988,58 @@ requirements:
         when: "bin/evidence-letter.py runs for that month"
         then: "the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release still gets a letter, which says none was published and carries the Check records of the latest release; before any release exists there is no letter and the script says so"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC2
         given: "a patch release (vX.Y.Z with Z above 0) in the month"
         when: "the letter is made"
         then: "it names the patch release and its reason, the first line of that release's notes quoted verbatim; a patch release with no notes line refuses"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC3
         given: "a release's OpenVEX file whose hash is the one in its release manifest"
         when: "the letter is made"
         then: "it lists each statement of that file dated in the month by its CVE name and date; an OpenVEX file whose hash differs from the manifest's refuses"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC4
         given: "the Check records of a release and the month's advisories file"
         when: "the letter is made"
         then: "it lists each Check record by name and hash, and either the month's advisories or that none was published; a missing Check record or a missing advisories file refuses"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC5
         given: "a letter just made"
         when: "its lines are read back against the assets"
         then: "every fact in it is found again in the assets it came from; any mismatch, missing asset or malformed asset makes no letter, ends nonzero and says why in one line"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC6
         given: "the controls document with its version history"
         when: "the letter is made"
         then: "it carries the one binding line naming the version in force and the date it was signed, 'unchanged this month' when it did not change, and when it changed names both versions and which releases fall under each"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC7
         given: "any letter the script makes"
         when: "its text is read"
         then: "it holds none of the words warranty, certified, compliant, guarantee or SOC 2, and no email address; a quoted line that holds one of those words refuses"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC8
         given: "the signatory text still holds the placeholder"
         when: "the script runs without --draft"
         then: "it makes no letter and ends nonzero naming the placeholder; with --draft it writes a file marked DRAFT that is never signed"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC9
         given: "the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else)"
         when: "its sign job runs on a letter that passed AC5"
         then: "the sign job is the only one with an identity token; it signs the letter keylessly with the signing call, the signing config and the transparency-log check of bin/release-sign.sh, so customers verify against the identity https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main, which docs/verify-release.md names; it signs nothing that did not pass AC5"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-013-AC10
         given: "a signed letter and its bundle"
         when: "bin/evidence-letter-publish.sh attaches them"
         then: "they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved

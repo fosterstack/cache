@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The monthly evidence letter (REQ-REL-013): downloads what bin/evidence-letter.py reads. For the month it takes every final release
 # published in it and the latest final release before it (the current images when the month had none), and the published advisories.
-#   evidence-letter-fetch.sh YYYY-MM OUTDIR      (GH_TOKEN set; REPO defaults to fosterstack/cache)
+#   arguments: the month YYYY-MM, then the output folder (GH_TOKEN set; REPO defaults to fosterstack/cache)
 # Reads only; it writes into OUTDIR/rel/<tag>/ and OUTDIR/advisories.json.
 set -euo pipefail
-month=${1:?usage: evidence-letter-fetch.sh YYYY-MM OUTDIR}
-out=${2:?usage: evidence-letter-fetch.sh YYYY-MM OUTDIR}
+month=${1:?the month YYYY-MM is the first argument}
+out=${2:?the output folder is the second argument}
 [[ "$month" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "evidence-letter-fetch: the month is YYYY-MM" >&2; exit 2; }
 repo=${REPO:-fosterstack/cache}
 mkdir -p "$out/rel"
