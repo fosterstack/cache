@@ -31,6 +31,13 @@ name: Dependabot reviewer
 # (the App has no Issues permission). No vendor or model name appears anywhere here, in the
 # check, or in the issue (row 48); model ids live only in the `agent` environment's secrets.
 #
+# The second job, `vendor-records`, finishes a Go dependency bump nobody has to finish by hand: for every open
+# dependabot/go_modules/* and auditor/bump-* branch it regenerates the vendored tree and the provenance records and
+# adds ONE App-signed commit holding only those (vendor/, dependency-provenance.json, the reviewed licences). It runs
+# here for the same reason as the review: a run Dependabot's own push starts holds no secrets, so a scheduled sweep
+# from main's copy is the only way to hold the App key. Branches are fetched as data and never run
+# (.github/agent/bin/auditor-vendor-records.py).
+#
 # `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on majors and flagged updates, and a
 # required check would block every human PR.
 
@@ -45,6 +52,10 @@ on:
         default: ''
       force:
         description: 'Re-review even if the head already carries a dependabot-reviewer check'
+        type: boolean
+        default: false
+      records_dry_run:
+        description: 'Records sweep: say what it would commit, commit nothing'
         type: boolean
         default: false
 
@@ -497,3 +508,39 @@ jobs:
           name: dependabot-reviewer-${{ github.run_id }}
           path: ${{ runner.temp }}/work
           if-no-files-found: ignore
+
+  vendor-records:
+    name: records sweep
+    # The `agent` environment is limited to branch main, so a run from any other ref fails before the App key exists:
+    # the environment is the boundary here, not a condition inside this file (a hostile ref would just omit it).
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      # the full history of main: the sweep fetches each bump branch into this clone as data and finds its merge base
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: mint the App token for the records commits (contents:write, this repository only)
+        id: app-records
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+
+      # the build's pinned Go toolchain at its fixed install path: go mod vendor and the records step both run it
+      - name: install the pinned Go toolchain
+        run: bash bin/install-scanner.sh go
+
+      - name: regenerate the records of every dependency-bump branch
+        env:
+          GH_TOKEN: ${{ steps.app-records.outputs.token }}
+          DRY_RUN: ${{ inputs.records_dry_run && '--dry-run' || '' }}
+        run: |
+          python3 -I .github/agent/bin/auditor-vendor-records.py --repo "$GITHUB_REPOSITORY" \
+            --workspace "$GITHUB_WORKSPACE" $DRY_RUN
