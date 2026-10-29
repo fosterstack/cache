@@ -60,8 +60,10 @@ The gate's policy is every severity, with the published VEX applied, and the
 example below uses the same policy. It is a simplified reproduction, not the exact
 invocation: the gate also runs Grype with an empty configuration file and refuses
 `GRYPE_*` and `OSV_SCANNER_*` variables (so a local setting cannot hide a finding),
-scans each platform of the index separately, and checks that every skipped
-finding was skipped by the VEX file. Read `bin/check-scan.sh` for the full set. The VEX document ships with each
+scans each platform of the index separately, and checks that every finding
+Grype reports as ignored was ignored by the VEX file. That check does not see
+matches Grype's distro exclusions or OSV-Scanner's `linux` filter drop before any
+report. Read `bin/check-scan.sh` for the full set. The VEX document ships with each
 release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/):
 

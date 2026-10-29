@@ -322,9 +322,9 @@ docker manifest inspect ghcr.io/fosterstack/cache:latest \
 
 Exactly two runnable platforms. The index also holds one VEX attestation child
 per platform; it lists as `unknown/unknown`, which the filter above leaves out.
-Signatures and SBOM/provenance are stored as separate artifacts against each
-digest rather than as entries in this index — see
-[Verify our images](verify-images.md).
+The image signature and the release-manifest attestation are stored against
+each digest rather than as entries in this index. The SBOMs and provenance are
+files on the GitHub release — see [Verify our images](verify-images.md).
 
 There are no darwin or windows images: containers on those platforms run a
 Linux VM, and it pulls `linux/*` like any other Linux host. There is no native
