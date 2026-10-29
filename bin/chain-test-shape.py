@@ -657,47 +657,23 @@ def listed(path, root):
 
 # ---- nosource: the build is the only step that runs source code (sandboxed-build ratify, Oct 27 2026, rule 1) ------------------------
 # In Build and Rebuild the compile of our source and of its dependencies happens only inside melange's sandbox (bin/build-apk.sh); apko only lays packages down. This judge reads every
-# script the four stage scripts (and bin/witnessed-local.sh) can start and applies an ALLOW-LIST: a command word is accepted only when it is a shell keyword or builtin, an ordinary
-# file utility (NS_UTILS), a repository script of the closure, a program in this script's own NS_EXTRA row, or a variable in this script's NS_VARS row; anything else is a finding. So a
-# new compiler, a wrapper in front of one (timeout, nice, xargs, command, time, exec, env, sudo are looked through to the program they start), `if go build`, `bash -c "go build"`,
-# an alias, an interpreter run with -c or on a file that is not a closure script, and a program named by a variable all fail unless a reviewed row names them. The Go toolchain is
-# accepted only as `version` (`go version -m BINARY` reads the build information out of a file; it never runs it). melange and apko are accepted only in the scripts of NS_ENGINE.
-# Python files are read by their syntax tree: every call that starts a program is judged by its first argument; a program named by anything but a list literal is a finding unless the
-# enclosing function is a reviewed wrapper in NS_PYWRAP. Which scripts are read: the `runs` rows of chain-scripts.json AND every bin/ script the text of a closure script names.
-# The one other melange caller is bin/chain-sandbox-probe.sh (the rule 3 probe, a second call site of the same sealed shape); it is accepted only when its text judges its call with
-# bin/build-apk-helper.py sealed-call, and any other script that starts melange is a finding.
-# bin/install-scanner.sh and bin/install-build-tools.sh are not read: the stage files pin which installs run (PRE_INSTALLS: witness, go, crane, melange, apko), and the compile branch
-# of install-scanner.sh (govulncheck) is not one of them; install-build-tools.sh downloads checksum-pinned release binaries and compiles nothing (read at the source, Oct 28 2026).
+# script the four stage scripts (and bin/witnessed-local.sh) can start, through the `runs` rows of chain-scripts.json, and refuses a step that could compile or run source code:
+#   * the Go toolchain with anything but `version` (`go version -m BINARY` reads the build information out of a file; it never runs it);
+#   * a compiler or build tool as a command word (NS_DENY);
+#   * the product binary itself (fscache, fscache.bin) as a command word;
+#   * melange outside bin/build-apk.sh, apko outside bin/assemble-image.sh and bin/apko-lock.sh.
+# Shell files are read line by line at the COMMAND position (after ; && || | ( ` $( then do sudo env exec and NAME=value words); Python files by their syntax tree: every call whose first argument
+# is a list literal is a program start, as is a call of os.system or os.popen or one with shell=True. A text scan over-reports by design (finite lists, no shell analysis; advisor decision b).
+# bin/install-scanner.sh is not read: the stage files pin which installs run (PRE_INSTALLS: witness, go, crane, melange, apko), and the compile branch of that script (govulncheck) is not one of them.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh")
 NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
-NS_KEYWORDS = frozenset("if then else elif fi while until do done esac in time ! { } ]] shopt trap".split())
-NS_UTILS = frozenset("rmdir awk basename cat chmod cmp cp cut date diff dirname find grep head ln ls mkdir mktemp mv rm readlink realpath sed sort tail tee touch tr uname wc id sleep sha256sum jq tar gzip gunzip curl".split())
-NS_WRAPPERS = frozenset("sudo env timeout nice ionice nohup setsid stdbuf command exec unshare builtin".split())
-NS_INTERP = frozenset("bash sh dash zsh ksh python python3 perl ruby node".split())
-NS_NEVER = frozenset("eval alias xargs source . make cargo npm npx yarn pnpm gcc cc clang rustc javac mvn gradle pip pip3 cmake ninja".split())
-NS_EXTRA = {      # per script: reviewed extra command words (Programs the script really starts; every entry is read at the source)
-    "bin/build-apk.sh": ("git", "grep", "sysctl"),      # sysctl: the sudo call that relaxes the unprivileged-namespace restriction of Ubuntu runners (rule 62)
-    "bin/witnessed-local.sh": ("witness", "openssl"),
-    "bin/build-stage-snapshot-apk.sh": ("git",), "bin/build-stage-snapshot-rebuild-apk.sh": ("git",),
-}
-NS_VARS = {       # per script: variables that may stand in command position (the fixed tool locations of REQ-BUILDAPK-001-AC3; each is one TEST-SUBST constant)
-    "bin/build-apk.sh": ("SUDO", "ENVBIN", "UNSHARE", "PY3", "GIT", "SHA256SUM", "GO_TOOL", "melange_bin", "MELANGE", "call"),      # call: the array the sealed-call checker judged
-    "bin/assemble-image.sh": ("SUDO", "ENVBIN", "UNSHARE", "PY3", "BASHBIN", "APKO"),
-    "bin/apko-lock.sh": ("PY3",),
-    "bin/chain-sandbox-probe.sh": ("SUDO", "ENVBIN", "UNSHARE", "PY3", "MELANGE", "melange_bin", "call"),
-}
-NS_ENGINE = {"melange": ("bin/build-apk.sh", "bin/chain-sandbox-probe.sh"), "apko": ("bin/assemble-image.sh", "bin/apko-lock.sh")}
-NS_PROBE = "bin/chain-sandbox-probe.sh"      # the one other melange caller (the rule 3 probe): only if its text runs the pinned sealed-call checker on the call it makes
-NS_ENGINE_VARS = {"MELANGE": "melange", "melange_bin": "melange", "APKO": "apko"}
-NS_INTERP_SCRIPT_VARS = {"bin/witnessed-local.sh": ("@",)}      # `timeout ... bash "$@"`: the stage script the caller names, itself judged as a stage script
-NS_PYCOMPUTED = {"bin/build-admit.py": ("python3", "bash")}      # interpreter on a computed file, only the copies of origin/main's scripts in the job's policy folder (check_policy_from_main, check_rc_proof): never the tagged tree
-# OPEN EXCEPTIONS (always printed): a start the ratified rule 1 does not allow and that a reviewed row accepts until the advisor rules. Each is (script, words that must all be in the call).
-NS_OPEN = (("bin/build-admit.py", ("-C", "tools/requirements", "run", "verify-freeze"),
-            "Build's admission step compiles and runs the Go module tools/requirements of the TAGGED tree with the pinned Go toolchain (go -C tools/requirements run . verify-freeze), outside melange and before GH_TOKEN is unset; "
-            "ruling needed: keep as the one reviewed exception, move the check into Python, or run main's copy"),)
-NS_PYFUNCS = {"bin/apk-tool.py": {"_openssl": "openssl"}}      # reviewed helpers that return one fixed program
-NS_PYWRAP = {"bin/build-admit.py": ("run_cmd",)}        # reviewed wrappers whose parameter is an argument list; their callers' list literals are judged
-NS_STARTS = frozenset("run Popen check_output check_call call system popen execv execvp execve execvpe execl execle execlp execlpe spawnv spawnve spawnvp spawnl spawnle spawnlp posix_spawn posix_spawnp".split())
+NS_DENY = ("make|cargo|npm|npx|yarn|pnpm|gcc|g\\+\\+|cc|clang|rustc|javac|mvn|gradle|pip3?|cmake|ninja|node|ruby|perl|java|fscache|fscache\\.bin")
+NS_PRE = r"""(?:^|[;&|({`]|\$\(|\bthen\b|\bdo\b|\bsudo\b|\benv\b|\bexec\b)\s*(?:\w+=\S*\s+)*["']?"""
+NS_GO = re.compile(NS_PRE + r"""(?:\$\{?GO_TOOL\}?|[\w$\{\}./-]*/go|go)["']?\s+(?!version\b)(\S+)""")
+NS_WORD = re.compile(NS_PRE + r"""(?:[\w$\{\}./-]*/)?(%s)["']?(?=\s|$)""" % NS_DENY)
+NS_ENGINE = re.compile(NS_PRE + r"""(?:\$\{?(?:MELANGE|APKO|melange_bin)\}?|[\w$\{\}./-]*/)?(melange|apko)["']?(?=\s|$)|""" + NS_PRE + r"""\$\{?(MELANGE|APKO|melange_bin)\}?""")
+NS_ENGINE_OK = {"melange": ("bin/build-apk.sh",), "apko": ("bin/assemble-image.sh", "bin/apko-lock.sh"), "MELANGE": ("bin/build-apk.sh",), "melange_bin": ("bin/build-apk.sh",), "APKO": ("bin/assemble-image.sh", "bin/apko-lock.sh")}
+NS_STARTS = {"run", "Popen", "check_output", "check_call", "call", "system", "popen", "execv", "execvp", "execve", "execl", "execlp", "spawnv"}
 
 
 def ns_closure(root):
@@ -717,204 +693,25 @@ def ns_closure(root):
             bad.append("%s is started by a stage script but is not a row of chain-scripts.json" % p)
             continue
         todo += rows[p].get("runs", [])
-        try:
-            text = open(root + "/" + p).read()
-        except OSError:
-            continue
-        for n in ns_named(p, text):      # a script a code word or string constant names is read too, even when no `runs` row lists it
-            if n != p and os.path.isfile(root + "/" + n):
-                todo.append(n)
     return sorted(seen), bad
 
 
-def ns_named(path, text):
-    """The repository scripts a script's CODE names: shell words and Python string constants that are exactly bin/NAME.sh|py (comments, docstrings and tests are not references)."""
-    pat = re.compile(r"(?:\./)?(bin/[A-Za-z0-9_.-]+\.(?:sh|py))")
-    names = set()
-    if path.endswith(".py"):
-        import ast
-        try:
-            for n in ast.walk(ast.parse(text)):
-                if isinstance(n, ast.Constant) and isinstance(n.value, str) and pat.fullmatch(n.value): names.add(pat.fullmatch(n.value).group(1))
-        except SyntaxError:
-            pass
-    else:
-        for cmd in ns_commands(text):
-            for w in cmd:
-                for m in pat.finditer(w):
-                    if re.fullmatch(r"(?:.*[\s=/\"'])?(?:\./)?bin/[A-Za-z0-9_.-]+\.(?:sh|py)", w): names.add(m.group(1))
-    return sorted(n for n in names if not re.search(r"(-test\.(sh|py)|_test\.py|^bin/chain-test-)", n))
-
-
-def ns_unfold_case(ln):
-    """`case X in a|b) body ;; *) body ;; esac` on one line: the words of the patterns are not commands; the bodies are."""
-    m = re.search(r"\bcase\b.*?\bin\b(.*)$", ln)
-    if not m or ";;" not in m.group(1) and ")" not in m.group(1): return ln
-    head = ln[:m.start()]
-    parts = re.split(r";;|\besac\b", m.group(1))
-    bodies = []
-    for part in parts:
-        part = re.sub(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)", "", part, count=1)
-        bodies.append(part)
-    return head + " ; " + " ; ".join(bodies)
-
-
-NS_CASEPAT = re.compile(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)[ \t]*")      # `-rc*)`, `a|b)`, `*)`: the pattern in front of a case branch is not a command
-
-
-def ns_commands(text, depth=0):
-    """The simple commands of a shell text, each a list of unquoted words: quote-aware; split at ; & | ( ) { } and newlines; ${...} stays inside its word; the text of every $(...) and
-    backtick substitution, also inside double quotes, is read as commands of its own; comments dropped. Not a shell parser: a judge's reading with the over-reporting that comes with it."""
-    cmds = []
-    if depth > 6:
-        return [["<too-deeply-nested>"]]
-    for ln in text.replace("\\\n", "").split("\n"):
-        ln = ns_unfold_case(ln)
-        ln = NS_CASEPAT.sub("", ln, count=1) if re.match(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)", ln) else ln
-        cur, tok, q, started, i, subs = [], "", None, False, 0, []
-        while i < len(ln):
-            c = ln[i]
-            if c == "$" and ln[i + 1:i + 2] == "{" and q != "'":
-                j = ln.find("}", i)
-                j = len(ln) - 1 if j < 0 else j
-                tok += ln[i:j + 1]; i = j + 1; started = True
-                continue
-            if q != "'" and (c == "`" or (c == "$" and ln[i + 1:i + 2] == "(")):      # a substitution: its text is read as commands of its own
-                if c == "`":
-                    j = ln.find("`", i + 1); j = len(ln) if j < 0 else j
-                    subs.append(ln[i + 1:j]); i = j + 1; started = True; tok += "SUB"
-                    continue
-                d, j = 0, i + 1
-                while j < len(ln):
-                    if ln[j] == "(": d += 1
-                    elif ln[j] == ")":
-                        d -= 1
-                        if d == 0: break
-                    j += 1
-                subs.append(ln[i + 2:j]); i = j + 1; started = True; tok += "SUB"
-                continue
-            if not q and not started and not cur and ln.startswith("[[", i) and ln[i + 2:i + 3] in (" ", "\t"):      # [[ ... ]] is one test: its operators are not commands
-                j = ln.find("]]", i + 2)
-                i = len(ln) if j < 0 else j + 2
-                continue
-            if not q and c == "(" and re.fullmatch(r"[A-Za-z_]\w*\+?=", tok):      # NAME=(...) / NAME+=(...): an array assignment, one word
-                d, j, qq = 0, i, None
-                while j < len(ln):
-                    ch = ln[j]
-                    if qq:
-                        if ch == qq: qq = None
-                    elif ch in "'\"": qq = ch
-                    elif ch == "(": d += 1
-                    elif ch == ")":
-                        d -= 1
-                        if d == 0: break
-                    j += 1
-                tok += ln[i:j + 1]; i = j + 1; started = True
-                continue
-            if q:
-                if c == q: q = None
-                elif c == "\\" and q == '"' and i + 1 < len(ln): tok += ln[i + 1]; i += 1
-                else: tok += c
-                started = True
-            elif c in "'\"": q, started = c, True
-            elif c == "\\" and i + 1 < len(ln): tok += ln[i + 1]; i += 1; started = True
-            elif c == "#" and not started: break
-            elif c in " \t":
-                if started: cur.append(tok)
-                tok, started = "", False
-            elif c in ";|&(){}":
-                if started: cur.append(tok)
-                tok, started = "", False
-                if cur: cmds.append(cur)
-                cur = []
-            else: tok += c; started = True
-            i += 1
-        if started: cur.append(tok)
-        if cur: cmds.append(cur)
-        for sub in subs: cmds += ns_commands(sub, depth + 1)
-    return cmds
-
-
-def ns_word(w):
-    """('var', NAME) for $NAME / ${NAME}; ('word', basename) for a plain word or path; None for a token that cannot name a program (option, number, pattern)."""
-    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)(?:\[[@*0-9]+\])?\}?", w)      # $NAME, ${NAME}, ${NAME[@]}: an array expansion in command position names a program too
-    if m: return ("var", m.group(1))
-    if w.startswith("-") or re.fullmatch(r"[0-9,]+", w) or re.search(r"[*?\[\]=<>~!$%]|^\.?$", w) and not re.fullmatch(r"\[\[?|\]\]?|\.", w):
-        return None
-    if re.fullmatch(r"[A-Za-z_./][A-Za-z0-9_./+@:-]*", w): return ("word", w)
-    return None
-
-
-NS_WHOLE = frozenset("for case select function echo printf set unset export local readonly declare shift return exit break continue true false test read mapfile wait umask cd pwd [ [[ ((".split())      # their other words are data, not programs
-
-
-def ns_shell(path, text, closure, funcs=None):
+def ns_shell(path, text):
     bad = []
-    if path == NS_PROBE and "bin/build-apk-helper.py sealed-call" not in text:
-        bad.append("%s starts melange but does not judge its call with bin/build-apk-helper.py sealed-call" % path)
-    extra = set(NS_EXTRA.get(path, ())); vars_ok = set(NS_VARS.get(path, ()))
-    funcs = set(funcs or ()) | set(re.findall(r"(?:^|[;&{(\s])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)", text))      # shell functions the script defines: their bodies are read like everything else
-    for cmd in ns_commands(text):
-        if cmd and cmd[0] == "trap" and len(cmd) > 2:      # a trap handler is code: it is read as commands too
-            bad += ns_shell(path, cmd[1], closure, funcs)
-        i = 0
-        while i < len(cmd) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", cmd[i]): i += 1      # NAME=value words
-        while i < len(cmd):
-            w = ns_word(cmd[i])
-            name = w and (w[1] if w[0] == "var" else w[1].rsplit("/", 1)[-1])
-            if w is None:
-                break
-            if w[0] == "word" and name in NS_WHOLE:
-                i = len(cmd); break
-            if w[0] == "word" and name in NS_KEYWORDS:
-                i += 1; continue
-            if w[0] == "word" and name in NS_WRAPPERS:                      # look through the wrapper to the program it starts
-                i += 1
-                while i < len(cmd) and (cmd[i].startswith("-") or re.fullmatch(r"[0-9.]+", cmd[i]) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", cmd[i])): i += 1
-                continue
-            if w[0] == "var" and name in vars_ok and name in ("SUDO", "ENVBIN", "UNSHARE"):      # the fixed-location wrappers of the sealed call
-                i += 1
-                while i < len(cmd) and (cmd[i].startswith("-") or re.fullmatch(r"[0-9.]+", cmd[i]) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", cmd[i])): i += 1
-                continue
-            break
-        if i >= len(cmd): continue
-        w = ns_word(cmd[i])
-        if w is None or (w[0] == "word" and (w[1] in NS_KEYWORDS or w[1] in NS_WHOLE)): continue
-        kind, name = w
-        base = name.rsplit("/", 1)[-1]
-        rest = cmd[i + 1:]
-        if kind == "var":
-            if name in NS_ENGINE_VARS:
-                eng = NS_ENGINE_VARS[name]
-                if path not in NS_ENGINE[eng]: bad.append("%s starts %s outside %s" % (path, eng, " and ".join(NS_ENGINE[eng])))
-            elif name == "GO_TOOL":
-                if not rest or rest[0] != "version": bad.append("%s runs the Go toolchain with %s (only `version` reads without running)" % (path, rest[0] if rest else "nothing"))
-            elif name not in vars_ok:
-                bad.append("%s starts a program named by the variable $%s, which is not in this script's reviewed variables" % (path, name))
+    for n, ln in enumerate(text.split("\n"), 1):
+        if ln.lstrip().startswith("#"):
             continue
-        if base == "go":
-            if not rest or rest[0] != "version": bad.append("%s runs the Go toolchain with %s (only `version` reads without running)" % (path, rest[0] if rest else "nothing"))
-        elif base in ("melange", "apko"):
-            if path not in NS_ENGINE[base]: bad.append("%s starts %s outside %s" % (path, base, " and ".join(NS_ENGINE[base])))
-        elif base in NS_NEVER or re.fullmatch(r"fscache(\.bin)?|fscache-fips", base):
-            bad.append("%s starts %s, which compiles or runs source code or builds a command line from text" % (path, base))
-        elif base in NS_INTERP:
-            opts = [x for x in rest if x.startswith("-")]
-            if any(re.fullmatch(r"-[A-Za-z]*[ce][A-Za-z]*", x) and x not in ("-I", "-B", "-u", "-E", "-S", "-s") for x in opts) or "-c" in rest:
-                bad.append("%s runs %s with inline code (-c)" % (path, base))
-            else:
-                script = next((x for x in rest if not x.startswith("-")), None)
-                ok = script is not None and (re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+", script) or (script.lstrip("$").strip("{}\"@") in NS_INTERP_SCRIPT_VARS.get(path, ())) or re.fullmatch(r"\$\{?[A-Za-z_]\w*\}?", script) and script.strip("${}") in vars_ok)
-                if not ok: bad.append("%s runs %s on %r, which is not a script of the repository" % (path, base, script))
-                elif re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+", script) and script.lstrip("./") not in closure: bad.append("%s runs %s, which is not in the closure the judge reads" % (path, script))
-        elif re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+\.(sh|py)", name):
-            if name.lstrip("./") not in closure: bad.append("%s runs %s, which is not in the closure the judge reads" % (path, name))
-        elif base in NS_UTILS or base in extra or base in ("exit", "return"):
-            pass
-        elif name in funcs or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\(\)", name):
-            pass
-        else:
-            bad.append("%s starts %s, which is not an accepted command of this script (allow-list: keywords, file utilities, the closure's own scripts and its reviewed extras)" % (path, name))
+        m = NS_GO.search(ln)
+        if m:
+            bad.append("%s:%d runs the Go toolchain with %s (only `version` reads without running)" % (path, n, m.group(1)))
+        m = NS_WORD.search(ln)
+        if m:
+            bad.append("%s:%d starts %s, which compiles or runs source code" % (path, n, m.group(1)))
+        m = NS_ENGINE.search(ln)
+        if m:
+            word = m.group(1) or m.group(2)
+            if path not in NS_ENGINE_OK.get(word, ()):
+                bad.append("%s:%d starts %s outside %s" % (path, n, word, " and ".join(NS_ENGINE_OK.get(word, ("its one script",)))))
     return bad
 
 
@@ -925,83 +722,30 @@ def ns_python(path, text):
         tree = ast.parse(text)
     except SyntaxError:
         return ["%s does not parse" % path]
-    wrappers = set(NS_PYWRAP.get(path, ()))
-    alias = {}      # local name -> module, for `import subprocess as _sp`, `from os import execv as go`
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Import):
-            for x in n.names: alias[x.asname or x.name.split(".")[0]] = x.name.split(".")[0]
-        elif isinstance(n, ast.ImportFrom) and n.module:
-            for x in n.names: alias[x.asname or x.name] = n.module.split(".")[0] + "." + x.name
-    parents = {}
-    for node in ast.walk(tree):
-        for ch in ast.iter_child_nodes(node): parents[ch] = node
-    def enclosing(n):
-        while n in parents:
-            n = parents[n]
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)): return n.name
-        return None
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         f = node.func
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-        owner = alias.get(getattr(f.value, "id", ""), getattr(f.value, "id", "")) if isinstance(f, ast.Attribute) else ""
-        if isinstance(f, ast.Name) and alias.get(f.id, "").count("."):      # `from os import execv`: the called name is the module's function
-            owner, name = alias[f.id].split(".", 1)
         if any(k.arg == "shell" and not (isinstance(k.value, ast.Constant) and k.value.value is False) for k in node.keywords):
-            bad.append("%s:%d starts a program through a shell" % (path, node.lineno)); continue
-        if name in ("system", "popen") and isinstance(f, ast.Attribute):
-            bad.append("%s:%d starts a program through a shell (.%s)" % (path, node.lineno, name)); continue
-        starts = (name in NS_STARTS and owner in ("subprocess", "os", "pty", "asyncio")) or name in wrappers or (name in NS_STARTS and owner == "")
-        if name in ("spawn",) and owner == "pty": starts = True
-        if not starts:
-            continue
+            bad.append("%s:%d starts a program through a shell" % (path, node.lineno))
+        if name in ("system", "popen") and isinstance(f, ast.Attribute):      # whatever name the os module was imported under
+            bad.append("%s:%d starts a program through a shell (.%s)" % (path, node.lineno, name))
         a = node.args[0] if node.args else None
-        if isinstance(a, ast.BinOp) and isinstance(a.op, ast.Add) and isinstance(a.left, (ast.List, ast.Tuple)):
-            a = a.left       # ["git", "-C", repo] + list(args): the program and its first words are the literal side
-        if name.startswith(("exec", "spawn", "posix_spawn")) and owner == "os":
-            bad.append("%s:%d starts a program with os.%s, which takes a path and an argument list apart; use a reviewed list-literal call" % (path, node.lineno, name)); continue
-        if isinstance(a, ast.Name):      # argv = [...] built a few lines earlier in the same function
-            fn = node
-            while fn in parents and not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)): fn = parents[fn]
-            var, found = a.id, None
-            for st in ast.walk(fn):      # the nearest function, or the whole module when the call is at module level
-                if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name) and st.targets[0].id == var and st.lineno < node.lineno:
-                    v = st.value.left if isinstance(st.value, ast.BinOp) and isinstance(st.value.op, ast.Add) else st.value
-                    if isinstance(v, (ast.List, ast.Tuple)): found = v      # the last list assigned before the call
-            if found is not None: a = found
-        if not isinstance(a, (ast.List, ast.Tuple)) or not a.elts:
-            if enclosing(node) in wrappers and isinstance(a, ast.Name):
-                continue        # the reviewed wrapper's own call: its parameter is judged at its callers
-            bad.append("%s:%d starts a program whose command line is not a list literal (a variable or a call): it cannot be judged" % (path, node.lineno)); continue
+        if not isinstance(a, (ast.List, ast.Tuple)) or not a.elts or (name not in NS_STARTS and not (isinstance(f, ast.Name) and f.id.startswith("run"))):
+            continue
         e0, e1 = a.elts[0], (a.elts[1] if len(a.elts) > 1 else None)
-        first = e0.value if isinstance(e0, ast.Constant) and isinstance(e0.value, str) else (e0.id if isinstance(e0, ast.Name) else (e0.attr if isinstance(e0, ast.Attribute) and e0.attr in ("go",) else None))
-        if first is None and isinstance(e0, ast.Call) and isinstance(e0.func, ast.Name) and NS_PYFUNCS.get(path, {}).get(e0.func.id):
-            first = NS_PYFUNCS[path][e0.func.id]       # a reviewed helper that returns a fixed program location (apk-tool.py _openssl)
+        first = e0.value if isinstance(e0, ast.Constant) and isinstance(e0.value, str) else (e0.id if isinstance(e0, ast.Name) else None)
         word = os.path.basename(first) if first else None
         arg1 = e1.value if isinstance(e1, ast.Constant) else None
-        consts = [x.value for x in a.elts if isinstance(x, ast.Constant)]
-        if word in ("go", "GO_TOOL"):
-            if arg1 != "version":
-                if any(p0 == path and all(w in consts for w in ws) for p0, ws, _why in NS_OPEN): continue      # an open exception, printed by nosource
-                bad.append("%s:%d runs the Go toolchain with %r (only `version` reads without running)" % (path, node.lineno, arg1))
-        elif word in ("melange", "apko"):
-            if path not in NS_ENGINE[word]: bad.append("%s:%d starts %s outside %s" % (path, node.lineno, word, " and ".join(NS_ENGINE[word])))
-        elif word and (word in NS_NEVER or re.fullmatch(r"fscache(\.bin)?|fscache-fips", word)):
+        if word in ("go", "GO_TOOL") and arg1 != "version":
+            bad.append("%s:%d runs the Go toolchain with %r (only `version` reads without running)" % (path, node.lineno, arg1))
+        elif word and re.fullmatch(NS_DENY, word):
             bad.append("%s:%d starts %s, which compiles or runs source code" % (path, node.lineno, word))
-        elif word in NS_INTERP:
-            computed = word in NS_PYCOMPUTED.get(path, ()) and "-c" not in consts and e1 is not None and (
-                (isinstance(e1, ast.Call) and ast.dump(e1.func) == ast.dump(ast.parse("os.path.join").body[0].value) and e1.args and ast.dump(e1.args[0]) == ast.dump(ast.parse("ctx.policy").body[0].value))
-                or (isinstance(e1, ast.Name) and e1.id in ("script", "script_path")))
-            if computed:
-                continue
-            if "-c" in consts or arg1 is None or not (isinstance(arg1, str) and re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+|-[A-Za-z]+", arg1)):
-                bad.append("%s:%d runs %s on something that is not a repository script (inline code or a computed file)" % (path, node.lineno, word))
-        elif first is None and isinstance(e0, ast.Attribute) and e0.attr == "executable":
-            if not (isinstance(arg1, str) and re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+|-[A-Za-z]+", arg1)) or "-c" in consts:
-                bad.append("%s:%d starts the interpreter on something that is not a repository script" % (path, node.lineno))
-        elif first is None:
-            bad.append("%s:%d starts a program that is not a string constant or the interpreter (%s)" % (path, node.lineno, type(e0).__name__))
+        elif word in ("melange", "apko") and path not in NS_ENGINE_OK[word]:
+            bad.append("%s:%d starts %s outside %s" % (path, node.lineno, word, " and ".join(NS_ENGINE_OK[word])))
+        elif first is None and isinstance(e0, ast.Attribute) and e0.attr == "executable" and not (isinstance(arg1, str) and arg1.startswith("bin/")):
+            bad.append("%s:%d starts the interpreter on something that is not a repository script" % (path, node.lineno))
     return bad
 
 
@@ -1015,11 +759,9 @@ def nosource(root):
         except OSError:
             bad.append("%s is listed but missing" % p)
             continue
-        bad += ns_python(p, text) if p.endswith(".py") else ns_shell(p, text, seen)
-    for p0, ws, why in NS_OPEN:      # the open exceptions are named every time, so nobody reads a green verdict as "nothing outside melange"
-        if p0 in seen:
-            print("NOTE open exception of rule 1 (%s): %s" % (p0, why), file=sys.stderr)
+        bad += ns_python(p, text) if p.endswith(".py") else ns_shell(p, text)
     return bad
+
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml",

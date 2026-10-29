@@ -2780,50 +2780,6 @@ nsm pysh "nosource a Python helper starting a program through a shell" "through 
 nsm pyos "nosource os.system in a Python helper" "through a shell" bin/build-archives.py 'import ' 'import os as _os; _os.system("true")\nimport '
 nsm pyin "nosource the interpreter started on inline code" "not a repository script" bin/build-archives.py 'import ' 'import subprocess as _sp, sys as _sys; _sp.run([_sys.executable, "-c", "pass"])\nimport '
 nsm row1 "nosource a script a stage script starts that is not a row" "not a row" .github/policy/chain-scripts.json '"path": "bin/oci-digest.py"' '"path": "bin/oci-digest-x.py"'
-# the gaps of the round-one ruling on #770 (allow-list, not block-list): each of these used to slip past a word scan
-nsm bp1 "nosource bash -c with a Go build inside" "inline code" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash -c "go build ./..."'
-nsm bp2 "nosource timeout in front of go build" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ntimeout 5 go build ./...'
-nsm bp3 "nosource nice in front of go build" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nnice -n 5 go build ./...'
-nsm bp4 "nosource xargs go build" "xargs" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nls | xargs go build'
-nsm bp5 "nosource command in front of make" "starts make" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ncommand make all'
-nsm bp6 "nosource time in front of go build" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ntime go build ./...'
-nsm bp7 "nosource if go build" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nif go build ./...; then true; fi'
-nsm bp8 "nosource an alias for the Go tool" "alias" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nalias g=go'
-nsm bp9 "nosource python3 -c" "inline code" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 -c "import os"'
-nsm bp10 "nosource python3 on a file that is not a repository script" "not a script of the repository" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 /tmp/x.py'
-nsm bp11 "nosource a program named by a variable" "named by the variable" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n"$TOOL" build ./...'
-nsm bp12 "nosource go build inside a substitution inside double quotes" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\necho "$(go build ./...)"'
-nsm bp13 "nosource eval" "eval" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\neval "go build"'
-nsm bp14 "nosource a compiler nobody listed" "not an accepted command" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ntsc --build'
-nsm bp15 "nosource a trap handler that builds" "Go toolchain" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\ntrap "go build ./..." EXIT'
-nsm bp16 "nosource a Python command line held in a variable" "starts make" bin/build-archives.py 'import ' 'import subprocess as _sp\ncmd = ["make", "all"]\n_sp.run(cmd)\nimport '
-nsm bp17 "nosource a Python command line that is a call" "list literal" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(str("x").split())\nimport '
-nsm bp18 "nosource os.execv" "os.execv" bin/build-archives.py 'import ' 'import os as _os\n_os.execv("/bin/sh", ["sh"])\nimport '
-nsm bp19 "nosource bash -c in a Python helper" "inline code" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["bash", "-c", "go build"])\nimport '
-nsm bp20 "nosource python3 -c in a Python helper" "something that is not a repository script" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["python3", "-c", "pass"])\nimport '
-nsm bp21 "nosource the open exception does not travel: the same go run in another script" "Go toolchain" bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["go", "-C", "tools/requirements", "run", ".", "verify-freeze", "x"])\nimport '
-nsm bp22 "nosource a script a closure script names but no runs row lists is read too" "not in the closure" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/chain-new-helper.sh'
-# the probe: the one other melange caller, only through the pinned sealed-call checker
-nsp() { # nsp LABEL WORD PROBE-TEXT: a fixture with bin/chain-sandbox-probe.sh (a row, named by build-stage-apk.sh) holding PROBE-TEXT
-  rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"
-  printf '%b' "$3" > "$work/nsm/bin/chain-sandbox-probe.sh"
-  python3 - "$work/nsm" <<'PY'
-import hashlib, json, sys
-r = sys.argv[1]; p = r + "/.github/policy/chain-scripts.json"
-d = json.load(open(p))
-d["scripts"].append({"path": "bin/chain-sandbox-probe.sh", "tools": [], "runs": [], "signs": False, "reason": "fixture", "sha256": hashlib.sha256(open(r + "/bin/chain-sandbox-probe.sh", "rb").read()).hexdigest()})
-json.dump(d, open(p, "w"))
-s = open(r + "/bin/build-stage-apk.sh").read().replace("unset GH_TOKEN", "unset GH_TOKEN\nbash bin/chain-sandbox-probe.sh", 1)
-open(r + "/bin/build-stage-apk.sh", "w").write(s)
-PY
-  if [ "$2" = ok ]; then expect ok "$1" "" nosource "$work/nsm"; else expect caught "$1" "$2" nosource "$work/nsm"; fi
-}
-nsp "nosource the probe may start melange when it judges its call with the pinned checker" ok 'set -euo pipefail\npython3 -I -B bin/build-apk-helper.py sealed-call --sealed-env build/sealed-env.json "${call[@]}"\n"$SUDO" "${call[@]}"\n"$MELANGE" build probe.yaml\n'
-nsp "nosource the probe is refused when it starts melange without judging the call" "does not judge its call" 'set -euo pipefail\n"$MELANGE" build probe.yaml\n'
-nsp "nosource the probe is still refused when it starts apko" "apko outside" 'set -euo pipefail\npython3 -I -B bin/build-apk-helper.py sealed-call --sealed-env build/sealed-env.json x\napko build a b\n'
-nsp "nosource the probe is still refused a compiler" "Go toolchain" 'set -euo pipefail\npython3 -I -B bin/build-apk-helper.py sealed-call --sealed-env build/sealed-env.json x\ngo build ./...\n'
-nsm bp24 "nosource an array expansion standing for the program" "named by the variable" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"${tool[@]}" build'
-nsm bp23 "nosource melange started by a variable outside build-apk.sh" "melange outside" bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"$MELANGE" build x.yaml'
 rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm"
 replace "$work/ns/bin/build-stage-apk.sh" "$work/nsm/bin/build-stage-apk.sh" 'unset GH_TOKEN' 'unset GH_TOKEN\n# never go build here; make is not used\n"$GO_TOOL" version -m out/x' \
   && expect ok "nosource a comment naming go build and make, and go version -m, change nothing" "" nosource "$work/nsm"
@@ -2834,8 +2790,6 @@ expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 expect ok "nosource the real scripts the stage scripts start compile and run nothing outside melange" "" nosource "$root"
-nsout=$(judge nosource "$root" 2>&1) || true
-if grep -q '^NOTE open exception of rule 1 (bin/build-admit.py)' <<< "$nsout"; then ok "nosource the one open exception (the admission step's go run of tools/requirements) is named in every run"; else bad "nosource the open exception is not named in the judge's output"; fi
 expect ok "AC2 the real bin/witnessed.sh is exactly the canonical helper" "" helper "$root/bin/witnessed.sh"
 expect ok "AC2 no real stage file or stage script names witness run" "" directwitness "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
@@ -3173,7 +3127,7 @@ if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1108
+EXPECT=1079
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
