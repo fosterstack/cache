@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 102 |
-| Acceptance criteria | 510 |
-| Release-blocking ACs | 131 |
-| ACs with mapped evidence | 500 |
-| Release-blocking ACs with mapped evidence | 131 |
+| Acceptance criteria | 511 |
+| Release-blocking ACs | 132 |
+| ACs with mapped evidence | 501 |
+| Release-blocking ACs with mapped evidence | 132 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 49 |
 | Confidence: implementation-only | 52 |
@@ -1532,6 +1532,7 @@ The production and FIPS images shall be assembled by apko in one offline run for
 | REQ-IMAGE-001-AC10 | Given bin/assemble-image.sh, bin/lock-proof.sh or bin/sealed-proof.sh; when it is started from a working directory that is not the repository root; then it exits 2 naming the repository root (lock-proof.sh and sealed-proof.sh with a usage line saying to run it from there) before any tool; assemble-image.sh names its helpers (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py) by literal repository-relative paths, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no python3 heredoc, builds no command word by substitution, and has no --apko-config, --base-lock, --render-dir, --index-record or --key-record option at all (each is refused as an unknown option, in every mode): those inputs are read only from their committed repository paths, and tests run the same script against a fixture repository root | unit |  | approved | 2 item(s) |
 | REQ-IMAGE-001-AC11 | Given assemble-image.sh run twice with the same archive, melange repository, keyring, committed config and base lock, and the same SOURCE_DATE_EPOCH; when both runs have finished; then the two OUT directories are byte-identical: the same file names and the same bytes in every file of the layout directory, the digest, the manifests, the full lock and the SBOM, whether apko wrote the standard layout or its own tar shape | unit |  | approved | 1 item(s) |
 | REQ-IMAGE-001-AC12 | Given any of bin/assemble-image.sh, bin/lock-proof.sh, bin/sealed-proof.sh or bin/apko-lock.sh; when it runs; then every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3) | unit |  | approved | 1 item(s) |
+| REQ-IMAGE-001-AC13 | Given the non-test Go code of the cache, and the linked fscache binary; when bin/check-no-outbound.py reads the source, and lists the binary's symbols (go tool nm: the linker keeps only what main can reach); then the source imports no HTTP client and dials no address, and the binary holds none of net/http.(*Client).do, net/http.(*Transport).roundTrip, net.Dial, net.DialTimeout, net.(*Resolver).LookupHost or crypto/tls.Dial, so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials through net.Dialer alone, or through a symbol not listed, is not caught by the binary check, and the source scan covers our own code only | unit | yes | approved | 1 item(s) |
 
 ## GUIDE
 

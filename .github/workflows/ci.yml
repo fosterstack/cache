@@ -59,6 +59,8 @@ jobs:
         run: bash bin/vendor-check.sh
       - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)
         run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json
+      - name: the cache's own code and the built binary have no HTTP client and no outbound dial (REQ-IMAGE-001-AC13)
+        run: bash bin/check-no-outbound-test.sh
 
   # test-strategy.md §6: the coverage RATCHET. Fails when total statement
   # coverage of non-excluded Go code drops below the committed floor

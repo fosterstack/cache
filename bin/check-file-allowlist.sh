@@ -265,6 +265,9 @@ ALLOW_PATTERNS=(
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
+  # the outbound-code check (0710 item 4): the module's non-test code has no HTTP client and dials nothing
+  '^bin/check-no-outbound\.py$'
+  '^bin/check-no-outbound-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
