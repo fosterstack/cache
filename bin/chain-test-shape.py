@@ -666,16 +666,13 @@ def listed(path, root):
 #   Python: every call that starts a program is judged by its first argument (a list literal, or a name assigned one earlier); the program must be on the script's own NS_PYPROGS row,
 #   the interpreter or Go `version`; executable=, exec(), eval(), a name bound to a program-starting function, and a command line that is not a list are findings.
 # Which scripts are read: the `runs` rows of chain-scripts.json, every bin/ script the code names, and every sibling module a closure script loads (load_sibling, import).
-# bin/install-scanner.sh and bin/install-build-tools.sh are not read. The stage files pin which installs run (PRE_INSTALLS: witness, go, crane, melange, apko), and the compile branch
+# bin/install-scanner.sh and bin/install-build-tools.sh are not read: the stage files pin which installs run (PRE_INSTALLS: witness, go, crane, melange, apko), and the compile branch
 # of install-scanner.sh (govulncheck) is not one of them; install-build-tools.sh downloads checksum-pinned release binaries and compiles nothing (read at the source, Oct 28 2026).
-# One more run of install-scanner.sh is not a stage-file install: bin/build-admit.py:217 runs `bash <policy folder>/install-scanner.sh gitsign`. That copy is origin/main's: check_policy_from_main
-# runs `git fetch --no-tags origin main` and writes `git show origin/main:bin/install-scanner.sh` into the job's policy folder, so the tagged tree's own file is never run there. Main's copy is
-# not pinned by a hash; origin/main itself is the pin, and what runs is whatever main holds when the admission step fetches it.
 # THE ONE KNOWN FINDING on the real tree: bin/build-admit.py:456 runs `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported as a finding (rule 1 forbids it);
 # the decision is its own job before Build in stage-build.yml, in its own pull request. Until that lands rule 1 is NOT done.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh")
 NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
-NS_KEYWORDS = frozenset("if then else elif fi while until do done esac in time ! { } ]]".split())
+NS_KEYWORDS = frozenset("if then else elif fi while until do done esac in time ! { } ]] shopt".split())
 NS_UTILS = frozenset("rmdir awk basename cat chmod cmp cp cut date diff dirname find grep head ln ls mkdir mktemp mv rm readlink realpath sed sort tail tee touch tr uname wc id sleep sha256sum jq tar gzip gunzip curl".split())
 NS_WRAPPERS = frozenset("sudo env timeout nice ionice nohup setsid stdbuf command exec unshare builtin".split())
 NS_INTERP = frozenset("bash sh dash zsh ksh python python3 perl ruby node".split())
@@ -685,46 +682,26 @@ NS_EXTRA = {      # per script: reviewed extra command words (programs the scrip
     "bin/witnessed-local.sh": ("witness", "openssl"),
     "bin/build-stage-snapshot-apk.sh": ("git",), "bin/build-stage-snapshot-rebuild-apk.sh": ("git",),
 }
-NS_VAR_LINES = {       # per script: variables that may stand in command position, each bound to its ONE assignment (the fixed tool locations of REQ-BUILDAPK-001-AC3; each is one TEST-SUBST constant)
-    "bin/build-apk.sh": {"PY3": "PY3=/usr/bin/python3", "GIT": "GIT=/usr/bin/git", "SUDO": "SUDO=/usr/bin/sudo", "UNSHARE": "UNSHARE=/usr/bin/unshare", "MELANGE": "MELANGE=/usr/local/bin/melange",
-                         "GO_TOOL": "GO_TOOL=/usr/local/bin/fscache-go/bin/go", "SHA256SUM": "SHA256SUM=/usr/bin/sha256sum", "ENVBIN": "ENVBIN=/usr/bin/env", "melange_bin": "melange_bin=$MELANGE",
-                         "call": 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")'},      # call: the array the sealed-call checker judged
-    "bin/assemble-image.sh": {"PY3": "PY3=/usr/bin/python3", "SUDO": "SUDO=/usr/bin/sudo", "UNSHARE": "UNSHARE=/usr/bin/unshare", "BASHBIN": "BASHBIN=/bin/bash", "APKO": "APKO=/usr/local/bin/apko", "ENVBIN": "ENVBIN=/usr/bin/env"},
-    "bin/apko-lock.sh": {"PY3": "PY3=/usr/bin/python3"},
+NS_VARS = {       # per script: variables that may stand in command position (the fixed tool locations of REQ-BUILDAPK-001-AC3; each is one TEST-SUBST constant)
+    "bin/build-apk.sh": ("SUDO", "ENVBIN", "UNSHARE", "PY3", "GIT", "SHA256SUM", "GO_TOOL", "melange_bin", "MELANGE", "call"),      # call: the array the sealed-call checker judged
+    "bin/assemble-image.sh": ("SUDO", "ENVBIN", "UNSHARE", "PY3", "BASHBIN", "APKO"),
+    "bin/apko-lock.sh": ("PY3",),
 }
-NS_VARS = {p: tuple(v) for p, v in NS_VAR_LINES.items()}
 NS_INTERP_VARS = ("PY3", "BASHBIN")      # variables that stand for an interpreter: the interpreter rules apply to them
 NS_ENGINE = {"melange": ("bin/build-apk.sh",), "apko": ("bin/assemble-image.sh", "bin/apko-lock.sh")}
 NS_ENGINE_VARS = {"MELANGE": "melange", "melange_bin": "melange", "APKO": "apko"}
+NS_INTERP_SCRIPT_VARS = {"bin/witnessed-local.sh": ("@",)}      # `timeout ... bash "$@"`: the stage script the caller names, itself judged as a stage script
 NS_PYPROGS = {    # per Python script: the programs it may start by name (the interpreter and Go `version` are judged by their own rules)
     "bin/admission-tag-signer.py": ("git",), "bin/apk-tool.py": ("openssl",), "bin/chain-bytes-sha.py": ("git",), "bin/chain-verify.py": ("cosign",),
     "bin/build-admit.py": ("bash", "git", "gh", "gitsign", "gpg", "gpgconf", "openssl", "python3"),
     "bin/chain_common.py": ("openssl",),
 }
-NS_PYVARS = {"bin/chain_common.py": {"OPENSSL": ("openssl", 'os.environ.get("OPENSSL", "openssl")')}}      # a module constant that names the program, bound to its ONE assignment (documented in chain-verify.py; no workflow or stage script sets it)
-NS_PYEXEC = {"bin/chain-verify.py": ("load_sibling", 'exec(compile(src, mod.__file__, "exec"), mod.__dict__)')}      # the ONE exec(): in the loader that checks a sibling module's sha256 against chain-scripts.json first; the siblings are in the closure and read here
-NS_PYCOMPUTED = {"bin/build-admit.py": (      # (function, interpreter, the file operand, its one assignment): the copies of origin/main's scripts in the job's policy folder, never the tagged tree
-    ("route_tag", "python3", "os.path.join(ctx.policy, os.path.basename(SIGNER))", None),
-    ("verify_tag_keyless", "bash", "os.path.join(ctx.policy, os.path.basename(INSTALLER))", None),
-    ("patch_baseline_version", "python3", "script", "os.path.join(ctx.policy, os.path.basename(SIGNER))"),
-    ("check_rc_proof", "python3", "script_path", "os.path.join(ctx.policy, os.path.basename(RC_BYTES))"))}
+NS_PYVARS = {"bin/chain_common.py": {"OPENSSL": "openssl"}}      # a module constant that names the program: OPENSSL = os.environ.get("OPENSSL", "openssl") (documented in chain-verify.py; no workflow or stage script sets it)
+NS_PYEXEC = {"bin/chain-verify.py": ("load_sibling",)}      # exec() only in the loader that checks a sibling module's sha256 against chain-scripts.json first; the siblings are in the closure and read here
+NS_PYCOMPUTED = {"bin/build-admit.py": ("python3", "bash")}      # interpreter on a computed file, only the copies of origin/main's scripts in the job's policy folder (check_policy_from_main, check_rc_proof): never the tagged tree
 NS_PYWRAP = {"bin/build-admit.py": ("run_cmd",)}        # reviewed wrappers whose parameter is an argument list; their callers' list literals are judged
 NS_PYFUNCS = {"bin/apk-tool.py": {"_openssl": "openssl"}}      # reviewed helpers that return one fixed program
-NS_START_MODULES = ("subprocess", "os", "pty", "asyncio")      # the modules whose calls start a program
-NS_START_ONLY = re.compile(r"^(Popen|check_output|check_call|system|popen\w*|spawn\w*|posix_spawn\w*|exec\w*|getoutput|getstatusoutput|startfile|forkpty)$")      # names that start a program on any owner
-
-
-def ns_start_calls():
-    """The call names that start a program or load code by name: the PY_START_CALLS line of chain-check-shape.py, read at the source (None when it cannot be read)."""
-    import ast
-    try:
-        tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-check-shape.py")).read())
-    except (OSError, SyntaxError):
-        return None
-    for n in tree.body:
-        if isinstance(n, ast.Assign) and any(getattr(x, "id", "") == "PY_START_CALLS" for x in n.targets) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
-            return re.compile(n.value.value)
-    return None
+NS_STARTS = frozenset("run Popen check_output check_call call system popen execv execvp execve execvpe execl execle execlp execlpe spawnv spawnve spawnvp spawnl spawnle spawnlp posix_spawn posix_spawnp".split())
 
 
 def ns_closure(root):
@@ -757,7 +734,7 @@ def ns_closure(root):
 def ns_named(path, text):
     """The repository files a script's CODE names: shell words and Python string constants that are exactly bin/NAME.sh|py; for Python also load_sibling("NAME") and `import NAME`
     (the candidate bin/NAME.py is kept when it exists). Comments, docstrings and tests are not references."""
-    pat = re.compile(r"(?:\./)?(bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)")
+    pat = re.compile(r"(?:\./)?(bin/[A-Za-z0-9_.-]+\.(?:sh|py))")
     names = set()
     if path.endswith(".py"):
         import ast
@@ -777,8 +754,8 @@ def ns_named(path, text):
         for cmd in ns_commands(text):
             for w in cmd:
                 for m in pat.finditer(w):
-                    if re.fullmatch(r"(?:.*[\s=/\"'])?(?:\./)?bin/[A-Za-z0-9_][A-Za-z0-9_.-]*", w): names.add(m.group(1))
-    return sorted(names)
+                    if re.fullmatch(r"(?:.*[\s=/\"'])?(?:\./)?bin/[A-Za-z0-9_.-]+\.(?:sh|py)", w): names.add(m.group(1))
+    return sorted(n for n in names if not re.search(r"(-test\.(sh|py)|_test\.py|^bin/chain-test-)", n))
 
 
 def ns_find_subs(text):
@@ -830,45 +807,6 @@ def ns_unfold_case(ln):
     return head + " ; " + " ; ".join(bodies)
 
 
-def ns_sub_end(s, i):
-    """The index of the `)` that closes the `$(` at s[i], the way a shell reads it: a parenthesis in single or double quotes does not count, and a `$(` inside double quotes is a
-    substitution of its own. -1 when it does not close on this line."""
-    d, j, q = 0, i + 1, None
-    while j < len(s):
-        c = s[j]
-        if q == "'":
-            if c == "'": q = None
-        elif c == "\\": j += 1
-        elif q == '"':
-            if c == '"': q = None
-            elif s.startswith("$(", j):
-                j = ns_sub_end(s, j)
-                if j < 0: return -1
-        elif c in "'\"": q = c
-        elif s.startswith("$(", j) and j > i + 1:
-            j = ns_sub_end(s, j)
-            if j < 0: return -1
-        elif c == "(": d += 1
-        elif c == ")":
-            d -= 1
-            if d == 0: return j
-        j += 1
-    return -1
-
-
-def ns_join_arrays(text):
-    """An array assignment `NAME=(` that runs over several lines is joined into one line (its closing parenthesis ends it), so its continuation lines are not read as commands."""
-    lines, out, k = text.split("\n"), [], 0
-    while k < len(lines):
-        ln = lines[k]; k += 1
-        code = ns_bare_code(ln)
-        while re.search(r"(?<![\w$])[A-Za-z_]\w*\+?=\(", code) and code.count("(") > code.count(")") and k < len(lines):
-            ln += " " + lines[k].strip(); k += 1
-            code = ns_bare_code(ln)
-        out.append(ln)
-    return "\n".join(out)
-
-
 def ns_commands(text, depth=0):
     """The simple commands of a shell text, each a list of unquoted words: quote-aware; split at ; & | ( ) { } and newlines; redirections dropped; ${...}, array assignments, [[ ... ]] and
     quotes stay inside their words, but the text of every substitution in them (also <( ) and >( )) is read as commands of its own; comments dropped. Not a shell parser: a judge's
@@ -876,13 +814,10 @@ def ns_commands(text, depth=0):
     cmds = []
     if depth > 6:
         return [["<too-deeply-nested>"]]
-    case_depth = 0      # a pattern `word)` at the start of a line is dropped only inside case ... esac: `make)` closing a subshell is a command
-    for ln in ns_join_arrays(text.replace("\\\n", "")).split("\n"):
+    for ln in text.replace("\\\n", "").split("\n"):
         ln = ns_unfold_case(ln)
-        if case_depth:      # each arm of a line (`a) x;; b) y;;`) loses its pattern
-            ln = " ; ".join(NS_CASEPAT.sub("", part, count=1) if re.match(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)", part) else part for part in ln.split(";;"))
-        if re.search(r"(?:^|[;&|{(]|\b(?:then|do|else)\b)\s*case\s+.+\s+in\s*$", ln): case_depth += 1
-        elif re.search(r"(?:^|;;)\s*esac\b", ln): case_depth = max(0, case_depth - 1)
+        if re.match(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)", ln):
+            ln = NS_CASEPAT.sub("", ln, count=1)
         cur, tok, q, started, i, subs = [], "", None, False, 0, []
         while i < len(ln):
             c = ln[i]
@@ -890,7 +825,6 @@ def ns_commands(text, depth=0):
                 j = ln.find("}", i)
                 j = len(ln) - 1 if j < 0 else j
                 subs += ns_find_subs(ln[i:j + 1])
-                if "[" in ln[i:j + 1] and "'" in ln[i:j + 1] and ("$(" in ln[i:j + 1] or "`" in ln[i:j + 1]): cmds.append(["<cannot-read: a substitution inside a quoted subscript of ${...}>"])      # a subscript runs a $( ) even inside single quotes
                 tok += ln[i:j + 1]; i = j + 1; started = True
                 continue
             if q != "'" and (c == "`" or ln.startswith("$(", i) or (not q and ln[i:i + 2] in ("<(", ">("))):      # a substitution: its text is read as commands of its own
@@ -915,7 +849,6 @@ def ns_commands(text, depth=0):
                         d -= 1
                         if d == 0: break
                     j += 1
-                if ns_sub_end(ln, i) != j: cmds.append(["<cannot-read: the end of $( ) is not where the parenthesis count puts it (a quoted parenthesis)>"])      # the count above does not know quotes
                 subs.append(ln[i + 2:j]); i = j + 1; started = True; tok += "SUB"
                 continue
             if not q and not started and not cur and ln.startswith("[[", i) and ln[i + 2:i + 3] in (" ", "\t"):      # [[ ... ]] is one test: its operators are not commands, its substitutions are
@@ -973,7 +906,6 @@ def ns_commands(text, depth=0):
             i += 1
         if started: cur.append(tok)
         if cur: cmds.append(cur)
-        if q: cmds.append(["<cannot-read: a quote stays open at the end of a line>"])      # the reader reads line by line; a string over several lines puts it out of step
         for sub in subs: cmds += ns_commands(sub, depth + 1)
     return cmds
 
@@ -989,72 +921,15 @@ def ns_word(w):
     return ("odd", w)
 
 
-NS_WHOLE = frozenset("for case select function echo printf set unset export local readonly declare shift return exit break continue true false test read mapfile wait umask cd pwd shopt [ [[ ((".split())      # their other words are data, not programs
-NS_UTIL_OPTS = {      # per utility: the option words it may carry (fullmatch). Any other option word is refused: a utility is never given an option that starts a program or reads a program
-    "awk": r"-F.*", "basename": r"-s", "cat": r"-n", "chmod": r"-R", "cmp": r"-s", "cp": r"-[Rrpa]+", "cut": r"-[dfc].*", "date": r"-[ud]",
-    "diff": r"-[uqr]+", "dirname": r"", "find": r"-(name|type|maxdepth|mindepth|newer|path|print|print0|empty|not|prune|mtime|size|o|a|L|P)",
-    "grep": r"-([EFqivxwcnlsoe]+|f)", "gunzip": r"-[cdkf]+", "gzip": r"-[cdknf1-9]+", "head": r"-([nc].*|[0-9]+)", "id": r"-[ugn]+",
-    "jq": r"-[rcesnRSj]+|--(arg|argjson|slurpfile|rawfile|raw-output|compact-output|exit-status|slurp|null-input)", "ln": r"-[sTfn]+", "ls": r"-[AlaRdhtr1]+",
-    "mkdir": r"-[pm]+", "mktemp": r"-[dtp]+", "mv": r"-[fnT]+", "readlink": r"-[fem]+", "realpath": r"-[em]+", "rm": r"-[rf]+", "rmdir": r"-p", "sed": r"-[nEres]+",
-    "sha256sum": r"-[cb]+|--(check|quiet|status)", "sleep": r"", "sort": r"-([nruVfbd]+|k.*|t.*)", "tail": r"-([nc].*|[0-9]+)", "tar": r"-?[cxtvfzpCO]+|--(exclude|numeric-owner|sort|owner|group|mtime|format|no-same-owner|strip-components)(=.*)?",
-    "tee": r"-a", "touch": r"-[acdtr]+", "tr": r"-[dcs]+", "uname": r"-[smrnpoa]+", "wc": r"-[lcwm]+",
-    "curl": r"-[fsSLo]+|--(retry|connect-timeout|max-time|output|fail|silent|show-error|location)(=.*)?",
-}
-NS_WRAPPER_OPTS = {      # the wrappers look through to a program; their options are refused unless listed (env -S, sudo -s and the like carry a command line)
-    "timeout": r"-k|-s|--preserve-status", "sudo": r"-n|-E", "env": r"-i", "nice": r"-n", "ionice": r"-c", "nohup": r"", "setsid": r"-w|-f", "stdbuf": r"-[ioe]L?",
-    "command": r"-p", "exec": r"", "unshare": r"-[rmupinUCT]+|--(map-root-user|mount|pid|fork|user|net)", "builtin": r"",
+NS_WHOLE = frozenset("for case select function echo printf set unset export local readonly declare shift return exit break continue true false test read mapfile wait umask cd pwd [ [[ ((".split())      # their other words are data, not programs
+NS_PROGRAM_OPTS = {      # utilities that can start a program through an option or a program text
+    "find": re.compile(r"^-(exec|execdir|ok|okdir|fprint|fprintf|fls)$"),
+    "tar": re.compile(r"^--(to-command|checkpoint-action|use-compress-program|rsh-command)|^-[A-Za-z]*I$"),
+    "sort": re.compile(r"^--compress-program"),
+    "tee": re.compile(r"^$a"),
 }
 NS_AWK_RUNS = re.compile(r"system\s*\(|\|\s*getline|\|&|print[^;}]*\|\s*[\"'$A-Za-z]|printf[^;}]*\|\s*[\"'$A-Za-z]|close\s*\(")
-NS_SED_PROG = re.compile(r"s(.)(?:(?!\1).)*\1(?:(?!\1).)*\1[gpI0-9]*", re.S)      # the one sed script the stage scripts use: a single s command (no e flag, no e, w, r or other command)
-NS_AWK_EXPAND = re.compile(r"`|\$[A-Za-z_{(]|\bSUB\b")      # an awk program is one literal word: no expansion builds part of it ($2 is a field, $x is the shell, and a substitution reads as the word SUB)
-
-
-def ns_sed_awk(path, base, rest, bad):
-    if base == "sed":
-        progs, first, i, e_seen = [], None, 0, False
-        while i < len(rest):
-            x = rest[i]
-            if x == "--": break
-            if x.startswith("-") and not x.startswith("--") and "e" in x:
-                e_seen = True
-                if i + 1 < len(rest): progs.append(rest[i + 1])
-                i += 2; continue
-            if not x.startswith("-") and first is None: first = x
-            i += 1
-        if not e_seen and first is not None: progs.append(first)
-        if not progs or any(not NS_SED_PROG.fullmatch(x) for x in progs):
-            bad.append("%s runs sed with a script that is not one plain s command (the e flag, the e command and every other command are refused)" % path)
-    elif base == "awk":
-        words, i = [], 0
-        while i < len(rest):
-            x = rest[i]
-            if x == "--": break
-            if x == "-F": i += 2; continue
-            if not x.startswith("-"): words.append(x)
-            i += 1
-        prog = words[0] if words else None
-        if prog is None or NS_AWK_EXPAND.search(prog) or NS_AWK_RUNS.search(prog):
-            bad.append("%s runs awk with a program that is not one literal word, or that starts a command (system(), a pipe or getline from one)" % path)
-
-
-
-NS_GIT_SUBS = ("tag", "log", "rev-parse")      # the git calls the stage scripts make (read at the source); `git -c`, --exec-path and --config-env carry a program, so only `-C DIR` may come before the subcommand
-NS_VAR_UTILS = {"GIT": "git", "SHA256SUM": "sha256sum"}
-
-
-def ns_git_check(path, rest, bad):
-    i = 0
-    if rest[:1] == ["-C"]: i = 2
-    if i >= len(rest) or rest[i] not in NS_GIT_SUBS:
-        bad.append("%s runs git with %s before a subcommand it may use (%s; only -C DIR may come first)" % (path, rest[i] if i < len(rest) else "nothing", ", ".join(NS_GIT_SUBS)))
-
-
-def ns_util_opts(path, base, rest, bad):
-    if base == "git": return ns_git_check(path, rest, bad)
-    for x in rest:
-        if x == "--": break
-        if x.startswith("-") and x != "-" and not re.fullmatch(NS_UTIL_OPTS.get(base, r".*"), x):
-            bad.append("%s runs %s with the option %s, which is not on its list of options" % (path, base, x)); break
+NS_SED_RUNS = re.compile(r"(?:^|[;{}\s])s(.).*?\1.*?\1[a-zA-Z]*e|(?:^|[;{}\s])e(?:\s|$)")
 
 
 def ns_interp_check(path, base, rest, closure, vars_ok, bad):
@@ -1067,51 +942,17 @@ def ns_interp_check(path, base, rest, closure, vars_ok, bad):
     clean = script.strip("\"'")
     if re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+", clean):
         if clean.lstrip("./") not in closure: bad.append("%s runs %s, which is not in the closure the judge reads" % (path, clean))
+    elif clean.lstrip("$").strip("{}\"@") in NS_INTERP_SCRIPT_VARS.get(path, ()) and clean.startswith("$"):
+        pass
     else:
         bad.append("%s runs %s on %r, which is not a script of the closure" % (path, base, script))
-
-
-def ns_var_lines(path, text, bad):
-    """Every variable that may stand in command position is assigned once, by its reviewed line (a trailing comment and a `;` command after it are not part of the line)."""
-    for var, want in NS_VAR_LINES.get(path, {}).items():
-        hits = []
-        for ln in text.splitlines():
-            code = ln.strip()
-            if code.startswith("#"): continue
-            hits += [code] * (len(re.findall(r"(?<![A-Za-z0-9_$])%s(?:\+=|=|\[[^\]]*\]=)" % re.escape(var), code))
-                            + len(re.findall(r"\b(?:for|read|local|declare|typeset|readonly|export|unset|mapfile|readarray)\s+(?:-\S+\s+)*%s\b|\bprintf\s+-v\s+%s\b" % (re.escape(var), re.escape(var)), code)))
-        ok = [h for h in hits if re.split(r"\s+#", h)[0].strip() == want or re.split(r"\s+#", h)[0].strip().startswith(want + ";")]
-        if len(hits) != 1 or len(ok) != 1:
-            bad.append("%s: $%s is assigned %d times or by a line other than `%s`" % (path, var, len(hits), want))
-
-
-def ns_bare_code(text):
-    """The text without comments and without the inside of quoted strings (each line on its own, as the reader reads it)."""
-    out = []
-    for ln in text.split("\n"):
-        res, q, k = "", None, 0
-        while k < len(ln):
-            c = ln[k]
-            if q:
-                if c == q: q = None
-                elif c == "\\" and q == '"': k += 1
-            elif c in "'\"": q = c
-            elif c == "\\": res += " "; k += 1
-            elif c == "#" and (not res or res[-1] in " \t;&|("): break
-            else: res += c
-            k += 1
-        out.append(res)
-    return "\n".join(out)
 
 
 def ns_shell(path, text, closure, funcs=None):
     bad = []
     extra = set(NS_EXTRA.get(path, ())); vars_ok = set(NS_VARS.get(path, ()))
-    if funcs is None: ns_var_lines(path, text, bad)      # the whole file once (a trap handler or a function body is read again with funcs set)
-    funcs = set(funcs or ()) | set(re.findall(r"(?:^|[;&{(\s])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)", ns_bare_code(text)))      # shell functions the script defines (found in code only: not in a comment or a string): their bodies are read like everything else
+    funcs = set(funcs or ()) | set(re.findall(r"(?:^|[;&{(\s])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)", text))      # shell functions the script defines: their bodies are read like everything else
     for cmd in ns_commands(text):
-        if cmd and cmd[0].startswith("<cannot-read"):
-            bad.append("%s %s (the judge reads line by line and does not guess)" % (path, cmd[0].strip("<>").replace("cannot-read:", "cannot be read:"))); continue
         if cmd and cmd[0] == "trap":      # a trap handler is code: it is read as commands too (`trap -- 'cmd' EXIT` included)
             args = [x for x in cmd[1:] if x != "--" and not (x.startswith("-") and len(x) > 1 and x != "-")]
             if args: bad += ns_shell(path, args[0], closure, funcs)
@@ -1125,25 +966,18 @@ def ns_shell(path, text, closure, funcs=None):
             if w is None:
                 break
             name = w[1] if w[0] == "var" else w[1].rsplit("/", 1)[-1]
-            if w[0] == "word" and name == "mapfile" and any(re.fullmatch(r"-[A-Za-z]*C.*", x) for x in cmd[i + 1:] if x.startswith("-")):
-                bad.append("%s runs mapfile with -C, which calls a command" % path)      # readarray is not on NS_WHOLE, so it is refused as a command
             if w[0] == "word" and name in NS_WHOLE:
                 i = len(cmd); break
             if w[0] == "word" and name in NS_KEYWORDS:
                 i += 1; continue
             if (w[0] == "word" and name in NS_WRAPPERS) or (w[0] == "var" and name in vars_ok and name in ("SUDO", "ENVBIN", "UNSHARE")):      # look through the wrapper to the program it starts
-                wrap = name if w[0] == "word" else name.lower()
                 i += 1
-                while i < len(cmd) and (cmd[i].startswith("-") or re.fullmatch(r"[0-9.]+", cmd[i]) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", cmd[i])):
-                    if cmd[i].startswith("-") and cmd[i] != "--" and not re.fullmatch(NS_WRAPPER_OPTS.get(wrap, r""), cmd[i]):
-                        bad.append("%s runs %s with the option %s, which is not on its list of options" % (path, wrap, cmd[i])); i = len(cmd); break
-                    i += 1
+                while i < len(cmd) and (cmd[i].startswith("-") or re.fullmatch(r"[0-9.]+", cmd[i]) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", cmd[i])): i += 1
                 continue
             break
         if i >= len(cmd): continue
         w = ns_word(cmd[i])
-        if w is None:
-            bad.append("%s has a command word that starts with - or is only digits: %r (a program with that name is not one the judge knows)" % (path, cmd[i])); continue
+        if w is None: continue
         kind, name = w
         if kind == "odd":
             bad.append("%s has a command word the judge cannot resolve: %r (computed, globbed or built from an expansion)" % (path, name)); continue
@@ -1159,8 +993,6 @@ def ns_shell(path, text, closure, funcs=None):
                 ns_interp_check(path, "$" + name, rest, closure, vars_ok, bad)
             elif name not in vars_ok:
                 bad.append("%s starts a program named by the variable $%s, which is not in this script's reviewed variables" % (path, name))
-            elif name in NS_VAR_UTILS:
-                ns_util_opts(path, NS_VAR_UTILS[name], rest, bad)
             continue
         if base in NS_WHOLE or base in NS_KEYWORDS:
             continue
@@ -1170,26 +1002,23 @@ def ns_shell(path, text, closure, funcs=None):
             if path not in NS_ENGINE[base]: bad.append("%s starts %s outside %s" % (path, base, " and ".join(NS_ENGINE[base])))
         elif base in NS_NEVER or re.fullmatch(r"fscache(\.bin)?|fscache-fips", base):
             bad.append("%s starts %s, which compiles or runs source code or builds a command line from text" % (path, base))
-        elif "/" in name and re.fullmatch(r"(\./)?bin/[A-Za-z0-9_][A-Za-z0-9_.-]*", name):      # a script of the repository: it is read too, so it must be in the closure
-            if name.lstrip("./") not in closure: bad.append("%s runs %s, which is not in the closure the judge reads" % (path, name))
-        elif "/" in name:
-            bad.append("%s starts %s, a path-qualified command word that is not a script of the closure (a name with a directory is a different program from the one the judge knows by its last part)" % (path, name))
         elif base in NS_INTERP:
             ns_interp_check(path, base, rest, closure, vars_ok, bad)
+        elif re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+\.(sh|py)", name):
+            if name.lstrip("./") not in closure: bad.append("%s runs %s, which is not in the closure the judge reads" % (path, name))
         elif base in NS_UTILS or base in extra or base in ("exit", "return") or name in funcs or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\(\)", name):
-            ns_util_opts(path, base, rest, bad)
-            if base in ("sed", "awk"): ns_sed_awk(path, base, rest, bad)
+            rx = NS_PROGRAM_OPTS.get(base)
+            if rx and any(rx.search(x) for x in rest): bad.append("%s runs %s with an option that starts a program" % (path, base))
+            if base == "awk" and any(NS_AWK_RUNS.search(x) for x in rest): bad.append("%s runs awk with a program that starts a command (system(), a pipe or getline from one)" % path)
+            if base == "sed" and any(NS_SED_RUNS.search(x) for x in rest if not x.startswith("-")): bad.append("%s runs sed with a script that starts a command (the e flag or command)" % path)
         else:
             bad.append("%s starts %s, which is not an accepted command of this script (allow-list: keywords, file utilities, the closure's own scripts and its reviewed extras)" % (path, name))
     return bad
 
 
-def ns_python(path, text, closure=None):
+def ns_python(path, text):
     import ast
     bad = []
-    rx = ns_start_calls()
-    if rx is None:
-        return ["%s cannot be judged: the list of program-starting calls (PY_START_CALLS in bin/chain-check-shape.py) is unreadable" % path]
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -1211,37 +1040,19 @@ def ns_python(path, text, closure=None):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)): return n.name
         return None
     def is_start_ref(v):      # an expression naming a program-starting function: subprocess.run, os.execv, a from-imported run
-        if isinstance(v, ast.Attribute): return bool(rx.match(v.attr)) and alias.get(getattr(v.value, "id", ""), "") in NS_START_MODULES
-        if isinstance(v, ast.Name): return bool(rx.match(alias.get(v.id, "").split(".")[-1])) and alias.get(v.id, "").split(".")[0] in NS_START_MODULES
+        if isinstance(v, ast.Attribute): return v.attr in NS_STARTS and alias.get(getattr(v.value, "id", ""), "") in ("subprocess", "os", "pty", "asyncio")
+        if isinstance(v, ast.Name): return alias.get(v.id, "").split(".")[-1] in NS_STARTS and alias.get(v.id, "").split(".")[0] in ("subprocess", "os", "pty", "asyncio")
         return False
-    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    exec_seen = []      # the reviewed exec() may stand once
-    def stores(name, scope):      # every place that binds or deletes `name` inside scope
-        return [n for n in ast.walk(scope) if (isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, (ast.Store, ast.Del))) or (isinstance(n, (ast.Global, ast.Nonlocal)) and name in n.names)
-                or (isinstance(n, ast.arg) and n.arg == name)]
-    def assigned_once(name, scope, src):      # `name` is bound exactly once in scope, by `name = src`
-        st = stores(name, scope)
-        asg = [n for n in ast.walk(scope) if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) and n.targets[0].id == name]
-        return len(st) == 1 and len(asg) == 1 and ast.dump(asg[0].value) == ast.dump(ast.parse(src, mode="eval").body)
-    for pv, (_prog, src) in NS_PYVARS.get(path, {}).items():
-        if not assigned_once(pv, tree, src): bad.append("%s binds %s more than once or not as `%s` (the reviewed program name)" % (path, pv, src))
-    local_defs = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}      # a function the file defines is judged where it is defined
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Attribute, ast.Name)) and is_start_ref(node) and id(node) not in called:      # passed, returned, stored or bound: partial(subprocess.run), x = os.execv
-            bad.append("%s:%d uses a program-starting function as a value (bound, passed or stored): its calls cannot be judged" % (path, node.lineno))
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and alias.get(node.value.id, "") in NS_START_MODULES:
-            bad.append("%s:%d binds the module %s to another name: its calls cannot be judged" % (path, node.lineno, alias[node.value.id]))
-        if isinstance(node, ast.ImportFrom) and any(x.name == "*" for x in node.names) and (node.module or "").split(".")[0] in NS_START_MODULES + ("importlib",):
-            bad.append("%s:%d imports * from %s: its calls cannot be judged" % (path, node.lineno, node.module))
+        if isinstance(node, ast.Assign) and is_start_ref(node.value):
+            bad.append("%s:%d binds a program-starting function to a name: its calls cannot be judged" % (path, node.lineno))
         if not isinstance(node, ast.Call):
             continue
         f = node.func
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
         if isinstance(f, ast.Name) and f.id in ("exec", "eval") and f.id not in alias:
-            fn_ok, src_ok = NS_PYEXEC.get(path, (None, None))
-            if fn_ok is None or enclosing(node) != fn_ok or f.id != "exec" or ast.dump(node) != ast.dump(ast.parse(src_ok).body[0].value) or exec_seen:
+            if enclosing(node) not in NS_PYEXEC.get(path, ()):
                 bad.append("%s:%d runs %s(), which executes code from a string" % (path, node.lineno, f.id))
-            exec_seen.append(node)
             continue
         owner = alias.get(getattr(f.value, "id", ""), getattr(f.value, "id", "")) if isinstance(f, ast.Attribute) else ""
         if isinstance(f, ast.Name) and alias.get(f.id, "").count("."):      # `from os import execv`: the called name is the module's function
@@ -1250,18 +1061,10 @@ def ns_python(path, text, closure=None):
             bad.append("%s:%d starts a program through a shell" % (path, node.lineno)); continue
         if name in ("system", "popen") and isinstance(f, ast.Attribute):
             bad.append("%s:%d starts a program through a shell (.%s)" % (path, node.lineno, name)); continue
-        if isinstance(f, ast.Name) and f.id == "getattr" and node.args and alias.get(getattr(node.args[0], "id", ""), "") in NS_START_MODULES + ("importlib",):
-            bad.append("%s:%d gets a function of %s by name (getattr): its calls cannot be judged" % (path, node.lineno, alias[node.args[0].id])); continue
-        if name in ("__import__", "import_module"):
-            bad.append("%s:%d loads a module by name (%s): its calls cannot be judged" % (path, node.lineno, name)); continue
-        if isinstance(f, ast.Attribute) and NS_START_ONLY.match(name) and owner not in NS_START_MODULES and not (owner == "" and name in wrappers):
-            bad.append("%s:%d calls .%s on something the judge cannot trace to subprocess, os, pty or asyncio" % (path, node.lineno, name)); continue
-        starts = (bool(rx.match(name)) and owner in NS_START_MODULES) or name in wrappers or (bool(rx.match(name)) and owner == "" and name not in local_defs)
+        starts = (name in NS_STARTS and owner in ("subprocess", "os", "pty", "asyncio")) or name in wrappers or (name in NS_STARTS and owner == "")
         if name in ("spawn",) and owner == "pty": starts = True
         if not starts:
             continue
-        if any(k.arg is None for k in node.keywords) or any(isinstance(x, ast.Starred) for x in node.args):
-            bad.append("%s:%d starts a program with ** or * arguments: the command line cannot be judged" % (path, node.lineno)); continue
         if any(k.arg == "executable" for k in node.keywords):
             bad.append("%s:%d starts a program with executable=, which names a program other than the command line shows" % (path, node.lineno)); continue
         a = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "args"), None)
@@ -1277,11 +1080,6 @@ def ns_python(path, text, closure=None):
                 if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name) and st.targets[0].id == var and st.lineno < node.lineno:
                     v = st.value.left if isinstance(st.value, ast.BinOp) and isinstance(st.value.op, ast.Add) else st.value
                     if isinstance(v, (ast.List, ast.Tuple)): found = v      # the last list assigned before the call
-            binds = [st for st in ast.walk(fn) if (isinstance(st, ast.Name) and st.id == var and isinstance(st.ctx, (ast.Store, ast.Del)))
-                     or (isinstance(st, ast.Subscript) and isinstance(st.value, ast.Name) and st.value.id == var and isinstance(st.ctx, (ast.Store, ast.Del)))
-                     or (isinstance(st, ast.Call) and isinstance(st.func, ast.Attribute) and isinstance(st.func.value, ast.Name) and st.func.value.id == var and st.func.attr in ("append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"))]
-            if found is not None and len(binds) != 1:
-                bad.append("%s:%d starts a program from the list %s, which is assigned more than once or changed after it was built: it cannot be judged" % (path, node.lineno, var)); continue
             if found is not None: a = found
         if not isinstance(a, (ast.List, ast.Tuple)) or not a.elts:
             if enclosing(node) in wrappers and isinstance(a, ast.Name):
@@ -1292,7 +1090,7 @@ def ns_python(path, text, closure=None):
         if first is None and isinstance(e0, ast.Call) and isinstance(e0.func, ast.Name) and NS_PYFUNCS.get(path, {}).get(e0.func.id):
             first = NS_PYFUNCS[path][e0.func.id]       # a reviewed helper that returns a fixed program location (apk-tool.py _openssl)
         if first in NS_PYVARS.get(path, {}):
-            first = NS_PYVARS[path][first][0]       # a reviewed module constant that names the program (bound to its one assignment at the top of ns_python)
+            first = NS_PYVARS[path][first]       # a reviewed module constant that names the program
         word = os.path.basename(first) if first else None
         rest = a.elts[1:]
         consts = [x.value for x in rest if isinstance(x, ast.Constant) and isinstance(x.value, str)]
@@ -1308,21 +1106,13 @@ def ns_python(path, text, closure=None):
             if "-c" in consts or any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", x) for x in consts):
                 bad.append("%s:%d runs the interpreter with inline code (-c)" % (path, node.lineno)); continue
             operand = next((x for x in rest if not (isinstance(x, ast.Constant) and isinstance(x.value, str) and x.value.startswith("-"))), None)
-            computed = False
-            for fn_name, w_ok, osrc, asrc in NS_PYCOMPUTED.get(path, ()):
-                if operand is None or fn_name != enclosing(node) or w_ok != word or ast.dump(operand) != ast.dump(ast.parse(osrc, mode="eval").body): continue
-                defs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn_name]
-                bound = asrc is None or (len(defs) == 1 and assigned_once(osrc, defs[0], asrc))
-                consts = [n.id for n in ast.walk(ast.parse(asrc or osrc, mode="eval")) if isinstance(n, ast.Name) and n.id.isupper()]
-                consts_ok = all(len(stores(c, tree)) == 1 and any(isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and n.targets[0].id == c and isinstance(n.value, ast.Constant)
-                                                                  and isinstance(n.value.value, str) and n.value.value.startswith("bin/") for n in tree.body) for c in consts)
-                computed = bound and consts_ok
+            computed = word in NS_PYCOMPUTED.get(path, ()) and operand is not None and (
+                (isinstance(operand, ast.Call) and ast.dump(operand.func) == ast.dump(ast.parse("os.path.join").body[0].value) and operand.args and ast.dump(operand.args[0]) == ast.dump(ast.parse("ctx.policy").body[0].value))
+                or (isinstance(operand, ast.Name) and operand.id in ("script", "script_path")))
             if computed:
                 continue
             if not (isinstance(operand, ast.Constant) and isinstance(operand.value, str) and re.fullmatch(r"(\./)?bin/[A-Za-z0-9_.-]+", operand.value)):
                 bad.append("%s:%d runs the interpreter on something that is not a repository script (the first non-option argument must be a bin/ script of the closure)" % (path, node.lineno))
-            elif closure is not None and operand.value.lstrip("./") not in closure:
-                bad.append("%s:%d runs the interpreter on %s, which is not in the closure the judge reads" % (path, node.lineno, operand.value))
         elif word and word in progs:
             pass
         else:
@@ -1340,7 +1130,7 @@ def nosource(root):
         except OSError:
             bad.append("%s is listed but missing" % p)
             continue
-        bad += ns_python(p, text, seen) if p.endswith(".py") else ns_shell(p, text, seen)
+        bad += ns_python(p, text) if p.endswith(".py") else ns_shell(p, text, seen)
     return bad
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------

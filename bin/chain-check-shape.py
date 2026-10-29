@@ -671,10 +671,6 @@ def _plain_command_is_removed_tool(line):
     return False
 
 
-# The names of the calls that start a program or load code by name: the one list (bin/chain-test-shape.py reads this line from the source for its own judge of Python helpers)
-PY_START_CALLS = r"^(run|call|check_\w+|Popen|system|popen\w*|spawn\w*|posix_spawn\w*|exec\w*|eval|getoutput|getstatusoutput|startfile|fork\w*|forkpty|__import__|import_module)$"
-
-
 def _judge_starts_tool(root, rel):
     """A judge's tables and refusal lists name the removed tools; a judge never STARTS one: no call of a program-running API (subprocess, os.system, exec, eval...)
     whose arguments, over however many lines, name one. A judge that does not parse is a finding (fail closed)."""
@@ -685,7 +681,7 @@ def _judge_starts_tool(root, rel):
     except (SyntaxError, ValueError) as ex:
         return ["%s does not parse (%s): a judge that cannot be read cannot be shown not to start a removed tool" % (rel, type(ex).__name__)]
     out = []
-    runs = re.compile(PY_START_CALLS)
+    runs = re.compile(r"^(run|call|check_\w+|Popen|system|popen\w*|spawn\w*|posix_spawn\w*|exec\w*|eval|getoutput|getstatusoutput|startfile|fork\w*|forkpty|__import__|import_module)$")
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             f = node.func
