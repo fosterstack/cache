@@ -23,7 +23,7 @@
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
 #   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
-#               only_new_workflow (stage-sign.yml is the only file added since v0.2.2); listed_signers + direct_signers (every workflow and
+#               only_new_workflow (stage-sign.yml, and at most evidence-letter.yml, are the only files added since v0.2.2); listed_signers + direct_signers (every workflow and
 #               composite action matched against the signer table; provenance only in stage-sign.yml, every other signer listed with a
 #               reason in .github/policy/chain-signers.json); stage_grammars (every stage-*.yml over the closed key, env, uses and run-line
 #               grammar, running only scripts listed in .github/policy/chain-scripts.json by path and sha256); listed_scripts (each listed
@@ -378,9 +378,11 @@ stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-pr
 stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
-    """001-AC1: "it is the only workflow file v0.3.0 adds beyond the files that existed at v0.2.2" (stage-sign.yml)."""
+    """001-AC1: stage-sign.yml (rule 52) and evidence-letter.yml (the monthly evidence letter; the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md)
+    are the only workflow files v0.3.0 adds beyond the files that existed at v0.2.2. The tree under judgement holds stage-sign.yml always; evidence-letter.yml may be there or not."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if new != ["stage-sign.yml"]: bad.append("AC1: workflow files added since v0.2.2 must be exactly [stage-sign.yml], found %s" % new)
+    if "stage-sign.yml" not in new or set(new) - {"stage-sign.yml", "evidence-letter.yml"}:
+        bad.append("AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52) and at most evidence-letter.yml (the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md), found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -2726,7 +2728,21 @@ expect caught "AC1 notation sign is a known signer that must be listed" tree "$d
 d=$(mk t_intoto); printf 'jobs:\n  b:\n    steps:\n      - run: in-toto-run --step-name build -- ./x\n' > "$d/.github/workflows/scan.yml"
 expect caught "AC1 in-toto-run is a known signer that must be listed" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
-expect caught "AC1 a second new workflow file" tree "$d"
+expect caught "AC1 a new workflow file other than the two named" tree "$d"
+# the monthly evidence letter's workflow is the second new file (rule 52 and the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md):
+# admitted with its one signing job on the id-token list; unlisted, or with a third new file beside it, refused
+addletter() { cp "$root/.github/workflows/evidence-letter.yml" "$1/.github/workflows/evidence-letter.yml"; }
+d=$(mk t_letter); addletter "$d"; python3 - "$d/.github/policy/id-token-jobs.json" <<'PY'
+import json, sys
+p = sys.argv[1]; j = json.load(open(p))
+j["jobs"].append({"workflow": "evidence-letter.yml", "job": "sign", "reason": "the monthly evidence letter's one signing job (REQ-REL-013-AC9)"})
+json.dump(j, open(p, "w"))
+PY
+expect ok "AC1 evidence-letter.yml is admitted beside stage-sign.yml when its signing job is on the id-token list" tree "$d"
+d=$(mk t_letter_unlisted); addletter "$d"
+expect caught "AC1 evidence-letter.yml's signing job must be on the id-token list" tree "$d"
+d=$(mk t_letter_third); addletter "$d"; cp "$good" "$d/.github/workflows/stage-extra.yml"
+expect caught "AC1 a third new workflow file is still refused, with evidence-letter.yml present" tree "$d"
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
@@ -2808,7 +2824,7 @@ expect ok "the real tree: only release.yml calls stage-sign.yml and no stage cal
 # bytes in .github/policy/legacy-stage-files.json; the tree judge leaves out the findings OF a listed file whose bytes match (it still reads
 # them to see which scripts they run), and judges everything else in full. So the real tree is an ordinary `expect ok`. A file whose bytes
 # differ is judged in full; when the last legacy file is rewritten, deleting the list leaves this same case judging the whole tree.
-expect ok "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
+expect ok "the real tree: only stage-sign.yml and evidence-letter.yml are new and only stage-sign.yml signs provenance (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
