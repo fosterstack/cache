@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-IMAGE-001-AC15
 # Tests for bin/check-no-outbound.py (0710 item 4): fixture trees in a temporary folder, plus the real tree.
 set -uo pipefail
 cd "$(dirname "$0")/.."
