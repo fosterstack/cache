@@ -274,6 +274,13 @@ GO
   else
     echo "FAIL: the real binary does not build: $(head -c 300 "$tmp/real.err")"; fail=$((fail+1))
   fi
+  # the FIPS apk builds the same program with GOFIPS140 set (build/melange-fips.yaml)
+  if GOFIPS140=v1.0.0 GOFLAGS=-mod=vendor gobuild -o "$real-fips" ./cmd/fscache 2>"$tmp/real.err"; then
+    run_binary "$real-fips"
+    expect "the FIPS build has no HTTP client symbol and no dial symbol either" 0 -
+  else
+    echo "FAIL: the FIPS binary does not build: $(head -c 300 "$tmp/real.err")"; fail=$((fail+1))
+  fi
 fi
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
