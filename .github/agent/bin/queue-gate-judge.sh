@@ -18,6 +18,10 @@
 # QUEUE_GATE_GIT_DIR (a git directory) and QUEUE_GATE_BASE_REF (a ref name, default refs/remotes/origin/main).
 set -uo pipefail
 
+# The merge queue must use the MERGE method: every group commit is then a two-parent merge, which is what this judge
+# accepts. The repository's merge queue setting belongs to the owner; this constant only names what the judge expects.
+queue_merge_method=MERGE
+
 head=${1:-}
 ref=${2:-}
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "queue-gate-judge: HEAD_SHA is not 40 lower-case hex" >&2; exit 1; }
@@ -49,7 +53,8 @@ done
 for c in $list; do
   read -r -a parents <<<"$(g log -1 --format=%P "$c")"
   if [ "${#parents[@]}" -ne 2 ]; then
-    echo "queue-gate-judge: ${c} is not a two-parent merge (${#parents[@]} parents); only merges are judged" >&2
+    echo "queue-gate-judge: ${c} is not a two-parent merge (${#parents[@]} parents);" \
+         "queue merge method ${queue_merge_method} is required" >&2
     exit 1
   fi
   [[ "${parents[1]}" =~ ^[0-9a-f]{40}$ ]] || { echo "queue-gate-judge: bad parent of ${c}" >&2; exit 1; }

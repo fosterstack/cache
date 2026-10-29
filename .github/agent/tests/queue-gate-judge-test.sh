@@ -170,6 +170,9 @@ else bad "a refused argument never reached the record judge"; fi
 # the shape of the group
 run "a group commit with ONE parent (squash or rebase shape) at the bottom -> refused" nz "$GS" \
   "gh-readonly-queue/main/pr-12-$GS"
+reset; exec_sut "$GS" "gh-readonly-queue/main/pr-12-$GS"
+grep -q "queue merge method MERGE" <<<"$LAST_OUT" && ok "the one-parent refusal names the queue merge method MERGE" \
+  || bad "the one-parent refusal does not name the queue merge method MERGE ($LAST_OUT)"
 run "a group commit with ONE parent at the head -> refused" nz "$GL" "gh-readonly-queue/main/pr-12-$GL"
 run "a group commit with THREE parents below the head -> refused" nz "$GT" "gh-readonly-queue/main/pr-12-$GT"
 run "a group commit with THREE parents at the head -> refused" nz "$GO" "gh-readonly-queue/main/pr-12-$GO"
