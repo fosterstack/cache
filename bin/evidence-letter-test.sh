@@ -75,8 +75,14 @@ check("AC1: both November releases are listed with date, link and commit", all(x
           "2026-11-20")), text)
 check("AC1: the October release is not listed", "v0.2.9" not in text)
 r0 = world([]); p0, out0, files0 = run(r0)
-check("AC1: a month with no release makes no letter and says so",
+check("AC1: before any release exists there is no letter, and it says so",
     p0.returncode == 0 and files0 == [] and "no release" in (p0.stdout + p0.stderr).lower(), p0.stdout + p0.stderr)
+rq = world([(("v0.2.9", "2026-10-28T12:00:00Z", "Fix: an October patch."), {})]); pq, oq, fq = run(rq)
+tq = open(os.path.join(oq, "evidence-letter-2026-11.md")).read() if fq else ""
+check("AC1: a month with no release still gets a letter, from the latest release",
+    pq.returncode == 0 and "none published this month" in tq and "Records of v0.2.9, the latest release" in tq
+    and "scanners-collection.json" in tq, (pq.stderr, tq))
+check("AC1: that letter has the controls line", "unchanged this month" in tq, tq)
 # AC2: patch release and why
 check("AC2: the patch release and its reason, verbatim",
     "v0.3.1" in text and "Fix: a parser crash on a long header." in text)

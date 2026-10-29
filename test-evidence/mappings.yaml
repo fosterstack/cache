@@ -1857,4 +1857,9 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC9
     evidence:
-      - { type: inspection, ref: "Not built yet: the signing job follows the letter script (read-back acked Oct 29); until it exists this AC is proposed only." }
+      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-job-test.sh over the workflow file and the publish script with stand-ins for cosign and gh" }
+  - ac: REQ-REL-013-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-job-test.sh" }

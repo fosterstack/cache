@@ -4986,7 +4986,7 @@ requirements:
       - id: REQ-REL-013-AC1
         given: "a month and the assets of the releases published in it (release.json and the files of each release)"
         when: "bin/evidence-letter.py runs for that month"
-        then: "the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release makes no letter and says so"
+        then: "the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release still gets a letter, which says none was published and carries the Check records of the latest release; before any release exists there is no letter and the script says so"
         verification: { method: unit, release_blocking: false }
         status: proposed
       - id: REQ-REL-013-AC2
@@ -5032,8 +5032,14 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: proposed
       - id: REQ-REL-013-AC9
-        given: "a letter that passed its checks"
-        when: "the signing job runs"
-        then: "it signs the letter keylessly by the same path as bin/release-sign.sh and attaches the letter and its bundle to a release; it signs nothing that did not pass AC5"
+        given: "the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else)"
+        when: "its sign job runs on a letter that passed AC5"
+        then: "the sign job is the only one with an identity token; it signs the letter keylessly with the signing call, the signing config and the transparency-log check of bin/release-sign.sh, so customers verify against the identity https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main, which docs/verify-release.md names; it signs nothing that did not pass AC5"
         verification: { method: ci-workflow, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-013-AC10
+        given: "a signed letter and its bundle"
+        when: "bin/evidence-letter-publish.sh attaches them"
+        then: "they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed"
+        verification: { method: unit, release_blocking: false }
         status: proposed

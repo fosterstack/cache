@@ -74,6 +74,15 @@ cosign verify-blob --bundle fips.full.lock.json.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json
 ```
 
+## 5. Letter
+
+```sh
+# Not run before release.
+cosign verify-blob --bundle letter.md.bundle \
+  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com letter.md
+```
+
 ## What this shows, and what it does not
 
 TO-VERIFY: the trust boundary, written once the chain has run end to end.

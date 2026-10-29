@@ -29,10 +29,12 @@ PAGE = "https://github.com/fosterstack/cache/releases/tag/"
 PLACEHOLDER = "PLACEHOLDER"
 SIGNED = "\nSigned, "
 NONE = "- none this month"
+NONE_RELEASED = "- none published this month"
 UNCHANGED = ("The build and images in this letter were produced by the process in the controls document, version %d, "
              "signed on %s, unchanged this month.")
 CHANGED = ("The controls document changed this month. The build and images in this letter were produced by the process "
            "in the version that was in force on each release's date:")
+NO_RELEASE_CHANGED = "The controls document changed this month, to version %d, signed on %s. No release was published."
 INTRO = ("This letter rolls up public facts about evidence that is already published. It adds no new information and "
          "makes no promise beyond those facts.")
 EVIDENCE = ("The signatures, provenance, SBOMs and VEX of each release are public assets of the release page "
@@ -104,13 +106,13 @@ def release_of(rel_dir, name):
     return {"tag": tag, "dir": path, "date": day(info.get("published_at"), tag), "info": info, "manifest": manifest}
 
 
-def releases_of_month(rel_dir, month):
+def releases_in(rel_dir):
+    """Every release folder, oldest first."""
     try:
         names = sorted(os.listdir(rel_dir))
     except OSError:
         raise Refuse("the releases folder cannot be read")
-    found = [release_of(rel_dir, n) for n in names if TAG.fullmatch(n)]
-    return sorted((r for r in found if r["date"].startswith(month)), key=lambda r: (r["date"], r["tag"]))
+    return sorted((release_of(rel_dir, n) for n in names if TAG.fullmatch(n)), key=lambda r: (r["date"], r["tag"]))
 
 
 def patch_reason(rel):
@@ -151,6 +153,14 @@ def advisories_of(advisories, month):
 
 def controls_lines(releases, month, controls_text):
     versions = controls_versions(controls_text)
+    if not releases:  # no release this month: the version in force at the end of the month
+        last_day = "%s-%02d" % (month, calendar.monthrange(int(month[:4]), int(month[5:]))[1])
+        in_force = [v for v in versions if v[1] <= last_day]
+        if not in_force:
+            raise Refuse("no controls version was signed by the end of the month")
+        if any(d.startswith(month) for _v, d in versions):
+            return [NO_RELEASE_CHANGED % in_force[-1]]
+        return [UNCHANGED % in_force[-1]]
     under = {}
     for rel in releases:
         in_force = [v for v in versions if v[1] <= rel["date"]]
@@ -168,10 +178,14 @@ def controls_lines(releases, month, controls_text):
 
 def body_of(rel_dir, month, advisories, controls_text):
     """The letter without its signature, read afresh from the assets. Used to write the letter and to check it."""
-    releases = releases_of_month(rel_dir, month)
-    if not releases:
-        return None
+    every = releases_in(rel_dir)
+    releases = [r for r in every if r["date"].startswith(month)]
+    before = [r for r in every if r["date"] < month + "-01"]
+    if not releases and not before:
+        return None  # no release has ever been published: nothing to roll up
     lines = ["# FosterStack evidence letter, " + month_title(month), "", INTRO, "", "## Releases"]
+    if not releases:
+        lines.append(NONE_RELEASED)
     for r in releases:
         link, commit = r["info"]["html_url"], r["manifest"]["commit"]
         lines.append("- %s, published %s, %s, commit %s" % (r["tag"], r["date"], link, commit))
@@ -182,7 +196,9 @@ def body_of(rel_dir, month, advisories, controls_text):
     lines += ["", "## VEX statements added"]
     lines += ["- %s: %s, dated %s" % (t, n, d) for t, d, n in vex] or [NONE]
     lines += ["", "## Check records"]
-    for r in releases:
+    if not releases:  # the current images are those of the latest release
+        lines.append("Records of %s, the latest release:" % before[-1]["tag"])
+    for r in releases or before[-1:]:
         for name in RECORDS:
             lines.append("- %s: %s sha256 %s" % (r["tag"], name, sha256_of(os.path.join(r["dir"], name))))
     advs = advisories_of(advisories, month)

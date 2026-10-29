@@ -318,7 +318,8 @@ ALLOW_PATTERNS=(
   '^bin/verify-release-guide-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
   # The monthly evidence letter (REQ-REL-013): the script, its test and the signatory text.
-  '^bin/evidence-letter(\.py|-test\.sh)$'
+  '^bin/evidence-letter\.py$'
+  '^bin/evidence-letter(-fetch|-publish|-test|-job-test)\.sh$'
   '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
