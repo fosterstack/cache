@@ -60,22 +60,15 @@ variant= version= archive= melrepo= keydir= out= render=$RENDER_DIR
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || die "missing value for $1"
   case $1 in
-    --variant) variant=$2;;
-    --version) version=$2;;
-    --archive) archive=$2;;
-    --melange-repo) melrepo=$2;;
-    --keyring-dir) keydir=$2;;
-    --out) out=$2;;
+    --variant) variant=$2;; --version) version=$2;; --archive) archive=$2;; --melange-repo) melrepo=$2;;
+    --keyring-dir) keydir=$2;; --out) out=$2;; 
     *) die "unknown argument: $1";;
   esac
   shift 2
 done
 
 # ---- 1. refusals ----
-case $variant in
-  production|fips) ;;
-  *) die "--variant must be production or fips";;
-esac
+case $variant in production|fips) ;; *) die "--variant must be production or fips";; esac
 case $variant in
   production) pkg=fscache; config=build/apko.yaml; baselock=build/locks/apko.base.lock.json;;
   fips) pkg=fscache-fips; config=build/apko-fips.yaml; baselock=build/locks/apko-fips.base.lock.json;;
@@ -105,9 +98,7 @@ apkver=${version/-rc./_rc}; apkver=${apkver/-rc/_rc}   # the apk version syntax 
 [[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)"
 build_date=$("$PY3" -I -B bin/oci-digest.py render-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
 for d in "$archive" "$melrepo" "$keydir"; do
-  case $d in
-    *://*) die "the archive, the melange repository and the keyring dir must be local directories, not addresses ($d)";;
-  esac
+  case $d in *://*) die "the archive, the melange repository and the keyring dir must be local directories, not addresses ($d)";; esac
 done
 [ -d "$archive" ] || die "--archive is not a directory: $archive"
 [ -d "$melrepo" ] || die "--melange-repo is not a directory: $melrepo"

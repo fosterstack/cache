@@ -362,7 +362,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "e146edc8b40b30ea0d18bc2ebac9d5b5b3f4dff14f38069b50e36fe9206ee0ea",
+      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -2239,7 +2239,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "699e9497602caf7b0142a244d26807e2a3551c83ae5dccc577b8b1d562cb81af",
+      "sha256": "46a6124af1bd913ac7a2323c318f4837f2e48a66478bd07bcdc7c2e62914749c",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2421,7 +2421,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "71ff2a163b6375714409118a0266bb8f1df94e388bf5755d1e107206b0080822",
+      "sha256": "6f588ccd095cfc5aa10379e624017956fe6dce487dd19528c44fb4c087d88b17",
       "exceptions": [
         {
           "rule": "script-name",

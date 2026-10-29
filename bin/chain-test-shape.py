@@ -547,7 +547,7 @@ def local_lines():
     trust boundary: the record carries no trust until Sign has checked its product digests (backslash continuations are joined before comparing)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in', "  %s) ;;" % LOCAL_STEPS, '  *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;;', "esac",
+            'case "$step" in %s) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac' % LOCAL_STEPS,
             'mkdir -p "witness-${step#snapshot-}"',
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN",
             "umask 077",
@@ -817,6 +817,19 @@ def ns_find_subs(text):
 NS_CASEPAT = re.compile(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)[ \t]*")      # `-rc*)`, `a|b)`, `*)`: the pattern in front of a case branch is not a command
 
 
+def ns_unfold_case(ln):
+    """`case X in a|b) body ;; *) body ;; esac` on one line: the words of the patterns are not commands; the bodies are."""
+    m = re.search(r"\bcase\b.*?\bin\b(.*)$", ln)
+    if not m or ";;" not in m.group(1) and ")" not in m.group(1): return ln
+    head = ln[:m.start()]
+    parts = re.split(r";;|\besac\b", m.group(1))
+    bodies = []
+    for part in parts:
+        part = re.sub(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)", "", part, count=1)
+        bodies.append(part)
+    return head + " ; " + " ; ".join(bodies)
+
+
 def ns_sub_end(s, i):
     """The index of the `)` that closes the `$(` at s[i], the way a shell reads it: a parenthesis in single or double quotes does not count, and a `$(` inside double quotes is a
     substitution of its own. -1 when it does not close on this line."""
@@ -865,16 +878,11 @@ def ns_commands(text, depth=0):
         return [["<too-deeply-nested>"]]
     case_depth = 0      # a pattern `word)` at the start of a line is dropped only inside case ... esac: `make)` closing a subshell is a command
     for ln in ns_join_arrays(text.replace("\\\n", "")).split("\n"):
-        code = ns_bare_code(ln).strip()
-        why = ("esac does not stand alone on its line" if re.search(r"(?<![\w-])esac(?![\w-])", code) and code != "esac"
-               else ";; does not end its line" if code.count(";;") > (1 if code.endswith(";;") else 0)
-               else "a case is opened on a line that does not end in `in`" if re.search(r"(?:^|[;&|{(]|\b(?:then|do|else)\b)\s*case\b", code) and not re.search(r"\bcase\s+.+\s+in\s*$", ln) else None)
-        if why:
-            cmds.append(["<cannot-read: %s>" % why]); continue
-        if case_depth:      # inside case ... esac: the arm loses its pattern, and the `;;` that ends the line
-            ln = NS_CASEPAT.sub("", ln.rstrip()[:-2] if ln.rstrip().endswith(";;") else ln, count=1)
+        ln = ns_unfold_case(ln)
+        if case_depth:      # each arm of a line (`a) x;; b) y;;`) loses its pattern
+            ln = " ; ".join(NS_CASEPAT.sub("", part, count=1) if re.match(r"^\s*\(?[^\s()=;&'\"$]*(?:\|[^\s()=;&'\"$]*)*\)", part) else part for part in ln.split(";;"))
         if re.search(r"(?:^|[;&|{(]|\b(?:then|do|else)\b)\s*case\s+.+\s+in\s*$", ln): case_depth += 1
-        elif code == "esac": case_depth = max(0, case_depth - 1)
+        elif re.search(r"(?:^|;;)\s*esac\b", ln): case_depth = max(0, case_depth - 1)
         cur, tok, q, started, i, subs = [], "", None, False, 0, []
         while i < len(ln):
             c = ln[i]
@@ -987,7 +995,7 @@ NS_UTIL_OPTS = {      # per utility: the option words it may carry (fullmatch). 
     "diff": r"-[uqr]+", "dirname": r"", "find": r"-(name|type|maxdepth|mindepth|newer|path|print|print0|empty|not|prune|mtime|size|o|a|L|P)",
     "grep": r"-([EFqivxwcnlsoe]+|f)", "gunzip": r"-[cdkf]+", "gzip": r"-[cdknf1-9]+", "head": r"-([nc].*|[0-9]+)", "id": r"-[ugn]+",
     "jq": r"-[rcesnRSj]+|--(arg|argjson|slurpfile|rawfile|raw-output|compact-output|exit-status|slurp|null-input)", "ln": r"-[sTfn]+", "ls": r"-[AlaRdhtr1]+",
-    "mkdir": r"-[pm]+", "mktemp": r"-[dtp]+", "mv": r"-[fnT]+", "readlink": r"-[fem]+", "realpath": r"-[em]+", "rm": r"-[rf]+", "rmdir": r"-p", "sed": r"-[nEres]",
+    "mkdir": r"-[pm]+", "mktemp": r"-[dtp]+", "mv": r"-[fnT]+", "readlink": r"-[fem]+", "realpath": r"-[em]+", "rm": r"-[rf]+", "rmdir": r"-p", "sed": r"-[nEres]+",
     "sha256sum": r"-[cb]+|--(check|quiet|status)", "sleep": r"", "sort": r"-([nruVfbd]+|k.*|t.*)", "tail": r"-([nc].*|[0-9]+)", "tar": r"-?[cxtvfzpCO]+|--(exclude|numeric-owner|sort|owner|group|mtime|format|no-same-owner|strip-components)(=.*)?",
     "tee": r"-a", "touch": r"-[acdtr]+", "tr": r"-[dcs]+", "uname": r"-[smrnpoa]+", "wc": r"-[lcwm]+",
     "curl": r"-[fsSLo]+|--(retry|connect-timeout|max-time|output|fail|silent|show-error|location)(=.*)?",
@@ -1049,18 +1057,11 @@ def ns_util_opts(path, base, rest, bad):
             bad.append("%s runs %s with the option %s, which is not on its list of options" % (path, base, x)); break
 
 
-NS_INTERP_OPTS = ("-I", "-B")      # the only option words an interpreter takes, and only python: isolated mode and no bytecode files. Neither can run stdin or inline code.
-
-
 def ns_interp_check(path, base, rest, closure, vars_ok, bad):
-    """An interpreter (by name or by a variable that stands for one) takes no option word but the two above; the file it runs is the first word and a script of the closure."""
-    python = base.lstrip("$").lower() in ("python", "python3", "py3")
-    script = None
-    for x in rest:
-        if not x.startswith("-"):
-            script = x; break
-        if not (python and x in NS_INTERP_OPTS):
-            bad.append("%s runs %s with the option word %s: an interpreter takes no option (-c, -m, -s and - run inline code or stdin)" % (path, base, x)); return
+    """An interpreter (by name or by a variable that stands for one): no inline code; the file it runs is the first non-option word and a script of the closure."""
+    if "-c" in rest or any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", x) for x in rest if x.startswith("-")) or any(re.fullmatch(r"-[eE]", x) for x in rest):
+        bad.append("%s runs %s with inline code (-c)" % (path, base)); return
+    script = next((x for x in rest if not x.startswith("-")), None)
     if script is None:
         bad.append("%s runs %s on no script file" % (path, base)); return
     clean = script.strip("\"'")
@@ -1071,13 +1072,17 @@ def ns_interp_check(path, base, rest, closure, vars_ok, bad):
 
 
 def ns_var_lines(path, text, bad):
-    """Every variable that may stand in command position has its bare name (not $NAME or ${NAME}) on ONE line of the file: its reviewed assignment (a trailing comment and a `;` command after it are not part of the line)."""
-    lines, codes = text.split("\n"), ns_bare_code(text).replace("${", "$").split("\n")
+    """Every variable that may stand in command position is assigned once, by its reviewed line (a trailing comment and a `;` command after it are not part of the line)."""
     for var, want in NS_VAR_LINES.get(path, {}).items():
-        hits = [ln.strip() for ln, code in zip(lines, codes) for _ in re.findall(r"(?<![\w$.\-/])%s(?![\w\-])" % re.escape(var), code)]      # a hyphenated word (sealed-call) or a path is not a use of the variable
+        hits = []
+        for ln in text.splitlines():
+            code = ln.strip()
+            if code.startswith("#"): continue
+            hits += [code] * (len(re.findall(r"(?<![A-Za-z0-9_$])%s(?:\+=|=|\[[^\]]*\]=)" % re.escape(var), code))
+                            + len(re.findall(r"\b(?:for|read|local|declare|typeset|readonly|export|unset|mapfile|readarray)\s+(?:-\S+\s+)*%s\b|\bprintf\s+-v\s+%s\b" % (re.escape(var), re.escape(var)), code)))
         ok = [h for h in hits if re.split(r"\s+#", h)[0].strip() == want or re.split(r"\s+#", h)[0].strip().startswith(want + ";")]
         if len(hits) != 1 or len(ok) != 1:
-            bad.append("%s: the name %s is written bare %d times, or on a line other than `%s`" % (path, var, len(hits), want))
+            bad.append("%s: $%s is assigned %d times or by a line other than `%s`" % (path, var, len(hits), want))
 
 
 def ns_bare_code(text):
@@ -1117,7 +1122,7 @@ def ns_shell(path, text, closure, funcs=None):
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", cmd[i]):      # an assignment word, also after a keyword (`then x=1`)
                 i += 1; continue
             w = ns_word(cmd[i])
-            if w is None or (w[0] == "word" and "/" in w[1]):
+            if w is None:
                 break
             name = w[1] if w[0] == "var" else w[1].rsplit("/", 1)[-1]
             if w[0] == "word" and name == "mapfile" and any(re.fullmatch(r"-[A-Za-z]*C.*", x) for x in cmd[i + 1:] if x.startswith("-")):
@@ -1144,12 +1149,6 @@ def ns_shell(path, text, closure, funcs=None):
             bad.append("%s has a command word the judge cannot resolve: %r (computed, globbed or built from an expansion)" % (path, name)); continue
         base = name.rsplit("/", 1)[-1]
         rest = cmd[i + 1:]
-        if kind == "word" and "/" in name:      # a command word with a directory is judged before any builtin, wrapper or utility rule: it is a script of the closure or a finding
-            if not re.fullmatch(r"(\./)?bin/[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
-                bad.append("%s starts %s, a path-qualified command word that is not a script of the closure" % (path, name))
-            elif name.lstrip("./") not in closure:
-                bad.append("%s runs %s, which is not in the closure the judge reads" % (path, name))
-            continue
         if kind == "var":
             if name in NS_ENGINE_VARS:
                 eng = NS_ENGINE_VARS[name]
@@ -1171,6 +1170,10 @@ def ns_shell(path, text, closure, funcs=None):
             if path not in NS_ENGINE[base]: bad.append("%s starts %s outside %s" % (path, base, " and ".join(NS_ENGINE[base])))
         elif base in NS_NEVER or re.fullmatch(r"fscache(\.bin)?|fscache-fips", base):
             bad.append("%s starts %s, which compiles or runs source code or builds a command line from text" % (path, base))
+        elif "/" in name and re.fullmatch(r"(\./)?bin/[A-Za-z0-9_][A-Za-z0-9_.-]*", name):      # a script of the repository: it is read too, so it must be in the closure
+            if name.lstrip("./") not in closure: bad.append("%s runs %s, which is not in the closure the judge reads" % (path, name))
+        elif "/" in name:
+            bad.append("%s starts %s, a path-qualified command word that is not a script of the closure (a name with a directory is a different program from the one the judge knows by its last part)" % (path, name))
         elif base in NS_INTERP:
             ns_interp_check(path, base, rest, closure, vars_ok, bad)
         elif base in NS_UTILS or base in extra or base in ("exit", "return") or name in funcs or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\(\)", name):
@@ -1226,9 +1229,8 @@ def ns_python(path, text, closure=None):
     for node in ast.walk(tree):
         if isinstance(node, (ast.Attribute, ast.Name)) and is_start_ref(node) and id(node) not in called:      # passed, returned, stored or bound: partial(subprocess.run), x = os.execv
             bad.append("%s:%d uses a program-starting function as a value (bound, passed or stored): its calls cannot be judged" % (path, node.lineno))
-        if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and alias.get(node.id, "") in NS_START_MODULES + ("importlib",)
-                and not (isinstance(parents.get(node), ast.Attribute) and parents[node].value is node)):      # the module name is used as `module.attr` and in no other way
-            bad.append("%s:%d uses the module name %s other than as the base of module.attr (assigned, passed, returned or stored): its calls cannot be judged" % (path, node.lineno, node.id))
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and alias.get(node.value.id, "") in NS_START_MODULES:
+            bad.append("%s:%d binds the module %s to another name: its calls cannot be judged" % (path, node.lineno, alias[node.value.id]))
         if isinstance(node, ast.ImportFrom) and any(x.name == "*" for x in node.names) and (node.module or "").split(".")[0] in NS_START_MODULES + ("importlib",):
             bad.append("%s:%d imports * from %s: its calls cannot be judged" % (path, node.lineno, node.module))
         if not isinstance(node, ast.Call):
@@ -1275,16 +1277,11 @@ def ns_python(path, text, closure=None):
                 if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name) and st.targets[0].id == var and st.lineno < node.lineno:
                     v = st.value.left if isinstance(st.value, ast.BinOp) and isinstance(st.value.op, ast.Add) else st.value
                     if isinstance(v, (ast.List, ast.Tuple)): found = v      # the last list assigned before the call
-            def start_arg(n):      # this load of the list is the first argument (or args=) of a program-starting call
-                par = parents.get(n)
-                if isinstance(par, ast.keyword): n, par = par, parents.get(par)
-                if not isinstance(par, ast.Call): return False
-                cname = par.func.attr if isinstance(par.func, ast.Attribute) else getattr(par.func, "id", "")
-                return (bool(rx.match(cname)) or cname in wrappers) and (par.args[:1] == [n] or (isinstance(n, ast.keyword) and n.arg == "args"))
-            stored = [st for st in ast.walk(fn) if isinstance(st, ast.Name) and st.id == var and isinstance(st.ctx, (ast.Store, ast.Del))]
-            loose = [st for st in ast.walk(fn) if isinstance(st, ast.Name) and st.id == var and isinstance(st.ctx, ast.Load) and not start_arg(st)]
-            if found is not None and (len(stored) != 1 or loose):
-                bad.append("%s:%d starts a program from the list %s, which is assigned more than once or used for anything but the start call (aliased, indexed, passed on, changed): it cannot be judged" % (path, node.lineno, var)); continue
+            binds = [st for st in ast.walk(fn) if (isinstance(st, ast.Name) and st.id == var and isinstance(st.ctx, (ast.Store, ast.Del)))
+                     or (isinstance(st, ast.Subscript) and isinstance(st.value, ast.Name) and st.value.id == var and isinstance(st.ctx, (ast.Store, ast.Del)))
+                     or (isinstance(st, ast.Call) and isinstance(st.func, ast.Attribute) and isinstance(st.func.value, ast.Name) and st.func.value.id == var and st.func.attr in ("append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"))]
+            if found is not None and len(binds) != 1:
+                bad.append("%s:%d starts a program from the list %s, which is assigned more than once or changed after it was built: it cannot be judged" % (path, node.lineno, var)); continue
             if found is not None: a = found
         if not isinstance(a, (ast.List, ast.Tuple)) or not a.elts:
             if enclosing(node) in wrappers and isinstance(a, ast.Name):
@@ -1308,12 +1305,9 @@ def ns_python(path, text, closure=None):
         elif word and (word in NS_NEVER or re.fullmatch(r"fscache(\.bin)?|fscache-fips", word)):
             bad.append("%s:%d starts %s, which compiles or runs source code" % (path, node.lineno, word))
         elif is_interp:
-            is_opt = lambda x: isinstance(x, ast.Constant) and isinstance(x.value, str) and x.value.startswith("-")
-            operand = next((x for x in rest if not is_opt(x)), None)
-            python = (first is None and word is None) or word in ("python", "python3")      # sys.executable
-            wrong = [x.value for x in rest[:rest.index(operand) if operand is not None else len(rest)] if not (python and x.value in NS_INTERP_OPTS)]
-            if wrong:
-                bad.append("%s:%d runs the interpreter with the option word %s: an interpreter takes no option (-c, -m, -s and - run inline code or stdin)" % (path, node.lineno, wrong[0])); continue
+            if "-c" in consts or any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", x) for x in consts):
+                bad.append("%s:%d runs the interpreter with inline code (-c)" % (path, node.lineno)); continue
+            operand = next((x for x in rest if not (isinstance(x, ast.Constant) and isinstance(x.value, str) and x.value.startswith("-"))), None)
             computed = False
             for fn_name, w_ok, osrc, asrc in NS_PYCOMPUTED.get(path, ()):
                 if operand is None or fn_name != enclosing(node) or w_ok != word or ast.dump(operand) != ast.dump(ast.parse(osrc, mode="eval").body): continue
