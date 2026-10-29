@@ -23,7 +23,7 @@
  "chain-verify-test.sh": 855,
  "check-action-pins-test.sh": 1159,
  "check-file-allowlist-test.sh": 670,
- "check-no-outbound-test.sh": 71,
+ "check-no-outbound-test.sh": 135,
  "dependabot-reviewer-gather-test.sh": 20,
  "dependabot-reviewer-test.sh": 79,
  "dependency-lanes-test.sh": 56,
