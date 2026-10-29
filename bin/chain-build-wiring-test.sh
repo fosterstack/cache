@@ -2748,12 +2748,585 @@ replace "$work/caller.yml" "$work/c15.yml" "echo anything at all, including secr
 replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact" \
     "    runs-on: self-hosted\n    steps:\n      - uses: actions/download-artifact" \
   && expect ok "AC14 the scanner steps are cache's: a change there does not change the verdict" "" callers "$work/c16.yml"
+# ---- nosource: no step of Build or Rebuild runs source code outside melange (sandboxed-build rule 1) ----------------
+# The shell closure scripts are held as exact text, the Python ones by exact start lines and closed lists of names.
+# Each row is one mutation of a fresh copy of the closure that the judge must refuse; the word is the message token.
+python3 - "$work/ns" "$root" "$shape" <<'PY' || true      # a failed build shows as the fixture row below
+import importlib.util, os, shutil, sys
+dst, root, shape = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("shape", shape)
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+seen, bad = S.ns_closure(root)
+assert seen and not bad, bad
+for p in seen + [".github/policy/chain-scripts.json"]:
+    os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
+    shutil.copy(os.path.join(root, p), os.path.join(dst, p))
+# The real tree has one known finding, the admission step's `go run`; the fixture drops it so each row proves its own.
+adm = dst + "/bin/build-admit.py"
+lines = open(adm).read().split("\n")
+hit = [n for n, l in enumerate(lines) if "[ctx.go," in l and '"verify-freeze"' in l]
+assert len(hit) == 1, "the admission call moved: move this replacement with it"
+lines[hit[0]] = "    rc, err = 0, b\"\""
+open(adm, "w").write("\n".join(lines))
+PY
+expect ok "nosource fixture: the closure of the stage scripts is clean without the one known finding" "" \
+  nosource "$work/ns"
+nsfresh() { # a fresh copy; when the fixture is missing the copy is an empty tree, so each row still ends in one verdict
+  rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm" 2> /dev/null || mkdir -p "$work/nsm/bin" "$work/nsm/.github/policy"
+}
+nsm() { # nsm ID LABEL WORD FILE OLD NEW   (replace OLD by NEW in FILE of a fresh copy; the refusal must contain WORD)
+  nsfresh
+  replace "$work/ns/$4" "$work/nsm/$4" "$5" "$6" && expect caught "$2" "$3" nosource "$work/nsm"; return 0
+}
+nsmf() { # nsmf ID LABEL WORD NEWFILE FILE OLD NEW   (like nsm, and NEWFILE is made in the copy first)
+  nsfresh; printf 'x\n' > "$work/nsm/$4"
+  replace "$work/ns/$5" "$work/nsm/$5" "$6" "$7" && expect caught "$2" "$3" nosource "$work/nsm"; return 0
+}
+nsa() { # nsa ID LABEL WORD FILE TEXT   (add TEXT at the end of FILE; \n in TEXT is a newline)
+  nsfresh; printf '\n%b\n' "$5" >> "$work/nsm/$4"
+  expect caught "$1 $2" "$3" nosource "$work/nsm"
+}
+nsok() { # nsok ID LABEL FILE TEXT   (like nsa, and the judge must accept the copy)
+  nsfresh; printf '\n%b\n' "$4" >> "$work/nsm/$3"
+  expect ok "$1 $2" "" nosource "$work/nsm"
+}
+nsl() { # nsl ID LABEL WORD FILE OP REGEX [TEXT]   (OP after|del|sub|swap acts on the first line matching ^REGEX;
+  # swap trades that line with the first line matching ^TEXT)
+  nsfresh
+  python3 - "$work/nsm/$4" "$5" "$6" "${7-}" <<'PY' || { bad "$1 mutation did not apply ($4 $5 $6)"; return 0; }
+import re, sys
+f, op, rx, text = sys.argv[1:5]
+text = text.replace("\\n", "\n")
+lines = open(f).read().split("\n")
+i = next(n for n, l in enumerate(lines) if re.match(rx, l))
+if op == "after": lines[i + 1:i + 1] = text.split("\n")
+elif op == "del": del lines[i]
+elif op == "sub": lines[i] = text
+else:
+    j = next(n for n, l in enumerate(lines) if re.match(text, l))
+    lines[i], lines[j] = lines[j], lines[i]
+open(f, "w").write("\n".join(lines))
+PY
+  expect caught "$1 $2" "$3" nosource "$work/nsm"
+}
+nsrow() { # nsrow ID LABEL WORD PATH   (drop the chain-scripts.json row of PATH)
+  nsfresh
+  python3 - "$work/nsm/.github/policy/chain-scripts.json" "$4" <<'PY' || { bad "$1 no row to drop: $4"; return 0; }
+import json, sys
+f, path = sys.argv[1:3]
+d = json.load(open(f))
+n = len(d["scripts"])
+d["scripts"] = [r for r in d["scripts"] if r["path"] != path]
+assert len(d["scripts"]) == n - 1, "no such row"
+json.dump(d, open(f, "w"), indent=2)
+PY
+  expect caught "$1 $2" "$3" nosource "$work/nsm"
+}
+CNT="commands, the grammar has"; EXP=": expected"; EXL="is not an exact line"
+REF="is refused outside an exact line"; MODL="is not on the closed module list"; ATTR="is not on the closed list"
+LIT="program is not a literal path"
+PYH='import subprocess as _sp, functools as _ft, os as _os, importlib as _il'
+PYS='import subprocess as _sp, sys as _sys'
+EXECL='    exec(compile(src, mod.__file__, "exec"), mod.__dict__)'
+PCZ='    run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER))])'
+# the round-one and rerun rows (cz, go, mk, bin1, mel1, apk1, bp1-bp24) keep their labels
+nsmf cz1 "nosource a stage script runs a test-named script that is not a row" "commands, the grammar has" \
+  bin/chain-test-local.py bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/chain-test-local.py'
+nsmf cz2 "nosource a stage script runs an extensionless bin/ file that is not a row" "commands, the grammar has" \
+  bin/helper bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/helper'
+nsmf cz3 "nosource a path-qualified extensionless bin/ file that is not a row" "commands, the grammar has" \
+  bin/helper bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n./bin/helper'
+nsm go1 "nosource a go build in a stage script" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n"$GO_TOOL" build ./cmd/fscache'
+nsm go2 "nosource go test in a stage script" "commands, the grammar has" bin/build-stage-assemble.sh \
+  'mkdir -p melange-repo' 'mkdir -p melange-repo\ngo test ./...'
+nsm go3 "nosource go run through a path to the pinned toolchain (a path-qualified word is judged first)" \
+  "commands, the grammar has" bin/build-stage-rebuild-apk.sh 'set -euo pipefail' \
+  'set -euo pipefail\n/usr/local/bin/fscache-go/bin/go run ./tools/x'
+nsm go4 "nosource go generate after a semicolon" ": expected" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'true; go generate ./...'
+nsm mk1 "nosource make in a stage script" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nmake all'
+nsm mk2 "nosource a compiler behind sudo" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsudo gcc -o x x.c'
+nsm bin1 "nosource the produced binary run in a stage script" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n./out/fscache.bin --version'
+nsm mel1 "nosource melange started outside build-apk.sh" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nmelange build x.yaml'
+nsm apk1 "nosource apko started through a path (a path-qualified word is judged first)" "commands, the grammar has" \
+  bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n/usr/local/bin/apko build a b'
+nsm pyg1 "nosource a Go build started by a Python helper" "is not an exact line" bin/build-version-check.py \
+  '[GO_TOOL, "version", "-m", binary]' '[GO_TOOL, "build", "-o", binary]'
+nsm pym1 "nosource make started by a Python helper" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp; _sp.run(["make"])\nimport '
+nsm pysh "nosource a Python helper starting a program through a shell" "is not an exact line" bin/build-archives.py \
+  'import ' 'import subprocess as _sp; _sp.run("echo", shell=True)\nimport '
+nsm pyos "nosource os.system in a Python helper" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  'import os as _os; _os.system("true")\nimport '
+nsm pyin "nosource the interpreter started on inline code" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp, sys as _sys; _sp.run([_sys.executable, "-c", "pass"])\nimport '
+nsm row1 "nosource a script a stage script starts that is not a row" "is not a row of chain-scripts.json" \
+  .github/policy/chain-scripts.json '"path": "bin/oci-digest.py"' '"path": "bin/oci-digest-x.py"'
+nsm bp1 "nosource bash -c with a Go build inside" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nbash -c "go build ./..."'
+nsm bp2 "nosource timeout in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ntimeout 5 go build ./...'
+nsm bp3 "nosource nice in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nnice -n 5 go build ./...'
+nsm bp4 "nosource xargs go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nls | xargs go build'
+nsm bp5 "nosource command in front of make" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ncommand make all'
+nsm bp6 "nosource time in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ntime go build ./...'
+nsm bp7 "nosource if go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nif go build ./...; then true; fi'
+nsm bp8 "nosource an alias for the Go tool" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nalias g=go'
+nsm bp9 "nosource python3 -c" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\npython3 -c "import os"'
+nsm bp10 "nosource python3 on a file that is not a repository script" "commands, the grammar has" \
+  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 /tmp/x.py'
+nsm bp11 "nosource a program named by a variable" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n"$TOOL" build ./...'
+nsm bp12 "nosource go build inside a substitution inside double quotes" "commands, the grammar has" \
+  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\necho "$(go build ./...)"'
+nsm bp13 "nosource eval" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\neval "go build"'
+nsm bp14 "nosource a compiler nobody listed" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ntsc --build'
+nsm bp15 "nosource a trap handler that builds" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ntrap "go build ./..." EXIT'
+nsm bp16 "nosource a Python command line held in a variable" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\ncmd = ["make", "all"]\n_sp.run(cmd)\nimport '
+nsm bp17 "nosource a Python command line that is a call" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\n_sp.run(str("x").split())\nimport '
+nsm bp18 "nosource os.execv" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  'import os as _os\n_os.execv("/bin/sh", ["sh"])\nimport '
+nsm bp19 "nosource bash -c in a Python helper" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\n_sp.run(["bash", "-c", "go build"])\nimport '
+nsm bp20 "nosource python3 -c in a Python helper" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\n_sp.run(["python3", "-c", "pass"])\nimport '
+nsm bp21 "nosource the open exception does not travel: the same go run in another script" "is not an exact line" \
+  bin/build-archives.py 'import ' \
+  'import subprocess as _sp\n_sp.run(["go", "-C", "tools/requirements", "run", ".", "verify-freeze", "x"])\nimport '
+nsm bp22 "nosource a script a closure script names but no runs row lists is read too" "commands, the grammar has" \
+  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/chain-new-helper.sh'
+nsm bp24 "nosource an array expansion standing for the program" "commands, the grammar has" \
+  bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"${tool[@]}" build'
+nsm cl1 \
+  "nosource a sibling module chain-verify.py loads (load_sibling) is read: a program started in chain_items.py" \
+  "is not an exact line" bin/chain_items.py 'import ' 'import subprocess as _sp\n_sp.run(["make"])\nimport '
+nsm cl3 "nosource chain_common.py is read too" "is not an exact line" bin/chain_common.py 'import ' \
+  'import subprocess as _sp\n_sp.run(["make"])\nimport '
+nsm cl4 "nosource chain_hostile.py is read too" "is not an exact line" bin/chain_hostile.py 'import ' \
+  'import subprocess as _sp\n_sp.run(["make"])\nimport '
+nsm sh1 "nosource a substitution inside an array assignment" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nx=("$(go build ./...)")'
+nsm sh2 "nosource a substitution inside a parameter expansion" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\necho ${y:-$(go build ./...)}'
+nsm sh3 "nosource a substitution inside [[ ]]" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n[[ $(go build ./...) ]]'
+nsm sh4 "nosource a computed command word" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n"${TOOL:-go}" build ./...'
+nsm sh5 "nosource a globbed command word" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n/usr/lo?al/bin/g? build'
+nsm sh6 "nosource trap -- with a build in the handler" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\ntrap -- "go build ./..." EXIT'
+nsm sh7 "nosource find -exec" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nfind . -name x -exec go build {} \;'
+nsm op1 "nosource tar -I runs a program" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ntar -I x -cf a.tar b'
+nsm op2 "nosource tar -I inside an option cluster" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\ntar -cIx a b'
+nsm op3 "nosource sort --compress-program" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsort --compress-program=x f'
+nsm op4 "nosource env -S" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nenv -S "go build" true'
+nsm op5 "nosource sed -f" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed -f x.sed f'
+nsm op6 "nosource awk -f" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nawk -f x.awk f'
+nsm op7 "nosource sed -nf (f inside a cluster)" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed -nf x f'
+nsm op8 "nosource sudo -u" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsudo -u root true'
+nsm op9 "nosource mapfile -C" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nmapfile -C x -c 1 arr < f'
+nsm op10 "nosource git -c" "commands, the grammar has" bin/build-stage-snapshot-apk.sh \
+  'git tag --force v0.0.0-rc.1 HEAD' 'git tag --force v0.0.0-rc.1 HEAD\ngit -c core.pager=x log'
+nsm op11 "nosource git with a subcommand that is not on the list" "commands, the grammar has" \
+  bin/build-stage-snapshot-apk.sh 'git tag --force v0.0.0-rc.1 HEAD' 'git tag --force v0.0.0-rc.1 HEAD\ngit foo'
+nsm sh8 "nosource awk system()" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nawk "BEGIN{system(\\"go build\\")}"'
+nsm sh9 "nosource an interpreter variable with -c" "commands, the grammar has" bin/build-apk.sh 'set -euo pipefail' \
+  'set -euo pipefail\n"$PY3" -c "import os"'
+nsm sh10 "nosource an interpreter on a script that is not in the closure" "commands, the grammar has" \
+  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/not-a-script-of-the-closure.py'
+nsm sh11 "nosource a process substitution" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ncat <(go build ./...)'
+nsm sh12 "nosource sed with the e flag" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed -n "s/x/go build/e" f'
+nsm sh13 "nosource a substitution inside arithmetic" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(( $(go build ./...) ))'
+nsm py1 "nosource a Python program that is not on the script's list" "is not an exact line" bin/build-archives.py \
+  'import ' 'import subprocess as _sp\n_sp.run(["true", "x"])\nimport '
+nsm py2 "nosource executable= in a Python start" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\n_sp.run(["git"], executable="/bin/sh")\nimport '
+nsm py3 "nosource a call of exec in a Python helper" "is refused outside an exact line" bin/build-archives.py \
+  'import ' 'exec("x = 1")\nimport '
+nsm py4 "nosource a name bound to a program-starting function" "is refused outside an exact line" \
+  bin/build-archives.py 'import ' 'import subprocess as _sp\nr = _sp.run\nimport '
+nsm py5 "nosource the interpreter on a file outside bin/ after an option" "is not an exact line" \
+  bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["python3", "-I", "tools/helper.py"])\nimport '
+nsm py6 "nosource a call of exec outside the reviewed loader function of chain-verify.py" \
+  "is refused outside an exact line" bin/chain-verify.py 'import ' \
+  'import os\ndef _zz():\n    exec("x = 1")\nimport '
+nsm py7 "nosource the OPENSSL module constant is allowed only in chain_common.py" "is not an exact line" \
+  bin/chain-verify.py 'import ' 'import subprocess as _sp\nOPENSSL = "openssl"\n_sp.run([OPENSSL, "x"])\nimport '
+nsm py8 "nosource a program list is per script: git is not on build-archives.py's" "is not an exact line" \
+  bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["git", "status"])\nimport '
+nsm pa1 "nosource getattr of a start function" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\n_x = getattr(_sp, '\''run'\'')\nimport '
+nsm pa2 "nosource getattr called at once" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\ngetattr(_sp, '\''run'\'')(['\''make'\''])\nimport '
+nsm pa3 "nosource functools.partial of a start function" "is refused outside an exact line" bin/build-archives.py \
+  'import ' "$PYH"'\n_p = _ft.partial(_sp.run, ['\''make'\''])\nimport '
+nsm pa4 "nosource a ** call of a start function" "is not an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\n_k = {}\n_sp.run(['\''git'\''], **_k)\nimport '
+nsm pa5 "nosource a * call of a start function" "is not an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\n_a = ['\''git'\'']\n_sp.run(*_a)\nimport '
+nsm pa6 "nosource the subprocess module bound to another name" "is refused outside an exact line" \
+  bin/build-archives.py 'import ' "$PYH"'\n_m = _sp\n_m.run(['\''make'\''])\nimport '
+nsm pa7 "nosource from subprocess import *" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\nfrom subprocess import *\nimport '
+nsm pa8 "nosource importlib.import_module" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\n_il.import_module('\''subprocess'\'')\nimport '
+nsm pa9 "nosource __import__" "is refused outside an exact line" bin/build-archives.py 'import ' \
+  "$PYH"'\n__import__('\''subprocess'\'').run(['\''make'\''])\nimport '
+nsm pa10 "nosource check_output on an owner the judge cannot trace" "is refused outside an exact line" \
+  bin/build-archives.py 'import ' "$PYH"'\ndef _f(p):\n    p.check_output(['\''make'\''])\nimport '
+nsm pa11 "nosource a start function returned as a value" "is refused outside an exact line" bin/build-archives.py \
+  'import ' "$PYH"'\ndef _f():\n    return _sp.run\nimport '
+nsm pa12 "nosource the interpreter on a bin/ script outside the closure" "is not an exact line" \
+  bin/build-archives.py 'import ' \
+  "$PYH"'\nimport sys as _sys\n_sp.run([_sys.executable, '\''bin/not-in-closure.py'\''])\nimport '
+nsm pl1 "nosource a command list assigned twice" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd = ['make']\n_sp.run(cmd)\nimport '
+nsm pl2 "nosource a command list appended to" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd.append('x')\n_sp.run(cmd)\nimport '
+nsm pl3 "nosource a command list item replaced" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd[0] = 'make'\n_sp.run(cmd)\nimport '
+nsm pl4 "nosource a command list extended with +=" "is not an exact line" bin/build-archives.py 'import ' \
+  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd += ['x']\n_sp.run(cmd)\nimport '
+nsm ex1 "nosource the approved call of exec duplicated in the reviewed loader" "is refused outside an exact line" \
+  bin/chain-verify.py "$EXECL" "$EXECL\n$EXECL"
+nsm ex2 "nosource the loader call of exec with other arguments" "is refused outside an exact line" \
+  bin/chain-verify.py 'exec(compile(src, mod.__file__, "exec"), mod.__dict__)' \
+  'exec(compile(src, mod.__file__, "exec"), {})'
+nsm ex3 "nosource a call of exec at module level of another script" "is refused outside an exact line" \
+  bin/build-archives.py 'import ' 'exec('\''x'\'')\nimport '
+nsm pc1 "nosource a computed interpreter operand in another script" "is not an exact line" bin/build-archives.py \
+  'import ' 'import subprocess as _sp, os as _os\n_sp.run(["python3", _os.path.join(ctx.policy, "x.py")])\nimport '
+nsm pc2 "nosource the policy-folder operand in a function that is not reviewed" "is not an exact line" \
+  bin/build-admit.py 'def check_rc_proof(ctx):' 'def zz(ctx):\n'"$PCZ"'\n\n\ndef check_rc_proof(ctx):'
+nsm pc3 "nosource script assigned twice in patch_baseline_version" "is not an exact line" bin/build-admit.py \
+  '    script = os.path.join(ctx.policy, os.path.basename(SIGNER))' \
+  '    script = os.path.join(ctx.policy, os.path.basename(SIGNER))\n    script = '\''x.py'\'''
+nsm pc4 "nosource SIGNER assigned twice" "is not an exact line" bin/build-admit.py \
+  'SIGNER = "bin/admission-tag-signer.py"' 'SIGNER = "bin/admission-tag-signer.py"\nSIGNER = "/tmp/x.py"'
+nsm sv1 "nosource SUDO assigned twice" "commands, the grammar has" bin/build-apk.sh 'SUDO=/usr/bin/sudo' \
+  'SUDO=/usr/bin/sudo\nSUDO=/tmp/x'
+nsm sv2 "nosource GIT assigned twice on one line" ": expected" bin/build-apk.sh 'GIT=/usr/bin/git ' \
+  'GIT=/usr/bin/git; GIT=/tmp/x '
+nsm sv3 "nosource the sealed call array appended to" ": expected" bin/build-apk.sh 'call=("$ENVBIN" -i' \
+  'call+=(x); call=("$ENVBIN" -i'
+nsm sv4 "nosource melange_bin read into" ": expected" bin/build-apk.sh 'melange_bin=$MELANGE;' \
+  'melange_bin=$MELANGE; read melange_bin <<< x;'
+nsm sv5 "nosource MELANGE given another location" ": expected" bin/build-apk.sh 'MELANGE=/usr/local/bin/melange' \
+  'MELANGE=/tmp/melange'
+nsm sv6 "nosource PY3 given another location in assemble-image.sh" ": expected" bin/assemble-image.sh \
+  'PY3=/usr/bin/python3' 'PY3=/tmp/python3'
+nsm sd1 "nosource sed with the e command at an address" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nsed '\''1e go build'\'' f'
+nsm sd2 "nosource sed -e with an e command" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed -n -e '\''/x/e'\'' f'
+nsm sd3 "nosource sed with two commands" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed '\''s/a/b/;s/c/d/'\'' f'
+nsm sd4 "nosource sed with the w command" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed '\''w out'\'' f'
+nsm sd5 "nosource sed -ne cluster with an e command" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nsed -ne '\''1e id'\'' f'
+nsm aw1 "nosource awk with a program from a variable" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nawk "$prog" f'
+nsm aw2 "nosource awk with a program from a command substitution" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nawk "$(cat p.awk)" f'
+nsm aw3 "nosource awk with no program" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nawk -F: '
+nsm pq1 "nosource a path-qualified cat" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n/tmp/evil/cat x'
+nsm pq2 "nosource a path-qualified rm in a directory of the tree" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n./tools/rm x'
+nsm pq3 "nosource a path-qualified bash" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n/tmp/evil/bash bin/chain-verify.py'
+nsm pq4 "nosource a bin/ script that is not in the closure" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n./bin/not-there.sh'
+nsm cs1 "nosource make closing a multi-line subshell" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n(\ncd x\nmake)'
+nsm cs2 "nosource make closing a multi-line substitution" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n$(\nmake)'
+nsm rd1 "nosource a quote left open across lines" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\necho '\''a\nmake\nb'\'''
+nsm rd2 "nosource a quoted parenthesis inside a substitution" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(echo ")" ; make)'
+nsm rd3 "nosource a quoted open parenthesis inside a substitution" "commands, the grammar has" \
+  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(echo '\''('\'' ; make)'
+nsm rd4 "nosource a substitution inside a single-quoted subscript" "commands, the grammar has" \
+  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=${arr['\''$(make)'\'']}'
+nsm rd5 "nosource a backtick inside a single-quoted subscript" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nx=${arr['\''`make`'\'']}'
+nsm fn1 "nosource a function name taken from a comment" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n# make() { :; }\nmake all'
+nsm fn2 "nosource a function name taken from a string" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\necho "x make() y"\nmake all'
+nsm fw1 "nosource a first command word that is an option" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n-x foo'
+nsm fw2 "nosource a first command word that is only digits" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\n1 foo'
+nsm ca1 "nosource a command in the second arm of a case line" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\ncase $1 in\n  a) true;; b) make all;;\nesac'
+nsm pq5 "nosource a path-qualified env" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n./tools/env true'
+nsm pq6 "nosource a path-qualified echo" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n./tools/echo hello'
+nsm ip1 "nosource bash -s reading stdin" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nbash -s bin/chain-verify.py <<< "make"'
+nsm ip2 "nosource python3 - reading stdin" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\npython3 - bin/chain-verify.py'
+nsm ip3 "nosource python3 -m" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\npython3 -m http.server'
+nsm ip4 "nosource a combined python option cluster" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\npython3 -Ic pass'
+nsm sd6 "nosource sed -ee (the attached e is the program)" "commands, the grammar has" bin/build-stage-apk.sh \
+  'unset GH_TOKEN' 'unset GH_TOKEN\nsed -ee sxsxx f'
+nsm sd7 "nosource sed -ne (a combined option)" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\nsed -ne p f'
+nsm cf1 "nosource the four-line case shape of the audit seat: an arm and esac on one line, then a subshell" \
+  "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ncase x in\nx) true;; esac\n(\nmake)'
+nsm cf2 "nosource a case on one line" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ncase $1 in a) true;; esac'
+nsm cf3 "nosource two arms on one line" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ncase $1 in\n  a) true;; b) true;;\nesac'
+nsm pe1 "nosource python executable -m" "is not an exact line" bin/build-archives.py 'import ' \
+  "$PYS"'\n_sp.run([_sys.executable, '\''-m'\'', '\''x'\''])\nimport '
+nsm pe2 "nosource python executable - (stdin)" "is not an exact line" bin/build-archives.py 'import ' \
+  "$PYS"'\n_sp.run([_sys.executable, '\''-'\'', '\''bin/chain-verify.py'\''])\nimport '
+nsm pa13 "nosource an annotated alias of the subprocess module" "is refused outside an exact line" \
+  bin/build-archives.py 'import ' \
+  "$PYS"'\nimport subprocess\nsp: object = subprocess\nsp.run(['\''make'\''])\nimport '
+nsm pa14 "nosource the subprocess module passed on" "is refused outside an exact line" bin/build-archives.py \
+  'import ' "$PYS"'\nprint(_sp)\nimport '
+nsm pl5 "nosource a command list aliased and the alias changed" "is not an exact line" bin/build-archives.py \
+  'import ' \
+  "$PYS"'\ncmd = ['\''git'\'', '\''status'\'']\nother = cmd\nother[0] = '\''make'\''\n_sp.run(cmd)\nimport '
+nsm pl6 "nosource a command list changed through __setitem__" "is not an exact line" bin/build-archives.py 'import ' \
+  "$PYS"'\ncmd = ['\''git'\'', '\''status'\'']\ncmd.__setitem__(0, '\''make'\'')\n_sp.run(cmd)\nimport '
+nsm pl7 "nosource a command list passed to a function" "is not an exact line" bin/build-archives.py 'import ' \
+  "$PYS"'\ncmd = ['\''git'\'', '\''status'\'']\nprint(cmd)\n_sp.run(cmd)\nimport '
+nsm sv7 "nosource read -r ignored PY3 (a later operand of read)" "commands, the grammar has" bin/build-apk.sh \
+  'PY3=/usr/bin/python3' 'PY3=/usr/bin/python3\nread -r ignored PY3 <<< "x ./tools/python3"'
+nsm sv8 "nosource unset PY3" "commands, the grammar has" bin/build-apk.sh 'PY3=/usr/bin/python3' \
+  'PY3=/usr/bin/python3\nunset PY3'
+nsm pr1 "nosource melange is refused in any script but build-apk.sh (the probe has no allowance)" \
+  "commands, the grammar has" bin/build-stage-assemble.sh 'mkdir -p melange-repo' \
+  'mkdir -p melange-repo\n"$MELANGE" build x.yaml'
+# the closure follows load_sibling: a module chain-verify.py loads that is not a row is refused
+add_sibling() {
+  nsfresh; printf 'x = 1\n' > "$work/nsm/bin/chain_zzz.py"
+  python3 - "$work/nsm" <<'PY'
+import sys
+f = sys.argv[1] + "/bin/chain-verify.py"
+t = open(f).read()
+old = 'chain_items = load_sibling("chain_items")'
+assert t.count(old) == 1
+open(f, "w").write(t.replace(old, old + '\nchain_zzz = load_sibling("chain_zzz")', 1))
+PY
+}
+add_sibling && expect caught "nosource a module chain-verify.py loads with load_sibling that is not a row is refused" \
+  "is not a row of chain-scripts.json" nosource "$work/nsm" || bad "nosource the load_sibling mutation did not apply"
+# the sealed-call round (R1-R5, F1-F8): each one a mutation the earlier readers let through
+PA=bin/build-archives.py
+nsl R1 "nosource a ( line then make) inside a case body of a shell helper" "$CNT" bin/build-apk.sh after \
+  '^set -euo pipefail' 'case $1 in\n  x)\n(\nmake)\n    ;;\nesac'
+nsa R2 "nosource a local def run(argv) that appends to the list before subprocess.run starts make" "$EXL" $PA \
+  "def run(argv):\n    argv.append('make')\n    subprocess.run(argv)\nrun(['x'])"
+nsl R3 "nosource read -r ignored \"PY3\" added to build-apk.sh" "$CNT" bin/build-apk.sh after '^PY3=' \
+  'read -r ignored "PY3"'
+nsa R4 "nosource a path accepted by its basename: subprocess.run of ./tools/git" "$EXL" $PA \
+  "subprocess.run(['./tools/git', 'status'])"
+nsa R5a "nosource a reused as name erasing an alias entry" "$REF" $PA \
+  "import subprocess as s\nimport json as s\ns.run(['make'])"
+nsa R5b "nosource subprocess.__dict__ reaching run" "$REF" $PA "subprocess.__dict__['run'](['make'])"
+nsm F1 "nosource a path word before the command word" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n/tmp/evil/go build'
+nsm F2 "nosource the interpreter with an option" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\npython3 -O bin/chain-verify.py'
+nsm F3 "nosource sed with an e flag" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nsed -n "s/x/y/e" f'
+nsm F4 "nosource esac and ;; sharing a line" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\ncase $1 in\n  a) true\n  ;; esac'
+nsa F5 "nosource the subprocess module name used other than as module.attr" "$REF" $PA "_zz = subprocess"
+nsa F6 "nosource a start command list built elsewhere" "$EXL" $PA "_cmd = ['git', 'status']\nsubprocess.run(_cmd)"
+nsm F7 "nosource a variable name that is not bare: \${PY3}" "$EXP" bin/apko-lock.sh '"$PY3" -I' '"${PY3}" -I'
+nsm F8 "nosource the approved exec duplicated" "$REF" bin/chain-verify.py "$EXECL" "$EXECL\n$EXECL"
+# refused names, one mutant each (an identifier in any position: bare name, attribute, import name, keyword)
+nsa N01 "nosource subprocess outside a start line" "$REF" $PA "_zz = subprocess.PIPE"
+nsa N02 "nosource os used bare" "$REF" $PA "_zz = os"
+nsa N03 "nosource a bare os passed on" "$REF" $PA "print(os)"
+nsa N04 "nosource os.system" "$ATTR" $PA "os.system('true')"
+nsa N05 "nosource os.popen" "$ATTR" $PA "os.popen('true')"
+nsa N06 "nosource os.execv" "$ATTR" $PA "os.execv('/bin/sh', ['sh'])"
+nsa N07 "nosource os.environ assigned outside an exact line" "$REF" $PA "os.environ['PYTHONPATH'] = '/tmp'"
+nsa N08 "nosource os.environ read outside an exact line" "$REF" $PA "_zz = os.environ.get('PYTHONPATH')"
+nsa N09 "nosource the attribute after os.path is closed too" "$ATTR" $PA "_zz = os.path.os"
+nsa N10 "nosource shutil.os" "$REF" $PA "import shutil\n_zz = shutil.os"
+nsa N11 "nosource glob.os" "$REF" $PA "_zz = glob.os"
+nsa N12 "nosource tempfile._os" "$REF" $PA "import tempfile\n_zz = tempfile._os"
+nsa N13 "nosource any attribute starting with _ on an imported module" "$REF" $PA "_zz = sys._getframe"
+nsa N14 "nosource types.FunctionType" "$REF" $PA "import types\n_zz = types.FunctionType"
+nsa N15 "nosource types.ModuleType outside the loader" "$REF" $PA "import types\n_zz = types.ModuleType('x')"
+nsa N16 "nosource yaml.load" "$ATTR" bin/build-admit.py "_zz = yaml.load('a: 1')"
+nsa N17 "nosource import pty" "$MODL" $PA "import pty"
+nsa N18 "nosource import asyncio" "$MODL" $PA "import asyncio"
+nsa N19 "nosource import importlib" "$MODL" $PA "import importlib"
+nsa N20 "nosource import runpy" "$MODL" $PA "import runpy"
+nsa N21 "nosource import multiprocessing" "$MODL" $PA "import multiprocessing"
+nsa N22 "nosource import ctypes" "$MODL" $PA "import ctypes"
+nsa N23 "nosource import functools" "$MODL" $PA "import functools"
+nsa N24 "nosource the name pty without an import" "$REF" $PA "pty.spawn(['x'])"
+nsa N25 "nosource the name asyncio without an import" "$REF" $PA "asyncio.run(x)"
+nsa N26 "nosource the name importlib without an import" "$REF" $PA "importlib.import_module('x')"
+nsa N27 "nosource the name runpy without an import" "$REF" $PA "runpy.run_path('x')"
+nsa N28 "nosource the name multiprocessing without an import" "$REF" $PA "multiprocessing.Process()"
+nsa N29 "nosource the name ctypes without an import" "$REF" $PA "ctypes.CDLL('x')"
+nsa N30 "nosource a bare exec" "$REF" $PA "exec('x = 1')"
+nsa N31 "nosource a bare eval" "$REF" $PA "eval('1')"
+nsa N32 "nosource a bare compile (re.compile is fine)" "$REF" $PA "compile('1', 'x', 'eval')"
+nsa N33 "nosource __import__" "$REF" $PA "__import__('os')"
+nsa N34 "nosource getattr" "$REF" $PA "getattr(sys, 'exit')"
+nsa N35 "nosource setattr" "$REF" $PA "setattr(sys, 'x', 1)"
+nsa N36 "nosource globals" "$REF" $PA "globals()"
+nsa N37 "nosource vars" "$REF" $PA "vars()"
+nsa N38 "nosource __dict__" "$REF" $PA "_zz = sys.__dict__"
+nsa N39 "nosource __builtins__" "$REF" $PA "_zz = __builtins__"
+nsa N40 "nosource breakpoint" "$REF" $PA "breakpoint()"
+nsa N41 "nosource help" "$REF" $PA "help()"
+nsa N42 "nosource a dunder chain through subclasses" "$REF" $PA "_zz = ().__class__.__base__.__subclasses__()"
+nsa N43 "nosource a dunder that is not on the short list" "$REF" $PA "_zz = sys.__class__"
+nsa N44 "nosource a refused name as a keyword" "$REF" $PA "_zz = dict(eval=1)"
+nsa N45 "nosource a refused name as an import name" "$REF" $PA "from json import eval"
+nsa N46 "nosource a refused name as an attribute after a dot" "$REF" $PA "_zz = sys.exec"
+nsa N47 "nosource import subprocess as sp" "$REF" $PA "import subprocess as sp"
+nsa N48 "nosource import json as j" "$REF" $PA "import json as j"
+nsa N49 "nosource from json import loads as l" "$REF" $PA "from json import loads as l"
+nsa N50 "nosource from os import system" "$ATTR" $PA "from os import system"
+nsa N51 "nosource from subprocess import run" "$ATTR" $PA "from subprocess import run"
+nsa N52 "nosource import *" "$REF" $PA "from json import *"
+nsok O1 "nosource re.compile is fine" bin/build-admit.py "_zz = re.compile('a')"
+nsok O2 "nosource __name__ and __doc__ are fine" $PA "_zz = (__name__, __doc__)"
+nsok O3 "nosource yaml.safe_load is fine" bin/build-admit.py "_zz = yaml.safe_load('a: 1')"
+# starts: what may stand in a program start
+nsa S01 "nosource a *args unpacking inside the list" "$EXL" $PA "subprocess.run(['git', *extra])"
+nsa S02 "nosource a *args call" "$EXL" $PA "subprocess.run(*extra)"
+nsa S03 "nosource a **kw call" "$EXL" $PA "subprocess.run(['git', 'status'], **kw)"
+nsa S04 "nosource shell=True" "$EXL" $PA "subprocess.run(['git', 'status'], shell=True)"
+nsa S05 "nosource executable=" "$EXL" $PA "subprocess.run(['git', 'status'], executable='/bin/sh')"
+nsa S06 "nosource a computed env=" "$EXL" $PA "subprocess.run(['git', 'status'], env=dict(zip(a, b)))"
+nsa S07 "nosource a computed program like ctx.go" "$LIT" $PA "subprocess.run([ctx.go, 'x'])"
+nsa S08 "nosource a NAME program assigned twice" "$LIT" $PA \
+  "PROG = '/usr/bin/git'  # TEST-SUBST\nPROG = '/usr/bin/git'  # TEST-SUBST\nsubprocess.run([PROG, 'x'])"
+nsa S09 "nosource a NAME program whose assignment lacks TEST-SUBST" "$LIT" $PA \
+  "PROG = '/usr/bin/git'\nsubprocess.run([PROG, 'x'])"
+nsa S10 "nosource sys.executable without -I -B" "$EXL" $PA "subprocess.run([sys.executable, 'bin/apk-tool.py'])"
+nsa S11 "nosource sys.executable with -I only" "$EXL" $PA "subprocess.run([sys.executable, '-I', 'bin/apk-tool.py'])"
+nsa S12 "nosource sys.executable with -B -I in the wrong order" "$EXL" $PA \
+  "subprocess.run([sys.executable, '-B', '-I', 'bin/apk-tool.py'])"
+nsa S13 "nosource sys.executable on an operand outside the closure" "$EXL" $PA \
+  "subprocess.run([sys.executable, '-I', '-B', 'bin/not-in-closure.py'])"
+nsl pv1 "nosource OPENSSL assigned twice" "$LIT" bin/chain_common.py after '^OPENSSL = ' \
+  'OPENSSL = "/usr/bin/make"  # TEST-SUBST'
+nsa pv2 "nosource OPENSSL reassigned in a function" "$LIT" bin/chain_common.py \
+  "def zz():\n    global OPENSSL\n    OPENSSL = '/usr/bin/make'"
+nsl pv3 "nosource OPENSSL given another program" "$EXL" bin/chain_common.py sub '^OPENSSL = ' \
+  'OPENSSL = "/usr/bin/make"  # TEST-SUBST'
+# the load_sibling lines are exempt exact lines; changing one is refused
+nsm L1 "nosource the ModuleType line of load_sibling changed" "$REF" bin/chain-verify.py 'types.ModuleType(name)' \
+  'types.ModuleType(name + "x")'
+nsm L2 "nosource the sys.modules line of load_sibling changed" "$REF" bin/chain-verify.py 'sys.modules[name] = mod' \
+  'sys.modules[name + "x"] = mod'
+nsm L3 "nosource the __file__ line of load_sibling changed" "$REF" bin/chain-verify.py \
+  'mod.__file__ = os.path.join(here, name + os.extsep + "py")' 'mod.__file__ = os.path.join(here, name)'
+# closure files without a row, and files that cannot be read
+nsrow K1 "nosource apko-lock.sh has no row" "is not a row of chain-scripts.json" bin/apko-lock.sh
+nsrow K2 "nosource build-apk.sh has no row" "is not a row of chain-scripts.json" bin/build-apk.sh
+nsrow K3 "nosource vex-index.py has no row" "is not a row of chain-scripts.json" bin/vex-index.py
+nsrow K4 "nosource chain_common.py has no row" "is not a row of chain-scripts.json" bin/chain_common.py
+nsfresh; printf '\xff\xfe\n' >> "$work/nsm/bin/oci-digest.py"
+expect caught "K5 nosource a Python closure file that is not valid UTF-8" "cannot be read" nosource "$work/nsm"
+nsa K6 "nosource a Python closure file with a syntax error" "cannot be read" bin/oci-digest.py "def ("
+nsfresh; printf '{' > "$work/nsm/.github/policy/chain-scripts.json"
+expect caught "K7 nosource a chain-scripts.json that does not parse" "cannot be read" nosource "$work/nsm"
+nsfresh; rm -f "$work/nsm/.github/policy/chain-scripts.json"
+expect caught "K8 nosource a missing chain-scripts.json" "cannot be read" nosource "$work/nsm"
+nsm M1 "nosource build-stage-refuse-mode.sh changed by one character" "$EXP" bin/build-stage-refuse-mode.sh \
+  'release|snapshot) ;;' 'release|snapshoT) ;;'
+# the three helpers are exact text: every kind of change to the command lines is a finding
+while IFS='|' read -r key text; do
+  for h in build-apk.sh assemble-image.sh apko-lock.sh; do
+    nsl "H2" "nosource $h with $key added after the first line" "$CNT" "bin/$h" after '^set -euo pipefail' "$text"
+  done
+done <<'KINDS_END'
+a command|true
+a case|case $1 in\n  x) true ;;\nesac
+a for|for i in 1 2; do\n  true\ndone
+a while|while false; do\n  true\ndone
+a function definition|f() {\n  true\n}
+a subshell|(\n  true\n)
+a read|read -r ignored
+KINDS_END
+for h in build-apk.sh assemble-image.sh apko-lock.sh; do
+  nsl H1 "nosource $h one line changed" "$EXP" "bin/$h" sub '^set -euo pipefail' 'set -eo pipefail'
+  nsl H3 "nosource $h one line removed" "$CNT" "bin/$h" del '^set -euo pipefail'
+  nsl H4 "nosource $h two lines swapped" "$CNT" "bin/$h" swap '^set -euo pipefail' '^PY3='
+  nsl H5 "nosource $h a changed TEST-SUBST constant" "$EXP" "bin/$h" sub '^PY3=' 'PY3=/tmp/python3  # TEST-SUBST'
+  nsl H6 "nosource $h PY3 rebound by a quoted assignment" "$CNT" "bin/$h" after '^PY3=' 'PY3="/tmp/python3"'
+done
+# a comment naming go build and make changes nothing; a real go version -m line is one more command
+nsfresh
+replace "$work/ns/bin/build-stage-apk.sh" "$work/nsm/bin/build-stage-apk.sh" 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n# never go build here; make is not used' \
+  && expect ok "cm1 nosource a comment naming go build and make is not code" "" nosource "$work/nsm"
+nsm cm2 "nosource a go version -m line is one more command" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+  'unset GH_TOKEN\n"$GO_TOOL" version -m out/x'
 # ---- the real repository --------------------------------------------------------------------------------------------------------------------
 RAL="$root/.github/policy/allowed-actions.json"
 expect ok "AC1/AC2 the real stage-build.yml is exactly the Build grammar" "" stage "$root/.github/workflows/stage-build.yml" build "$RAL"
 expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild grammar" "" stage "$root/.github/workflows/stage-reproducibility.yml" \
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
+real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
+if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:456"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
+  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:456) is the ONE finding"
+else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:456 -> ${real_json:0:300}"; fi
+ns_hits=""
+for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
+  ns_hits+=$(grep -rnw "NS_$n" "$root/bin" || true)
+done
+if [ -z "$ns_hits" ]; then ok "nosource no name of the earlier reader's tables is left in bin/"
+else bad "nosource a name of the earlier reader's tables is left: ${ns_hits:0:200}"; fi
+if ! grep -qw PY_START_CALLS "$root/bin/chain-test-shape.py" "$root/bin/chain-check-shape.py"; then
+  ok "nosource neither chain-test-shape.py nor chain-check-shape.py holds a start-call name list"
+else bad "nosource a start-call name list is left in chain-test-shape.py or chain-check-shape.py"; fi
 expect ok "AC2 the real bin/witnessed.sh is exactly the canonical helper" "" helper "$root/bin/witnessed.sh"
 expect ok "AC2 no real stage file or stage script names witness run" "" directwitness "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
@@ -3091,7 +3664,7 @@ if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1061
+EXPECT=1351
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

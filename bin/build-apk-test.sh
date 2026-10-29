@@ -888,8 +888,8 @@ P
 t "chain" "the entry mentions none of the protected names outside a pure \$NAME read (comments and strings included)" python3 - "$BA_PROD" <<'P'
 import re, sys
 t = open(sys.argv[1]).read()
-phrase = "no Go toolchain on PATH in CI"   # the one message an existing case fixes by name; the row lists it as an env_mentions entry
-assert t.count(phrase) == 1, "the CI message is the one allowed mention"
+phrase = "no Go toolchain on PATH in CI"   # the one message an existing case fixes by name (now go-verdict's)
+assert t.count(phrase) <= 1, "the CI message is the one allowed mention"
 t = t.replace(phrase, "")
 rx = re.compile(r"(?<![A-Za-z0-9_])(PATH|BASH_ENV|ENV|LD_[A-Za-z0-9_]+|PYTHON[A-Za-z0-9_]*|NODE_OPTIONS|IFS|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|PS4|PROMPT_COMMAND)(?![A-Za-z0-9_])")
 bad = [m.group(1) for m in rx.finditer(t) if not (t[max(0, m.start() - 1):m.start()] == "$" or (t[max(0, m.start() - 2):m.start()] == "${" and t[m.end():m.end() + 1] == "}"))]
@@ -1253,13 +1253,14 @@ src = open(sys.argv[1]).read()
 UN = '"$UNSHARE" -n "$melange_bin"'
 M = {   # name -> [(old, new), ...]; each old must occur exactly once in the copy
  "ba-melange":    [(UN, '"$UNSHARE" -n melange')],
- "ba-sudo":       [('( cd "$rdir" && "$SUDO" "${call[@]}"', '( cd "$rdir" && sudo "${call[@]}"')],
+ "ba-sudo":       [('"$SUDO" "${call[@]}"', 'sudo "${call[@]}"')],
  "ba-env-sudo":   [('call=("$ENVBIN" -i', 'call=(env -i')],
  "ba-unshare":    [('"$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n', '"$ENVBIN" -i "${sealed[@]}" unshare -n')],
  "ba-sha256sum":  [('got=$("$SHA256SUM" ', 'got=$(sha256sum ')],
  "ba-python3":    [('"$PY3" -I -B bin/build-apk-helper.py sealed-env', 'python3 -I -B bin/build-apk-helper.py sealed-env')],
  "ba-git":        [('headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null)', 'headrev=$(git -C "$src" rev-parse HEAD)')],
- "ba-git-excl":   [('excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || die', 'excl=$(git -C "$src" rev-parse --path-format=absolute --git-path info/exclude) || die')],
+ "ba-git-excl":   [('excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null)',
+                    'excl=$(git -C "$src" rev-parse --path-format=absolute --git-path info/exclude)')],
  "ba-go":         [('"$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off "$GO_TOOL" version -m', '"$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off go version -m')],
  "ba-env-go":     [('gov=$("$ENVBIN" GOTOOLCHAIN=local', 'gov=$(env GOTOOLCHAIN=local')],
  "ba-openssl":    [('tmp=$(mktemp -d)\n', 'openssl version >/dev/null\ntmp=$(mktemp -d)\n')],      # inserted call: the script has no openssl site of its own
@@ -1389,23 +1390,23 @@ python3 - "$work/ba-copy.sh" "$rpm" <<'PYM'
 import sys
 src = open(sys.argv[1]).read(); out = sys.argv[2]
 SDE = '"$GIT" -C "$src" log -1 --format=%ct 2>/dev/null |'
-RM = '|| "$SUDO" rm -rf "$tmp" >/dev/null 2>&1;'
-PR = '"$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1;'
+RM = '|| "$SUDO" rm -rf "$tmp" >/dev/null 2>&1'
+PR = '"$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1'
 SYS = '"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 ||'
 ENVI = '"$ENVBIN" -i "${sealed[@]}" "$UNSHARE"'
 M = {
  "ba-sde-git":      [(SDE, 'git -C "$src" log -1 --format=%ct |')],
  "ba-sde-assembled": [(SDE, 'g=gi; g+=t; "$g" -C "$src" log -1 --format=%ct |')],
  "ba-sde-basename": [(SDE, '"$(basename "$GIT")" -C "$src" log -1 --format=%ct |')],
- "ba-rm-sudo":      [(RM, '|| sudo rm -rf "$tmp";')],
- "ba-rm-assembled": [(RM, '|| s=su; s+=do; "$s" rm -rf "$tmp";')],
- "ba-rm-basename":  [(RM, '|| "$(basename "$SUDO")" rm -rf "$tmp";')],
- "ba-probe-sudo":   [(PR, 'sudo "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
- "ba-probe-unshare": [(PR, '"$SUDO" unshare -n "$PY3" -I -B bin/net-probe.py;')],
- "ba-probe-python3": [(PR, '"$SUDO" "$UNSHARE" -n python3 -I -B bin/net-probe.py;')],
- "ba-probe-assembled": [(PR, 'g=sud; g+=o; "$g" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
- "ba-probe-sudo-py": [(PR, 'p=py; p+=thon3; "$SUDO" "$p" -I -B bin/net-probe.py;')],
- "ba-probe-basename": [(PR, '"$(basename "$SUDO")" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-rm-sudo":      [(RM, '|| sudo rm -rf "$tmp"')],
+ "ba-rm-assembled": [(RM, '|| s=su; s+=do; "$s" rm -rf "$tmp"')],
+ "ba-rm-basename":  [(RM, '|| "$(basename "$SUDO")" rm -rf "$tmp"')],
+ "ba-probe-sudo":   [(PR, 'sudo "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py')],
+ "ba-probe-unshare": [(PR, '"$SUDO" unshare -n "$PY3" -I -B bin/net-probe.py')],
+ "ba-probe-python3": [(PR, '"$SUDO" "$UNSHARE" -n python3 -I -B bin/net-probe.py')],
+ "ba-probe-assembled": [(PR, 'g=sud; g+=o; "$g" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py')],
+ "ba-probe-sudo-py": [(PR, 'p=py; p+=thon3; "$SUDO" "$p" -I -B bin/net-probe.py')],
+ "ba-probe-basename": [(PR, '"$(basename "$SUDO")" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py')],
  "ba-sysctl-sudo":  [(SYS, 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||')],
  "ba-env-opt":      [('"$SUDO" "${call[@]}"', '"$SUDO" -n env "${call[@]:1}"')],
  "ba-env-dashes":   [('"$SUDO" "${call[@]}"', '"$SUDO" -- env "${call[@]:1}"')],
@@ -1542,6 +1543,501 @@ t "AC7" "release-sign-apks.sh: no comment names bin/install-build-tools.sh" bash
 rp_sign_dirs fcA fcB
 ( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" --key "$work/release.rsa" ) >"$work/fc.log" 2>&1; fc=$?
 t "AC7" "release-sign-apks.sh: a run from another directory is refused (exit 2) with a message naming the repository root, and signs nothing" bash -c "[ '$fc' = 2 ] && grep -qi 'repository root' '$work/fc.log' && ! grep -q 'signed' '$work/fc.log'"
+
+# ===== cache#770: build-apk.sh is straight-line text; what were its loops and cases is done by the helper =====
+# The cases say what the script said and did before: the same message, the same exit status, the same order.
+# They call the helper subcommands directly. The end-to-end checks after them run the whole script.
+cat >"$work/bah-cases.py" <<'PY'
+import os, subprocess, sys, tempfile
+
+ROOT, WORK = sys.argv[1], sys.argv[2]
+T = os.path.realpath(tempfile.mkdtemp(dir=WORK))
+SDE = "1789952380"
+P = "build-apk.sh: "
+
+
+def helper(args, env=None, cwd=None):
+    full = {"PATH": os.environ["PATH"]}
+    full.update(env or {})
+    full = {k: v for k, v in full.items() if v is not None}
+    r = subprocess.run(["python3", "-I", "-B", ROOT + "/bin/build-apk-helper.py"] + args,
+                       env=full, cwd=cwd or T, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def case(label, args, rc=0, out=None, err=None, env=None, cwd=None):
+    """one helper call; err None means: empty when rc is 0, not looked at otherwise"""
+    got_rc, got_out, got_err = helper(args, env, cwd)
+    if err is None and rc == 0:
+        err = ""
+    problems = []
+    if got_rc != rc:
+        problems.append("exit %r, wanted %r" % (got_rc, rc))
+    if out is not None and got_out.rstrip("\n") != out:
+        problems.append("stdout %r, wanted %r" % (got_out, out))
+    if err is not None and got_err != err:
+        problems.append("stderr %r, wanted %r" % (got_err, err))
+    print(("FAIL %s: %s" % (label, "; ".join(problems))) if problems else "ok " + label)
+
+
+def refuse(label, args, msg, rc=2, **kw):
+    case(label, args, rc=rc, err=P + msg + "\n", **kw)
+
+
+def put(path, text=""):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+def mkdir(*parts):
+    path = os.path.join(T, *parts)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def tree(name, *subdirs):
+    for sub in subdirs:
+        mkdir(name, sub)
+    return mkdir(name)
+
+
+src = tree("src", "vendor", ".git")
+repo, ga, out = mkdir("repo"), mkdir("goarch"), mkdir("out")
+kr, ml = put(T + "/kr.pub", "k"), put(T + "/melange.lock", "x\n")
+GOOD = dict(variant="standard", arch="x86_64", version="0.3.0", source_dir=src, repo=repo, keyring=kr,
+            go_archive=ga, melange_lock=ml, out=out)
+
+
+def argv(**over):
+    opts = dict(GOOD)
+    opts.update(over)
+    flat = []
+    for name, value in opts.items():
+        if value is not None:
+            flat += ["--" + name.replace("_", "-"), value]
+    return flat
+
+
+ENV = {"SOURCE_DATE_EPOCH": SDE}
+
+
+def check(label, rc, msg, s="Linux", m="x86_64", env=None, extra=(), **over):
+    full = dict(ENV)
+    full.update(env or {})
+    args = ["check-args", s, m] + argv(**over) + list(extra)
+    if rc == 0:
+        case(label, args, out=msg, env=full)
+    else:
+        refuse(label, args, msg, rc=rc, env=full)
+
+
+# ---- check-args: the accepted call, the parse, the sde mode ----------------------------------------------------------
+check("check-args: a complete call is accepted and answers build", 0, "build")
+check("check-args: amd64 is the x86_64 host and arm64 the aarch64 one", 0, "build", m="amd64")
+check("check-args: arm64 host builds aarch64", 0, "build", m="arm64", arch="aarch64")
+check("check-args: a repeated option takes its last value", 0, "build", extra=["--arch", "aarch64", "--arch", "x86_64"])
+MAC = ("refusing to run on Darwin: this script uses sudo, unshare and the sealed build tools, which run on Linux only "
+       "(inside a Linux container or on a GitHub runner), never on the Mac itself")
+check("check-args: a host that is not Linux is refused", 2, MAC, s="Darwin")
+refuse("check-args: the host is judged before the options are read", ["check-args", "Darwin", "x86_64", "--bogus"], MAC)
+check("check-args: an unknown option", 2, "unknown argument: --bogus", extra=["--bogus"])
+check("check-args: --recipe is not an option of the production script", 2, "unknown argument: --recipe",
+      extra=["--recipe", "x.yaml"])
+check("check-args: a stray word", 2, "unknown argument: stray", extra=["stray"])
+NOKEY = "--signing-key is not accepted: the apk is signed with the committed assembly key only"
+check("check-args: --signing-key", 2, NOKEY, extra=["--signing-key", "k"])
+check("check-args: --signing-key without a value says the same", 2, NOKEY, extra=["--signing-key"])
+check("check-args: the first bad option is the one named", 2, "unknown argument: --bogus",
+      extra=["--bogus", "--signing-key", "k"])
+OPTIONS = "variant arch version source-dir repo keyring go-archive melange-lock out render-dir apk-cache-dir"
+for opt in OPTIONS.split():
+    refuse("check-args: --%s as the last word has no value" % opt,
+           ["check-args", "Linux", "x86_64", "--" + opt], "missing value for --" + opt, env=ENV)
+refuse("check-args: no --source-dir", ["check-args", "Linux", "x86_64", "--variant", "standard"],
+       "--source-dir is required", env=ENV)
+check("check-args: an empty --source-dir", 2, "--source-dir is required", source_dir="")
+nogit = tree("nogit", "vendor")
+SDE_ARGS = ["check-args", "Linux", "x86_64", "--print-source-date-epoch", "--source-dir"]
+case("check-args: --print-source-date-epoch with a checkout answers sde, nothing else required", SDE_ARGS + [src])
+case("check-args: sde mode prints sde", SDE_ARGS + [src], out="sde")
+case("check-args: sde mode needs no SOURCE_DATE_EPOCH and judges no variant",
+     SDE_ARGS + [src, "--variant", "bogus"], out="sde", env={})
+refuse("check-args: sde mode with no .git", SDE_ARGS + [nogit],
+       nogit + " has no .git; there is no commit time to print")
+
+# ---- check-args: the refusals, in the order the old script made them
+VERSION = ("--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 "
+           "(numbers without leading zeros; not '%s')")
+for v in ("0.3.0", "10.20.30", "0.3.0-rc1", "1.0.0-rc12", "0.0.0-rc.1"):
+    check("check-args: version %s is accepted" % v, 0, "build", version=v)
+for v in ("v0.3.0", "0.3", "01.3.0", "0.3.0-rc01", "0.3.0-rc", "0.3.0-rc.1", "0.0.1-rc.1", "0.3.0\n", "", "(devel)"):
+    check("check-args: version %r is refused" % v, 2, VERSION % v, version=v)
+check("check-args: --variant production", 2, "--variant must be standard or fips", variant="production")
+check("check-args: no --variant", 2, "--variant must be standard or fips", variant=None)
+ARCH = "--arch must be an apk architecture name: x86_64 or aarch64 (not '%s')"
+check("check-args: --arch amd64", 2, ARCH % "amd64", arch="amd64")
+check("check-args: no --arch", 2, ARCH % "", arch=None)
+HOST = "refusing to build %s on a %s host: each architecture builds natively on its own runner, no emulation"
+check("check-args: aarch64 on an x86_64 host", 2, HOST % ("aarch64", "x86_64"), arch="aarch64")
+check("check-args: x86_64 on an aarch64 host", 2, HOST % ("x86_64", "aarch64"), m="aarch64")
+check("check-args: x86_64 on an unknown host is named as uname says", 2, HOST % ("x86_64", "riscv64"), m="riscv64")
+SDE_DIGITS = "SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)"
+for v in (None, "", "yesterday", "12 3", "1234567890123", "-5"):
+    check("check-args: SOURCE_DATE_EPOCH %r" % v, 2, SDE_DIGITS, env={"SOURCE_DATE_EPOCH": v})
+check("check-args: twelve digits that are not a date", 2, "SOURCE_DATE_EPOCH 999999999999 is not a date",
+      env={"SOURCE_DATE_EPOCH": "999999999999"})
+check("check-args: the epoch 0 is a date", 0, "build", env={"SOURCE_DATE_EPOCH": "0"})
+check("check-args: the release signing key", 2,
+      "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)",
+      env={"APK_RELEASE_SIGNING_KEY": "canary"})
+check("check-args: an empty release signing key variable is not a key", 0, "build", env={"APK_RELEASE_SIGNING_KEY": ""})
+GOPROXY = "GOPROXY must be off or unset (its value is not printed: it can carry a credential)"
+for v in ("https://proxy.golang.org", "", "direct"):
+    check("check-args: GOPROXY %r" % v, 2, GOPROXY, env={"GOPROXY": v})
+check("check-args: GOPROXY=off", 0, "build", env={"GOPROXY": "off"})
+PROXY = "a proxy is defined in the environment (%s); the sealed build has no network"
+for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+    check("check-args: %s" % name, 2, PROXY % name, env={name: "http://127.0.0.1:3128"})
+check("check-args: the proxies are looked at in the old order", 2, PROXY % "HTTPS_PROXY",
+      env={"all_proxy": "x", "HTTPS_PROXY": "x"})
+check("check-args: an empty proxy variable is not a proxy", 0, "build", env={"HTTP_PROXY": ""})
+NOREPO = ("--repo DIR (the local package repository melange installs the build tools from) "
+          "is required; a cache alone is not an input")
+check("check-args: no --repo", 2, NOREPO, repo=None)
+check("check-args: an https --repo", 2, "--repo must be a local directory, not an address (https://x.example/os)",
+      repo="https://x.example/os")
+check("check-args: a file:// --repo", 2, "--repo must be a local directory, not an address (file:///x)",
+      repo="file:///x")
+check("check-args: --repo that is not there", 2, "--repo %s/nope is not a directory" % T, repo=T + "/nope")
+check("check-args: --repo that is a file", 2, "--repo %s is not a directory" % kr, repo=kr)
+check("check-args: an empty --repo", 2, "--repo  is not a directory", repo="")
+check("check-args: --keyring that is not there", 2, "--keyring file not found: %s/nokey" % T, keyring=T + "/nokey")
+check("check-args: --keyring that is a directory", 2, "--keyring file not found: " + repo, keyring=repo)
+check("check-args: no --keyring", 2, "--keyring file not found: ", keyring=None)
+check("check-args: no --go-archive", 2, "--go-archive DIR is required", go_archive=None)
+check("check-args: --melange-lock that is not there", 2, "--melange-lock file not found: %s/nolock" % T,
+      melange_lock=T + "/nolock")
+check("check-args: no --out", 2, "--out DIR is required", out=None)
+nov = tree("nov", ".git")
+check("check-args: no vendor/", 2, "%s/vendor is missing: the build uses only vendored Go code" % nov, source_dir=nov)
+bare = mkdir("bare")
+check("check-args: no vendor/ is judged before no .git", 2,
+      "%s/vendor is missing: the build uses only vendored Go code" % bare, source_dir=bare)
+check("check-args: no .git", 2, "%s has no .git: the binary's stamp would say (devel)" % nogit, source_dir=nogit)
+put(T + "/gitfile/vendor/x")
+put(T + "/gitfile/.git", "gitdir: elsewhere\n")
+check("check-args: a .git file (a worktree) is enough", 0, "build", source_dir=T + "/gitfile")
+
+# One broken thing per step, in the order the old script judged them. A step i is run with steps i.. all broken and
+# must name step i: it is judged before every later one. The steps are applied last to first so that, when two
+# steps set the same option, the earlier step wins.
+# (name, options to break, environment to break, uname -m to fake or None, the message)
+STEPS = [
+    ("variant", dict(variant="production"), {}, None, "--variant must be standard or fips"),
+    ("arch", dict(arch="amd64"), {}, None, ARCH % "amd64"),
+    ("host", {}, {}, "aarch64", HOST % ("x86_64", "aarch64")),
+    ("version", dict(version="v0.3.0"), {}, None, VERSION % "v0.3.0"),
+    ("epoch", {}, {"SOURCE_DATE_EPOCH": "x"}, None, SDE_DIGITS),
+    ("release key", {}, {"APK_RELEASE_SIGNING_KEY": "k"}, None,
+     "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)"),
+    ("GOPROXY", {}, {"GOPROXY": "x"}, None, GOPROXY),
+    ("proxy", {}, {"all_proxy": "x"}, None, PROXY % "all_proxy"),
+    ("repo", dict(repo=None), {}, None, NOREPO),
+    ("keyring", dict(keyring=T + "/nokey"), {}, None, "--keyring file not found: %s/nokey" % T),
+    ("go-archive", dict(go_archive=None), {}, None, "--go-archive DIR is required"),
+    ("melange-lock", dict(melange_lock=T + "/nolock"), {}, None, "--melange-lock file not found: %s/nolock" % T),
+    ("out", dict(out=None), {}, None, "--out DIR is required"),
+    ("vendor", dict(source_dir=bare), {}, None, "%s/vendor is missing: the build uses only vendored Go code" % bare),
+    ("git", dict(source_dir=nogit), {}, None, "%s has no .git: the binary's stamp would say (devel)" % nogit),
+]
+for i, (name, _, _, _, msg) in enumerate(STEPS):
+    over, env, host = {}, {}, "x86_64"
+    for _, o, e, h, _ in reversed(STEPS[i:]):
+        over.update(o)
+        env.update(e)
+        host = h or host
+    check("check-args order: %s comes before everything after it" % name, 2, msg, m=host, env=env, **over)
+date_chain = [s for s in STEPS[5:]]
+over, env = {}, {}
+for _, o, e, _, _ in reversed(date_chain):
+    over.update(o)
+    env.update(e)
+env["SOURCE_DATE_EPOCH"] = "999999999999"
+check("check-args order: a bad epoch date comes before the release key and all after it", 2,
+      "SOURCE_DATE_EPOCH 999999999999 is not a date", env=env, **over)
+
+# ---- arg: the values the script reads from its options
+link = T + "/link"
+os.symlink(src, link)
+mkdir("sub")
+
+
+def arg(label, name, want, cwd=None, env=ENV, **over):
+    case("arg %s: %s" % (name, label), ["arg", name] + argv(**over), out=want, env=env, cwd=cwd)
+
+
+arg("an existing directory", "src", src)
+arg("a trailing slash is dropped", "src", src, source_dir=src + "/")
+arg("dot-dot is folded away", "src", src, source_dir=src + "/../src")
+arg("a relative directory becomes absolute", "src", src, cwd=T, source_dir="src")
+arg("a symlink is not resolved", "src", link, source_dir=link)
+arg("a name that is not a directory stays as typed", "repo", "nope/x", cwd=T, repo="nope/x")
+arg("a file is not a directory: it stays as typed", "go-archive", kr, go_archive=kr)
+arg("a directory", "repo", repo)
+arg("a directory", "go-archive", ga)
+arg("an existing directory", "out", out)
+case("arg variant: the last --variant wins", ["arg", "variant"] + argv() + ["--variant", "fips"], out="fips", env=ENV)
+arg("the value", "variant", "standard")
+arg("the value", "arch", "x86_64")
+arg("x86_64 is Go amd64", "goarch", "amd64")
+arg("aarch64 is Go arm64", "goarch", "arm64", arch="aarch64")
+arg("the value", "version", "0.3.0")
+arg("a final release keeps its number", "apkver", "0.3.0")
+arg("-rcN becomes _rcN", "apkver", "0.3.0_rc1", version="0.3.0-rc1")
+arg("-rc.1 becomes _rc1", "apkver", "0.0.0_rc1", version="0.0.0-rc.1")
+arg("the epoch as an ISO time", "build-date", "2026-09-21T00:59:40Z")
+arg("epoch 0", "build-date", "1970-01-01T00:00:00Z", env={"SOURCE_DATE_EPOCH": "0"})
+arg("a relative file becomes absolute", "keyring", kr, cwd=T, keyring="kr.pub")
+arg("a file in a directory reached through dot-dot", "keyring", kr, cwd=T, keyring="sub/../kr.pub")
+arg("a relative file becomes absolute", "melange-lock", ml, cwd=T, melange_lock="melange.lock")
+arg("not given: empty", "render-dir", "")
+arg("an existing directory", "render-dir", out, render_dir=out)
+arg("not given: empty", "apk-cache-dir", "")
+arg("an existing directory", "apk-cache-dir", ga, apk_cache_dir=ga)
+arg("a directory that is not there stays as typed", "apk-cache-dir", "no/cache", cwd=T, apk_cache_dir="no/cache")
+
+for rel, want in ((kr, kr), ("kr.pub", kr), ("sub/../kr.pub", kr), ("sub/new.txt", T + "/sub/new.txt")):
+    case("abs-file %s" % rel, ["abs-file", rel], out=want, cwd=T)
+
+# ---- exclude-file
+NINE = ["/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json",
+        "/build-in/", "/witness-build/", "/witness-rapk/", "/policy.json"]
+exn = [0]
+
+
+def exclude(label, before, expect_same=False, twice=False):
+    exn[0] += 1
+    info = mkdir("ex%d" % exn[0], "info")
+    excl = info + "/exclude"
+    if before is not None:
+        put(excl, before)
+    rc, _, err = helper(["exclude-file", excl, info])
+    text = open(excl).read() if os.path.exists(excl) else ""
+    lines = text.split("\n")
+    old = (before or "").split("\n")
+    old = old[:-1] if old and old[-1] == "" else old
+    problems = []
+    if rc != 0 or err:
+        problems.append("exit %r stderr %r" % (rc, err))
+    if lines[:len(old)] != old:
+        problems.append("the old lines are not kept in front: %r" % text)
+    problems += ["%s is there %d times" % (p, lines.count(p)) for p in NINE if lines.count(p) != 1]
+    if not text.endswith("\n"):
+        problems.append("the last pattern has no newline")
+    if expect_same and text != before:
+        problems.append("the file was changed: %r" % text)
+    if twice:
+        helper(["exclude-file", excl, info])
+        again = open(excl).read() if os.path.exists(excl) else ""
+        if again != text:
+            problems.append("a second run changed the file")
+    print(("FAIL exclude-file %s: %s" % (label, "; ".join(problems))) if problems else "ok exclude-file " + label)
+
+
+exclude("makes the file with the nine paths", None, twice=True)
+exclude("keeps what the file held and adds the nine", "# local\nfoo\n", twice=True)
+exclude("a last line without a newline is not glued to the first pattern", "# local excludes")
+exclude("adds only the paths that are missing", "/out/\n/policy.json\n", twice=True)
+exclude("all nine there: the file is not touched", "".join(p + "\n" for p in NINE), expect_same=True)
+exclude("a different pattern is not the same line", " /out/\n/out\n/archive/ \n")
+bad_dir = put(T + "/exf/info", "not a directory")
+EXCLUDE_REFUSED = ("the exclude file %s cannot be used: its directory %s is not a directory, "
+                   "or the exclude path itself is a directory")
+refuse("exclude-file: the directory of the exclude file is a file", ["exclude-file", bad_dir + "/exclude", bad_dir],
+       EXCLUDE_REFUSED % (bad_dir + "/exclude", bad_dir), rc=1)
+dir_excl = mkdir("exd", "info", "exclude")
+refuse("exclude-file: the exclude path is itself a directory", ["exclude-file", dir_excl, os.path.dirname(dir_excl)],
+       EXCLUDE_REFUSED % (dir_excl, os.path.dirname(dir_excl)), rc=1)
+
+# ---- melange-verdict
+case("melange-verdict: exit 0 is fine", ["melange-verdict", "0", ""])
+refuse("melange-verdict: failed, probe 101: a network attempt", ["melange-verdict", "1", "101"],
+       "a network attempt was made inside the sealed melange call (the probe confirms the namespace has no route); "
+       "the build must use only declared inputs", rc=4)
+for probe in ("0", "1", "110", "111", "127"):
+    refuse("melange-verdict: failed, probe %s: the namespace is not sealed" % probe, ["melange-verdict", "2", probe],
+           "melange failed with a network error, but the probe says the namespace is not sealed (exit %s); "
+           "fix the seal first" % probe, rc=1)
+for code in ("1", "2", "137"):
+    refuse("melange-verdict: failed %s, no probe run" % code, ["melange-verdict", code, ""],
+           "melange build failed (exit %s)" % code, rc=1)
+
+# ---- check-buildinfo
+BI = ("/usr/bin/fscache: go1.27.2\n\tpath\tgithub.com/fosterstack/cache/cmd/fscache\n"
+      "\tmod\tgithub.com/fosterstack/cache\tv0.3.0\n\tdep\tgithub.com/example/x\tv1.0.0\n"
+      "\tbuild\t-trimpath=true\n\tbuild\tvcs.modified=false\n")
+bin_ = [0]
+
+
+def textfile(text):
+    bin_[0] += 1
+    return put(T + "/text%d" % bin_[0], text)
+
+
+def buildinfo(label, text, version, rc=0, msg=None):
+    args = ["check-buildinfo", textfile(text), version]
+    refuse("check-buildinfo: " + label, args, msg, rc=rc) if msg else case("check-buildinfo: " + label, args)
+
+
+MAINVER = ("the binary's main module version is '%s', not v%s: the build is not stamped with the version being built "
+           "(a tag at the source HEAD is needed)")
+buildinfo("a stamped, clean binary", BI, "0.3.0")
+buildinfo("a module line with a hash field", BI.replace("v0.3.0\n", "v0.3.0\th1:abc=\n"), "0.3.0")
+buildinfo("a release candidate", BI.replace("v0.3.0", "v0.3.0-rc1"), "0.3.0-rc1")
+buildinfo("the snapshot version", BI.replace("v0.3.0", "v0.0.0-rc.1"), "0.0.0-rc.1")
+DEVEL = "the binary says (devel): the source was not stamped"
+buildinfo("(devel) as the module version", BI.replace("v0.3.0", "(devel)"), "0.3.0", 1, DEVEL)
+buildinfo("(devel) on any other line", BI + "\tdep\tx\t(devel)\n", "0.3.0", 1, DEVEL)
+buildinfo("vcs.modified=true", BI.replace("modified=false", "modified=true"), "0.3.0", 1,
+          "the binary was built from a modified (dirty) tree (vcs.modified=true)")
+buildinfo("(devel) is judged before vcs.modified", BI.replace("v0.3.0", "(devel)").replace("false", "true"),
+          "0.3.0", 1, DEVEL)
+buildinfo("another module version", BI.replace("v0.3.0", "v0.3.1"), "0.3.0", 1, MAINVER % ("v0.3.1", "0.3.0"))
+buildinfo("a pseudo-version", BI.replace("v0.3.0", "v0.3.1-0.20260101000000-abcdef123456"), "0.3.0", 1,
+          MAINVER % ("v0.3.1-0.20260101000000-abcdef123456", "0.3.0"))
+buildinfo("the version asked for is another one", BI, "0.3.1", 1, MAINVER % ("v0.3.0", "0.3.1"))
+NO_MAINVER = MAINVER % ("none", "0.3.0")
+buildinfo("no module line", BI.replace("\tmod\tgithub.com/fosterstack/cache\tv0.3.0\n", ""), "0.3.0", 1, NO_MAINVER)
+buildinfo("a dep line is not the main module", BI.replace("\tmod\t", "\tdep\t"), "0.3.0", 1, NO_MAINVER)
+buildinfo("the first module line is the main module", BI + "\tmod\tx\tv9.9.9\n", "0.3.0")
+
+# ---- check-revision
+HEAD, OTHER, FIPSID = "a" * 40, "b" * 40, "v1.0.0-c2097c7c"
+GOOD_FM = put(T + "/fm-good.txt", FIPSID + "\n")
+REVM = "the binary's vcs.revision is '%s', not the source HEAD %s: the binary is not tied to this source"
+STDF = "the standard binary records GOFIPS140 (%s); only the fips variant may"
+FIPSW = ("the fips binary must record exactly one GOFIPS140=%s (the module build/locks/fips-module.txt names) "
+         "and nothing else (found: %s)")
+FM_MISSING = ("build/locks/fips-module.txt is missing, not a regular file or a symlink: "
+              "the module the fips binary must record is unknown")
+FM_GRAMMAR = ("build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; "
+              "refusing")
+
+
+def revision(label, text, variant="standard", module=GOOD_FM, rc=0, msg=None, head=HEAD):
+    args = ["check-revision", textfile(text), head, variant, module]
+    refuse("check-revision: " + label, args, msg, rc=rc) if msg else case("check-revision: " + label, args)
+
+
+REV = BI + "\tbuild\tvcs.revision=%s\n" % HEAD
+FIPS_LINE = "\tbuild\tGOFIPS140=%s\n" % FIPSID
+revision("a binary of this source", REV)
+revision("another revision", BI + "\tbuild\tvcs.revision=%s\n" % OTHER, rc=1, msg=REVM % (OTHER, HEAD))
+NO_REV = REVM % ("none", HEAD)
+revision("no revision line", BI, rc=1, msg=NO_REV)
+revision("an empty revision", BI + "\tbuild\tvcs.revision=\n", rc=1, msg=NO_REV)
+revision("a revision on a dep line does not count", BI + "\tdep\tvcs.revision=%s\n" % HEAD, rc=1, msg=NO_REV)
+revision("the first revision line counts", REV + "\tbuild\tvcs.revision=%s\n" % OTHER)
+revision("the standard binary may not record GOFIPS140", REV + FIPS_LINE, rc=1, msg=STDF % ("GOFIPS140=" + FIPSID))
+revision("two GOFIPS140 lines are both shown", REV + FIPS_LINE + "\tbuild\tGOFIPS140=v1.1.0-deadbeef\n", rc=1,
+         msg=STDF % ("GOFIPS140=%s\nGOFIPS140=v1.1.0-deadbeef" % FIPSID))
+revision("the standard variant does not read the module file", REV, module=T + "/no-such-module-file")
+revision("the revision is judged before the module file", BI, "fips", T + "/no-such-module-file", rc=1, msg=NO_REV)
+revision("a fips binary that records the module", REV + FIPS_LINE, "fips")
+revision("a fips binary that records nothing", REV, "fips", rc=1, msg=FIPSW % (FIPSID, "none"))
+revision("a fips binary that records another module", REV + "\tbuild\tGOFIPS140=v1.1.0-deadbeef\n", "fips", rc=1,
+         msg=FIPSW % (FIPSID, "GOFIPS140=v1.1.0-deadbeef"))
+revision("a fips binary that records two", REV + FIPS_LINE + FIPS_LINE, "fips", rc=1,
+         msg=FIPSW % (FIPSID, "GOFIPS140=%s\nGOFIPS140=%s" % (FIPSID, FIPSID)))
+revision("a fips binary that records the longer id", REV + FIPS_LINE.replace("\n", "9\n"), "fips", rc=1,
+         msg=FIPSW % (FIPSID, "GOFIPS140=" + FIPSID + "9"))
+revision("a module file that is not there", REV + FIPS_LINE, "fips", T + "/nofm", 1, FM_MISSING)
+revision("a module file that is a directory", REV + FIPS_LINE, "fips", mkdir("fmdir"), 1, FM_MISSING)
+os.symlink(GOOD_FM, T + "/fm-link.txt")
+revision("a module file that is a symlink", REV + FIPS_LINE, "fips", T + "/fm-link.txt", 1, FM_MISSING)
+BAD_MODULES = ("v1.0.0-C2097C7C\n", FIPSID, FIPSID + "\n\n", "v1.0.0-c2097c7\n", "v01.0.0-c2097c7c\n", FIPSID + "\r\n",
+               "vx\n", "", FIPSID + "\n" + FIPSID + "\n", "v1.0.0-c2097c7c9\n", "v1.0.0-c2097c7\xe9\n")
+for i, content in enumerate(BAD_MODULES):
+    module = put(T + "/fm-bad%d.txt" % i, content)
+    revision("a module file holding %r" % content, REV + FIPS_LINE, "fips", module, 1, FM_GRAMMAR)
+
+# ---- go-verdict
+GOBODY = BI.split("\n", 1)[1]
+GOERR = put(T + "/go.err", "")
+TOOLCHAIN = ("the Go toolchain in buildinfo.txt (%s) differs from the one go version -m reports "
+             "for the packaged binary (%s)")
+BODY = ("buildinfo.txt in the apk differs from 'go version -m' of the packaged binary: "
+        "the recorded build information is not the binary's own")
+CI = ("no Go toolchain on PATH in CI: the buildinfo.txt cross-check against the packaged binary "
+      "cannot be skipped there; the runner must have Go (put it on the search path)")
+SKIP = ("build-apk.sh: note: buildinfo.txt not verified against the binary (no Go toolchain found); "
+        "the check is skipped\n")
+
+
+def go(label, rc, goout, info=BI, goerr=GOERR, env=None, msg=None, err=None):
+    args = ["go-verdict", str(rc), textfile(goout), textfile(info), goerr]
+    if msg:
+        refuse("go-verdict: " + label, args, msg, rc=1, env=env)
+    else:
+        case("go-verdict: " + label, args, err=err, env=env)
+
+
+go("the same build information", 0, "/tmp/x/fscache.bin: go1.27.2\n" + GOBODY)
+go("the same, though the file name in the first line differs", 0, "/usr/bin/fscache: go1.27.2\n" + GOBODY)
+go("trailing blank lines of buildinfo.txt do not count", 0, "/x: go1.27.2\n" + GOBODY, BI + "\n\n")
+go("trailing blank lines of the go output do not count", 0, "/x: go1.27.2\n" + GOBODY + "\n\n")
+go("one line each", 0, "/x: go1.27.2\n", "/y: go1.27.2\n")
+go("another toolchain", 0, "/x: go1.27.3\n" + GOBODY, msg=TOOLCHAIN % ("go1.27.2", "go1.27.3"))
+go("another body", 0, "/x: go1.27.2\n" + GOBODY.replace("v1.0.0", "v1.0.1"), msg=BODY)
+go("a missing body line", 0, "/x: go1.27.2\n" + GOBODY.split("\n", 1)[1], msg=BODY)
+go("the toolchain line is judged before the body", 0, "/x: go1.27.3\n" + GOBODY.replace("v1.0.0", "v1.0.1"),
+   msg=TOOLCHAIN % ("go1.27.2", "go1.27.3"))
+go("no output from go at all", 0, "", msg=TOOLCHAIN % ("go1.27.2", ""))
+go("no go toolchain, in CI", 127, "\n", env={"GITHUB_ACTIONS": "true"}, msg=CI, goerr=T + "/no-go-err")
+go("no go toolchain outside CI: a note, exit 0", 127, "\n", goerr=T + "/no-go-err", err=SKIP)
+go("an empty GITHUB_ACTIONS is not CI", 127, "\n", env={"GITHUB_ACTIONS": ""}, goerr=T + "/no-go-err", err=SKIP)
+GOFAIL = ("'go version -m' failed on the packaged binary (exit %s: %s); "
+          "the build information cannot be checked, refusing")
+go("go failed", 1, "\n", goerr=put(T + "/go1.err", "go: not a Go binary\n"), msg=GOFAIL % (1, "go: not a Go binary"))
+go("go failed, another status", 2, "\n", goerr=put(T + "/go2.err", "boom"), msg=GOFAIL % (2, "boom"))
+go("go failed, nothing said", 3, "\n", goerr=put(T + "/go3.err", ""), msg=GOFAIL % (3, ""))
+go("go failed, only the first 120 bytes of its words", 1, "\n", goerr=put(T + "/go4.err", "x" * 300 + "\n"),
+   msg=GOFAIL % (1, "x" * 120))
+go("go failed, two lines", 1, "\n", goerr=put(T + "/go5.err", "first\nsecond\n"), msg=GOFAIL % (1, "first\nsecond"))
+go("go failed in CI: the status, not the missing toolchain", 1, "\n", env={"GITHUB_ACTIONS": "true"},
+   goerr=put(T + "/go6.err", "bad\n"), msg=GOFAIL % (1, "bad"))
+PY
+python3 "$work/bah-cases.py" "$root" "$work" >"$work/bah-cases.out" 2>&1
+while IFS= read -r l; do case $l in "ok "*) ok;; *) bad 770 "$l";; esac; done <"$work/bah-cases.out"
+
+cat >"$work/sealed-line" <<'EOF'
+mapfile -d '' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV")
+EOF
+t "770" "the sealed environment is read by exactly one line, without || true: a helper that fails stops the script" \
+  grep -Fxqf "$work/sealed-line" "$BA_PROD"
+t "770" "no line of bin/build-apk.sh is longer than 120 characters" python3 - "$BA_PROD" <<'PY'
+import sys
+long_lines = [n for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1) if len(line.rstrip("\n")) > 120]
+sys.exit("lines over 120 characters: %r" % long_lines[:20] if long_lines else 0)
+PY
+
+# the paths melange is given are absolute, also when --out and --render-dir are relative and do not exist yet
+rel_work=$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1]))' "$work/relnew")
+run_s "${bae[@]}" "$BA" "${ba_args[@]}" --out "$rel_work/out" --render-dir "$rel_work/render"
+t "770" "relative --out and --render-dir that do not exist yet: made, and melange gets the absolute --out-dir" \
+  bash -c "[ '$(rc)' = 0 ] && [ -d '$work/relnew/out' ] && [ -f '$work/relnew/render/melange.yaml' ] \
+    && grep -Eq -- '^melange build .*--out-dir $work/relnew/out( |\$)' '$CALLS'"
+# a checkout without .git/info: the script makes the directory; the exclude file takes the job's nine paths once each
+cp -R "$src" "$work/src-noinfo"; rm -rf "$work/src-noinfo/.git/info"
+run_s "${bae[@]}" "$BA" "${ba_args[@]}" --source-dir "$work/src-noinfo" --out "$(mo)"
+nine="/archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /witness-build/ /witness-rapk/ /policy.json"
+t "770" "a checkout with no .git/info: the build runs and the exclude file holds each of the nine paths once" bash -c "
+  ex='$work/src-noinfo/.git/info/exclude'; [ '$(rc)' = 0 ] \
+    && for p in $nine; do [ \"\$(grep -cx \"\$p\" \"\$ex\")\" = 1 ] || exit 1; done"
+t "770" "after all the builds of this suite the fixture checkout's exclude file holds each of the nine paths once" \
+  bash -c "for p in $nine; do [ \"\$(grep -cx \"\$p\" '$src/.git/info/exclude')\" = 1 ] || exit 1; done"
 
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
