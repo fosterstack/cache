@@ -1017,7 +1017,8 @@ def _line_ids(text):
 # FILE-LEVEL rule, not by reading commands: a non-comment line of a scanned file outside vendor/ that names the vendored folder (a path under vendor/, a bare vendor
 # word; `go mod vendor` and -mod=vendor are the tool's own words) is an unmeasured occurrence unless the file is one of these exact paths. A new workflow or script that
 # names vendor/ is therefore refused until a security-tier change lists it here: a human gate on every new consumer, with no shell syntax to spell around.
-# bin/check-no-outbound.py and its test are listed because they are ours: the check skips vendor/ by name and the test builds a vendor/ fixture to prove it.
+# bin/check-no-outbound.py and its test are listed because they are ours: the check skips vendor/ by name and
+# the test builds a vendor/ fixture to prove it.
 _VENDOR_NAMING_FILES = frozenset("""
 .github/workflows/ci.yml
 .github/workflows/release.yml
