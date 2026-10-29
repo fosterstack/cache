@@ -732,7 +732,7 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 
 Every check the main branch requires shall also run in the merge queue, on the queue's own commit, with the same pass bar. A check that reads the pull request (pin age, dependency review, the review gate) shall read the queue's commits instead and fail if it cannot. No required check shall be skipped in the queue, except the landing marker check.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json; .github/workflows/agent-review-gate.yml; .github/agent/bin/queue-gate-judge.sh*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json; .github/workflows/agent-review-gate.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|

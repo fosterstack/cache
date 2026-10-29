@@ -1870,7 +1870,7 @@ requirements:
       pull request (pin age, dependency review, the review gate) shall read the
       queue's commits instead and fail if it cannot. No required check shall be
       skipped in the queue, except the landing marker check.
-    source: [.github/workflows/ci.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json, .github/workflows/agent-review-gate.yml, .github/agent/bin/queue-gate-judge.sh]
+    source: [.github/workflows/ci.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json, .github/workflows/agent-review-gate.yml]
     tier: community
     introduced: v0.3.0
     origin: 'owner RATIFIED Oct 22 2026, ops/docs/ratify/2026-10-22-merge-queue-checks.md; exception ruled by the owner Oct 28 2026 ("Yes: add the landing marker check as the second listed exception to my merge-queue rule.")'
