@@ -9,7 +9,8 @@ laptop cannot forge a release that GitHub's own runners never built).
 ## Pipeline (`.github/workflows/release.yml`)
 
 From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
-own job and its own signing identity, on a fresh GitHub-hosted runner:
+own job on a fresh GitHub-hosted runner. Sign signs the records and the provenance of Build, Rebuild and
+Check under its own identity (`stage-sign.yml`); Release signs what it makes under its own:
 
 ```
 Build -> { Sign, Rebuild } ; { Build, Sign } -> Check ; { Check, Rebuild, Sign } -> Release
@@ -26,18 +27,23 @@ signing key or `packages: write`.
   ancestry of `main`, required checks, approved requirements baseline), builds
   the apks on two native runners (amd64 and arm64) and assembles the images
   and archives. Witness (pinned by checksum, set up first) wraps every step
-  through `bin/witnessed.sh` and signs Build's record keyless under Build's
-  identity; `digests.json` is the list of everything Build made. Before
+  and writes Build's record; Build signs its records only with a throwaway key
+  that nothing trusts, and Sign signs them (below);
+  `digests.json` is the list of everything Build made. Before
   `digests.json`, Build makes each image's final index from the built index
   and the committed VEX file: the platform manifests plus one VEX attestation
   child per platform. The final index's digest is the one that is signed,
   attested, tested and promoted.
-- **Sign** (`stage-sign.yml`): its own job and workflow file; it receives only
-  Build's digest list, never runs code from the build, and writes and signs the
-  SLSA provenance keyless under its own identity.
+- **Sign** (`stage-sign.yml`): its own job and workflow file; it receives
+  Build's records and the artifacts they name, never runs code from the build,
+  checks the records against those artifacts, signs the records keyless under
+  its own identity, then checks Build's digest list against the signed record
+  and signs the SLSA provenance.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
-  machines and compares every item with Build's; any difference blocks the
-  release.
+  machines and compares its items with Build's; any difference blocks the
+  release. Its items include the apks' digests. The `compare` job of
+  `stage-promote.yml` compares the apks once more (control and data sections;
+  the job has `contents: read` only: no key, no write token, no identity token).
 - **Check** (`stage-verify.yml`): runs every scanner of
   [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
@@ -87,7 +93,8 @@ from GitHub OIDC, entry in Rekor; no signing key exists to steal, except the
 apk release key, which only Release's `release-apks` step reads):
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
-  `linux/arm64` index on the unmodified distroless base with one binary added,
+  `linux/arm64` index holding the `fscache` binary and a few packages (base layout, CA
+  certificates, time zone data), with no base image,
   at `ghcr.io/fosterstack/cache` and mirrored, same digests, at
   `docker.io/fosterstack/cache`. Tags: `:X.Y.Z` and `:X.Y.Z-fips` exactly;
   `:X.Y` moves to every final release of that line; `:X` and `:latest` move
@@ -186,7 +193,7 @@ a file that anyone could have written.
 | `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, keyless, per stage | the stage that made it |
+| Witness records | Witness envelope, keyless | `stage-sign.yml` for Build, Rebuild and Check; `stage-promote.yml` for Release's own |
 
 ### VEX statements
 
