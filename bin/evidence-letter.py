@@ -5,7 +5,8 @@ Makes one letter from a template out of the assets of the releases published in 
 from those assets. Any mismatch, missing or malformed asset makes no letter (exit 1, one line on stderr). No model, no
 network, no signing: the signing job takes the letter this script wrote.
 
-  evidence-letter.py --month YYYY-MM --releases DIR --advisories FILE --controls FILE --signatory FILE --out DIR [--draft]
+  evidence-letter.py --month YYYY-MM --releases DIR --advisories FILE --controls FILE --signatory FILE --out DIR
+                     [--draft]
 
 DIR holds one folder per release, named by its tag, with the release page's release.json and the downloaded assets.
 Exit 0: letter written, or no release that month (nothing written). 1: refused. 2: bad arguments. 3: the signatory is
@@ -27,6 +28,15 @@ FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc 2")
 PAGE = "https://github.com/fosterstack/cache/releases/tag/"
 PLACEHOLDER = "PLACEHOLDER"
 SIGNED = "\nSigned, "
+NONE = "- none this month"
+UNCHANGED = ("The build and images in this letter were produced by the process in the controls document, version %d, "
+             "signed on %s, unchanged this month.")
+CHANGED = ("The controls document changed this month. The build and images in this letter were produced by the process "
+           "in the version that was in force on each release's date:")
+INTRO = ("This letter rolls up public facts about evidence that is already published. It adds no new information and "
+         "makes no promise beyond those facts.")
+EVIDENCE = ("The signatures, provenance, SBOMs and VEX of each release are public assets of the release page "
+            "linked above.")
 
 
 class Refuse(Exception):
@@ -41,6 +51,10 @@ def load(path):
             return fh.read()
     except OSError:
         raise Refuse("%s cannot be read" % os.path.basename(path))
+
+
+def sha256_of(path):
+    return hashlib.sha256(load(path)).hexdigest()
 
 
 def load_json(path):
@@ -110,7 +124,7 @@ def vex_statements(rel, month):
     """[(date, name)] of the OpenVEX statements dated in the month; the file must be the one the manifest hashes."""
     path = os.path.join(rel["dir"], "fosterstack-cache.openvex.json")
     entries = [v for v in rel["manifest"].get("vex", []) if isinstance(v, dict) and v.get("form") == "openvex"]
-    if len(entries) != 1 or entries[0].get("sha256") != hashlib.sha256(load(path)).hexdigest():
+    if len(entries) != 1 or entries[0].get("sha256") != sha256_of(path):
         raise Refuse("%s: the OpenVEX file is not the one in the release manifest" % rel["tag"])
     out = []
     for st in load_json(path).get("statements", []):
@@ -146,10 +160,8 @@ def controls_lines(releases, month, controls_text):
     changed = any(d.startswith(month) for _v, d in versions)
     if len(under) == 1 and not changed:
         (version, signed), = under
-        return ["The build and images in this letter were produced by the process in the controls document, version %d, "
-                "signed on %s, unchanged this month." % (version, signed)]
-    lines = ["The controls document changed this month. The build and images in this letter were produced by the process "
-             "in the version that was in force on each release's date:"]
+        return [UNCHANGED % (version, signed)]
+    lines = [CHANGED]
     lines += ["- version %d, signed on %s: %s" % (v, d, ", ".join(tags)) for (v, d), tags in sorted(under.items())]
     return lines
 
@@ -159,25 +171,25 @@ def body_of(rel_dir, month, advisories, controls_text):
     releases = releases_of_month(rel_dir, month)
     if not releases:
         return None
-    lines = ["# FosterStack evidence letter, " + month_title(month), "",
-             "This letter rolls up public facts about evidence that is already published. It adds no new information and "
-             "makes no promise beyond those facts.", "", "## Releases"]
-    lines += ["- %s, published %s, %s, commit %s" % (r["tag"], r["date"], r["info"]["html_url"], r["manifest"]["commit"])
-              for r in releases]
+    lines = ["# FosterStack evidence letter, " + month_title(month), "", INTRO, "", "## Releases"]
+    for r in releases:
+        link, commit = r["info"]["html_url"], r["manifest"]["commit"]
+        lines.append("- %s, published %s, %s, commit %s" % (r["tag"], r["date"], link, commit))
     patches = [r for r in releases if not r["tag"].endswith(".0")]
-    lines += ["", "## Patch releases"] + (["- %s: %s" % (r["tag"], patch_reason(r)) for r in patches] or ["- none this month"])
+    lines += ["", "## Patch releases"]
+    lines += ["- %s: %s" % (r["tag"], patch_reason(r)) for r in patches] or [NONE]
     vex = [(r["tag"], d, n) for r in releases for d, n in vex_statements(r, month)]
-    lines += ["", "## VEX statements added"] + (["- %s: %s, dated %s" % (t, n, d) for t, d, n in vex] or ["- none this month"])
+    lines += ["", "## VEX statements added"]
+    lines += ["- %s: %s, dated %s" % (t, n, d) for t, d, n in vex] or [NONE]
     lines += ["", "## Check records"]
     for r in releases:
         for name in RECORDS:
-            lines.append("- %s: %s sha256 %s" % (r["tag"], name, hashlib.sha256(load(os.path.join(r["dir"], name))).hexdigest()))
+            lines.append("- %s: %s sha256 %s" % (r["tag"], name, sha256_of(os.path.join(r["dir"], name))))
     advs = advisories_of(advisories, month)
-    lines += ["", "## Advisories"] + (["- %s, published %s, %s" % (i, d, s) for d, i, s in advs]
-                                      or ["- No advisory was published this month."])
+    lines += ["", "## Advisories"]
+    lines += ["- %s, published %s, %s" % (i, d, s) for d, i, s in advs] or ["- No advisory was published this month."]
     lines += ["", "## Controls"] + controls_lines(releases, month, controls_text)
-    lines += ["", "## Evidence", "The signatures, provenance, SBOMs and VEX of each release are public assets of the release "
-              "page linked above."]
+    lines += ["", "## Evidence", EVIDENCE]
     body = "\n".join(lines) + "\n"
     words = [w for w in FORBIDDEN if w in body.lower()]
     if words or "@" in body:
@@ -217,7 +229,8 @@ def run(a):
     read_back(text, a.releases, a.month, advisories, controls_text)
     os.makedirs(a.out, exist_ok=True)
     if PLACEHOLDER in signatory:
-        write(os.path.join(a.out, "evidence-letter-%s.DRAFT.md" % a.month), "DRAFT: not signed, not to be sent.\n\n" + text)
+        draft = os.path.join(a.out, "evidence-letter-%s.DRAFT.md" % a.month)
+        write(draft, "DRAFT: not signed, not to be sent.\n\n" + text)
     else:
         write(os.path.join(a.out, "evidence-letter-%s.md" % a.month), text)
     return 0
@@ -235,7 +248,8 @@ def main(argv):
     try:
         return run(a)
     except (Refuse, KeyError, TypeError, AttributeError) as why:
-        print("evidence-letter: refused: %s" % (why if isinstance(why, Refuse) else "an asset is malformed"), file=sys.stderr)
+        reason = why if isinstance(why, Refuse) else "an asset is malformed"
+        print("evidence-letter: refused: %s" % reason, file=sys.stderr)
         return 1
 
 
