@@ -271,7 +271,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           # empty on a push (nothing to compare against); on a pull request refuse an odd base name before the fetch
@@ -349,7 +350,8 @@ jobs:
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           # REQ-SUP-001-AC28, AC31: when a pull request changes the Gradle wrapper pin or jar, the online tests compare them with Gradle's published sum
@@ -442,7 +444,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
@@ -486,7 +489,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
@@ -522,7 +526,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
@@ -564,7 +569,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
@@ -608,7 +614,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
@@ -685,10 +692,12 @@ jobs:
       - name: suite floors only rise (against the merge base on a pull request)
         if: ${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
-          bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+          bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" \
+            test-evidence/suite-floors.json
 
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
@@ -781,7 +790,8 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
@@ -819,7 +829,9 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
       - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
         run: bash bin/audit-record-test.sh
-      - name: the review gate in the merge queue — the judge of a queue's temporary branch, from main's copy, fails closed (REQ-DEP-005-AC3)
+      - name: >-
+          the review gate in the merge queue — the judge of a queue's temporary branch, from main's copy,
+          fails closed (REQ-DEP-005-AC3)
         run: bash .github/agent/tests/queue-gate-judge-test.sh
       - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
@@ -1033,7 +1045,9 @@ jobs:
           QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
-          [ -n "$QUEUE_BASE_SHA" ] && [ -n "$QUEUE_HEAD" ] || { echo "::error::the merge queue named no base or head commit: nothing to compare, so this check fails"; exit 1; }
+          [ -n "$QUEUE_BASE_SHA" ] && [ -n "$QUEUE_HEAD" ] || {
+            echo "::error::the merge queue named no base or head commit:" \
+              "nothing to compare, so this check fails"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:

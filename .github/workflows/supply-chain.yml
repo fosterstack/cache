@@ -36,7 +36,8 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}   # the queue's base, which is main as it is now
+          # the queue's base, which is main as it is now
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           path: trusted
           persist-credentials: false
       - name: The pull request's tree
@@ -54,17 +55,22 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          # a pull request is read at its own base and head; the merge queue at the queue's (REQ-DEP-005-AC2); an empty one fails
-          BASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"; HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
-          : "${BASE_SHA:?no base commit to compare: this check fails}" "${HEAD_SHA:?no head commit to compare: this check fails}"
-          python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" || status=1
+          # a pull request is read at its own base and head; the merge queue at the queue's (REQ-DEP-005-AC2);
+          # an empty one fails
+          BASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
+          : "${BASE_SHA:?no base commit to compare: this check fails}" \
+            "${HEAD_SHA:?no head commit to compare: this check fails}"
+          python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
+            --head "$HEAD_SHA" || status=1
           # the advisor's rulings come from the base branch too: a pull request must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
           if [ ! -f "$exceptions" ]; then
             exceptions="$RUNNER_TEMP/no-exceptions.json"
             echo '{"exceptions": []}' > "$exceptions"
           fi
-          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" --exceptions "$exceptions" --report-only || status=1
+          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --exceptions "$exceptions" --report-only || status=1
           exit $status
 
   daily-audit:

@@ -246,7 +246,7 @@ GUARD_STEPS = [
         "env": {
             "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
         },
-        "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json\n"
+        "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n  test-evidence/suite-floors.json\n"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -432,7 +432,7 @@ SPLIT_STEPS = json.loads(r'''{
    },
    "if": "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
    "name": "suite floors only rise (against the merge base on a pull request)",
-   "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n  test-evidence/suite-floors.json\n"
   },
   {
    "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",

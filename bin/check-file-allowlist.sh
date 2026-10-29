@@ -196,7 +196,8 @@ ALLOW_PATTERNS=(
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/check-action-pins\.py$'
-  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch (its test is under tests/).
+  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch
+  # (its test is under tests/).
   '^\.github/agent/bin/queue-gate-judge\.sh$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)

@@ -3012,7 +3012,8 @@ def run_scripts(doc):
                         dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
                         lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
                         lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
-                        if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() in BASE_SHA_REFS and "repository" not in wm
+                        if (isinstance(ref, yaml.ScalarNode)
+                                and ref.value.strip() in BASE_SHA_REFS and "repository" not in wm
                                 and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
