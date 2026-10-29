@@ -19,7 +19,10 @@
 set -euo pipefail
 step="$1"
 shift
-case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac
+case "$step" in
+  apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;;
+  *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;;
+esac
 mkdir -p "witness-${step#snapshot-}"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN
 umask 077

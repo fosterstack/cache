@@ -1115,6 +1115,7 @@ def closed_ok(t):
     if re.search(r"(?<![\s;(])\{|\{(?!\s)", t): return False                 # brace expansion
     t = re.sub(r"(^|[\s;])\*\)", " ", t)                                       # the catch-all case pattern
     t = re.sub(r"\bcase\s.*?\sin\s+\S*?\)", " ", t)                          # the patterns of a one-line case
+    t = re.sub(r"^\s*[^\s()]*\)", " ", t)                                     # the pattern of a case arm that starts its line (cases stand on several lines)
     t = re.sub(r"\$\?", "S", t)
     t = re.sub(r"(^|[\s;(])!(?=\s|$)", " ", t)
     if re.search(r"[*?^!\[\]]", t.replace("$@", "").replace("$*", "").replace("$#", "").replace("$$", "").replace("$!", "").replace("$-", "")) and re.search(r"[*?^]", t): return False

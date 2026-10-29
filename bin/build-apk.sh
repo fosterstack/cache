@@ -85,10 +85,20 @@ fi
 
 # ---- 1. refusals ----
 [ "$(uname -s)" = Linux ] || die "build-apk.sh runs on Linux only (melange's bubblewrap runner and unshare -n)"
-case $variant in standard|fips) ;; *) die "--variant must be standard or fips";; esac
-case $arch in x86_64|aarch64) ;; *) die "--arch must be an apk architecture name: x86_64 or aarch64 (not '$arch')";; esac
+case $variant in
+  standard|fips) ;;
+  *) die "--variant must be standard or fips";;
+esac
+case $arch in
+  x86_64|aarch64) ;;
+  *) die "--arch must be an apk architecture name: x86_64 or aarch64 (not '$arch')";;
+esac
 um=$(uname -m)
-case $um in x86_64|amd64) host=x86_64;; aarch64|arm64) host=aarch64;; *) host=$um;; esac
+case $um in
+  x86_64|amd64) host=x86_64;;
+  aarch64|arm64) host=aarch64;;
+  *) host=$um;;
+esac
 [ "$arch" = "$host" ] || die "refusing to build $arch on a $host host: each architecture builds natively on its own runner, no emulation"
 # exactly the chain's grammar (the tag minus its v): X.Y.Z, X.Y.Z-rcN (N digits, no leading zero, no dot) and the one fixed snapshot version
 # 0.0.0-rc.1 (REQ-CHAIN-004-AC12); anything else is refused before any tool runs
@@ -103,7 +113,9 @@ for p in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
   [ -z "${!p:-}" ] || die "a proxy is defined in the environment ($p); the sealed build has no network"
 done
 [ "$repo_set" = 1 ] || die "--repo DIR (the local package repository melange installs the build tools from) is required; a cache alone is not an input"
-case $repo in *://*) die "--repo must be a local directory, not an address ($repo)";; esac
+case $repo in
+  *://*) die "--repo must be a local directory, not an address ($repo)";;
+esac
 [ -d "$repo" ] || die "--repo $repo is not a directory"
 [ -n "$keyring" ] && [ -f "$keyring" ] || die "--keyring file not found: $keyring"
 [ -n "$goarch_dir" ] || die "--go-archive DIR is required"
