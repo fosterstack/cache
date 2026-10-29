@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""0710 item 4: the cache has no HTTP client, dials nothing, runs no program and verifies no certificate (REQ-IMAGE-001-AC13).
+"""0710 item 4: the cache has no HTTP client, dials nothing, runs no program and verifies no certificate
+(REQ-IMAGE-001-AC13).
 
-  check-no-outbound.py [ROOT]      scan the non-test Go source under ROOT/cmd and ROOT/internal (ROOT: the repository)
-  check-no-outbound.py binary BIN  refuse BIN if it holds a listed symbol; the linker keeps only what main can reach, so `go tool nm` is the call graph
+  check-no-outbound.py [ROOT]      scan the non-test Go source under ROOT/cmd and ROOT/internal (default: this repo)
+  check-no-outbound.py binary BIN  refuse BIN if it holds a listed symbol; the linker keeps only what main can reach,
+                                   so `go tool nm` is the call graph
 
 Exit 0: clean. Exit 1: a refusal, named. Exit 2: the check could not run. The residual is written in REQ-IMAGE-001-AC13.
 """
@@ -20,27 +22,32 @@ BANNED = {
             "LookupHost", "LookupIP", "LookupMX", "LookupNS", "LookupPort", "LookupSRV", "LookupTXT", "Resolver",
             "DefaultResolver", "ResolveIPAddr", "ResolveTCPAddr", "ResolveUDPAddr"},
     "crypto/tls": {"Client", "Dial", "DialWithDialer", "Dialer"},
-    "crypto/x509": {"SystemCertPool"},
-    "syscall": {"Connect", "Exec", "ForkExec", "Socket", "StartProcess"},
-    "golang.org/x/sys/unix": {"Connect", "Socket"},
+    "crypto/x509": {"SystemCertPool", "VerifyOptions"},
+    "syscall": {"Connect", "Exec", "ForkExec", "RawSyscall", "RawSyscall6", "Socket", "StartProcess", "Syscall",
+                "Syscall6"},
+    "golang.org/x/sys/unix": {"Connect", "Exec", "RawSyscall", "RawSyscall6", "Socket", "Syscall", "Syscall6"},
     "os": {"StartProcess"},
 }
 BANNED_IMPORTS = {"net/http/httputil", "os/exec"}
-# a UDP socket that is only listened on sends nothing; WriteTo on it sends without a dial
-UDP_LISTENS = ("ListenPacket", "ListenUDP")
-UDP_SENDS = ("WriteTo", "WriteToUDP", "WriteToUDPAddrPort", "WriteMsgUDP", "WriteMsgUDPAddrPort")
+# a packet socket is what a UDP send needs, so listening for packets is refused on any value (net.ListenConfig included)
+BANNED_CALLS = ("ListenIP", "ListenMulticastUDP", "ListenPacket", "ListenUDP")
+# a server that sets tls.Config.ClientAuth verifies client certificates against the system roots: refused anywhere
+BANNED_WORDS = ("ClientAuth",)
 # a symbol is listed only where a test program holds it and a plain net/http server and the real binaries do not
 BANNED_SYMBOLS = ["net/http.(*Client).do", "net/http.(*Transport).roundTrip", "net.Dial", "net.DialTimeout",
                   "net.(*Resolver).LookupHost", "net.ResolveIPAddr", "net.ResolveTCPAddr", "net.ResolveUDPAddr",
                   "crypto/tls.Dial", "crypto/tls.(*Dialer).DialContext", "os/exec.(*Cmd).Start"]
 
 # One token: a comment, a raw string, a quoted string or rune, a name, or any other single character.
-# It reads `"net/\"x"` as one token and `// import "a"` as one comment; an unclosed `"abc` is not a string and falls to single characters.
-TOKEN = re.compile(r"""//[^\n]*|/\*.*?\*/|`[^`]*`|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\w+|\S""", re.S)
+# It reads `"net/\"x"` as one token and `// import "a"` as one comment;
+# an unclosed `"abc` is not a string and falls to single characters.
+TOKEN = re.compile(
+    r"""//[^\n]*|/\*.*?\*/|`[^`]*`|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\w+|\S""", re.S
+)
 
 
 def tokens(src):
-    """[(text, line)] of the Go source, comments dropped; a string is one token, so no text in one can look like code."""
+    """[(text, line)] of the Go source, comments dropped; a string is one token, so its text never looks like code."""
     found, line, pos = [], 1, 0
     for m in TOKEN.finditer(src):
         line += src.count("\n", pos, m.start())
@@ -53,7 +60,7 @@ def tokens(src):
 def go_string(token):
     """The text a Go string literal stands for: raw as written, quoted with its escapes read."""
     if token[0] == "`":
-        return token[1:-1]
+        return token[1:-1].replace("\r", "")      # Go drops a carriage return inside a raw string
     try:
         return ast.literal_eval(token)
     except (ValueError, SyntaxError):
@@ -90,9 +97,17 @@ def method_calls(toks):
     return calls
 
 
+def first_lines(toks):
+    """{token text: line of its first use}."""
+    lines = {}
+    for word, line in toks:
+        lines.setdefault(word, line)
+    return lines
+
+
 def check_file(path):
     """[(line, what)] this file does that the cache may not."""
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8", newline="") as f:      # newline="": keep a carriage return, as Go sees it
         toks = tokens(f.read())
     found, names, packages = [], {}, set()
     for alias, pkg, line in imports(toks):
@@ -111,10 +126,13 @@ def check_file(path):
         if dot == "." and pkg and not selects_from_a_value and name in BANNED[pkg]:
             found.append((toks[k][1], "uses %s.%s" % (pkg, name)))
     calls = method_calls(toks)
-    listen = next((name for name in UDP_LISTENS if name in calls), None)
-    send = next((name for name in UDP_SENDS if name in calls), None)
-    if "net" in packages and listen and send:
-        found.append((calls[send], "net.%s and %s" % (listen, send)))
+    for name in BANNED_CALLS:
+        if name in calls:
+            found.append((calls[name], "calls " + name))
+    used = first_lines(toks)
+    for word in BANNED_WORDS:
+        if word in used:
+            found.append((used[word], "uses " + word))
     if "crypto/x509" in packages and "Verify" in calls:
         found.append((calls["Verify"], "crypto/x509 and Verify"))
     return found
