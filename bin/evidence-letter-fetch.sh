@@ -18,7 +18,7 @@ for tag in $tags; do
   dir="$out/rel/$tag"
   mkdir -p "$dir"
   gh api "repos/$repo/releases/tags/$tag" > "$dir/release.json"
-  # the three files the letter reads, by asset id through the API (no `gh release download`)
+  # the three files the letter reads, by asset id through the API
   jq -r '.assets[] | select(.name == "release-manifest.json" or .name == "fosterstack-cache.openvex.json" or (.name | test("-collection\\.json$"))) | "\(.id) \(.name)"' "$dir/release.json" |
     while read -r id name; do
       gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$dir/$name"

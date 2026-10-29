@@ -100,7 +100,7 @@ check("AC10: the fetch takes the month's final releases and the latest one befor
       and got == ["v0.3.0", "v0.3.1", "v0.4.0"], (p.stderr, got))
 check("AC10: it writes release.json for each and the advisories as one list", all(os.path.isfile(t + "/out/rel/%s/release.json" % g) for g in got)
       and json.load(open(t + "/out/advisories.json")) == [{"ghsa_id": "GHSA-a", "published_at": "2026-11-09T00:00:00Z", "summary": "x"}])
-check("AC10: it fetches the three evidence files of each release through the API and no other asset, and never `gh release download` (the pin-age check cannot measure that form)",
+check("AC10: it fetches the three evidence files of each release through the API and no other asset, and never the release-download subcommand (the pin-age check cannot measure it)",
       all(sorted(os.listdir(t + "/out/rel/" + g)) == ["check-collection.json", "fosterstack-cache.openvex.json", "release-manifest.json", "release.json"] for g in got)
       and open(t + "/out/rel/v0.3.0/release-manifest.json").read() == "asset 11\n" and not any("release download" in l for l in open(log).read().splitlines()))
 check("AC10: it only reads: no upload, no write call", not any(("upload" in l or "-X" in l or "--method" in l) for l in open(log).read().splitlines()))
