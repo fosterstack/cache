@@ -2455,8 +2455,8 @@ done
 PTP="registry.example:5000/team/ptool-p@$DIG1"
 newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
 runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
-CASE="AC2 persona tools: an image on a registry with a port, 10 days old via registry-push, is inventoried (named) and accepted (exit 0)"
-check test "$rc" -eq 0; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
+CASE="AC2 persona tools: an image on a registry with a port is inventoried (named) and refused (exit 1) even with a 10 day old registry-push time: only ghcr.io and Docker Hub give one"
+check test "$rc" -eq 1; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
 rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
 ( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
 runck pmove2 '{"times": {}}'
@@ -4592,5 +4592,554 @@ r = rows[0]
 assert r == {"file": ".github/policy/gradle-wrapper-jar-sha256.txt", "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
              "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "2026-08-19T15:30:28Z"}, r
 PYROW
+CASE="pin age of images: ghcr.io and Docker Hub keep the registry time; every other registry is refused with its name; the PR clock never dates an image"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+Item = ac.inv.Item
+D = "sha256:" + "a" * 64
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+OLD, YOUNG = "2020-01-01T00:00:00Z", "2026-10-04T00:00:00Z"
+judge = lambda name, proofs: ac.judge_item(Item("image", name, D), proofs, now)
+for name in ("ghcr.io/o/p", "alpine", "library/alpine", "ns/x", "docker.io/library/alpine", "docker.io/ns/x"):
+    assert judge(name, [(OLD, "registry-push")])[0], name
+    ok, why, _ = judge(name, [(OLD, "pr-clock")])
+    assert not ok and "no server-side publish time" in why, (name, why)         # the PR clock is no proof for an image
+    assert not judge(name, [(OLD, "pr-clock"), (YOUNG, "registry-push")])[0], name
+for name, host in (("gcr.io/distroless/static-debian12", "gcr.io"), ("registry.k8s.io/kubectl", "registry.k8s.io"), ("registry.example:5000/team/p", "registry.example:5000"),
+                   ("localhost/x", "localhost"), ("localhost:5000/x", "localhost:5000"), ("GHCR.IO/o/p", "GHCR.IO"), ("quay.io/o/p", "quay.io")):
+    for src in ("registry-push", "pr-clock", "first-seen", "image-config"):
+        ok, why, _ = judge(name, [(OLD, src)])
+        assert not ok and host in why and "publisher-signed" in why and "\n" not in why, (name, src, why)      # one plain line naming the registry
+assert judge("a/b/c", [(OLD, "registry-push")])[0] is False        # three parts and no host: not a Docker Hub name
+assert ac._signed_timestamp(Item("image", "gcr.io/x/y", D)) is None  # the signed-timestamp branch exists and reads nothing yet
+PY
+CASE="pin age of images: the live lookup asks only the registry the name has (registry.k8s.io/kubectl is never asked of Docker Hub) and starts no PR clock for an image"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+Item = ac.inv.Item
+D = "sha256:" + "b" * 64
+calls, gets = [], []
+ac._get_bytes = lambda url, accept="*/*", timeout=30: (gets.append(url), None)[1]       # no registry or log is ever really asked here: a pinned name's own registry answers "not there"
+def gh(path, rows):
+    calls.append(("ghcr", path)); return [{"name": D, "created_at": "2020-01-01T00:00:00Z"}] if "/versions?per_page=100&page=1" in path else []
+def http(url, need, *a, **k):
+    calls.append(("hub", url)); return {"results": [{"digest": D, "tag_last_pushed": "2020-01-01T00:00:00Z"}], "next": None}
+ac._gh_list, ac._http_dict = gh, http
+ac._pr_clock = lambda *a, **k: calls.append(("pr-clock", a)) or "2020-01-01T00:00:00Z"
+def asked(name):
+    del calls[:]
+    got = ac.live_proofs(Item("image", name, D), ".", "base", "HEAD")
+    return [c[0] for c in calls], got
+assert asked("ghcr.io/o/p") == (["ghcr"], [("2020-01-01T00:00:00Z", "registry-push")]), asked("ghcr.io/o/p")
+for name, url in (("alpine", "library/alpine"), ("library/alpine", "library/alpine"), ("ns/x", "ns/x"), ("docker.io/library/alpine", "library/alpine"), ("docker.io/ns/x", "ns/x")):
+    who, got = asked(name)
+    assert who == ["hub"] and got == [("2020-01-01T00:00:00Z", "registry-push")] and "/repositories/" + url + "/tags" in calls[0][1], (name, who, calls)
+OWN = {"registry.k8s.io/kubectl": "https://registry.k8s.io/v2/kubectl/", "gcr.io/distroless/static-debian12": "https://gcr.io/v2/distroless/static-debian12/",
+       "gcr.io/projectsigstore/cosign": "https://gcr.io/v2/projectsigstore/cosign/"}
+for name in ("registry.k8s.io/kubectl", "gcr.io/distroless/static-debian12", "gcr.io/projectsigstore/cosign", "localhost:5000/x", "registry.example:5000/team/p", "a/b/c"):
+    del gets[:]
+    who, got = asked(name)
+    assert who == [] and all(src != "signed-timestamp" for _, src in got), (name, who, got)      # no Docker Hub or GitHub call, no PR clock, no proof
+    assert (gets and all(u.startswith(OWN[name]) for u in gets)) if name in OWN else gets == [], (name, gets)      # a pinned name asks only its own registry; an unpinned one asks nobody
+PY
+CASE="pin age of images (publisher-signed time): a recorded bundle with its inclusion proof, signed by the pinned publisher key, gives its Rekor integrated time; wrong identity, wrong digest, no inclusion proof and a forged time are each refused"
+check python3 - "$chk" "$here/fixtures/image-publishers/cosign.bundle.json" "$here/../../policy/image-publishers.json" "$here/../../policy/rekor.pub" <<'PY'
+import copy, datetime, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+bundle, pins, rekor_pem = json.load(open(sys.argv[2])), json.load(open(sys.argv[3])), open(sys.argv[4]).read()
+NAME = "gcr.io/projectsigstore/cosign"
+DIGEST = "sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
+verify = lambda b=bundle, d=DIGEST, p=pins: ac.publisher_signed_time(NAME, d, b, p, rekor_pem)
+t = verify()
+assert t == datetime.datetime.fromtimestamp(int(bundle["verificationMaterial"]["tlogEntries"][0]["integratedTime"]), datetime.timezone.utc), t
+def refused(why, **kw):
+    try:
+        verify(**kw)
+    except ac.CouldNotProve as e:
+        assert why in str(e) and "\n" not in str(e), (why, str(e))
+        return
+    raise AssertionError("accepted: " + why)
+other = copy.deepcopy(pins); other[NAME]["key"] = open(sys.argv[4]).read()                       # a key that is not the publisher's
+refused("identity", p=other)
+refused("digest", d="sha256:" + "0" * 64)
+noproof = copy.deepcopy(bundle); del noproof["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]
+refused("inclusion proof", b=noproof)
+forged = copy.deepcopy(bundle); forged["verificationMaterial"]["tlogEntries"][0]["integratedTime"] = str(int(bundle["verificationMaterial"]["tlogEntries"][0]["integratedTime"]) - 86400 * 30)
+refused("time", b=forged)
+bent = copy.deepcopy(bundle); h = bent["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]["hashes"]; h[0] = h[1]            # a proof that no longer leads to the tree root
+refused("inclusion proof", b=bent)
+unpinned = {k: v for k, v in pins.items() if k != NAME}
+refused("not pinned", p=unpinned)
+PY
+CASE="pin age of images (keyless .sig signatures): the recorded distroless and kubectl signatures verify (certificate chain to the pinned Fulcio root, pinned issuer and subject, inclusion proof, integrated time inside the certificate window); any one pinned kubectl identity is enough; an identity that is not pinned, a wrong digest, no inclusion proof, a bent proof and a forged time are each refused"
+check python3 - "$chk" "$here/fixtures/image-publishers" "$here/../../policy/image-publishers.json" "$here/../../policy/rekor.pub" "$here/../../policy/fulcio-chain.pem" <<'PY'
+import copy, datetime, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx, pins, rekor_pem, fulcio_pem = sys.argv[2], json.load(open(sys.argv[3])), open(sys.argv[4]).read(), open(sys.argv[5]).read()
+load = lambda n: json.load(open(f"{fx}/{n}.sig.json"))
+IMAGES = (("gcr.io/distroless/static-debian12", "distroless"), ("registry.k8s.io/kubectl", "kubectl"))
+def verify(name, ev, digest=None, p=pins):
+    return ac.keyless_signed_time(name, digest or ev["digest"], ev, p, rekor_pem, fulcio_pem)
+def refused(why, name, ev, **kw):
+    try:
+        verify(name, ev, **kw)
+    except ac.CouldNotProve as e:
+        assert why in str(e) and "\n" not in str(e), (why, str(e))
+        return
+    raise AssertionError("accepted: " + why)
+for name, n in IMAGES:
+    ev = load(n)
+    t = verify(name, ev)                                      # the earliest time of a signature that verifies fully
+    assert isinstance(t, datetime.datetime) and t.tzinfo is not None, t
+    assert t == min(datetime.datetime.fromtimestamp(int(l["rekor_entry"]["integratedTime"]), datetime.timezone.utc) for l in ev["layers"]), t
+    refused("digest", name, ev, digest="sha256:" + "0" * 64)
+    other = copy.deepcopy(pins); other[name]["keyless"] = [{"issuer": "https://accounts.google.com", "subject": "someone-else@example.org"}]
+    refused("identity", name, ev, p=other)
+    wrong_issuer = copy.deepcopy(pins); wrong_issuer[name]["keyless"] = [{"issuer": "https://token.actions.githubusercontent.com", "subject": s["subject"]} for s in pins[name]["keyless"]]
+    refused("identity", name, ev, p=wrong_issuer)
+    noproof = copy.deepcopy(ev)
+    for l in noproof["layers"]:
+        l["rekor_entry"]["verification"].pop("inclusionProof", None)
+    refused("inclusion proof", name, noproof)
+    bent = copy.deepcopy(ev)
+    for l in bent["layers"]:
+        h = l["rekor_entry"]["verification"]["inclusionProof"]["hashes"]; h[0] = h[1]
+    refused("inclusion proof", name, bent)
+    forged = copy.deepcopy(ev)
+    for l in forged["layers"]:
+        l["rekor_entry"]["integratedTime"] = int(l["rekor_entry"]["integratedTime"]) - 86400 * 30; l["bundle"]["Payload"]["integratedTime"] = l["rekor_entry"]["integratedTime"]
+    refused("time", name, forged)
+    unpinned = {k: v for k, v in pins.items() if k != name}
+    refused("not pinned", name, ev, p=unpinned)
+ev = load("kubectl")
+for keep in (0, 1):                                           # the image is accepted when ANY ONE pinned identity verifies fully
+    one = copy.deepcopy(ev); one["layers"] = [ev["layers"][keep]]
+    assert verify("registry.k8s.io/kubectl", one) == datetime.datetime.fromtimestamp(int(ev["layers"][keep]["rekor_entry"]["integratedTime"]), datetime.timezone.utc)
+only_staging = copy.deepcopy(pins); only_staging["registry.k8s.io/kubectl"]["keyless"] = only_staging["registry.k8s.io/kubectl"]["keyless"][:1]
+trust_only = copy.deepcopy(ev); trust_only["layers"] = [ev["layers"][1]]                      # valid in every field, signed by krel-trust, which is NOT pinned here
+refused("identity", "registry.k8s.io/kubectl", trust_only, p=only_staging)
+PY
+CASE="pin age of images (wired): live_proofs asks only the image's own registry and the Rekor log (reads), turns a recorded signature that verifies into a signed-timestamp proof the judge accepts, and gives no proof (so the judge refuses) when the signature is missing, forged or from an identity that is not pinned"
+check python3 - "$chk" "$here/fixtures/image-publishers" <<'PY'
+import base64, copy, datetime, hashlib, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx = sys.argv[2]
+sha = lambda b: "sha256:" + hashlib.sha256(b).hexdigest()
+BUNDLE = open(f"{fx}/cosign.bundle.json", "rb").read()
+EV = {n: json.load(open(f"{fx}/{n}.sig.json")) for n in ("distroless", "kubectl")}
+IMAGES = {"gcr.io/projectsigstore/cosign": ("gcr.io", "projectsigstore/cosign", "sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8", None),
+          "gcr.io/distroless/static-debian12": ("gcr.io", "distroless/static-debian12", EV["distroless"]["digest"], "distroless"),
+          "registry.k8s.io/kubectl": ("registry.k8s.io", "kubectl", EV["kubectl"]["digest"], "kubectl")}
+asked = []
+def registry(ev_by_name, missing=()):
+    def get(url, accept="*/*", timeout=30):
+        asked.append(url)
+        for name, (host, repo, digest, key) in IMAGES.items():
+            base = f"https://{host}/v2/{repo}/"
+            if not url.startswith(base) or name in missing:
+                continue
+            if key is None:                                              # the keyed image: a signature bundle published as a referrer
+                if url == base + "referrers/" + digest:
+                    return json.dumps({"schemaVersion": 2, "manifests": [{"digest": "sha256:" + "1" * 64, "annotations": {"dev.sigstore.bundle.predicateType": "https://sigstore.dev/cosign/sign/v1"}}]}).encode()
+                if url == base + "manifests/sha256:" + "1" * 64:
+                    return json.dumps({"layers": [{"digest": sha(BUNDLE)}]}).encode()
+                if url == base + "blobs/" + sha(BUNDLE):
+                    return BUNDLE
+                continue
+            ev = ev_by_name[key]
+            if url == base + "manifests/sha256-" + digest[7:] + ".sig":    # the keyless images: the older .sig tag
+                return json.dumps({"layers": [{"digest": sha(base64.b64decode(l["payload"])), "annotations": {
+                    "dev.cosignproject.cosign/signature": l["signature"], "dev.sigstore.cosign/certificate": l["certificate"], "dev.sigstore.cosign/chain": l["chain"],
+                    "dev.sigstore.cosign/bundle": json.dumps(l["bundle"])}} for l in ev["layers"]]}).encode()
+            for l in ev["layers"]:
+                if url == base + "blobs/" + sha(base64.b64decode(l["payload"])):
+                    return base64.b64decode(l["payload"])
+        if url.startswith("https://rekor.sigstore.dev/api/v1/log/entries?logIndex="):
+            idx = int(url.rsplit("=", 1)[1])
+            for ev in ev_by_name.values():
+                for l in ev["layers"]:
+                    if int(l["bundle"]["Payload"]["logIndex"]) == idx:
+                        e = dict(l["rekor_entry"]); return json.dumps({e.pop("uuid"): e}).encode()
+        if any(url.startswith(f"https://{h}/v2/") for h in ("gcr.io", "registry.k8s.io")):
+            return None                                                  # not there: 404
+        raise AssertionError("unexpected request: " + url)
+    return get
+Item = ac.inv.Item
+NOW = datetime.datetime(2026, 10, 30, tzinfo=datetime.timezone.utc)
+def proofs(name, ev=EV, missing=()):
+    ac._get_bytes = registry(ev, missing); del asked[:]
+    host, repo, digest, key = IMAGES[name]
+    return ac.live_proofs(Item("image", name, digest), ".", "base", "HEAD")
+for name in IMAGES:
+    got = proofs(name)
+    assert len(got) == 1 and got[0][1] == "signed-timestamp", (name, got)
+    ok, why, _ = ac.judge_item(Item("image", name, IMAGES[name][2]), got, NOW)
+    assert ok, (name, why)                                              # signed in August: older than the minimum age
+    assert all(u.startswith((f"https://{IMAGES[name][0]}/v2/", "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=")) for u in asked), (name, asked)
+    assert not any("hub.docker.com" in u or "api.github.com" in u for u in asked), asked
+    got = proofs(name, missing=(name,))
+    ok, why, _ = ac.judge_item(Item("image", name, IMAGES[name][2]), got, NOW)
+    assert not ok and "publisher-signed" in why and "\n" not in why and f"no signature of {name} was recorded" in why, (name, why)      # no signature published: refused, with its reason
+    ok, why, _ = ac.judge_item(Item("image", name, IMAGES[name][2]), [], NOW)
+    assert not ok and "publisher-signed" in why, (name, why)
+forged = copy.deepcopy(EV)
+for l in forged["distroless"]["layers"]:
+    l["rekor_entry"]["integratedTime"] = int(l["rekor_entry"]["integratedTime"]) - 86400 * 30; l["bundle"]["Payload"]["integratedTime"] = l["rekor_entry"]["integratedTime"]
+got = proofs("gcr.io/distroless/static-debian12", forged)                 # a forged time gives no proof, never a traceback, and the refusal says which part failed
+ok, why, _ = ac.judge_item(Item("image", "gcr.io/distroless/static-debian12", IMAGES["gcr.io/distroless/static-debian12"][2]), got, NOW)
+assert not ok and "time not proven" in why and "\n" not in why, why
+ac.PUBLISHER_PINS_FILE = "/nonexistent"
+got = proofs("registry.k8s.io/kubectl")                                  # no pins file: nothing is pinned, nothing is proven
+ok, why, _ = ac.judge_item(Item("image", "registry.k8s.io/kubectl", IMAGES["registry.k8s.io/kubectl"][2]), got, NOW)
+assert not ok and "publisher pins could not be read" in why, why
+PY
+CASE="pin age of images (CI cosign job): cosign-verify runs only 'cosign verify' (never sign or attest) from the pinned cosign image, once per pinned identity of each pinned image in the tree, passes an image when any one pinned identity verifies and fails it when none does"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root = sys.argv[2]
+COSIGN = "gcr.io/projectsigstore/cosign@sha256:" + "9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
+ran = []
+def runner(fail=()):
+    def run(cmd):
+        ran.append(cmd); return 1 if any(f in " ".join(cmd) for f in fail) else 0
+    return run
+def go(fail=()):
+    del ran[:]
+    return ac.cosign_verify_images(root, "HEAD", COSIGN, runner(fail))
+res = go()
+assert {r["name"] for r in res} == {"gcr.io/projectsigstore/cosign", "gcr.io/distroless/static-debian12", "registry.k8s.io/kubectl"}, res
+assert all(r["ok"] for r in res), res
+for cmd in ran:
+    assert cmd[:3] == ["docker", "run", "--rm"] and COSIGN in cmd, cmd
+    after = cmd[cmd.index(COSIGN) + 1:]
+    assert after[0] == "verify" and not {"sign", "attest", "sign-blob", "upload", "attach", "copy", "clean"} & set(after), cmd      # a read of the signature, never a write
+    assert "--certificate-oidc-issuer" in after or "--key" in after, cmd
+kube = [c for c in ran if "registry.k8s.io/kubectl@sha256:" in " ".join(c)]
+assert len(kube) == 2 and {"krel-staging@k8s-releng-prod.iam.gserviceaccount.com", "krel-trust@k8s-releng-prod.iam.gserviceaccount.com"} == {a for c in kube for a in c if a.startswith("krel-")}, kube
+res = go(fail=("krel-staging",))                                  # one of kubectl's two pinned identities fails: the image still passes
+assert all(r["ok"] for r in res), res
+res = go(fail=("krel-staging", "krel-trust"))                     # none does: the image fails, the others pass
+bad = [r for r in res if not r["ok"]]
+assert [r["name"] for r in bad] == ["registry.k8s.io/kubectl"] and "no pinned identity" in bad[0]["reason"], res
+res = go(fail=("distroless",))
+assert [r["name"] for r in res if not r["ok"]] == ["gcr.io/distroless/static-debian12"], res
+PY
+CASE="pin age of images (CI cosign job): the cosign-verify command reads the cosign image from the tools file, and without exactly one image source, with a missing file or with an image not named by digest it exits 2 with one plain line and no traceback"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root = sys.argv[2]
+def run(*args):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", *args])
+    return rc, err.getvalue()
+for args in ((), ("--tools-file", "/nonexistent"), ("--cosign-image", "gcr.io/x/y:latest"), ("--cosign-image", "gcr.io/x/y@sha256:" + "0" * 64, "--tools-file", "/nonexistent")):
+    rc, err = run(*args)
+    assert rc == 2 and err.count("\n") == 1 and "Traceback" not in err and "not a pass" in err, (args, rc, err)
+with tempfile.TemporaryDirectory() as d:
+    f = os.path.join(d, "tools.json"); json.dump({"cosign": "latest"}, open(f, "w"))
+    rc, err = run("--tools-file", f)
+    assert rc == 2 and "digest" in err, (rc, err)
+PY
+CASE="pin age of images (CI cosign job): an empty or malformed pins file or tools file never passes and never ends in a traceback (exit 2, one line); a tree that names no pinned image says so in one line and exits 0 without running cosign"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root, ran = sys.argv[2], []
+ac._run_docker = lambda cmd: (ran.append(cmd), 0)[1]
+G = "https://accounts.google.com"
+def go(pins, tools):
+    d = tempfile.mkdtemp(); p, t = os.path.join(d, "pins.json"), os.path.join(d, "tools.json")
+    json.dump(pins, open(p, "w")); json.dump(tools, open(t, "w")); ac.PUBLISHER_PINS_FILE = p
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", "--tools-file", t])
+    return rc, out.getvalue(), err.getvalue()
+TOOLS = {"cosign": "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64}
+GOOD = {"gcr.io/none/none": {"keyless": [{"issuer": G, "subject": "s@example.org"}]}}
+committed = ac._checked_pins(json.load(open(os.path.join(root, ".github/policy/image-publishers.json"))))      # the file in the tree passes its own validation
+assert set(committed) == {"gcr.io/projectsigstore/cosign", "gcr.io/distroless/static-debian12", "registry.k8s.io/kubectl"}, sorted(committed)
+K, ID = "-----BEGIN PUBLIC KEY-----\nx\n-----END PUBLIC KEY-----", {"issuer": G, "subject": "s@example.org"}
+for pins in ([], {}, "x", {"gcr.io/a/b": "x"}, {"gcr.io/a/b": {}}, {"gcr.io/a/b": {"keyless": []}}, {"gcr.io/a/b": {"keyless": [{"issuer": G}]}}, {"gcr.io/a/b": {"keyless": "x"}},
+             {"gcr.io/a/b": {"key": K, "keyless": None}}, {"gcr.io/a/b": {"key": K, "keyless": "x"}}, {"gcr.io/a/b": {"key": K, "keyless": [{"issuer": ""}]}},
+             {"gcr.io/a/b": {"key": 5, "keyless": [ID]}}, {"gcr.io/a/b": {"key": "", "keyless": [ID]}}, {"gcr.io/a/b": {"keyless": [ID], "extra": 1}}):
+    del ran[:]; rc, out, err = go(pins, TOOLS)
+    assert rc == 2 and not ran and err.count("\n") == 1 and "Traceback" not in err and "not a pass" in err, (pins, rc, out, err)
+for tools in ([], {}, "x", {"cosign": 7}, {"cosign": "latest"}):
+    del ran[:]; rc, out, err = go(GOOD, tools)
+    assert rc == 2 and not ran and err.count("\n") == 1 and "Traceback" not in err and "not a pass" in err, (tools, rc, out, err)
+del ran[:]; rc, out, err = go(GOOD, TOOLS)                                  # valid, but nothing in the tree is pinned
+assert rc == 0 and not ran and out.count("\n") == 1 and "no pinned image" in out and err == "", (rc, out, err)
+PY
+CASE="pin age of images (controls): each check of the offline proof has its own case with the exact refusal text (the certificate chain, also against a CA installed on the machine; the certificate window; the payload and the publisher signatures; the signed entry time, also one second off and too large to convert; the checkpoint signature of both paths; the log id; the key named by the log entry), a negative inclusion index is refused, the subject is read from the subjectAltName block only and exactly one name is accepted, and a missing openssl stops the run"
+check python3 - "$chk" "$here/fixtures/image-publishers" "$here/../../policy/image-publishers.json" "$here/../../policy/rekor.pub" "$here/../../policy/fulcio-chain.pem" <<'PY'
+import base64, contextlib, copy, datetime, hashlib, importlib.util, json, os, subprocess, sys, tempfile, time
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx, pins, rekor_pem, fulcio_pem = sys.argv[2], json.load(open(sys.argv[3])), open(sys.argv[4]).read(), open(sys.argv[5]).read()
+load = lambda n: json.load(open(f"{fx}/{n}.sig.json"))
+BUNDLE = json.load(open(f"{fx}/cosign.bundle.json"))
+COSIGN, DISTROLESS = "gcr.io/projectsigstore/cosign", "gcr.io/distroless/static-debian12"
+COSIGN_DIGEST = "sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
+TMP = tempfile.mkdtemp()
+GOOGLE = "https://accounts.google.com"
+b64 = lambda b: base64.b64encode(b).decode()
+
+def sh(*cmd, data=None):
+    return subprocess.run(cmd, input=data, capture_output=True, check=True, cwd=TMP).stdout
+
+def make_cert(tag, ca, san, extra_before=(), issuer=GOOGLE):
+    """A certificate for a fresh key under the test CA `ca` (or self-signed when ca is None): the Fulcio issuer extension and the given subjectAltName."""
+    ext = [f"{oid}=DER:{raw.encode().hex()}" for oid, raw in extra_before] + [f"subjectAltName={san}", f"1.3.6.1.4.1.57264.1.1=DER:{issuer.encode().hex()}"]
+    with open(f"{TMP}/{tag}.cnf", "w") as f:
+        f.write("\n".join(ext) + "\n")
+    sh("openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", f"{tag}.key", "-out", f"{tag}.csr", "-subj", f"/CN={tag}")
+    if ca is None:
+        adds = [a for e in ext for a in ("-addext", e)]
+        sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", f"{tag}.key", "-out", f"{tag}.pem", "-subj", f"/CN={tag}", "-days", "3", *adds)
+    else:
+        sh("openssl", "x509", "-req", "-in", f"{tag}.csr", "-CA", f"{ca}.pem", "-CAkey", f"{ca}.key", "-CAcreateserial", "-out", f"{tag}.pem", "-days", "3", "-extfile", f"{tag}.cnf")
+    return open(f"{TMP}/{tag}.pem").read()
+
+sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-subj", "/CN=test-ca", "-days", "30")
+SUBJECT = "someone@pinned.example"
+LEAF = make_cert("leaf", "ca", f"email:{SUBJECT}")
+FORGED_PINS = {DISTROLESS: {"keyless": [{"issuer": GOOGLE, "subject": SUBJECT}]}}
+DIGEST = "sha256:" + "c" * 64
+
+def forged_layer(integrated=None, sign_with="leaf.key", digest=DIGEST):
+    """A signature layer that is consistent in every field (payload hash, signature, certificate in the log entry) and signed under the test CA's leaf."""
+    payload = json.dumps({"critical": {"identity": {"docker-reference": DISTROLESS}, "image": {"docker-manifest-digest": digest}, "type": "cosign container image signature"}, "optional": None}).encode()
+    open(f"{TMP}/payload", "wb").write(payload)
+    sig = b64(sh("openssl", "dgst", "-sha256", "-sign", sign_with, "payload"))
+    integrated = int(time.time()) + 60 if integrated is None else integrated
+    body = {"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": {"data": {"hash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()}},
+            "signature": {"content": sig, "publicKey": {"content": b64(LEAF.encode())}}}}
+    entry = {"uuid": "u", "body": b64(json.dumps(body).encode()), "integratedTime": integrated, "logID": ac.rekor_log_id(rekor_pem), "logIndex": 1,
+             "verification": {"inclusionProof": {"logIndex": 0, "treeSize": 1, "hashes": [], "rootHash": "00", "checkpoint": "x"}, "signedEntryTimestamp": "AA=="}}
+    return {"payload": b64(payload), "signature": sig, "certificate": LEAF, "chain": "", "bundle": {}, "rekor_entry": entry}
+
+@contextlib.contextmanager
+def patched(**attrs):
+    old = {k: getattr(ac, k) for k in attrs}
+    for k, v in attrs.items():
+        setattr(ac, k, v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            setattr(ac, k, v)
+
+NOOP = lambda *a, **k: None
+def keyless(name, ev, p=pins, digest=None):
+    return ac.keyless_signed_time(name, digest or ev["digest"], ev, p, rekor_pem, fulcio_pem)
+def expect(exc, text, fn):
+    try:
+        fn()
+    except exc as e:
+        assert str(e) == text, f"wrong refusal text:\n  got : {e}\n  want: {text}"
+        return
+    raise AssertionError("accepted (wanted: " + text + ")")
+CHAIN = "the certificate does not chain to the pinned Fulcio root (wrong identity)"
+WINDOW = "the integrated time is outside the certificate's validity window (time not proven)"
+SET_T = "the log's signature does not cover this integrated time (time not proven)"
+CKPT = "the checkpoint is not signed by the log key"
+SIGN = "the signature does not verify under the certificate (wrong identity)"
+LOGID = "the log entry names another log than the pinned Rekor key (time not proven)"
+
+def flip_checkpoint(checkpoint):
+    note, _, sigs = checkpoint.partition("\n\n")
+    out = []
+    for line in sigs.split("\n"):
+        if line.startswith("— "):
+            name, b = line[2:].rsplit(" ", 1); raw = bytearray(base64.b64decode(b)); raw[8] ^= 1
+            line = "— " + name + " " + b64(bytes(raw))
+        out.append(line)
+    return note + "\n\n" + "\n".join(out)
+
+CASES = []
+def case(label):
+    def deco(fn):
+        CASES.append((label, fn)); return fn
+    return deco
+
+@case("chain: a certificate from a CA that is not the pinned Fulcio root")
+def _():
+    with patched(_check_log_entry=NOOP, _check_entry_time=NOOP):
+        expect(ac.CouldNotProve, CHAIN, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer()]}, FORGED_PINS))
+
+@case("chain: a CA installed on the machine (SSL_CERT_DIR) is not the pinned root either")
+def _():
+    d = f"{TMP}/ambient"; os.makedirs(d); open(f"{d}/ca.pem", "w").write(open(f"{TMP}/ca.pem").read()); sh("openssl", "rehash", d)
+    old = os.environ.get("SSL_CERT_DIR"); os.environ["SSL_CERT_DIR"] = d
+    try:
+        assert ac._chains_to_root(LEAF, fulcio_pem, datetime.datetime.now(datetime.timezone.utc)) is False
+        with patched(_check_log_entry=NOOP, _check_entry_time=NOOP):
+            expect(ac.CouldNotProve, CHAIN, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer()]}, FORGED_PINS))
+    finally:
+        os.environ.pop("SSL_CERT_DIR") if old is None else os.environ.__setitem__("SSL_CERT_DIR", old)
+
+@case("window: an integrated time after the certificate expired")
+def _():
+    with patched(_check_log_entry=NOOP, _check_entry_time=NOOP):
+        expect(ac.CouldNotProve, WINDOW, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer(integrated=int(time.time()) + 10 * 86400)]}, FORGED_PINS))
+
+@case("payload signature (keyless): a signature made by another key")
+def _():
+    sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "other.key")
+    with patched(_check_log_entry=NOOP, _check_entry_time=NOOP, _chains_to_root=lambda *a: True):
+        expect(ac.CouldNotProve, SIGN, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer(sign_with="other.key")]}, FORGED_PINS))
+
+@case("signed entry time (keyless): a time one second later, still inside the certificate window")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        l["rekor_entry"]["integratedTime"] = int(l["rekor_entry"]["integratedTime"]) + 1
+    expect(ac.CouldNotProve, SET_T, lambda: keyless(DISTROLESS, ev))
+
+@case("signed entry time: a time too large to convert is refused as unproven, never a traceback")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        l["rekor_entry"]["integratedTime"] = 2 ** 100
+    expect(ac.CouldNotProve, SET_T, lambda: keyless(DISTROLESS, ev))
+
+@case("checkpoint signature (keyless): a checkpoint the log did not sign")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        p = l["rekor_entry"]["verification"]["inclusionProof"]; p["checkpoint"] = flip_checkpoint(p["checkpoint"])
+    expect(ac.CouldNotProve, CKPT, lambda: keyless(DISTROLESS, ev))
+
+@case("log id (keyless): an entry that names another log")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        l["rekor_entry"]["logID"] = "0" * 64
+    expect(ac.CouldNotProve, LOGID, lambda: keyless(DISTROLESS, ev))
+
+@case("publisher signature (keyed): a signature that does not verify under the pinned key")
+def _():
+    b = copy.deepcopy(BUNDLE); s = b["dsseEnvelope"]["signatures"][0]; raw = bytearray(base64.b64decode(s["sig"])); raw[-1] ^= 1; s["sig"] = b64(bytes(raw))
+    expect(ac.CouldNotProve, f"the signature does not verify under the identity pinned for {COSIGN} (wrong identity)",
+           lambda: ac.publisher_signed_time(COSIGN, COSIGN_DIGEST, b, pins, rekor_pem))
+
+@case("entry key (keyed): a log entry that names another key than the pinned one")
+def _():
+    b = copy.deepcopy(BUNDLE); e = b["verificationMaterial"]["tlogEntries"][0]
+    body = json.loads(base64.b64decode(e["canonicalizedBody"])); body["spec"]["signatures"][0]["verifier"] = b64(rekor_pem.encode())
+    e["canonicalizedBody"] = b64(json.dumps(body).encode())
+    expect(ac.CouldNotProve, "the log entry names another key than the pinned one (wrong identity)", lambda: ac.publisher_signed_time(COSIGN, COSIGN_DIGEST, b, pins, rekor_pem))
+
+@case("checkpoint signature (keyed): a checkpoint the log did not sign")
+def _():
+    b = copy.deepcopy(BUNDLE); p = b["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]; p["checkpoint"]["envelope"] = flip_checkpoint(p["checkpoint"]["envelope"])
+    expect(ac.CouldNotProve, CKPT, lambda: ac.publisher_signed_time(COSIGN, COSIGN_DIGEST, b, pins, rekor_pem))
+
+@case("inclusion proof: a negative index or an empty tree is refused")
+def _():
+    leaf = hashlib.sha256(b"\x00x").digest()
+    assert ac._merkle_root_from_inclusion(-1, 1, leaf, []) is None
+    assert ac._merkle_root_from_inclusion(0, 0, leaf, []) is None
+    assert ac._merkle_root_from_inclusion(0, 1, leaf, []) == leaf
+
+@case("subject: the name is read from the subjectAltName block only, and exactly one name is accepted")
+def _():
+    trap = make_cert("trap", None, "email:real@pinned.example", extra_before=[("1.2.3.4.5", "email:evil@trap.example")])
+    issuer, subject, _nb, _na = ac._cert_identity(trap)
+    assert (issuer, subject) == (GOOGLE, "real@pinned.example"), (issuer, subject)
+    two = make_cert("two", None, "email:a@pinned.example,email:b@pinned.example")
+    expect(ac.CouldNotProve, "the certificate has no single subject name (wrong identity)", lambda: ac._cert_identity(two))
+    uri = make_cert("uri", None, "URI:https://github.com/o/r/.github/workflows/w.yml@refs/heads/main")
+    assert ac._cert_identity(uri)[1] == "https://github.com/o/r/.github/workflows/w.yml@refs/heads/main"
+
+@case("openssl missing: the check cannot run (CouldNotLook), it is never a refusal of the image or a traceback")
+def _():
+    def boom(*a, **k):
+        raise FileNotFoundError("openssl")
+    old = ac.subprocess.run; ac.subprocess.run = boom
+    try:
+        try:
+            keyless(DISTROLESS, load("distroless"))
+        except ac.CouldNotLook as e:
+            assert "openssl" in str(e) and "\n" not in str(e), str(e)
+        else:
+            raise AssertionError("did not stop")
+    finally:
+        ac.subprocess.run = old
+
+results = []
+for label, fn in CASES:
+    try:
+        fn(); results.append((label, "ok"))
+    except Exception as e:
+        results.append((label, "RED: " + " ".join(str(e).split())[:230]))
+for label, r in results:
+    print(f"CASE {r[:3] if r == 'ok' else 'RED'}  {label}" + ("" if r == "ok" else "\n      " + r))
+sys.exit(0 if all(r == "ok" for _, r in results) else 1)
+PY
+CASE="pin age of images (timeouts): every openssl and docker call has a timeout, and a call that hangs stops the run (CouldNotLook for openssl, exit 2 'cannot run' for docker), never a refusal of the image or a traceback"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+seen = []
+def hang(cmd, **kw):
+    seen.append(kw.get("timeout")); raise subprocess.TimeoutExpired(cmd, kw.get("timeout") or 0)
+old = ac.subprocess.run; ac.subprocess.run = hang
+try:
+    try:
+        ac._openssl(["version"])
+    except ac.CouldNotLook as e:
+        assert str(e) == "openssl timed out", str(e)
+    else:
+        raise AssertionError("openssl hang did not stop the run")
+    try:
+        ac._run_docker(["docker", "run"])
+    except RuntimeError as e:
+        assert str(e) == "docker timed out", str(e)
+    else:
+        raise AssertionError("docker hang did not stop the run")
+finally:
+    ac.subprocess.run = old
+assert len(seen) == 2 and all(isinstance(t, (int, float)) and t > 0 for t in seen), seen
+ac.inv.load_at = lambda root, rev: {"i": ac.inv.Item("image", "gcr.io/projectsigstore/cosign", "sha256:" + "9" * 64)}      # no git here: only the docker call may hang
+ac.subprocess.run = hang
+err = io.StringIO()
+try:
+    with contextlib.redirect_stderr(err):
+        rc = ac.main(["cosign-verify", "--root", sys.argv[2], "--head", "HEAD", "--cosign-image", "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64])
+finally:
+    ac.subprocess.run = old
+assert rc == 2 and err.getvalue() == "pin-age: cannot run: docker timed out (not a pass)\n", (rc, err.getvalue())
+PY
+CASE="pin age of images (pin notes): a present source or key_source that is not non-empty text is refused with one line and exit 2, and the committed pins file still passes"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root = sys.argv[2]
+G, K = "https://accounts.google.com", "-----BEGIN PUBLIC KEY-----\nx\n-----END PUBLIC KEY-----"
+ID = {"issuer": G, "subject": "s@example.org"}
+ac._checked_pins(json.load(open(os.path.join(root, ".github/policy/image-publishers.json"))))
+bad = [{"keyless": [ID], "source": None}, {"keyless": [ID], "source": 5}, {"keyless": [ID], "source": ""}, {"keyless": [ID], "source": "  "},
+       {"key": K, "key_source": None}, {"key": K, "key_source": 5}, {"key": K, "key_source": ""}]
+for pin in bad:
+    try:
+        ac._checked_pins({"gcr.io/a/b": pin})
+    except ValueError as e:
+        assert "\n" not in str(e) and ("source" in str(e)), (pin, str(e))
+    else:
+        raise AssertionError(("accepted", pin))
+d = tempfile.mkdtemp(); p, t = os.path.join(d, "pins.json"), os.path.join(d, "tools.json")
+json.dump({"gcr.io/a/b": {"keyless": [ID], "source": None}}, open(p, "w")); json.dump({"cosign": "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64}, open(t, "w"))
+ac.PUBLISHER_PINS_FILE = p
+out, err = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", "--tools-file", t])
+assert rc == 2 and err.getvalue().count("\n") == 1 and "not a pass" in err.getvalue() and "Traceback" not in err.getvalue(), (rc, err.getvalue())
+assert ac._checked_pins({"gcr.io/a/b": {"keyless": [ID], "source": "a note", "key_source": "a note"}})
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
