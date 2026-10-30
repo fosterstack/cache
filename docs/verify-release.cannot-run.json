@@ -34,9 +34,5 @@
   {
     "command": "cosign verify-blob --bundle fips.full.lock.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
-  },
-  {
-    "command": "cosign verify-blob --bundle letter.md.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com letter.md",
-    "reason": "needs a letter and its bundle, which the monthly evidence-letter workflow makes after launch and publishes on a release; no release candidate has one, so it is not run before release"
   }
 ]
