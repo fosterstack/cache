@@ -2,10 +2,11 @@
 # bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) and Check's four steps (REQ-REL-011-AC1).
 # the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
 # record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload
-# with the release KMS key (handoff 0713): Witness is told the key by RELEASE_KMS_KEY_REF (the job pins it, as for the Release helper) and the AWS SDK exchanges the job's identity
+# with the release KMS key (handoff 0713) by the one signing function (bin/chain-verify.py sign-record: the key named by RELEASE_KMS_KEY_REF signs through cosign, the Rekor
+# entry kept beside the record, one try and six retries while Rekor does not answer); the AWS SDK exchanges the job's identity
 # token (audience sts.amazonaws.com) for short-lived credentials. The token is written to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the
 # repository tree; AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN point the SDK at it, nothing goes to GITHUB_ENV, and the directory is removed when the script ends or gets
-# EXIT, HUP, INT or TERM. The request variables are unset first. Each signed record goes into SIGNED/<record-dir>/STEP-collection.json with the data files copied unchanged, and
+# EXIT, HUP, INT or TERM. The request variables are unset first. Each signed record goes into SIGNED/<record-dir>/STEP-collection.json (its Rekor entries in STEP-collection.rekor.json) with the data files copied unchanged, and
 # the self-check `bin/chain-verify.py verify` then runs on every signed record (the release key, the policy made for GITHUB_REF), so a signing that
 # did not produce a record signed by the manifest key stops the job. It builds nothing and runs no stage script.
 set -euo pipefail
@@ -80,9 +81,7 @@ while read -r line; do
   step=${base%-collection}
   mkdir -p "$signed/$name"
   for f in "$dir"/*; do case "$f" in *.payload) ;; *) cat "$f" > "$signed/$name/$(basename "$f")" ;; esac; done
-  witness sign -f "$payload" -t application/vnd.in-toto+json \
-    --signer-kms-ref "$RELEASE_KMS_KEY_REF" \
-    -o "$final"
+  python3 -I -B bin/chain-verify.py sign-record --payload "$payload" --out "$final" --template .github/policy/release-policy.template.json
   case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime|arm64) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
   python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
 done < "$plan"

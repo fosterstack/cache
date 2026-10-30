@@ -5,7 +5,9 @@
 # Any other STEP exits 2 before Witness runs.
 # The record is witness-DIR/STEP-collection.json; DIR drops a leading "snapshot-" so a snapshot job uploads the same
 # directory, and the marker stays in the step name (verifiers refuse it, REQ-CHAIN-004-AC13).
-#  - Witness signs with the KMS key, named by RELEASE_KMS_KEY_REF (the job pins it to the key's reference awskms:///<name>), through the AWS SDK. The SDK exchanges the
+#  - Witness runs with a throwaway key made for the step (its own signature carries no trust); then the one signing function (bin/chain-verify.py sign-record)
+#    signs the collection's payload with the release KMS key, named by RELEASE_KMS_KEY_REF (the job pins it to the key's reference awskms:///<name>), through the
+#    AWS SDK, and keeps the Rekor entry beside the record (STEP-collection.rekor.json). The SDK exchanges the
 #    job's identity token for short-lived credentials: the token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 #    file in a private directory under RUNNER_TEMP, outside the repository tree, and AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN point the SDK
 #    at it. They are never written to GITHUB_ENV. The directory is removed when Witness returns or the shell gets EXIT, HUP, INT or TERM.
@@ -46,8 +48,10 @@ if [ "$step" = release-sign ]; then
 else
   wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)
 fi
+openssl genpkey -algorithm ed25519 -out "$td/key.pem"
+local_record="$td/$step-collection.json"
 rc=0
-witness run --step "$step" --signer-kms-ref "$RELEASE_KMS_KEY_REF" \
+witness run --step "$step" --signer-file-key-path "$td/key.pem" \
   -a environment,git,material,product \
   --env-filter-sensitive-vars \
   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' \
@@ -59,7 +63,13 @@ witness run --step "$step" --signer-kms-ref "$RELEASE_KMS_KEY_REF" \
   --env-add-sensitive-key DOCKERHUB_TOKEN \
   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE \
   --env-add-sensitive-key AWS_ROLE_ARN \
-  -o "witness-${step#snapshot-}/$step-collection.json" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?
+  -o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?
+if [ "$rc" -eq 0 ]; then
+  # the step ran: the one signing function signs the collection's payload with the release key; a failure here ends the job (nothing is left unsigned and unnoticed)
+  jq -r .payload "$local_record" | base64 -d > "$td/payload" || { echo "witnessed: the collection has no payload" >&2; exit 1; }
+  python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" --out "witness-${step#snapshot-}/$step-collection.json" \
+    --template .github/policy/release-policy.template.json || rc=$?
+fi
 rm -rf "$td"
 [ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }
 exit "$rc"

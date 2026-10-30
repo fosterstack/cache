@@ -92,10 +92,17 @@ def witnessed_lines():
             "else",
             "  wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)",
             "fi",
+            'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
+            'local_record="$td/$step-collection.json"',
             "rc=0",
-            'witness run --step "$step" --signer-kms-ref "$RELEASE_KMS_KEY_REF" '
+            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-${step#snapshot-}/$step-collection.json" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?' % keys,
+            '-o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?' % keys,
+            'if [ "$rc" -eq 0 ]; then',
+            '  jq -r .payload "$local_record" | base64 -d > "$td/payload" || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
+            '  python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
+            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json || rc=$?',
+            "fi",
             'rm -rf "$td"',
             '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
             'exit "$rc"']

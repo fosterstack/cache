@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "c6c197ae42f8785a7d4e7a76e5700f356653873de11ecff1b82821b76e6cb955",
+      "sha256": "290fe807e7fbdbac9b8069123902e0e0132f955a3eb3dedba9d7fc2454872b88",
       "tools": [
         "make",
         "at",
@@ -315,7 +315,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN unless the step is release-sign; a Witness collection is not a provenance statement",
-      "sha256": "df086df8e25af8cc773dda142a21535b57d9624381de2422d0ffa0159dedf2a4",
+      "sha256": "153f438027fbddfd9d523fdb22af25b51748d4ad059732216d485ecae0042915",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -418,7 +418,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): takes the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness sign with the release KMS key (RELEASE_KMS_KEY_REF) over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record against the release key; builds nothing",
-      "sha256": "e3346ad9d83819c1dc9a5eb59cd53931ca1b6b802fa3f97543104a9ce1d4361e",
+      "sha256": "064c339b95c7063cd149e37b4b5862a811a2d5bcf6bc0c89d0d108ee14c4841d",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",

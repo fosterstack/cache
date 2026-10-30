@@ -113,7 +113,7 @@ def witness_block(spec_):       # the stage's Witness step(s): one line through 
 def witnessed_text():           # bin/witnessed.sh, the witness line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
     i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
-    for flag in (" --signer-kms-ref", " -a ", " -o "):
+    for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
     comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
     return "#!/usr/bin/env bash\n" + comment + "\n" + "\n".join(lines) + "\n"
@@ -597,7 +597,7 @@ expect caught "AC1 stage-admission.yml still present" "still exists" workflows "
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-${step#snapshot-}' '-d out -o "witness-${step#snapshot-}'
+hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "$local_record"' '-d out -o "$local_record"'
 hm fextra  "AC2 an extra Witness flag" '--env-filter-sensitive-vars' '--enable-archivista --env-filter-sensitive-vars'
 hm fnoflt  "AC8 no environment filter flag (tokens would be recorded)" '--env-filter-sensitive-vars' ''
 hm fnokey  "AC8 no token-variable key pattern" "--env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'" ''
@@ -605,16 +605,18 @@ hm fnogh   "AC8 GH_TOKEN not on the sensitive-key list" '--env-add-sensitive-key
 hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git,material,product' 'environment,git,material,slsa'
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
-hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
+hm fout    "AC2 the signed record written to another path" '--out "witness-${step#snapshot-}/$step-collection.json"' '--out out/x.json'
 hm fopen   "AC2 the step list is open" 'release-verify' '*'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value' '| jq -r .value | tee /tmp/leak'
 hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
 hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
-hm kref    "AC2 another KMS key reference" '--signer-kms-ref "$RELEASE_KMS_KEY_REF"' '--signer-kms-ref awskms:///alias/other'
-hm kfulcio "AC2 a Fulcio flag (keyless signing is gone)" '--signer-kms-ref' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-kms-ref'
-hm ktsa    "AC2 a timestamp authority flag (the Rekor entry carries the time)" '--signer-kms-ref' '-t https://tsa.example/ts --signer-kms-ref'
+hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$td/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
+hm kfulcio "AC2 a Fulcio flag (keyless signing is gone)" '--signer-file-key-path' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-file-key-path'
+hm ktsa    "AC2 a timestamp authority flag (the Rekor entry carries the time)" '--signer-file-key-path' '-t https://tsa.example/ts --signer-file-key-path'
+hm kkms    "AC2 Witness told to sign with the KMS key itself again (the one signing function does it)" '--signer-file-key-path "$td/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
+hm knosign "AC2 the collection is not signed with the release key (the signing function is not called)" 'sign-record' 'verify'
 hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts.amazonaws.com)" 'audience=sts.amazonaws.com' 'audience=sigstore'
 hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
 hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
@@ -2929,7 +2931,7 @@ if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1026
+EXPECT=1028
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

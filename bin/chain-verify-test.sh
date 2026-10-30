@@ -236,7 +236,7 @@ def record(name, ptype, subjects, key="rel", signed=True, stmt="v1", dsse=DSSE, 
     sig = sign_file(key, p("pae.bin"))
     env = {"payloadType": dsse, "payload": b64(payload), "signatures": [{"keyid": KEYID, "sig": b64(sig)}] if signed else []}
     json.dump(env, open(p(name + ".json"), "w"))
-    if signed and (ptype == PROV_URI or dsse == "https://witness.testifysec.com/policy/v0.1"):      # a provenance and the release policy carry a Rekor entry beside them
+    if signed:      # every record signed by the release key carries a Rekor entry beside it (ratify B): a provenance, the release policy and a Witness collection alike
         json.dump({"entries": [rekor_entry(payload, sig, key if key in ("rel", "other") else "rel")]}, open(p(name + ".rekor.json"), "w"))
     return hashlib.sha256(payload).hexdigest()
 PAY = {}
@@ -574,6 +574,7 @@ def _prods(items_name, digests_name="digests.json"):
 def _envatt(ref): return [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": ref}}}]
 def _coll(step, subj, ref=T): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": _envatt(ref)}, "subject": subj}).encode()
 add("bi_ok", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+for _n in ("build_coll", "bi_ok"): shutil.copy(p(_n + ".json"), p(_n + "_norekor.json"))      # the same signed records with no Rekor entries file beside them
 add("bi_otheritems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
 add("bi_noitems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
 add("bi_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
@@ -604,10 +605,18 @@ def _cl(dirname, slots):
         if rec is None: continue
         os.makedirs(p("%s/witness-%s" % (dirname, slot)), exist_ok=True)
         shutil.copy(p(rec + ".json"), p("%s/witness-%s/%s-collection.json" % (dirname, slot, slot)))
+        if os.path.exists(p(rec + ".rekor.json")): shutil.copy(p(rec + ".rekor.json"), p("%s/witness-%s/%s-collection.rekor.json" % (dirname, slot, slot)))      # its Rekor entry beside it
 OK4 = {"scanners": "c_scanners", "acceptance": "c_acceptance", "runtime": "c_runtime", "arm64": "c_arm64"}
 _cl("cl_ok", OK4)
 _cl("cl_missing", dict(OK4, arm64=None))
 _cl("cl_extra", dict(OK4, extra="c_scanners"))
+# group 7: the closed folder takes exactly one Rekor entries file beside each record (<step>-collection.rekor.json), and nothing else
+_cl("cl_norekor", OK4); os.remove(p("cl_norekor/witness-runtime/runtime-collection.rekor.json"))
+_cl("cl_stray", OK4); open(p("cl_stray/witness-scanners/notes.txt"), "w").write("x")
+_cl("cl_bak", OK4); shutil.copy(p("cl_bak/witness-scanners/scanners-collection.rekor.json"), p("cl_bak/witness-scanners/scanners-collection.rekor.json.bak"))
+_cl("cl_two", OK4); shutil.copy(p("cl_two/witness-scanners/scanners-collection.rekor.json"), p("cl_two/witness-scanners/other.rekor.json"))
+_cl("cl_alone", OK4); os.remove(p("cl_alone/witness-arm64/arm64-collection.json"))
+_cl("cl_sym", OK4); os.remove(p("cl_sym/witness-acceptance/acceptance-collection.rekor.json")); os.symlink(p("cl_sym/witness-scanners/scanners-collection.rekor.json"), p("cl_sym/witness-acceptance/acceptance-collection.rekor.json"))
 _cl("cl_swapped", dict(OK4, scanners="c_acceptance", acceptance="c_scanners"))          # reordered: each record sits in the other's slot
 _cl("cl_dup", dict(OK4, acceptance="c_scanners"))                                        # the scanners record presented twice
 _cl("cl_subst", dict(OK4, runtime="c_scanners", acceptance="c_acceptance"))              # a substituted record under another name
@@ -691,7 +700,10 @@ def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", hostile=
     for rel, src in files:
         os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
         shutil.copy(p(src), os.path.join(d, rel))
+        if os.path.exists(p(src[:-5] + ".rekor.json")): shutil.copy(p(src[:-5] + ".rekor.json"), os.path.join(d, rel[:-5] + ".rekor.json"))      # the record's Rekor entry beside it
 rcdir("rc_ok")
+rcdir("rc_norekor_rebuild"); os.remove(p("rc_norekor_rebuild/witness-rebuild/rebuild-collection.rekor.json"))      # one collection loses its entries file
+rcdir("rc_norekor_check"); os.remove(p("rc_norekor_check/witness-check/witness-runtime/runtime-collection.rekor.json"))
 rcdir("rc_badsign", sign="sign_othertag")
 rcdir("rc_othersrc", sign="rc_sign_othersrc")
 rcdir("rc_nosrc", sign="rc_sign_nosrc")
@@ -928,6 +940,9 @@ for s in build rebuild check; do
 done
 expect_refuse "KEY provenance signed by the throwaway key is refused with the same plain reason" "signature|manifest key" verify $(V) --stage sign $(rec sign_throwaway)
 expect_refuse "KEY stage-start rebuild <- build refuses a Build record signed by the throwaway key" "build|signature|manifest key" $(ST rebuild build) $(rec build_coll_throwaway) --digests "$work/digests.json"
+# group 2: every flow that reads a record asks for its Rekor entry, and refuses, naming Rekor, when it is not there
+expect_refuse "REKOR verify: a Build record with no entries file is refused, naming Rekor" "rekor" verify $(V) --stage build $(rec build_coll_norekor)
+expect_refuse "REKOR stage-start: the previous stage's record with no entries file is refused, naming Rekor" "rekor" $(ST rebuild build) $(rec build_coll_norekor) --digests "$work/digests.json"
 expect_refuse "KEY tamper: payload changed after signing is refused" "signature" verify $(V) --stage sign $(rec sign_tamper_payload)
 expect_refuse "KEY tamper: signature bytes altered is refused" "signature" verify $(V) --stage sign $(rec sign_tamper_sig)
 expect_refuse "KEY an unsigned record (no signature at all) is refused" "signature" verify $(V) --stage sign $(rec sign_unsigned)
@@ -1533,6 +1548,7 @@ done
 # ---- PR 4: bind-items and check-list (read-back verifier-bindings, advisor OK): refuse-only commands of Release's verify step, on the real verifier ----
 BI() { echo bind-items --policy "$work/policy.json" --record "$work/$1.json" --items "$work/${2:-items}.json"; }
 expect_ok     "PR4 bind-items: items.json equal to the product of Build's verified record is accepted" $(BI bi_ok)
+expect_refuse "REKOR bind-items: Build's record with no entries file is refused, naming Rekor" "rekor" $(BI bi_ok_norekor)
 expect_refuse "PR4 bind-items: an items.json that is not the file Build's record holds is refused" "build|items.json|digest" $(BI bi_ok items-other)
 expect_refuse "PR4 bind-items: a record that holds another items.json hash is refused" "build|items.json|digest" $(BI bi_otheritems)
 expect_refuse "PR4 bind-items: a record with no items.json product is refused" "build|items.json" $(BI bi_noitems)
@@ -1551,6 +1567,12 @@ expect_refuse "AB bind-items --product: a product name with a slash is refused" 
 CLS() { echo check-list --policy "$work/policy.json" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
 expect_ok     "PR4 check-list: exactly scanners, acceptance, runtime and arm64, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
 expect_refuse "PR4 check-list: a missing record (arm64) is refused, naming Check and the record" "check|arm64|missing" $(CLS cl_missing)
+expect_refuse "PR4 check-list: a record with no Rekor entries file beside it is refused, naming Rekor" "rekor" $(CLS cl_norekor)
+expect_refuse "PR4 check-list: a stray file beside a record is refused as extra" "check|extra|notes.txt" $(CLS cl_stray)
+expect_refuse "PR4 check-list: a renamed copy of the entries file is refused as extra" "check|extra|rekor.json.bak" $(CLS cl_bak)
+expect_refuse "PR4 check-list: a second entries file under another name is refused as extra" "check|extra|other.rekor.json" $(CLS cl_two)
+expect_refuse "PR4 check-list: an entries file with its record missing is refused as missing" "check|arm64|missing" $(CLS cl_alone)
+expect_refuse "PR4 check-list: an entries file that is a symlink is refused" "check|symlink|acceptance" $(CLS cl_sym)
 expect_refuse "PR4 check-list: an extra record is refused, naming it" "check|extra" $(CLS cl_extra)
 expect_refuse "PR4 check-list: a stray file inside a record directory is refused" "check|stray.json" $(CLS cl_stray)
 expect_refuse "PR4 check-list: two records swapped between their slots (a substitution) are refused" "check|scanners" $(CLS cl_swapped)
@@ -1736,6 +1758,8 @@ cm_no "AC6 marker: the sha equals the commit's but the rc tag's commit holds oth
 RCP() { echo rc-proof --marker "${3:-$MK}" --commit "${2:-$C2}" --repo "$RG" --records "$work/$1" --template "$work/template.json" \
           --repository "${RCREPO:-fosterstack/cache}"; }
 expect_ok "AC6 rc-proof: the marker, the commit and a complete rc run (Build, Sign with its Rekor stub, Rebuild, the four Check records, the hostile verdict) are accepted" $(RCP rc_ok)
+expect_refuse "REKOR rc-proof: a complete rc run whose Rebuild record has no entries file is refused, naming Rekor" "rekor" $(RCP rc_norekor_rebuild)
+expect_refuse "REKOR rc-proof: a complete rc run whose Check runtime record has no entries file is refused, naming Rekor" "rekor" $(RCP rc_norekor_check)
 expect_ok "AC6 rc-proof: the same proof is accepted at a later commit with the same chain files" $(RCP rc_ok "$C3")
 expect_refuse "AC6 rc-proof: a marker for other bytes is refused before any record is read" "marker|bytes" $(RCP rc_ok "$cother")
 expect_refuse "AC6 rc-proof: a missing marker file is refused" "marker|missing" $(RCP rc_ok "$C2" "$work/no-such-marker.json")
@@ -1874,7 +1898,29 @@ for k in idx_edit it_edit set_garbage set_star keyid_nl body_nl verifier_junk ve
   expect_refuse "002-AC3 verify: a provenance whose Rekor entry file is damaged ($k, see RK_ENTRY and RK_FILE in the fixtures) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov_rk_$k)
 done
 
-EXPECT=741
+# ---- sign-record: the one signing function for Witness collections (handoff 0713 P2). cosign on the PATH of every case below is the fake in $work/fakebin
+# (the first assertion proves it), so nothing here calls KMS, a certificate service or a public Rekor.
+[ "$(PATH="$work/fakebin:$PATH" command -v cosign)" = "$work/fakebin/cosign" ] && ok "P2 the cosign every sign-record case reaches is the fake in the test's own folder (no public write)" \
+  || bad "P2 cosign on the PATH is not the fake: $(PATH="$work/fakebin:$PATH" command -v cosign)"
+printf '{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"x","subject":[],"predicate":{}}' > "$work/sr-payload.json"
+SR() { run sign-record --payload "$work/sr-payload.json" --out "$work/sr/$1/build-collection.json" --template "$work/template.json"; }
+mkdir -p "$work/sr"; rc=0; SR ok || rc=$?
+SR_RE='^attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config [^ ]+/cosign-signing-config\.json --statement [^ ]+/sr-payload\.json --bundle [^ ]+\.bundle\.json$'
+[ "$rc" = 0 ] && [ -s "$work/sr/ok/build-collection.json" ] && [ -s "$work/sr/ok/build-collection.rekor.json" ] && [ "$(wc -l < "$work/cosign-argv.log")" = 1 ] \
+  && grep -Eq "$SR_RE" "$work/cosign-argv.log" \
+  && ok "P2 sign-record: cosign is called once with the pinned argv; the record and its Rekor entries file are written beside each other" \
+  || bad "P2 sign-record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); argv $(head -c 300 "$work/cosign-argv.log"))"
+for m in twosigs notlog withcert; do
+  rc=0; FAKE_BUNDLE=$m SR "bad-$m" || rc=$?
+  [ "$rc" = 1 ] && grep -q '^refused at sign: ' "$work/err" && [ ! -e "$work/sr/bad-$m/build-collection.json" ] && [ ! -e "$work/sr/bad-$m/build-collection.rekor.json" ] \
+    && ok "P2 sign-record: a bundle that fails ($m) is refused and leaves no record and no entries file" \
+    || bad "P2 sign-record $m (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+done
+rc=0; SR ok || rc=$?
+[ "$rc" = 1 ] && grep -q 'exists' "$work/err" && [ ! -s "$work/cosign-argv.log" ] && ok "P2 sign-record: an existing record is refused before cosign is asked" \
+  || bad "P2 sign-record over an existing record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+
+EXPECT=758
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

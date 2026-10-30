@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Tests for how the two Witness helpers that hold an identity token sign with the release KMS key (handoff 0713, rows P2 and P9):
-#   bin/witnessed.sh STEP SCRIPT...      Release's six steps, `witness run`
-#   bin/witness-sign-staged.sh STAGED SIGNED   Sign's step for Build's, Rebuild's and Check's records, `witness sign`
-# Offline: `witness`, the token endpoint helper (bin/loopback-get.sh) and the verifier are doubles made here; nothing reaches AWS, a network or a public log.
+#   bin/witnessed.sh STEP SCRIPT...      Release's six steps: `witness run` with a throwaway key, then the one signing function
+#   bin/witness-sign-staged.sh STAGED SIGNED   Sign's step for Build's, Rebuild's and Check's records: the same signing function
+# Offline: `witness`, the token endpoint helper (bin/loopback-get.sh) and the verifier (which holds the signing function, `sign-record`) are doubles made here;
+# nothing reaches AWS, KMS, a network or a public log (the signing function itself is tested in bin/chain-rekor-key-test.sh with a fake cosign).
 # What it proves, by running the real helper against the doubles (the doubles record what they were given):
-#   - Witness is told to sign with the KMS key named by RELEASE_KMS_KEY_REF (the job pins the value awskms:///alias/fosterstack-release-signing) and with no Fulcio, timestamp or certificate flag
+#   - Witness runs with a throwaway key file made for the step (never the KMS key, no Fulcio, timestamp or certificate flag); the collection's payload is then signed by
+#     `sign-record` (the key named by RELEASE_KMS_KEY_REF, the job pins the value awskms:///alias/fosterstack-release-signing); a failing Witness is not signed; a failing signature fails the helper
 #   - the identity token is asked for exactly once, with audience sts.amazonaws.com (the audience the AWS trust requires), and lands in a file of mode 0600 in a
 #     directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
 #   - the AWS SDK is pointed at that file by AWS_WEB_IDENTITY_TOKEN_FILE and at the role by AWS_ROLE_ARN, for Witness; the wrapped script of every step but
@@ -65,7 +67,33 @@ if [ "$n" -lt "${#args[@]}" ] || [ "${args[$((n - 1))]}" = -- ]; then
   cmd=("${args[@]:$n}")
   [ "${#cmd[@]}" -eq 0 ] || "${cmd[@]}" || true
 fi
+out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
+if [ -n "$out" ] && [ "${FAKE_WITNESS_RC:-0}" = 0 ]; then
+  mkdir -p "$(dirname "$out")"
+  printf '{"payloadType":"application/vnd.in-toto+json","payload":"%s","signatures":[]}\n' "$(printf 'PAYLOAD-OF-WITNESS' | base64 -w0)" > "$out"
+fi
 exit "${FAKE_WITNESS_RC:-0}"
+'''
+
+FAKE_CV = r'''#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+log = os.environ["LOG"]
+open(log + "/cv.log", "a").write(" ".join(a) + "\n")
+if a[:2] == ["policy", "make"]:
+    open(a[a.index("--out") + 1], "w").write("{}")
+if a[:1] == ["sign-record"]:
+    tf = os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE", "UNSET")
+    open(log + "/signrec.env", "a").write("ROLE=%s TOKFILE=%s TOKEXISTS=%s REQ=%s|%s|%s\n" % (
+        os.environ.get("AWS_ROLE_ARN", "UNSET"), tf, "yes" if os.path.isfile(tf) else "no", os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "UNSET"),
+        os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "UNSET"), os.environ.get("ACTIONS_RUNTIME_TOKEN", "UNSET")))
+    open(log + "/signrec.payload", "wb").write(open(a[a.index("--payload") + 1], "rb").read())
+    if os.environ.get("FAKE_SIGN_RC"):
+        sys.exit(int(os.environ["FAKE_SIGN_RC"]))
+    out = a[a.index("--out") + 1]
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    open(out, "w").write("{}")
+    open(out[: -len(".json")] + ".rekor.json", "w").write("{}")
 '''
 
 FAKE_INNER = r'''#!/usr/bin/env bash
@@ -90,6 +118,9 @@ def tree(helper, text):
     sh(os.path.join(repo, "bin", helper), text)
     sh(os.path.join(repo, "bin", "loopback-get.sh"), FAKE_LOOP)
     sh(os.path.join(repo, "bin", "inner.sh"), FAKE_INNER)
+    sh(os.path.join(repo, "bin", "chain-verify.py"), FAKE_CV)
+    os.makedirs(os.path.join(repo, ".github/policy"))
+    open(os.path.join(repo, ".github/policy/release-policy.template.json"), "w").write("{}")
     sh(os.path.join(fakebin, "witness"), FAKE_WITNESS)
     return t, repo, log, runner, fakebin
 
@@ -134,8 +165,17 @@ def problems_witnessed(text):
     tokdir = os.path.dirname(tokfile) if tokfile and tokfile != "UNSET" else ""
     if r.returncode != 0:
         bad.append("release-verify exit %d: %s" % (r.returncode, r.stderr.strip()[:120]))
-    if "--signer-kms-ref " + KEY not in argv:
-        bad.append("Witness is not told to sign with the KMS key by alias")
+    if "--signer-kms-ref" in argv or not re.search(r"--signer-file-key-path \S+/key\.pem", argv):
+        bad.append("Witness is not told to sign with a throwaway key file (or is still told the KMS key)")
+    sr = [l for l in read(os.path.join(log, "cv.log")).splitlines() if l.startswith("sign-record ")]
+    want_sr = "sign-record --payload %s --out witness-release-verify/release-verify-collection.json --template .github/policy/release-policy.template.json"
+    if len(sr) != 1 or not re.fullmatch(re.escape(want_sr).replace("%s", r"\S+/payload"), sr[0].replace("\\", "")) and not re.fullmatch(want_sr % r"\S+/payload", sr[0]):
+        bad.append("the collection is not signed once by sign-record with --payload, --out and --template as pinned: %r" % sr)
+    se = read(os.path.join(log, "signrec.env")).splitlines()
+    if len(se) != 1 or not se[0].startswith("ROLE=" + ROLE) or "TOKEXISTS=yes" not in se[0] or not se[0].endswith("REQ=UNSET|UNSET|UNSET"):
+        bad.append("sign-record does not see the role and the token file, or sees a request variable: %r" % se)
+    if read(os.path.join(log, "signrec.payload")) != "PAYLOAD-OF-WITNESS":
+        bad.append("sign-record is not handed the payload Witness wrote")
     if re.search(r"fulcio|oidc|--timestamp|timestamp\.sigstore|\s-t\s|certificate", argv):
         bad.append("a Fulcio, OIDC, timestamp or certificate flag is still given to Witness")
     if "timeout" in argv:
@@ -192,6 +232,15 @@ def problems_witnessed(text):
     d3 = os.path.dirname((lines(log3, "witness.log", "TOKFILE") or [""])[0])
     if r3.returncode != 7:
         bad.append("a failing Witness (7) ends the helper with %d" % r3.returncode)
+    if "sign-record" in read(os.path.join(log3, "cv.log")):
+        bad.append("a failing Witness is still signed")
+    # a failing signature fails the helper and leaves no token directory
+    t6, repo6, log6, runner6, r6 = run_witnessed(text, "release-verify", {"FAKE_SIGN_RC": "3"})
+    if r6.returncode == 0:
+        bad.append("a failing signature does not fail the helper")
+    if os.listdir(runner6):
+        bad.append("a token directory is left after a failing signature")
+    shutil.rmtree(t6, ignore_errors=True)
     if d3 and os.path.exists(d3):
         bad.append("the token directory still exists after a failing Witness")
     # refusals: nothing is run, nothing is left
@@ -233,7 +282,10 @@ mutant("a value written to GITHUB_ENV", lambda s: s.replace("rc=0\nwitness run",
 mutant("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'))
 mutant("AWS_ROLE_ARN not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key AWS_ROLE_ARN \\\n", ""))
 mutant("a Fulcio flag", lambda s: s.replace("witness run --step", "witness run --signer-fulcio-url https://fulcio.sigstore.dev --step"))
-mutant("the key reference taken from nowhere (a fixed wrong key)", lambda s: s.replace('--signer-kms-ref "$RELEASE_KMS_KEY_REF"', "--signer-kms-ref awskms:///other"))
+mutant("Witness told to sign with the KMS key itself again", lambda s: s.replace('--signer-file-key-path "$td/key.pem"', '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'))
+mutant("the collection is not signed with the release key", lambda s: s.replace("sign-record", "verify"))
+mutant("a failing signature ignored", lambda s: s.replace("--template .github/policy/release-policy.template.json || rc=$?", "--template .github/policy/release-policy.template.json || true"))
+mutant("a failing Witness signed anyway", lambda s: s.replace('if [ "$rc" -eq 0 ]; then', "if true; then"))
 mutant("the ten-minute timeout kept", lambda s: s.replace('bash "$@" || rc=$?', 'timeout -k 20 540 bash "$@" || rc=$?'))
 mutant("the exit status of Witness lost", lambda s: s.replace('exit "$rc"', "exit 0"))
 mutant("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
@@ -244,19 +296,10 @@ mutant("release-sign loses the variables too", lambda s: s.replace("  wrap=()\ne
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # bin/witness-sign-staged.sh: Sign's step for the records of the jobs that hold no token
 
-FAKE_CV = r'''#!/usr/bin/env python3
-import os, sys
-open(os.environ["LOG"] + "/cv.log", "a").write(" ".join(sys.argv[1:]) + "\n")
-if sys.argv[1:3] == ["policy", "make"]:
-    open(sys.argv[sys.argv.index("--out") + 1], "w").write("{}")
-'''
 
 
 def staged_tree(text):
     t, repo, log, runner, fakebin = tree("witness-sign-staged.sh", text)
-    sh(os.path.join(repo, "bin", "chain-verify.py"), FAKE_CV)
-    os.makedirs(os.path.join(repo, ".github/policy"))
-    open(os.path.join(repo, ".github/policy/release-policy.template.json"), "w").write("{}")
     st = os.path.join(repo, "staged")
     os.makedirs(os.path.join(st, "witness-build"))
     open(os.path.join(st, "witness-build", "build-collection.payload"), "w").write("payload")
@@ -265,42 +308,37 @@ def staged_tree(text):
     return t, repo, log, runner, fakebin
 
 
-FAKE_WITNESS_SIGN = FAKE_WITNESS.replace('} >> "$LOG/witness.log"', '} >> "$LOG/witness.log"\nout=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done; [ -z "$out" ] || { mkdir -p "$(dirname "$out")"; echo signed > "$out"; }')
 
 
 def problems_staged(text):
     bad = []
     t, repo, log, runner, fakebin = staged_tree(text)
-    sh(os.path.join(fakebin, "witness"), FAKE_WITNESS_SIGN)
     # the plan is written with paths relative to the repository root, as the verifier prints them
     plan = os.path.join(repo, "staged", "plan.txt")
     open(plan, "w").write("%s\t%s\n" % (os.path.join(repo, "staged/witness-build/build-collection.payload"), os.path.join(repo, "signed/witness-build/build-collection.json")))
     e = env_of(t, log, runner, fakebin, {"GITHUB_REF": "refs/tags/v0.3.0"})
     r = subprocess.run(["bash", "bin/witness-sign-staged.sh", os.path.join(repo, "staged"), os.path.join(repo, "signed")], cwd=repo, env=e, capture_output=True, text=True, timeout=60)
-    argv = (lines(log, "witness.log", "ARGV") or [""])[0]
     if r.returncode != 0:
         bad.append("exit %d: %s" % (r.returncode, r.stderr.strip()[:160]))
-    if not argv.startswith("sign ") or "--signer-kms-ref " + KEY not in argv:
-        bad.append("Witness is not told to sign with the KMS key by alias: %r" % argv[:120])
-    if re.search(r"fulcio|oidc|--timestamp|timestamp\.sigstore|certificate", argv):
-        bad.append("a Fulcio, OIDC, timestamp or certificate flag is still given to Witness")
+    if os.path.exists(os.path.join(log, "witness.log")):
+        bad.append("Witness is run: Sign signs through the one signing function only")
+    want_sr = "sign-record --payload %s --out %s --template .github/policy/release-policy.template.json" % (
+        os.path.join(repo, "staged/witness-build/build-collection.payload"), os.path.join(repo, "signed/witness-build/build-collection.json"))
+    if want_sr not in read(os.path.join(log, "cv.log")).splitlines():
+        bad.append("the staged payload is not signed by sign-record as pinned: %r" % read(os.path.join(log, "cv.log"))[:300])
+    argv = want_sr
     loops = read(os.path.join(log, "loop.log")).splitlines()
     if len(loops) != 1 or not loops[0].endswith("&audience=sts.amazonaws.com"):
         bad.append("the identity token is not asked for exactly once with audience sts.amazonaws.com: %r" % loops)
-    tokfile = (lines(log, "witness.log", "TOKFILE") or [""])[0]
-    if tokfile in ("", "UNSET"):
-        bad.append("Witness does not see AWS_WEB_IDENTITY_TOKEN_FILE")
+    se = read(os.path.join(log, "signrec.env")).splitlines()
+    if len(se) != 1 or not se[0].startswith("ROLE=" + ROLE) or "TOKEXISTS=yes" not in se[0] or not se[0].endswith("REQ=UNSET|UNSET|UNSET"):
+        bad.append("sign-record does not see the role and the token file, or sees a request variable: %r" % se)
     else:
-        if (lines(log, "witness.log", "TOKMODE") or [""])[0] != "600" or (lines(log, "witness.log", "TOKCONTENT") or [""])[0] != TOKEN:
-            bad.append("the token file is not a mode 0600 file holding exactly the token")
+        tokfile = re.search(r"TOKFILE=(\S+)", se[0]).group(1)
         if not os.path.realpath(tokfile).startswith(os.path.realpath(runner) + os.sep):
             bad.append("the token file is not under RUNNER_TEMP")
         if os.path.exists(os.path.dirname(tokfile)):
             bad.append("the token directory still exists after success")
-    if (lines(log, "witness.log", "ROLE") or [""])[0] != ROLE:
-        bad.append("Witness does not see AWS_ROLE_ARN")
-    if (lines(log, "witness.log", "REQ") or [""])[0] != "UNSET|UNSET|UNSET":
-        bad.append("the identity-token request or runtime variables reach Witness")
     cv = read(os.path.join(log, "cv.log"))
     if "policy make" not in cv or not re.search(r"^verify --policy policy\.json --stage build --record .*build-collection\.json$", cv, re.M):
         bad.append("the signed record is not checked with the verifier under the policy made for the ref: %r" % cv[:200])
@@ -311,23 +349,23 @@ def problems_staged(text):
     shutil.rmtree(t, ignore_errors=True)
     # a failing Witness stops the job and leaves no token directory
     t2, repo2, log2, runner2, fakebin2 = staged_tree(text)
-    sh(os.path.join(fakebin2, "witness"), FAKE_WITNESS_SIGN)
     open(os.path.join(repo2, "staged", "plan.txt"), "w").write("%s\t%s\n" % (os.path.join(repo2, "staged/witness-build/build-collection.payload"), os.path.join(repo2, "signed/witness-build/build-collection.json")))
-    e2 = env_of(t2, log2, runner2, fakebin2, {"GITHUB_REF": "refs/tags/v0.3.0", "FAKE_WITNESS_RC": "5"})
+    e2 = env_of(t2, log2, runner2, fakebin2, {"GITHUB_REF": "refs/tags/v0.3.0", "FAKE_SIGN_RC": "5"})
     r2 = subprocess.run(["bash", "bin/witness-sign-staged.sh", os.path.join(repo2, "staged"), os.path.join(repo2, "signed")], cwd=repo2, env=e2, capture_output=True, text=True, timeout=60)
     if r2.returncode == 0:
-        bad.append("a failing Witness does not stop the job")
+        bad.append("a failing signature does not stop the job")
     if os.listdir(runner2):
-        bad.append("a token directory is left after a failing Witness")
+        bad.append("a token directory is left after a failing signature")
+    if "--stage build" in read(os.path.join(log2, "cv.log")):
+        bad.append("a record whose signing failed is still checked")
     shutil.rmtree(t2, ignore_errors=True)
     # refusals before any token is asked for
     for label, extra, drop in (("no role", {}, ("AWS_ROLE_ARN",)), ("no key reference", {}, ("RELEASE_KMS_KEY_REF",)), ("a failed fetch", {"FAKE_FETCH_FAIL": "1"}, ()), ("a null token", {"FAKE_TOKEN": "null"}, ())):
         t3, repo3, log3, runner3, fakebin3 = staged_tree(text)
-        sh(os.path.join(fakebin3, "witness"), FAKE_WITNESS_SIGN)
         open(os.path.join(repo3, "staged", "plan.txt"), "w").write("%s\t%s\n" % (os.path.join(repo3, "staged/witness-build/build-collection.payload"), os.path.join(repo3, "signed/witness-build/build-collection.json")))
         e3 = env_of(t3, log3, runner3, fakebin3, dict({"GITHUB_REF": "refs/tags/v0.3.0"}, **extra), drop)
         r3 = subprocess.run(["bash", "bin/witness-sign-staged.sh", os.path.join(repo3, "staged"), os.path.join(repo3, "signed")], cwd=repo3, env=e3, capture_output=True, text=True, timeout=60)
-        if r3.returncode == 0 or os.path.exists(os.path.join(log3, "witness.log")):
+        if r3.returncode == 0 or os.path.exists(os.path.join(log3, "signrec.env")):
             bad.append("%s: the helper went on" % label)
         if os.listdir(runner3):
             bad.append("%s: a token directory is left behind" % label)
@@ -349,13 +387,14 @@ def mutant2(label, fn):
 
 
 mutant2("audience sigstore", lambda s: s.replace("audience=sts.amazonaws.com", "audience=sigstore"))
-mutant2("a Fulcio flag", lambda s: s.replace("witness sign ", "witness sign --signer-fulcio-url https://fulcio.sigstore.dev "))
-mutant2("the key reference taken from nowhere (a fixed wrong key)", lambda s: s.replace('--signer-kms-ref "$RELEASE_KMS_KEY_REF"', "--signer-kms-ref awskms:///other"))
+mutant2("Witness used again to sign", lambda s: s.replace("python3 -I -B bin/chain-verify.py sign-record --payload", "witness sign -f"))
+mutant2("the staged payload not signed", lambda s: s.replace("sign-record", "verify"))
+mutant2("the signing step runs under another template", lambda s: s.replace("release-policy.template.json", "other.json", 1) if "sign-record" in s.split("release-policy.template.json")[0].split("\n")[-1] else s.replace("--out \"$final\" --template .github/policy/release-policy.template.json", "--out \"$final\" --template other.json"))
 mutant2("no cleanup of the token directory", lambda s: re.sub(r"^trap .*\n", "", s, flags=re.M).replace('rm -rf "$td"\n', ""))
 mutant2("the signed record not checked", lambda s: re.sub(r"^  python3 -I -B bin/chain-verify.py verify .*\n", "", s, flags=re.M))
 mutant2("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'))
 
-EXPECT = 22
+EXPECT = 26
 print("pass=%d fail=%d" % (passn, failn))
 if passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT))
