@@ -3,6 +3,8 @@ name: supply-chain
 # REQ-SUP-001 (owner ratified Oct 5): the actions supply-chain checks.
 #   pin-age        every pull request: a version the PR moves must be public 7 days by a server-side time (AC2-AC4). It runs the base branch's
 #                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
+#   image-signatures  every pull request: `cosign verify` (reads only) of each pinned third-party image, run by the
+#                  base branch's checker from the pinned cosign image.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 #   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
 # It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
@@ -62,6 +64,36 @@ jobs:
           fi
           python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1
           exit $status
+
+  image-signatures:
+    # Reads only: the base branch's checker runs `cosign verify` (never sign, attest or upload) from the cosign
+    # image the repository pins by digest, once per pinned publisher identity of each pinned third-party image
+    # the pull request's tree names. It cross-checks the offline proof of the pin-age job.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # a real run takes seconds; the checker also guards each docker call against a hang
+    permissions:
+      contents: read
+    steps:
+      - name: Trusted checker (the base branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: The pull request's tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The signature of every pinned third-party image
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 trusted/.github/agent/supply-chain/pin-age-check.py cosign-verify --root pr --head "$HEAD_SHA" \
+            --tools-file trusted/bin/persona-uat-tools.json
 
   daily-audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
