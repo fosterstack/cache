@@ -20,7 +20,8 @@ ALL_ROWS = ATTEMPTS + ["positive_control"]
 ROW_STAGES = ("runner", "build", "sign", "rebuild", "check", "release")
 # (allowed stages, cause words) per attempt; a refusal counts only when stage and cause fit
 FITS = {
-    "mint_sign_cert": (("sign", "release"), ("manifest key", "signature")),      # keyed: a record made with a key the manifest does not name
+    # keyed: a record made with a key the manifest does not name
+    "mint_sign_cert": (("sign", "release"), ("manifest key", "signature")),
     "read_sign_token": (("runner",), ("nothing usable",)),
     "read_sign_key": (("runner",), ("nothing usable",)),
     "hand_sign_code": (("sign",), ("digest", "format")),
@@ -124,7 +125,8 @@ def _transcript(path):
 
 
 def sign_key_hash(policy_path):
-    """sha256 of the DER of the policy's release key (the manifest key): the key a stolen private key would have to match."""
+    """sha256 of the DER of the policy's release key (the manifest key): the key a stolen private key would have to
+    match."""
     try:
         with open(policy_path, "rb") as f:
             pem = strict_json(f.read())["release_key"]["public_key"]
