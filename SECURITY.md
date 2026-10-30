@@ -161,8 +161,6 @@ The apks of a release are signed with one release key; its public half will be c
 
 - The key is rotated every year.
 - A suspected leak is not waited out: the key is rotated at once.
-- A retired key's public half stays published, so the apks it signed stay verifiable.
-- A leak is disclosed when the key is rotated, in the security advisory for the affected releases.
 
 ## Supported versions
 
