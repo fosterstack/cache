@@ -10,3 +10,8 @@ Questions for the orchestrator:
 - Q-a: "waits/retries when Rekor is down": how many tries and how long (a number, so a test can assert it)?
 - Q-b: the Rekor incident rule says no public service in any test. A real upload proof then needs a local stand-in Rekor, or it waits for the first real chain run (as T2 does). Which?
 - Q-c: is the TSA gone with Fulcio, or does the Rekor entry check still want a timestamp authority?
+
+## Answers received (orchestrator 0305) and what I will build
+- Rekor down: 6 tries, backoff 1-2-4-8-16-32 s (about 1 minute), then Release fails closed with one line naming Rekor; a re-run continues. Reason: a short outage clears inside a minute, and a longer one should stop the release. A test asserts the six tries and the one-line refusal.
+- Tests use recorded Rekor fixtures and a local stand-in only. Nothing in a test writes to the public Rekor. The real upload proof is the first real chain run, quoted.
+- TSA: I know of no kept reader, since the key path reads the Rekor integrated time. tsa-chain.pem goes with Fulcio in P5, unless the new Rekor check code turns up a reader; I will name it before deleting.
