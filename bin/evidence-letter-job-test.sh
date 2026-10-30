@@ -112,13 +112,15 @@ mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
 check("AC9: the identity customers verify is named in the workflow header and in the verify guide",
       all(IDENTITY in read(f) for f in (WF, "docs/verify-release.md")))
 rs, pub = read("bin/release-sign.sh"), read("bin/evidence-letter-publish.sh")
+ver = read("bin/evidence-letter-verify.sh")
 check("AC9: the signing config is release-sign.sh's, and the key is the one KMS alias Sign uses",
       "--signing-config .github/policy/cosign-signing-config.json" in rs
       and "--key awskms:///alias/fosterstack-release-signing" in pub
       and "--signing-config .github/policy/cosign-signing-config.json" in pub)
 for banned in ("--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog", "@refs/heads/main", "keyless",
                "--identity-token", "--fulcio-url", "--oidc-"):
-    check("F2: the publish script holds no " + banned, banned not in pub, banned)
+    check("F2: neither the publish nor the verify script holds " + banned,
+          banned not in pub and banned not in ver, banned)
 check("AC9: no upload may overwrite", "--clobber" not in pub)
 
 

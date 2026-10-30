@@ -109,8 +109,9 @@ bin/build-apk-helper.py build/sealed-env.json
 bin/layout-archive.sh bin/layout-archive-test.sh
 bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
+bin/evidence-letter-verify.sh
 """.split())
-if len(DECLARED) != 62: errs.append("declared list is not 62 paths: %d" % len(DECLARED))
+if len(DECLARED) != 63: errs.append("declared list is not 63 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
