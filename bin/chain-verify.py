@@ -426,8 +426,9 @@ def check_record_type(stage, pol, ptype, payload):
             refuse(stage, "ref: the ref inside the provenance (%s) is not the policy's ref %s" % (json.dumps(found), pol.get("ref")))
         # the provenance names the ref twice (the run's ref and the calling workflow's `file@ref`); a branch run must not pass as the tag by either one
         workflow = params.get("workflow")
-        if not isinstance(workflow, str) or workflow.rpartition("@")[2] != pol.get("ref"):
-            refuse(stage, "ref: the calling workflow inside the provenance (%s) is not at the policy's ref %s" % (json.dumps(workflow), pol.get("ref")))
+        want = "https://github.com/%s/.github/workflows/release.yml@%s" % (pol.get("repository"), pol.get("ref"))
+        if workflow != want:
+            refuse(stage, "ref: the calling workflow inside the provenance (%s) is not %s" % (json.dumps(workflow), want))
         if predicate.get("dryRun") and not pol.get("dry_run"):
             refuse(stage, "the provenance says dryRun true (dry): only a dry-run policy accepts it")
         return stmt
@@ -1054,13 +1055,18 @@ def provenance_statement(pol, obj, dry):
     site = "https://github.com/" + repo
     run_url = "%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", "https://github.com"), repo, os.environ.get("GITHUB_RUN_ID", "0"))
     commit = os.environ.get("GITHUB_SHA", "")
+    # the calling workflow is the one GitHub names for this run, and it must be release.yml at the policy's ref: Sign writes what it was
+    # told, never a constant, so a run of another workflow (or of release.yml at another ref) cannot produce a provenance that passes
+    caller = os.environ.get("GITHUB_WORKFLOW_REF", "")
+    if caller != "%s/.github/workflows/release.yml@%s" % (repo, ref):
+        refuse("sign", "workflow: GITHUB_WORKFLOW_REF (%s) is not %s/.github/workflows/release.yml@%s" % (json.dumps(caller), repo, ref))
     statement = {
         "_type": "https://in-toto.io/Statement/v1", "predicateType": PROV,
         "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in sorted(obj.items())],
         "predicate": {
             "buildDefinition": {
                 "buildType": "https://github.com/%s/release-chain/v0.3.0" % repo,
-                "externalParameters": {"ref": ref, "workflow": "%s/.github/workflows/release.yml@%s" % (site, ref)},
+                "externalParameters": {"ref": ref, "workflow": "https://github.com/" + caller},
                 "internalParameters": {},
                 "resolvedDependencies": [{"uri": "git+https://github.com/%s@%s" % (repo, ref), "digest": {"gitCommit": commit}}],
             },

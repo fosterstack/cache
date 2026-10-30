@@ -258,6 +258,13 @@ add("sign_brtag", PROV, D, ref="refs/heads/v0.3.0")
 _cfg = slsa_ok(T)       # Q2b: the run's ref is the tag, the calling workflow's ref is the branch named like the tag
 _cfg["buildDefinition"]["externalParameters"]["workflow"] = "https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/v0.3.0"
 add("sign_cfg_brtag", PROV, D, predicate=_cfg, raw_predicate=True)
+# the calling workflow must be exactly <repo>/.github/workflows/release.yml@<ref> (re-aimed from the certificate-identity cases)
+WF_BAD = {"evil": "https://github.com/fosterstack/cache-evil/.github/workflows/release.yml@" + T, "cachex": "https://github.com/fosterstack/cachex/.github/workflows/release.yml@" + T,
+          "prerelease": "https://github.com/fosterstack/cache/.github/workflows/prerelease.yml@" + T, "xrelease": "https://github.com/fosterstack/cache/.github/workflows/xrelease.yml@" + T,
+          "otherref": "https://github.com/fosterstack/cache/.github/workflows/release.yml@" + T2, "nosite": "fosterstack/cache/.github/workflows/release.yml@" + T}
+for _k, _w in WF_BAD.items():
+    _c = slsa_ok(T); _c["buildDefinition"]["externalParameters"]["workflow"] = _w
+    add("sign_wf_" + _k, PROV, D, predicate=_c, raw_predicate=True)
 _nowf = slsa_ok(T); del _nowf["buildDefinition"]["externalParameters"]["workflow"]
 add("sign_nowf", PROV, D, predicate=_nowf, raw_predicate=True)
 _noref = slsa_ok(T); del _noref["buildDefinition"]["externalParameters"]["ref"]
@@ -732,6 +739,7 @@ SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SE
 # sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/cosign-argv.log"; local rc=0
   "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" OPENSSL="$OPENSSL" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
+    GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
     ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
@@ -910,6 +918,9 @@ pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["bui
 PY
 # rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before cosign is asked
 SGN() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/$1"; }
+for _w in "fosterstack/cache-evil/.github/workflows/release.yml@refs/tags/v0.3.0" "fosterstack/cache/.github/workflows/prerelease.yml@refs/tags/v0.3.0" "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.1" ""; do
+  GITHUB_WORKFLOW_REF="$_w" expect_refuse "Q2b sign refuses to write a provenance when GITHUB_WORKFLOW_REF is '$_w'" "workflow" $(SGN wfref-${#_w}-$RANDOM)
+done
 GITHUB_SHA="" GITHUB_RUN_ID=424242 expect_refuse "R1a an empty GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-empty)
 [ ! -e "$work/sd/r1a-empty" ] && ok "R1a r1a-empty: no output folder was made" || bad "R1a r1a-empty: an output folder exists"
 GITHUB_SHA=0123456789abcdef GITHUB_RUN_ID=424242 expect_refuse "R1a a short GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-short)
@@ -1011,6 +1022,9 @@ expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3
 expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel)
 expect_refuse "Q2b 002-AC2 round 5 B2a: the run's ref is the tag but the calling workflow's ref is the BRANCH refs/heads/v0.3.0: refused" "workflow|refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_cfg_brtag)
 expect_refuse "Q2b a provenance with no calling workflow is refused (the field the policy compares must be there)" "workflow" verify $(V) --stage sign $(rec sign_nowf)
+for _k in evil cachex prerelease xrelease otherref nosite; do
+  expect_refuse "Q2b a provenance whose calling workflow is $_k (not exactly release.yml of this repository at the tag) is refused" "workflow" verify $(V) --stage sign $(rec sign_wf_$_k)
+done
 expect_refuse "Q3 a provenance with no externalParameters.ref is refused (with no certificate the ref is what ties it to the tag)" "ref" verify $(V) --stage sign $(rec sign_noref)
 # the committed key manifest does not exist until the owner makes the offline root key: that absence is ONE fail-closed case, not a failure of every case that makes a policy
 expect_refuse "P1 with the committed policy directory (no release-key-root.pub yet) policy make fails closed at the manifest" "manifest|release-key-root.pub" policy make --template "$root/.github/policy/release-policy.template.json" --tag v0.3.0 --out "$work/policy-committed.json"
@@ -1367,8 +1381,9 @@ expect_refuse "R2-4 release <- sign: a subject whose digest is a list is refused
 expect_refuse "R2-4 rebuild <- build: a product subject whose digest is a list is refused" "build|subject" $(ST rebuild build) $(rec build_baddigest) --digests "$work/digests.json"
 expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused (at build since r7 B6: the record's own stage, as for its identity)" "build|subject" check-build-record --policy "$work/policy.json" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
+WFREF=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
-rc=0; env PATH="$work/nocosign" OPENSSL="$work/nocosign/openssl" "$PY3" "$cv" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
+rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" OPENSSL="$work/nocosign/openssl" "$PY3" "$cv" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- Codex security round 3 ----
@@ -1708,7 +1723,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=676
+EXPECT=686
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
