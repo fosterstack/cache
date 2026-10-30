@@ -1249,8 +1249,11 @@ def deadline_for(a):
 
 def _deadline_passed(seconds):
     """The run did not finish: say where it was, and end it. os._exit, because a timer thread's sys.exit would only
-    end that thread; one os.write to fd 2 and no stdout flush, so a full pipe or a held stream lock cannot stop it."""
+    end that thread; one write to fd 2 and no stdout flush, so neither a full stdout or stderr pipe nor a held stream
+    lock can stop it."""
     try:
+        # non-blocking: the flag lands on the step's shared pipe, harmless because the process exits next line
+        os.set_blocking(2, False)
         os.write(2, f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n".encode())
     finally:
         os._exit(2)

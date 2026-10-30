@@ -1165,6 +1165,32 @@ except subprocess.TimeoutExpired:
 err = p.stderr.read().decode()
 assert p.returncode == 2 and "could not finish" in err, (p.returncode, err)
 PY
+# the same for stderr: with fd 2 a pipe that is full and never read, the one write of the diagnostic must not wait either
+CASE="deadline: stderr full and never read does not stop the callback: exit 2 within seconds"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+code = """
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+os.set_blocking(2, False)
+try:
+    while True:
+        os.write(2, b"x" * 4096)      # fill the pipe: nobody reads it
+except BlockingIOError:
+    pass
+os.set_blocking(2, True)              # as the step has it: a write now waits
+pa.history_items = lambda *a, **k: time.sleep(30)
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh)
+p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=6)
+except subprocess.TimeoutExpired:
+    p.kill()
+    raise SystemExit("the run was still alive after 6 s: the callback waited on a full stderr")
+assert p.returncode == 2, p.returncode
+PY
 # stdout is a pipe under Actions: without line buffering a run killed from OUTSIDE (the job timeout's SIGKILL) loses what it printed since its last full
 # buffer. The audit is killed here by the test, not by its own deadline (--deadline 60); the information line it prints after the judging marker must
 # have reached the pipe by then. Removing sys.stdout.reconfigure(line_buffering=True) from main makes this case fail.
