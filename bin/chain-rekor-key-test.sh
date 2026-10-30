@@ -259,6 +259,42 @@ pin("a missing rekor.pub is refused", trust_good, os.path.join(pinned, "absent.p
 open(os.path.join(pinned, "junk.pub"), "w").write("not a key")
 pin("a rekor.pub that is not a public key is refused", trust_good, os.path.join(pinned, "junk.pub"), "rekor")
 
+# Every pinned `chain-verify.py` line in the workflows and the release scripts must parse (it once failed in production with exit 2 when a flag was
+# renamed and five pinned lines were not): each line is run through build_parser(); a $-word or an expression stands for a value.
+import glob, re, shlex
+lines = []
+for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml")) + glob.glob(os.path.join(root, "bin", "*.sh"))):
+    if path.endswith("-test.sh"):
+        continue
+    for n, text in enumerate(re.sub(r"\\\n\s*", " ", open(path, errors="replace").read()).split("\n"), 1):     # a continued line is one line
+        m = re.search(r"chain-verify\.py\s+[a-z][a-z-]*\s.*", text)
+        if m and "--help" not in text and not text.lstrip().startswith("#"):
+            lines.append((os.path.relpath(path, root), n, m.group(0)))
+parsed = 0
+for rel, n, cmd in lines:
+    cmd = re.sub(r"\$\{\{.*?\}\}", "x", cmd)
+    cmd = re.split(r"\s(?:2>|>|\|\||&&|\||;)\s*", cmd)[0].rstrip("\\ ")
+    try:
+        words = shlex.split(cmd)
+        argv = [(("1" if words[i - 1] == "--exit-code" else "x") if "$" in w else w) for i, w in enumerate(words)][1:]
+        cv.build_parser().parse_args(argv)
+        parsed += 1
+    except SystemExit:
+        bad("%s:%d: the pinned line does not parse: %s" % (rel, n, cmd[:120]))
+    except ValueError:
+        pass                      # a line cut in the middle of a quote: its other lines are checked
+if lines and parsed == len(lines):
+    ok("every pinned chain-verify.py line (%d, in the workflows and bin/*.sh) parses through build_parser()" % len(lines))
+else:
+    bad("no pinned chain-verify.py line was found to parse")
+try:
+    cv.build_parser().parse_args(["verify", "--stage", "sign", "--record", "x", "--policy", "x", "--rekor-stub", "x"])
+    ok("--rekor-stub is accepted by verify")
+    cv.build_parser().parse_args(["stage-start", "--stage", "release", "--previous", "sign", "--record", "x", "--digests", "x", "--policy", "x", "--rekor-stub", "x"])
+    ok("--rekor-stub is accepted by stage-start")
+except SystemExit:
+    bad("--rekor-stub is not accepted by the parser")
+
 print("pass=%d fail=%d" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

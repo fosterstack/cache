@@ -1667,7 +1667,7 @@ def build_parser():
     v.add_argument("--policy", required=True)
     v.add_argument("--stage", required=True)
     v.add_argument("--record", required=True)
-    v.add_argument("--rekor-entries")      # the Rekor entries file of a provenance or a release policy (provenance.rekor.json)
+    v.add_argument("--rekor-stub", dest="rekor_entries")      # the Rekor entries file of a provenance or a release policy (provenance.rekor.json)
     v.add_argument("--now")
     for name in ("sign", "check-build-record"):
         s = sub.add_parser(name)
@@ -1695,7 +1695,7 @@ def build_parser():
     st.add_argument("--stage", required=True)
     st.add_argument("--previous", required=True)
     st.add_argument("--record", required=True)
-    st.add_argument("--rekor-entries")      # the previous stage's Rekor entries file, when its record is a provenance
+    st.add_argument("--rekor-stub", dest="rekor_entries")      # the previous stage's Rekor entries file, when its record is a provenance
     st.add_argument("--digests", required=True)
     st.add_argument("--policy", required=True)
     st.add_argument("--now")

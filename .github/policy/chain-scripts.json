@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "f5cc4a2914c23640ac8ff7af09ab577cdcef62f38e1d670867c0d06efe01a93b",
+      "sha256": "9e2c78226457bfb7d1b7376543a42edec8fed23adbd4356081129d469840c8a0",
       "tools": [
         "make",
         "at",

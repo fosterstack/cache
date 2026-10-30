@@ -16,7 +16,7 @@
  "chain-manifest-test.sh": 47,
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 98,
- "chain-rekor-key-test.sh": 35,
+ "chain-rekor-key-test.sh": 38,
  "chain-release-metadata-test.sh": 100,
  "chain-release-scripts-test.sh": 385,
  "chain-release-wiring-test.sh": 244,
