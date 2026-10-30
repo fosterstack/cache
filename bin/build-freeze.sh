@@ -4,8 +4,7 @@
 # Each baseline file of the tagged commit gets verify-freeze and one `freeze-ok BASE` line in freeze/freeze.txt.
 # Build's admission reads that file.
 set -euo pipefail
-GO=/usr/local/bin/fscache-go/bin/go      # the pinned Go; the runner's own go is never used
-[ -x "$GO" ] || { echo "build-freeze: the pinned Go is missing: $GO" >&2; exit 2; }
+[ -x /usr/local/bin/fscache-go/bin/go ] || { echo "build-freeze: the pinned Go is missing" >&2; exit 2; }
 mkdir -p freeze
 : > freeze/freeze.txt
 for file in requirements/releases/*.yaml; do
@@ -13,7 +12,7 @@ for file in requirements/releases/*.yaml; do
   started=$SECONDS
   # an old baseline can be inconsistent (v0.2.0 has no fixed_at): it gets no line, and admission refuses a tag whose
   # base has none
-  if GOTOOLCHAIN=local "$GO" -C tools/requirements run . verify-freeze "$base"; then
+  if GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze "$base"; then
     echo "freeze-ok $base" >> freeze/freeze.txt
   else
     echo "build-freeze: $base is not consistent, no freeze-ok line" >&2

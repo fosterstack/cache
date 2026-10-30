@@ -387,8 +387,7 @@ may run it)" \
        "only the freeze job runs bin/build-freeze.sh" "$WINST" '      - name: freeze in apk\n        run: bash '\
 'bin/build-freeze.sh\n'"$WINST"
 st s_fz_vf    "AC4 verify-freeze named by a step of the assemble job" "names verify-freeze" "$APKINST" \
-       '      - name: freeze in assemble\n        run: cd tools/requirements && go run . verify-freeze '\
-'v0.3.0\n'"$APKINST"
+       '      - name: freeze in assemble\n        run: echo verify-freeze v0.3.0\n'"$APKINST"
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
 CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'

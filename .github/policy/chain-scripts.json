@@ -551,7 +551,21 @@
       "runs": [],
       "signs": false,
       "reason": "the freeze job's script: runs the requirements tool's verify-freeze of the tagged tree with the pinned Go for each release baseline file and writes one freeze-ok line per file; it runs only in the freeze job of stage-build.yml, which holds no token and no Witness step",
-      "sha256": "9b0f340a5f73861eaebf3d8a94d0ee6db5480b237553866de174769f883dc715"
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  if GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze \"$base\"; then",
+          "line_sha256": "da68f7b45e5d02dddd1527dae72168f757ac230e5387c702f68dc6dbb7e73838",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go), named in full so the runner's own go is never used; the pin checker refuses a program named by a variable"
+        },
+        {
+          "rule": "script-name",
+          "text": "GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze \"$base\"",
+          "why": "the pinned Go toolchain by its fixed install path, as above; the runner's own go is never used"
+        }
+      ],
+      "sha256": "db95a4b9162a5d561f7f222285bddabc0d28e210538506dffb7723485549e5f8"
     },
     {
       "path": "bin/build-version-check.py",
