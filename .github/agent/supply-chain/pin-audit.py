@@ -225,7 +225,7 @@ class FixtureNet:
 
 
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
-            "osv": "github.com/google/osv-scanner/v2", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint/v2",
+            "osv": "github.com/google/osv-scanner/v2", "golangci-lint": "github.com/golangci/golangci-lint/v2",
             "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign/v3",
             "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3",
             "go": "stdlib"}   # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib (REQ-SUP-001-AC27: the exempt release is still audited)

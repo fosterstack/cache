@@ -13,6 +13,7 @@
  "chain-hostile-test.sh": 279,
  "chain-install-crane-test.sh": 7,
  "chain-install-witness-test.sh": 44,
+ "chain-no-keyless-tag-test.sh": 3,
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 98,
  "chain-release-metadata-test.sh": 100,

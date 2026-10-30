@@ -70,7 +70,6 @@ cat >"$base/bin/install-scanner.sh" <<'EOF'
 #!/usr/bin/env bash
 TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
-GITSIGN_VER=0.17.1
 case "${TOOL}:${arch}" in
   trivy:x86_64|trivy:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
 esac
@@ -166,7 +165,6 @@ cover() { # <name> <edit> <item key> <source>
   CASE="$1: with no age data fails"; check test "$rc" -eq 1
 }
 cover tool-scanner "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')" "tool:trivy@0.75.0" github-release
-cover tool-gitsign "$(sub bin/install-scanner.sh 'GITSIGN_VER=0.17.1' 'GITSIGN_VER=0.18.0')" "tool:gitsign@0.18.0" github-release
 cover tool-installer-input "$(sub .github/workflows/ci.yml 'version: v2.13.2' 'version: v2.14.0')" "tool:golangci-lint@v2.14.0" github-release
 cover tool-python-version "$(sub .github/workflows/ci.yml "python-version: '3.12'" "python-version: '3.13.1'")" "tool:python@3.13.1" github-release
 cover gotool "$(sub .github/workflows/ci.yml 'gosec@v2.29.0' 'gosec@v2.30.0')" "gotool:github.com/securego/gosec/v2/cmd/gosec@v2.30.0" go-index
