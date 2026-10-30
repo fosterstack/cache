@@ -588,15 +588,18 @@ expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable"
 mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
-# the monthly evidence letter's workflow is the second new file (owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md): admitted; a third is still refused
+# the monthly evidence letter's workflow is the second new file (owner's Oct 3 amendment,
+# docs/ratify/2026-10-02-owner-load.md): admitted; a third is still refused
 mkdir -p "$work/wf-letter" "$work/wf-third"
 cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-letter"/* "$work/wf-third/"; : > "$work/wf-third/stage-extra.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
 expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
-expect ok     "AC1 evidence-letter.yml is admitted beside stage-sign.yml (rule 52 and the owner's Oct 3 amendment)" "" workflows "$work/wf-letter"
-expect caught "AC1 a third new workflow file is still refused, with evidence-letter.yml present" "workflow file stage-extra.yml was added" workflows "$work/wf-third"
+expect ok     "AC1 evidence-letter.yml is admitted beside stage-sign.yml (rule 52 and the owner's Oct 3 amendment)" "" \
+  workflows "$work/wf-letter"
+expect caught "AC1 a third new workflow file is still refused, with evidence-letter.yml present" \
+  "workflow file stage-extra.yml was added" workflows "$work/wf-third"
 expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
 # ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
@@ -3008,7 +3011,8 @@ expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode 
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
-expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml and evidence-letter.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
+label="AC1 the real workflow directory: no file added beyond stage-sign.yml and evidence-letter.yml, stage-image.yml"
+expect ok "$label and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
 python3 - "$root" <<'PY' && ok "the four chain stage files (build, reproducibility, verify, promote) pin download-artifact and upload-artifact each to one and the same digest, which .github/policy/allowed-actions.json lists" || bad "the chain stage files pin download-artifact to different digests, or to one the allowlist does not list"

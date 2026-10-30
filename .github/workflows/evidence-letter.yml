@@ -1,10 +1,11 @@
 name: Evidence letter
 
 # The monthly signed evidence letter (REQ-REL-013; owner Oct 27, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md).
-# Once a month the first job, which has no identity token, fetches the month's release assets, checks their signatures and
-# makes the letter. The second job, the only one with an identity token, signs it keyless and attaches it to the latest
-# published release. Only a run from main does either: customers verify the signature against this workflow's identity
-#   https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main      (docs/verify-release.md)
+# Once a month the first job, which has no identity token, fetches the month's release assets, checks their
+# signatures and makes the letter. The second job, the only one with an identity token, signs it keyless and attaches
+# it to the latest published release. Only a run from main does either: customers verify the signature against this
+# workflow's identity
+#   https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main (docs/verify-release.md)
 # If any check fails, or the signatory is still the placeholder, the first job fails and nothing is signed or published.
 
 on:
@@ -64,7 +65,9 @@ jobs:
         run: |
           python3 -I bin/evidence-letter.py --month "$MONTH" --releases work/rel --advisories work/advisories.json \
             --controls docs/controls.md --signatory docs/evidence-letter-signatory.txt --out letter
-          if [ -f "letter/evidence-letter-$MONTH.md" ]; then echo "made=true" >> "$GITHUB_OUTPUT"; else echo "made=false" >> "$GITHUB_OUTPUT"; fi
+          made=false
+          if [ -f "letter/evidence-letter-$MONTH.md" ]; then made=true; fi
+          echo "made=$made" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ steps.letter.outputs.made == 'true' }}

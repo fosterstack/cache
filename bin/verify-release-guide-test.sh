@@ -235,7 +235,8 @@ def needs_registry(segs):
     return False
 # A release asset is a file Sign or Release makes and publishes (provenance.bundle.json, <image>.sbom.json[.bundle], <image>.full.lock.json[.bundle], see
 # bin/release-assets.sh): Check holds Build's records and the candidate image, not these, so pipeline's planner cannot run a command that reads one.
-ASSET = re.compile(r"^(provenance\.bundle\.json|(production|fips)\.(sbom|full\.lock)\.json(\.bundle)?|letter\.md(\.bundle)?)$")
+ASSET = re.compile(r"^(provenance\.bundle\.json|(production|fips)\.(sbom|full\.lock)\.json(\.bundle)?"
+                   r"|letter\.md(\.bundle)?)$")
 def reads_asset(segs):
     return any(ASSET.match(w) for s in segs for w in s)
 for c, ln, bo, segs in parsed:

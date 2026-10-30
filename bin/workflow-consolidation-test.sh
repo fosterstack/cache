@@ -455,9 +455,11 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61; 19 until the monthly evidence letter's evidence-letter.yml, a new file under the owner's Oct 3 amendment in docs/ratify/2026-10-02-owner-load.md, reported to the owner; 20 today, the list below): after the consolidation PRs the workflow directory holds exactly
-# the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
-# stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2): the workflow directory holds exactly the ratified files and nothing else, so
+# no workflow sprawls. Today's 20 are the consolidation's "keep" rows, the attestation-signer stages and
+# dependabot-auto-merge.yml. Two files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9) and
+# evidence-letter.yml (a new file under the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md).
+# The history of the count (24, 25, 26, 24, 19) is in the git log of this file.
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 evidence-letter.yml stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
@@ -467,11 +469,13 @@ judge_set() {  # $1: the directory's entries as a JSON list (every entry, not on
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
 if len(want) != 20:
-    print("the ratified list is not 20 files"); sys.exit(1)
+    print("the ratified list is not 20 files (rule 52 and the owner's Oct 3 amendment admit the two new files)")
+    sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s" % (extra, missing, odd)); sys.exit(1)
+    print("extra: %s missing: %s odd names: %s (the list is rule 52 and the owner's Oct 3 amendment: "
+          "stage-sign.yml and evidence-letter.yml)" % (extra, missing, odd)); sys.exit(1)
 print("ok")
 PY
 }
@@ -480,6 +484,11 @@ case_set() {
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS set:$1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL set:$1 → $got, want $2 ($out)"; fi
 }
+case_cites() { # case_cites NAME SET: the refusal names rule 52 and the owner's Oct 3 amendment (the two new files)
+  out=$(judge_set "$2") || true
+  if [[ "$out" == *"rule 52"* && "$out" == *"Oct 3"* ]]; then pass=$((pass+1)); echo "PASS cites:$1 ($out)"
+  else failn=$((failn+1)); echo "FAIL cites:$1 → the refusal does not name rule 52 and the Oct 3 amendment ($out)"; fi
+}
 # every entry of the directory, unfiltered: a non-YAML file or a name with a newline is a difference (Codex #162 pin, R78-B3)
 real_set=$(python3 -c 'import json, os, sys; print(json.dumps(sorted(os.listdir(sys.argv[1]))))' "$root/.github/workflows")
 edit_set() { python3 -c 'import json, sys; s = json.loads(sys.argv[1]); exec(sys.argv[2]); print(json.dumps(s))' "$real_set" "$1"; }
@@ -487,6 +496,8 @@ case_set real          ok  "$real_set"
 case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
 case_set a-third-new-file bad "$(edit_set 's.append("stage-extra.yml")')"
 case_set letter-missing bad "$(edit_set 's.remove("evidence-letter.yml")')"
+case_cites a-third-new-file "$(edit_set 's.append("stage-extra.yml")')"
+case_cites letter-missing "$(edit_set 's.remove("evidence-letter.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"

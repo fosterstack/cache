@@ -5,7 +5,8 @@ name: supply-chain
 #                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 #   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
-#   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a published release and verify (REQ-REL-013). Read-only.
+#   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a
+#                  published release and verify (REQ-REL-013). Read-only.
 # It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
 
 on:

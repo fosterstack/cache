@@ -406,11 +406,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-forms-test.sh"
   },
   {
-   "name": "the monthly evidence letter \u2014 made from the release assets, read back, refused on any mismatch (REQ-REL-013)",
+   "name": "the monthly evidence letter \u2014 made from the release assets, refused on any mismatch (REQ-REL-013)",
    "run": "bash bin/evidence-letter-test.sh"
   },
   {
-   "name": "the monthly evidence letter's jobs \u2014 identity, no overwrite, fail closed, placeholder refused (REQ-REL-013-AC9, AC10)",
+   "name": "the monthly evidence letter's jobs \u2014 key, no overwrite, closed, presence (REQ-REL-013-AC9 to AC11)",
    "run": "bash bin/evidence-letter-job-test.sh"
   },
   {

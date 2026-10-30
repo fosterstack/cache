@@ -1902,7 +1902,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 20 ratified files, the list fixed by bin/workflow-consolidation-test.sh (the effect of the ratified consolidation and of the v0.3.0 chain's ratified removals of the legacy workflows; dependabot-auto-merge.yml stays its own file, owner RATIFIED Oct 2; supply-chain.yml, REQ-SUP-001, owner ratified Oct 5; stage-sign.yml, v0.3.0 rule 52, owner ratified Oct 9)"
+        then: "it holds exactly the 20 ratified files, the list fixed by bin/workflow-consolidation-test.sh (the effect of the ratified consolidation and of the v0.3.0 chain's ratified removals of the legacy workflows; dependabot-auto-merge.yml stays its own file, owner RATIFIED Oct 2; supply-chain.yml, REQ-SUP-001, owner ratified Oct 5; stage-sign.yml, v0.3.0 rule 52, owner ratified Oct 9; evidence-letter.yml, the monthly evidence letter REQ-REL-013, a new file under the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2

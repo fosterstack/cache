@@ -662,11 +662,15 @@ jobs:
       - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-forms-test.sh bin/vex-forms-test.sh
 
-      - name: the monthly evidence letter — made from the release assets, read back, refused on any mismatch (REQ-REL-013)
-        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json evidence-letter-test.sh bin/evidence-letter-test.sh
+      - name: the monthly evidence letter — made from the release assets, refused on any mismatch (REQ-REL-013)
+        run: >-
+          python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json
+          evidence-letter-test.sh bin/evidence-letter-test.sh
 
-      - name: the monthly evidence letter's jobs — identity, no overwrite, fail closed, placeholder refused (REQ-REL-013-AC9, AC10)
-        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json evidence-letter-job-test.sh bin/evidence-letter-job-test.sh
+      - name: the monthly evidence letter's jobs — key, no overwrite, closed, presence (REQ-REL-013-AC9 to AC11)
+        run: >-
+          python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json
+          evidence-letter-job-test.sh bin/evidence-letter-job-test.sh
 
       - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json scout-root-cause-test.sh bin/scout-root-cause-test.sh
