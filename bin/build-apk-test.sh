@@ -262,8 +262,9 @@ sf "rule 24" "a binary that says (devel) is refused before hand-off" 'devel' env
 sf "rule 24" "a binary built from a dirty tree (vcs.modified=true) is refused" 'modified|dirty' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/dirty.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 # the EXIT trap cannot change the refusal's status: a cleanup (rm) that fails still leaves exit 1 (Oct 30 CI ruling)
 mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 1\n' >"$work/failrm/rm"; chmod +x "$work/failrm/rm"
-run_s env PATH="$work/failrm:$stubs:$PATH" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
-t "rule 40" "a refusal (a binary that says (devel), exit 1) whose cleanup (rm) fails still exits 1, the script's own status" test "$(rc)" = 1
+printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 1;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; chmod +x "$work/rmfailsudo"
+run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/rmfailsudo" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
+t "rule 40" "a refusal (a binary that says (devel), exit 1) whose cleanup (rm and sudo rm) fails still exits 1, the script's own status" test "$(rc)" = 1
 sf "rule 20" "a module list that does not match the binary (extra dependency) fails the build" 'example\.org/evil|module|mismatch' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/extra.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 sf "rule 13" "the fips variant is refused when its binary does not record GOFIPS140=v1.0.0-c2097c7c" 'GOFIPS140|c2097c7c' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/nofips.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
 sd "rule 13" "the fips variant passes when the binary records GOFIPS140=v1.0.0-c2097c7c" '^melange build ' "${bae[@]}" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
