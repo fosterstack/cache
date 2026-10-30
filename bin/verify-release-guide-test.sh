@@ -4,7 +4,7 @@
 # its commands, its placeholders, what it verifies, which images it covers, the tool names it uses, and its open marks.
 # The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads, so a page that passes here
 # is a page that run can read: every command is a line of a ```sh fenced block (a line ending in a backslash joins the next
-# with one space; a line starting with # is a comment); placeholders are <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <IDENTITY>, each defined once
+# with one space; a line starting with # is a comment); placeholders are <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <RELEASE_KEY>, each defined once
 # before the first fence as a list line  - `<NAME>`: what it is.
 # A verify command whose operand is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, oci://..., or a literal reference with a
 # path and a : or @; flag values are skipped, as pipeline's check skips them) needs a registry and cannot run on
@@ -42,7 +42,7 @@ if not os.path.isfile(page):
 text = open(page, encoding="utf-8").read()
 lines = text.replace("\r", "").split("\n")
 
-PLACEHOLDERS = {"IMAGE_REF", "IMAGE_REF_FIPS", "TAG", "IDENTITY"}
+PLACEHOLDERS = {"IMAGE_REF", "IMAGE_REF_FIPS", "TAG", "RELEASE_KEY"}
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
 FORMS3 = ("gh attestation verify",)
 # Build-chain tool names that may not appear on the page (AC6). "witness" is allowed on ONE prose line, the pointer.
@@ -101,7 +101,7 @@ for i, l in enumerate(lines):
 for p in sorted(PLACEHOLDERS):
     if defs.get(p, 0) != 1: err("AC2", "the placeholder <%s> is defined %d times at the top (exactly once)" % (p, defs.get(p, 0)))
 for u in sorted(set(re.findall(r"<([A-Z][A-Z0-9_]*)>", text)) - PLACEHOLDERS):
-    err("AC2", "the placeholder <%s> is not one of <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG>, <IDENTITY>" % u)
+    err("AC2", "the placeholder <%s> is not one of <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG>, <RELEASE_KEY>" % u)
 
 # --- AC2 (unattended) + AC3 (only cosign, gh, jq): a pipeline of the verify forms and jq, no other shell syntax ---
 def segments(c):
@@ -258,6 +258,15 @@ if listed:
         for ph in CLAIM_PHRASES:
             if re.search(ph, l, re.I):
                 err("AC7", "line %d: wording that claims the commands were checked before release (%s) while %d command(s) are on the cannot-run list" % (i+1, ph, len(listed)))
+# The guide verifies by the release key (ratified Oct 29, rule 2): no identity, no issuer, no keyless wording anywhere on the page, and the log is
+# skipped in exactly one place, one sentence of prose about verifying without network access, never inside a command.
+for i, l in enumerate(lines):
+    for w in ("--certificate-identity", "--certificate-oidc-issuer", "<IDENTITY>", "keyless"):
+        if w in l: err("AC7", "line %d: %s is the keyless form; the guide verifies by the release key" % (i+1, w))
+for c, ln, bo, segs in parsed:
+    if "--insecure-ignore-tlog" in c: err("AC7", "line %d: --insecure-ignore-tlog is never inside a command" % (ln+1))
+if text.count("--insecure-ignore-tlog") != 1:
+    err("AC7", "the page must say once, in prose, that --insecure-ignore-tlog verifies without network access (found %d)" % text.count("--insecure-ignore-tlog"))
 marks = [i+1 for i, l in enumerate(lines) if "TO-VERIFY" in l]
 if mode == "final":
     if marks: err("AC7", "final mode: %d TO-VERIFY mark(s) remain (lines %s); the page cannot be final" % (len(marks), marks))
@@ -290,29 +299,31 @@ The production image and the -fips image are both covered.
 - `<IMAGE_REF>`: the production image, repository@digest.
 - `<IMAGE_REF_FIPS>`: the -fips image, repository@digest.
 - `<TAG>`: the release tag.
-- `<IDENTITY>`: the signing identity.
+- `<RELEASE_KEY>`: the release public key file.
+
+Without network access, add `--insecure-ignore-tlog`: it checks our key alone and skips the public log entry.
 
 Not run before release: it needs the image in a registry.
 
 ```sh
-cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify <IMAGE_REF> --key <RELEASE_KEY>
 ```
 
 ```sh
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF_FIPS> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>
 cosign verify-blob-attestation --bundle provenance.json --type https://slsa.dev/provenance/v1 \
-  --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --key <RELEASE_KEY>
 jq -e '.subject[].digest.sha256' provenance.json
-cosign verify-blob --bundle sbom.bundle --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com sbom.json
-cosign verify-blob --bundle inputs.bundle --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com inputs.json
+cosign verify-blob --bundle sbom.bundle --key <RELEASE_KEY> sbom.json
+cosign verify-blob --bundle inputs.bundle --key <RELEASE_KEY> inputs.json
 ```
 
 Witness records are extra evidence, outside these steps.
 MD
 cat > "$work/f/good.cannot-run.json" <<'JS'
-[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "needs a registry image"},
- {"command": "cosign verify <IMAGE_REF_FIPS> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "needs a registry image"}]
+[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": "needs a registry image"},
+ {"command": "cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>", "reason": "needs a registry image"}]
 JS
 out=$(judge "$work/f/good.md" draft); rc=$?
 [ "$rc" -eq 0 ] && ok "the good fixture passes in draft mode" || bad "the good fixture fails in draft mode" "$out"
@@ -342,12 +353,12 @@ mutant "no command at all"              "has no command"               '"\n".joi
 # AC2
 mutant "a command outside a sh fence"   "outside a \`\`\`sh fence"     's.replace("Witness records", "jq . provenance.json\n\nWitness records")'
 mutant "a shell block fenced as bash"   "not fenced as \`\`\`sh"       's.replace("```sh\n# Not", "```bash\n# Not")'
-mutant "a placeholder defined twice"    "<TAG> is defined 2 times"     's.replace("- `<IDENTITY>`", "- `<TAG>`: again.\n- `<IDENTITY>`")'
-mutant "a placeholder not defined"      "<IDENTITY> is defined 0 times" 's.replace("- `<IDENTITY>`: the signing identity.\n", "")'
+mutant "a placeholder defined twice"    "<TAG> is defined 2 times"     's.replace("- `<RELEASE_KEY>`", "- `<TAG>`: again.\n- `<RELEASE_KEY>`")'
+mutant "a placeholder not defined"      "<RELEASE_KEY> is defined 0 times" 's.replace("- `<RELEASE_KEY>`: the release public key file.\n", "")'
 mutant "<IMAGE_REF_FIPS> defined twice"  "<IMAGE_REF_FIPS> is defined 2 times" 's.replace("- `<TAG>`", "- `<IMAGE_REF_FIPS>`: again.\n- `<TAG>`")'
 mutant "<IMAGE_REF_FIPS> not defined"   "<IMAGE_REF_FIPS> is defined 0 times" 's.replace("- `<IMAGE_REF_FIPS>`: the -fips image, repository@digest.\n", "")'
-mutant "a fifth placeholder"            "<IMAGE_REF_DEBUG> is not one of" 's.replace("<IMAGE_REF_FIPS> --cert", "<IMAGE_REF_DEBUG> --cert")'
-mutant "a placeholder defined late"     "defined after the first command block" 's.replace("- `<IDENTITY>`: the signing identity.\n", "") + "\n- `<IDENTITY>`: late.\n"'
+mutant "a fifth placeholder"            "<IMAGE_REF_DEBUG> is not one of" 's.replace("<IMAGE_REF_FIPS> --key", "<IMAGE_REF_DEBUG> --key")'
+mutant "a placeholder defined late"     "defined after the first command block" 's.replace("- `<RELEASE_KEY>`: the release public key file.\n", "") + "\n- `<RELEASE_KEY>`: late.\n"'
 mutant "another placeholder"            "<DIGEST> is not one of"       's.replace("jq -e", "jq -e --arg d <DIGEST>")'
 mutant "a \$ variable"                  "a \$ expansion outside single quotes" 's.replace("jq -e", "jq -e --arg t \"$TAG\"")'
 mutant "a command substitution"         "a \$ expansion outside single quotes" 's.replace("jq -e", "jq -e --arg t $(date)")'
@@ -369,15 +380,15 @@ mutant "cosign sign"                    "is not cosign verify"         's.replac
 mutant "export VAR"                     "is not cosign verify"         's.replace("```sh\n# Not", "```sh\nexport A=1\n# Not")'
 mutant "base64 in a pipe"               "is not cosign verify"         's.replace("jq -e", "jq -r .payload provenance.json | base64 -d | jq -e")'
 # AC4
-mutant "no signature command"           "no command verifies signatures"  's.replace("cosign verify <IMAGE_REF>", "cosign verify-blob <IMAGE_REF>").replace("cosign verify <IMAGE_REF_FIPS>", "cosign verify-blob <IMAGE_REF_FIPS>")' '[{"command": "cosign verify-blob <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "cosign verify-blob <IMAGE_REF_FIPS> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}]'
+mutant "no signature command"           "no command verifies signatures"  's.replace("cosign verify <IMAGE_REF>", "cosign verify-blob <IMAGE_REF>").replace("cosign verify <IMAGE_REF_FIPS>", "cosign verify-blob <IMAGE_REF_FIPS>")' '[{"command": "cosign verify-blob <IMAGE_REF> --key <RELEASE_KEY>", "reason": "r"}, {"command": "cosign verify-blob <IMAGE_REF_FIPS> --key <RELEASE_KEY>", "reason": "r"}]'
 mutant "no digest check"                "no command verifies digests"  's.replace("\x27.subject[].digest.sha256\x27", ".subject")'
 mutant "no provenance type"             "no command verifies provenance" 's.replace("https://slsa.dev/provenance/v1", "https://example.com/other/v1")'
 mutant "no SBOM command"                "no command verifies the SBOM" 's.replace("sbom", "other")'
 mutant "no inputs command"              "no command verifies the inputs" 's.replace("inputs", "other").replace("full.lock", "other")'
 # AC5
 mutant "production not named"           "the production image is not named" 's.replace("production", "main")'
-mutant "fips not named"                 "the -fips image is not named" 's.replace("- `<IMAGE_REF_FIPS>`: the -fips image, repository@digest.\n", "").replace("-fips image", "second image").replace("<IMAGE_REF_FIPS>", "<IMAGE_REF> ")' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "cosign verify <IMAGE_REF>  --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}]'
-mutant "no command for fips"            "no command covers the -fips image" 's.replace("cosign verify <IMAGE_REF_FIPS>", "cosign verify example.com/cache:<TAG>")' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "cosign verify example.com/cache:<TAG> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}]'
+mutant "fips not named"                 "the -fips image is not named" 's.replace("- `<IMAGE_REF_FIPS>`: the -fips image, repository@digest.\n", "").replace("-fips image", "second image").replace("<IMAGE_REF_FIPS>", "<IMAGE_REF> ")' '[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": "r"}, {"command": "cosign verify <IMAGE_REF>  --key <RELEASE_KEY>", "reason": "r"}]'
+mutant "no command for fips"            "no command covers the -fips image" 's.replace("cosign verify <IMAGE_REF_FIPS>", "cosign verify example.com/cache:<TAG>")' '[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": "r"}, {"command": "cosign verify example.com/cache:<TAG> --key <RELEASE_KEY>", "reason": "r"}]'
 mutant "a debug image"                  "names a debug image"          's.replace("are both covered.", "are both covered; the -debug image is not.")'
 # AC6
 mutant "Witness in a command block"     "Witness inside a code block"  's.replace("```sh\n# Not", "```sh\n# witness verify is extra\n# Not")'
@@ -390,15 +401,18 @@ python3 -I -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").wri
 cp "$work/f/good.cannot-run.json" "$work/f/tv.cannot-run.json"
 out=$(judge "$work/f/tv.md" draft); rc=$?; [ "$rc" -eq 0 ] && ok "draft mode allows a TO-VERIFY mark" || bad "draft mode refused a TO-VERIFY mark" "$out"
 out=$(judge "$work/f/tv.md" final); rc=$?; case "$out" in *"TO-VERIFY mark(s) remain"*) ok "kills mutant: --final with a TO-VERIFY mark";; *) bad "MISSED mutant: --final with a TO-VERIFY mark" "$out";; esac
-mutant "a registry command not listed"  "the cannot-run list does not name it" 's.replace("<IMAGE_REF> --cert", "<IMAGE_REF>  --cert")'
-mutant "the -fips registry command not listed" "the cannot-run list does not name it" 's.replace("<IMAGE_REF_FIPS> --cert", "<IMAGE_REF_FIPS>  --cert")'
+mutant "a registry command not listed"  "the cannot-run list does not name it" 's.replace("<IMAGE_REF> --key", "<IMAGE_REF>  --key")'
+mutant "the -fips registry command not listed" "the cannot-run list does not name it" 's.replace("<IMAGE_REF_FIPS> --key", "<IMAGE_REF_FIPS>  --key")'
 mutant "gh attestation verify oci:// not listed" "the cannot-run list does not name it" 's.replace("jq -e", "gh attestation verify oci://<IMAGE_REF> --repo fosterstack/cache | jq -e")'
 mutant "a literal registry reference not listed" "the cannot-run list does not name it" 's.replace("jq -e", "cosign verify-attestation --type https://slsa.dev/provenance/v1 ghcr.io/fosterstack/cache:<TAG> | jq -e")'
 mutant "verify-blob on an image placeholder not listed" "the cannot-run list does not name it" 's.replace("sbom.json\n", "<IMAGE_REF_FIPS>\n")'
 mutant "a release-asset command not listed" "the cannot-run list does not name it" 's.replace("jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.bundle.json")'
-mutant "a stale cannot-run entry"       "a stale entry"                's.replace("--certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com\n```\n\n```sh\n# Not", "--certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity <IDENTITY>\n```\n\n```sh\n# Not")'
-mutant "a runnable command on the list" "needs no registry image"      's + " "' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "cosign verify <IMAGE_REF_FIPS> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "reason": "r"}]'
-mutant "a list entry without a reason"  "not exactly {command, reason}" 's + " "' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": ""}]'
+mutant "the identity form is back"      "is the keyless form"          's.replace("--key <RELEASE_KEY>", "--certificate-identity x --certificate-oidc-issuer y", 1)'
+mutant "the log is skipped in a command" "is never inside a command"    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-tlog", 1)'
+mutant "the offline sentence is missing" "must say once, in prose"      's.replace("--insecure-ignore-tlog", "--no-log")'
+mutant "a stale cannot-run entry"       "a stale entry"                's.replace("--key <RELEASE_KEY>\n```\n\n```sh\n# Not", "--key <RELEASE_KEY> --output json\n```\n\n```sh\n# Not")'
+mutant "a runnable command on the list" "needs no registry image"      's + " "' '[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": "r"}, {"command": "cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>", "reason": "r"}, {"command": "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "reason": "r"}]'
+mutant "a list entry without a reason"  "not exactly {command, reason}" 's + " "' '[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": ""}]'
 mutant "a list that is not JSON"        "not JSON"                     's + " "' '[{'
 mutant "a listed command without the mark (prose)" "does not say 'Not run before release'" 's.replace("Not run before release: it needs the image in a registry.\n\n```sh\ncosign", "Run this.\n\n```sh\ncosign")'
 mutant "a listed command without the mark (comment)" "does not say 'Not run before release'" 's.replace("# Not run before release: it needs the image in a registry.\ncosign", "# check the fips image\ncosign")'
