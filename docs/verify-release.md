@@ -11,11 +11,11 @@ Set these once:
 - `<TAG>`: the release tag, for example v0.3.0.
 - `<RELEASE_KEY>`: the release public key file, from our key manifest after the manifest is checked against our root public key. TO-VERIFY: where the manifest and the root key are published, and the manifest check.
 
-Without network access, add `--insecure-ignore-tlog` to a command below: it checks our key alone and skips the public log entry.
+Without network access, add `--insecure-ignore-tlog` to each cosign command below: it checks our key alone and skips the public log entry. TO-VERIFY: offline.
 
 ## 1. Image signatures
 
-Did our release key sign these exact images?
+Did our release key sign these exact images? TO-VERIFY: the flags.
 
 ```sh
 # Not run before release: it needs the image in a registry.
