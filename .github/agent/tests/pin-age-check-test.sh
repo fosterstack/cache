@@ -3807,7 +3807,9 @@ import tempfile
 # branch and not yet on main; the helper and the shape file name vendor/ only once cache#770 lands (then these two go)
 ahead = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py")
 _t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
-_names = ahead + ("bin/check-govulncheck.py", "bin/release-metadata.py")
+# not built from ahead: a change of ahead must fail the assert below
+_names = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py",
+          "bin/check-govulncheck.py", "bin/release-metadata.py")
 for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
 _quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
 assert _quiet == sorted(_names), _quiet      # the rule itself still reports every quiet listed file
