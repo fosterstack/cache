@@ -1887,7 +1887,24 @@ def c_file_issues():
         def run(self, *a, **k): return P("{}" if a[:2] == ("issue", "list") else "")
     refuse("issues {}", lambda: pa.file_issues(G2(), [], "2026-10-05"))
 
+def c_json_object():
+    for body in (b"{}", b"null", b"[]", b"[{}]", b"not json", b'{"other": 1}'):
+        refuse(("json_object", body), lambda: age._json_object(body, ("k",)))
+    refuse(("json_object empty", "{}"), lambda: age._json_object(b"{}"))
+    assert accepts(("json_object", "good"), lambda: age._json_object(b'{"k": 1}', ("k",))) == {"k": 1}
+def c_json_file():
+    bad = os.path.join(tmp, "not-json.txt"); open(bad, "w").write("not json")
+    for path in (bad, os.path.join(tmp, "absent.json")):
+        try:
+            age._json_file(path)
+        except (ValueError, OSError):
+            pass
+        else:
+            raise AssertionError(("json_file accepted", path))
+    good = os.path.join(tmp, "good.json"); open(good, "w").write('{"k": 1}')
+    assert accepts(("json_file", "good"), lambda: age._json_file(good)) == {"k": 1}
 CASES = {
+    ("pin-age-check.py", "_json_object", "loads"): c_json_object, ("pin-age-check.py", "_json_file", "load"): c_json_file,
     ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, ("pin-age-check.py", "_gh_api", "loads"): c_gh_api, ("pin-age-check.py", "_gh_list", "loads"): c_gh_list,
     ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
     ("pin-age-check.py", "_http_json_strict", "_http_dict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_json_strict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_dict"): c_go_lenient,
