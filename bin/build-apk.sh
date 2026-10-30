@@ -31,7 +31,7 @@
 #      writes OUT/fscache-modules-fips.spdx.json and OUT/inputs-manifest-fips.json (both variants share one OUT).
 #
 # Exit codes: 0 ok | 1 the build or a post-build check failed
-#   | 2 refused (the message names the reason; no tool was run)
+#   | 2 refused (the message names the reason; no build tool was run)
 #   | 4 a network attempt was made inside the sealed melange call (rule 40: melange failed, its output shows a network
 #     error, AND bin/net-probe.py run in the same kind of namespace exits 101 = ENETUNREACH). If the probe says the
 #     namespace is not sealed the exit is 1, not 4.

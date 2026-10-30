@@ -258,13 +258,17 @@ imc "rule 15" "manifest assertion: the apk environment alone holding the first p
 imc "rule 15" "manifest assertion: an empty manifest fails" fail empty
 imc "rule 15" "manifest assertion: a repeated key whose first copy holds the first pin with 0 appended fails (a later copy must not win)" fail repeated-key
 # post-build checks of the stamp and the FIPS record
-sf "rule 24" "a binary that says (devel) is refused before hand-off" 'says \(devel\)' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
+sf "rule 24" "a binary that says (devel) is refused before hand-off" 'says \(devel\)' env SOURCE_DATE_EPOCH=$SDE \
+  FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 sf "rule 24" "a binary built from a dirty tree (vcs.modified=true) is refused" 'modified|dirty' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/dirty.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 # the EXIT trap cannot change the refusal's status: a cleanup (rm) that fails still leaves exit 1 (Oct 30 CI ruling)
 mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 7\n' >"$work/failrm/rm"; chmod +x "$work/failrm/rm"
-printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 7;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; chmod +x "$work/rmfailsudo"
-run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/rmfailsudo" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
-t "rule 40" "a refusal (a binary that says (devel), exit 1) whose cleanup (rm and sudo rm) fails still exits 1, the script's own status" test "$(rc)" = 1
+printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 7;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; \
+  chmod +x "$work/rmfailsudo"
+run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/rmfailsudo" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
+  STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
+t "rule 40" "a refusal (a binary that says (devel), exit 1) whose cleanup (rm and sudo rm) fails still exits 1, the \
+script's own status" test "$(rc)" = 1
 sf "rule 20" "a module list that does not match the binary (extra dependency) fails the build" 'example\.org/evil|module|mismatch' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/extra.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 sf "rule 13" "the fips variant is refused when its binary does not record GOFIPS140=v1.0.0-c2097c7c" 'GOFIPS140|c2097c7c' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/nofips.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
 sd "rule 13" "the fips variant passes when the binary records GOFIPS140=v1.0.0-c2097c7c" '^melange build ' "${bae[@]}" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
@@ -578,9 +582,16 @@ for f in fm-nonl fm-two fm-crlf fm-empty fm-bad fm-upper fm-lead0 fm-space; do
 sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is missing" 'fips-module' env TEST_FIPS_MODULE="$work/no-such-file.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
 ln -sf "$work/fm-new.txt" "$work/fm-link.txt"
 sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is a symlink" 'fips-module' env TEST_FIPS_MODULE="$work/fm-link.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
-t "REQ-BUILDAPK-001-AC4" "the helper itself refuses a symlinked lock and a directory (it opens with O_NOFOLLOW and reads the handle it checked, whatever the shell tested before)" bash -c '! "$0" -I -B bin/build-apk-helper.py fips-module "$1" && ! "$0" -I -B bin/build-apk-helper.py fips-module "$2"' "$PY3_REAL" "$work/fm-link.txt" "$work"
+t "REQ-BUILDAPK-001-AC4" "check-revision refuses a symlinked lock and a directory as the fips module (it tests the \
+path, then opens with O_NOFOLLOW and reads the handle it checked)" bash -c 'printf \
+"\tbuild\tvcs.revision=abc\n\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n" > "$3/bi-fm.txt"; ! "$0" -I -B \
+  bin/build-apk-helper.py check-revision "$3/bi-fm.txt" abc fips "$1" && ! "$0" -I -B bin/build-apk-helper.py \
+  check-revision "$3/bi-fm.txt" abc fips "$2"' "$PY3_REAL" "$work/fm-link.txt" "$work" "$work"
 sd "REQ-BUILDAPK-001-AC4" "the fips variant passes when the binary records the module a (test) lock names, here the one the committed build used at v0.3.0-rc time" '^melange build ' env TEST_FIPS_MODULE="$work/fm-cur.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-cur.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
-t "REQ-BUILDAPK-001-AC4" "the committed build/locks/fips-module.txt is in the closed grammar the driver reads (format only: the test never depends on which module it names)" "$PY3_REAL" -I -B bin/build-apk-helper.py fips-module build/locks/fips-module.txt
+t "REQ-BUILDAPK-001-AC4" "the committed build/locks/fips-module.txt is in the closed grammar the driver reads (format \
+only: the test never depends on which module it names)" bash -c 'v=$(cat build/locks/fips-module.txt); printf \
+"\tbuild\tvcs.revision=abc\n\tbuild\tGOFIPS140=%s\n" "$v" > "$1/bi-grammar.txt"; "$0" -I -B bin/build-apk-helper.py \
+  check-revision "$1/bi-grammar.txt" abc fips build/locks/fips-module.txt' "$PY3_REAL" "$work"
 sf "REQ-BUILDAPK-001-AC4" "the standard variant still refuses a binary that records a GOFIPS140 value, whatever the module file names" 'GOFIPS140' env TEST_FIPS_MODULE="$work/fm-new.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 # leading zeros: X.Y.Z are plain decimal numbers
 for v in 01.2.3 1.02.3 1.2.03 00.0.0; do
@@ -1187,7 +1198,8 @@ open(sys.argv[2] + "/mut-frag1.sh", "w").write(src.replace('"$UNSHARE" -n "$mela
 open(sys.argv[2] + "/mut-frag2.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n ${AUDIT_UNSET:-mela}nge'))
 open(sys.argv[2] + "/mut-frag3.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "${AUDIT_UNSET:-mela}nge"'))
 open(sys.argv[2] + "/mut-concat.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', 'A=mela; B=nge; "$UNSHARE" -n "$A$B"'))
-open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "${call[@]}"', '"$SUDO" nice -n 5 "$ENVBIN" -u X env "${call[@]}"'))
+open(sys.argv[2] + "/mut-chain.sh", "w").write(
+    src.replace('"$SUDO" "${call[@]}"', '"$SUDO" nice -n 5 "$ENVBIN" -u X env "${call[@]}"'))
 PY
 for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-brace mut-bracen mut-glob mut-hash mut-heredoc mut-frag1 mut-frag2 mut-frag3 mut-concat mut-chain; do
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
@@ -1287,7 +1299,9 @@ PY
 rp_refused() { local m=$1 tool=$2 desc=$3; shift 3; local o; o=$(mo)
   t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
   rp_build "$rpm/$m.sh" "$o"
-  if [ "$(cat "$work/rp.rc")" != 0 ] && { grep -Eqi -- "$tool.*(not found|No such file or directory)" "$work/rp.log" || { grep -Eq -- "refusing the melange call: " "$work/rp.log" && ! grep -Eq '^(melange|apko) ' "$CALLS"; }; }; then ok; else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found)"; fi; }
+  if [ "$(cat "$work/rp.rc")" != 0 ] && { grep -Eqi -- "$tool.*(not found|No such file or directory)" "$work/rp.log" \
+    || { grep -Eq -- "refusing the melange call: " "$work/rp.log" && ! grep -Eq '^(melange|apko) ' "$CALLS"; }; }; \
+    then ok; else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found)"; fi; }
 rp_extra=("${RP_GO[@]}")
 rp_refused ba-melange melange "melange called by bare name in the privileged call is not found"
 rp_refused ba-sudo sudo "sudo called by bare name is not found"
@@ -1302,25 +1316,34 @@ for m in ba-brace ba-quote ba-ansic ba-printf ba-default ba-append ba-concat; do
 # git: its own diagnostic is hidden by 2>/dev/null in the production line, so the mutant removes the redirect: the name is then reported
 rp_refused ba-git git "git called by bare name is not found"
 rp_refused ba-git-excl git "git called by bare name in the exclude-file lookup is not found"
-# --- build-apk.sh: the melange call is refused unless it is the sealed one (sandboxed-build ratify Oct 27 2026, rule 2). The driver builds the call once and the pinned helper judges that
-# same array before sysctl, before melange, before anything is produced: exit 2, the reason named, no tool run, nothing in the output directory.
+# --- build-apk.sh: the melange call is refused unless it is the sealed one (sandboxed-build ratify Oct 27 2026, rule
+# 2). The driver builds the call once and the pinned helper judges that
+# same array before sysctl, before melange, before anything is produced: exit 2, the reason named, no tool run, nothing
+# in the output directory.
 python3 - "$work/ba-copy.sh" "$rpm" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
 CALL = 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")'
 M = {
  "sc-no-runner":   [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --signing-key')],
- "sc-docker":      [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner docker --signing-key')],
- "sc-runner-eq":   [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner=bubblewrap --signing-key')],
- "sc-two-runners": [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --runner docker --signing-key')],
+ "sc-docker":      [('--arch "$arch" --runner bubblewrap --signing-key',
+                      '--arch "$arch" --runner docker --signing-key')],
+ "sc-runner-eq":   [('--arch "$arch" --runner bubblewrap --signing-key',
+                      '--arch "$arch" --runner=bubblewrap --signing-key')],
+ "sc-two-runners": [('--arch "$arch" --runner bubblewrap --signing-key',
+                      '--arch "$arch" --runner bubblewrap --runner docker --signing-key')],
  "sc-no-unshare":  [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$melange_bin" "${margs[@]}")')],
  "sc-unshare-r":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -r "$melange_bin" "${margs[@]}")')],
  "sc-no-env-i":    [(CALL, 'call=("$ENVBIN" "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-not-build":   [('margs=(build ', 'margs=(sign ')],
- "sc-short-runner": [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" -r bubblewrap --signing-key')],
- "sc-config":      [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --config /tmp/x.yaml --signing-key')],
- "sc-extra-flag":  [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --runner bubblewrap --extra-packages x --signing-key')],
- "sc-dup-arch":    [('--arch "$arch" --runner bubblewrap --signing-key', '--arch "$arch" --arch aarch64 --runner bubblewrap --signing-key')],
+ "sc-short-runner": [('--arch "$arch" --runner bubblewrap --signing-key',
+                        '--arch "$arch" -r bubblewrap --signing-key')],
+ "sc-config":      [('--arch "$arch" --runner bubblewrap --signing-key',
+                      '--arch "$arch" --runner bubblewrap --config /tmp/x.yaml --signing-key')],
+ "sc-extra-flag":  [('--arch "$arch" --runner bubblewrap --signing-key',
+                      '--arch "$arch" --runner bubblewrap --extra-packages x --signing-key')],
+ "sc-dup-arch":    [('--arch "$arch" --runner bubblewrap --signing-key',
+                      '--arch "$arch" --arch aarch64 --runner bubblewrap --signing-key')],
  "sc-env-extra":   [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" EXTRA=1 "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-env-less":    [(CALL, 'call=("$ENVBIN" -i "${sealed[@]:1}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")')],
  "sc-bare-melange": [(CALL, 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n melange "${margs[@]}")')],
@@ -1337,38 +1360,54 @@ PY
 rp_callcheck() { local m=$1 why=$2 desc=$3 o; o=$(mo)
   t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
   rp_build "$rpm/$m.sh" "$o"
-  if [ "$(cat "$work/rp.rc")" = 2 ] && grep -Eq -- "refusing the melange call: .*$why" "$work/rp.log" && ! grep -Eq '^(sudo|unshare|sysctl|melange|apko) ' "$CALLS" && [ -z "$(find "$o" -type f)" ]; then ok
-  else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted 2 naming '$why', no tool run and nothing produced)"; fi; }
+  if [ "$(cat "$work/rp.rc")" = 2 ] && grep -Eq -- "refusing the melange call: .*$why" "$work/rp.log" && ! grep -Eq \
+    '^(sudo|unshare|sysctl|melange|apko) ' "$CALLS" && [ -z "$(find "$o" -type f)" ]; then ok
+  else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted 2 naming '$why', no tool run and nothing produced)"; \
+    fi; }
 rp_extra=("${RP_GO[@]}")
 rp_callcheck sc-no-runner "exactly one --runner bubblewrap" "a melange call without the bubblewrap runner is refused"
 rp_callcheck sc-docker "exactly one --runner bubblewrap" "a melange call with another runner is refused"
-rp_callcheck sc-runner-eq "not one of the sealed call's options" "the --runner=VALUE spelling is refused (only the one exact form is read)"
+rp_callcheck sc-runner-eq "not one of the sealed call's options" "the --runner=VALUE spelling is refused (only the \
+one exact form is read)"
 rp_callcheck sc-two-runners "given twice" "two --runner flags are refused"
 rp_callcheck sc-no-unshare "unshare -n" "a melange call without unshare is refused (the network namespace is not cut)"
 rp_callcheck sc-unshare-r "unshare -n" "unshare with another option instead of -n is refused"
 rp_callcheck sc-no-env-i "env and -i" "a melange call without env -i is refused (the environment is not closed)"
 rp_callcheck sc-not-build "melange build" "a melange call that is not the build subcommand is refused"
-rp_callcheck sc-short-runner "not one of the sealed call's options" "a short runner flag is not one of the sealed call's options"
+rp_callcheck sc-short-runner "not one of the sealed call's options" "a short runner flag is not one of the sealed \
+call's options"
 rp_callcheck sc-config "not one of the sealed call's options" "a config file option is refused"
 rp_callcheck sc-extra-flag "not one of the sealed call's options" "any other melange option is refused"
 rp_callcheck sc-dup-arch "given twice" "an option given twice is refused"
 rp_callcheck sc-env-extra "sealed environment file" "an environment item the file does not hold is refused"
 rp_callcheck sc-env-less "sealed environment file" "an environment missing an item of the file is refused"
-rp_callcheck sc-bare-melange "absolute path to melange" "melange by a bare name is refused (a search path decides what runs)"
+rp_callcheck sc-bare-melange "absolute path to melange" "melange by a bare name is refused (a search path decides \
+what runs)"
 rp_callcheck sc-bare-unshare "absolute unshare" "unshare by a bare name is refused"
 rp_callcheck sc-bare-env "absolute path to env" "env by a bare name is refused"
-rp_callcheck ba-brace-set "melange build" "a brace set that expands the program name into two words is refused by the call check (it used to be found missing at run time)"
-t "AC9" "build/sealed-env.json is exactly the reviewed sealed environment (a change to it is a reviewed change to this test: no secret name, no inherited name but SOURCE_DATE_EPOCH)" python3 - "$root/build/sealed-env.json" <<'PY'
+rp_callcheck ba-brace-set "melange build" "a brace set that expands the program name into two words is refused by the \
+call check (it used to be found missing at run time)"
+t "AC9" "build/sealed-env.json is exactly the reviewed sealed environment (a change to it is a reviewed change to \
+this test: no secret name, no inherited name but SOURCE_DATE_EPOCH)" python3 - "$root/build/sealed-env.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d == {"closed": {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C"}, "from_environment": ["SOURCE_DATE_EPOCH"]}, d
+assert d == {"closed": {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+                        "LC_ALL": "C"}, "from_environment": ["SOURCE_DATE_EPOCH"]}, d
 PY
 H="$root/bin/build-apk-helper.py"
-t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items, unshare -n, melange build, one --runner bubblewrap)" python3 -I -B "$H" sealed-call /usr/bin/env -i A=1 B=2 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64
-t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap --arch x86_64 2>/dev/null"
-t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call env -i 2>/dev/null"
-t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner --arch bubblewrap 2>/dev/null"
-t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner 2>/dev/null"
+t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items, unshare -n, melange build, one \
+--runner bubblewrap)" python3 -I -B "$H" sealed-call /usr/bin/env -i A=1 B=2 /usr/bin/unshare -n \
+/usr/local/bin/melange build x.yaml --runner bubblewrap --arch x86_64
+t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c \
+  "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap --arch x86_64 \
+2>/dev/null"
+t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call \
+env -i 2>/dev/null"
+t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the runner must be next to its value)" bash \
+  -c "! python3 -I -B '$H' sealed-call /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml \
+--runner --arch bubblewrap 2>/dev/null"
+t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call \
+/usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner 2>/dev/null"
 # go and env at the go call site: the production line captures the diagnostic into a file and treats exit 127 as "no toolchain on PATH". In CI that
 # is fatal, outside CI the run says 'not verified': either way the stub go is never reached and the run is not the control's.
 for m in ba-go ba-env-go; do
@@ -1422,8 +1461,10 @@ for name, pairs in M.items():
     open("%s/%s.sh" % (out, name), "w").write(t)
 PYM
 # 1. env named by bare name after sudo's options, after --, and after env -i: not found (the stub resolves a command operand under the script's path)
-for m in ba-env-opt ba-env-dashes; do rp_extra=("${RP_GO[@]}"); rp_refused $m env "env by bare name ($m) is not found"; done
-rp_extra=("${RP_GO[@]}"); rp_callcheck ba-env-after-i "unshare -n" "a second env between the closed environment and unshare is refused by the call check (it used to be found missing at run time)"
+for m in ba-env-opt ba-env-dashes; do rp_extra=("${RP_GO[@]}"); rp_refused $m env "env by bare name ($m) is not \
+found"; done
+rp_extra=("${RP_GO[@]}"); rp_callcheck ba-env-after-i "unshare -n" "a second env between the closed environment and \
+unshare is refused by the call check (it used to be found missing at run time)"
 # 2a. --print-source-date-epoch reaches git
 rp_extra=(); rp_ba "$work/ba-copy.sh" --print-source-date-epoch --source-dir "$src"
 t "AC9" "build-apk.sh: --print-source-date-epoch with PATH holding only the coreutils prints the commit time (reaches the git site)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -qx '$SDE' '$work/rp.log'"
@@ -1507,7 +1548,8 @@ for name, pairs in M.items():
     open("%s/%s.sh" % (sys.argv[2], name), "w").write(t)
 PY
 rs_refused() { local m=$1 tool=$2 desc=$3
-  t "AC9" "$m exists and differs from the copy it was made from" bash -c "[ -f '$rpm/$m.sh' ] && ! cmp -s '$work/rs-copy.sh' '$rpm/$m.sh'"
+  t "AC9" "$m exists and differs from the copy it was made from" bash -c "[ -f '$rpm/$m.sh' ] && ! cmp -s \
+'$work/rs-copy.sh' '$rpm/$m.sh'"
   rp_sign_dirs rpC rpD; rp_extra=(); rp_sign "$rpm/$m.sh" "$work/rpC" "$work/rpD"
   if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)|(not found|No such file or directory).*$tool" "$work/rp.log" && ! grep -q '^melange sign' "$CALLS"; then ok
   else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found, nothing signed)"; fi; }
@@ -2016,7 +2058,7 @@ while IFS= read -r l; do case $l in "ok "*) ok;; *) bad 770 "$l";; esac; done <"
 cat >"$work/sealed-line" <<'EOF'
 mapfile -d '' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV")
 EOF
-t "770" "the sealed environment is read by exactly one line, without || true: a helper that fails stops the script" \
+t "770" "the sealed environment is read by exactly one line, without || true" \
   grep -Fxqf "$work/sealed-line" "$BA_PROD"
 t "770" "no line of bin/build-apk.sh is longer than 120 characters" python3 - "$BA_PROD" <<'PY'
 import sys

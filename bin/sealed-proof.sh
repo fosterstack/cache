@@ -64,7 +64,8 @@ for ((i = 0; i < ${#bwords[@]}; i++)); do case ${bwords[$i]} in --source-dir|--o
 for ((i = 0; i < ${#awords[@]}; i++)); do case ${awords[$i]} in --archive|--out|--render-dir) die "${awords[$i]} in --assemble-args: this option is supplied by the proof; refusing" 2;; --apko-config|--base-lock|--index-record|--key-record) die "${awords[$i]} in --assemble-args: the assembly uses the committed files; refusing" 2;; esac; done
 # the victim is a package the image uses: the first package of the BASE LOCK by (name, architecture), the same choice lock-proof makes
 variant= version= melrepo= keydir=
-for ((i = 0; i < ${#awords[@]}; i += 2)); do   # the assembler's four options, each with its value; the assembler takes them in a fixed order
+# the assembler's four options, each with its value; the assembler takes them in a fixed order
+for ((i = 0; i < ${#awords[@]}; i += 2)); do
   case ${awords[$i]} in
     --variant) variant=${awords[$((i + 1))]:-};;
     --version) version=${awords[$((i + 1))]:-};;
@@ -74,7 +75,10 @@ for ((i = 0; i < ${#awords[@]}; i += 2)); do   # the assembler's four options, e
   esac
 done
 bl=
-case $variant in production) bl=$here/../build/locks/apko.base.lock.json;; fips) bl=$here/../build/locks/apko-fips.base.lock.json;; esac
+case $variant in
+  production) bl=$here/../build/locks/apko.base.lock.json;;
+  fips) bl=$here/../build/locks/apko-fips.base.lock.json;;
+esac
 [ -f "$bl" ] || die "the base lock for the negative case cannot be found (the variant is production or fips)"
 victim=$("$PY3" -I -B - "$bl" "sealed-proof.sh" <<'PY'
 import json, re, sys
@@ -121,8 +125,9 @@ inside_tmp "$(dirname "$tmp/arch-nopkg/$victim")"
 # ---- rule 39: the real drivers ----
 apkdir=$out/apk; imgdir=$out/image
 "$BASHBIN" bin/build-apk.sh "${bwords[@]}" --source-dir "$src" --out "$apkdir" >"$tmp/build.log" 2>&1 || { cat "$tmp/build.log" >&2; die "the sealed build failed"; }
-"$BASHBIN" bin/assemble-image.sh --variant "$variant" --version "$version" --archive "$archive" --melange-repo "$melrepo" \
-  --keyring-dir "$keydir" --out "$imgdir" >"$tmp/assemble.log" 2>&1 || { cat "$tmp/assemble.log" >&2; die "the sealed image assembly failed"; }
+"$BASHBIN" bin/assemble-image.sh --variant "$variant" --version "$version" --archive "$archive" \
+  --melange-repo "$melrepo" --keyring-dir "$keydir" --out "$imgdir" >"$tmp/assemble.log" 2>&1 \
+  || { cat "$tmp/assemble.log" >&2; die "the sealed image assembly failed"; }
 
 [ -n "$(find "$apkdir" -name '*.apk' -type f 2>/dev/null | head -n 1)" ] || die "no digests were produced: the build left no apk in $apkdir"
 compgen -G "$imgdir/*.digest" >/dev/null || die "no digests were produced: the image assembly left no *.digest file in $imgdir"

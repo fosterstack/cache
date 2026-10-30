@@ -133,11 +133,13 @@ def sign_key_hash(record_path):
             cp = os.path.join(d, "cert.pem")
             with open(cp, "wb") as f:
                 f.write(b64d(sg["certificate"]))
-            pub = ssl_done(subprocess.run([OPENSSL, "x509", "-in", cp, "-pubkey", "-noout"], capture_output=True)).stdout
+            pub = ssl_done(subprocess.run([OPENSSL, "x509", "-in", cp, "-pubkey", "-noout"],
+                capture_output=True)).stdout
             kp = os.path.join(d, "pub.pem")
             with open(kp, "wb") as f:
                 f.write(pub)
-            return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"], capture_output=True)).stdout).hexdigest()
+            return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"],
+                capture_output=True)).stdout).hexdigest()
     except Exception:
         print("error: cannot read Sign's certificate from %s" % record_path, file=sys.stderr)
         sys.exit(2)

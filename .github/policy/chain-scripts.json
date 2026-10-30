@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "602d47d24c0747596b2d4cf56e9cccb14e0ec916040a4a19666054aa19cbfb0f",
+      "sha256": "51c0dfa9739ddc5cc83d2e7596258014f29e41160be4671f2c71c77fa1c133df",
       "tools": [
         "make",
         "at",
@@ -242,7 +242,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "f21621004de89da11ff46b20a0745d1d6536c012b736c5be2d04c9f8ede47775",
+      "sha256": "377ac8e8f5440fb51616ae937416ba0a206c70bce93999270c2df5cfb9c92d0c",
       "tools": [
         "at"
       ],
@@ -252,7 +252,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "91dd43ca3527602b3c56d6eb97f4f7b2b3643957d91831d7a0fc23e61fd6b103",
+      "sha256": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
       "tools": [
         "at",
         "git"
@@ -529,7 +529,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "d529420ed52238f02328cea694b26dfd5835fb67001a11eaefe2526cc623d8bc",
+      "sha256": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -563,7 +563,7 @@
       ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
-      "sha256": "6a956daee6abfbc44d25c80ccad85cc54aaac9881a0f3cd9204a68f47e609f00",
+      "sha256": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
       "env_mentions": [
         {
           "name": "PATH",
@@ -598,7 +598,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "acebde9792fed0abc5a8dcbf39e4e1e890a8e2f46b28f329df2d9acd9a7f2410"
+      "sha256": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77"
     },
     {
       "path": "bin/chain_items.py",
@@ -613,7 +613,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "4b7e1b7398832c8e1c9a1bade1f50f33ab328f0e4be9a7b993558f360f9b003b"
+      "sha256": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -724,7 +724,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
-      "sha256": "d5eab93a9196eabd95a462fc23fb61c46a0dc893f8df181d8280390b539b058a"
+      "sha256": "03b66ea50f873de93047bfb4becd305ba6c81fcb1506584990ade81bd16bab40"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
@@ -2102,7 +2102,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "aeda5885f5bc95a6eb1e73dafb23604ea2a63be5f4c6be57e2d023658cf0097f",
+      "sha256": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
       "exceptions": [
         {
           "rule": "deny",
@@ -2158,7 +2158,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "4fbf3ce583e3d42279f14579a0f3df94fb7ce36ec882ca7fe01f357e630c2905",
+      "sha256": "b8e1f71b9717e681d67eacb6b4eea7d5967d3fb45dac0d2c66874fc8bff26bd1",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2260,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "78fdb985da16948e6200000743b244da1f0f64fe95599ea6a13e68714ad7fd4a",
+      "sha256": "8c3bf014d81476ca2812045d64ad4b27984ffced54e8763936e7ec6046953864",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2391,7 +2391,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "cd202bae5c57cc7151535f9e07c46bc056cf4a439257a9ecc3f4261ed050e41c",
+      "sha256": "4619886c66e7ccb9d361e221748bb8c195c18fc8acb55c178b7321062361a081",
       "exceptions": [
         {
           "rule": "script-name",

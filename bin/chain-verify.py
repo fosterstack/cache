@@ -61,8 +61,10 @@ def load_sibling(name):
 
 
 _common = load_sibling("chain_common")
-Refuse, b64d, b64e, load_json, parse_now, refuse, ssl_done, strict_json = (_common.Refuse, _common.b64d, _common.b64e, _common.load_json,
-                                                                           _common.parse_now, _common.refuse, _common.ssl_done, _common.strict_json)
+Refuse, b64d, b64e, load_json, parse_now, refuse, ssl_done, strict_json = (_common.Refuse, _common.b64d, _common.b64e,
+    _common.load_json,
+                                                                           _common.parse_now, _common.refuse,
+                                                                           _common.ssl_done, _common.strict_json)
 OPENSSL = _common.OPENSSL
 chain_hostile = load_sibling("chain_hostile")
 chain_items = load_sibling("chain_items")
@@ -248,7 +250,8 @@ def policy_make(a):
         raise Refuse("policy", "trust: cannot read %s" % ex)
     froot, fblocks = first_cert_der(fulcio_text)
     troot, tblocks = first_cert_der(tsa_text)
-    rdir = ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", rekor_p, "-outform", "DER"], capture_output=True)).stdout
+    rdir = ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", rekor_p, "-outform", "DER"],
+        capture_output=True)).stdout
     got = {"fulcio_root_sha256": hashlib.sha256(froot).hexdigest(), "tsa_root_sha256": hashlib.sha256(troot).hexdigest(),
            "rekor_sha256": hashlib.sha256(rdir).hexdigest()}
     for k, v in got.items():
@@ -374,7 +377,8 @@ def stamp_token(stamp_der, kind, tmp):
         f.write(stamp_der)
     if kind == STAMP_TOKEN:
         return resp
-    text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", resp, "-text"], capture_output=True)).stdout.decode(errors="replace")
+    text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", resp, "-text"],
+        capture_output=True)).stdout.decode(errors="replace")
     status = re.search(r"^Status info:\n(.*?)(?=^TST info:|\Z)", text, re.S | re.M)
     fields = dict(re.findall(r"^(Status|Status description|Failure info): (.*)$", status.group(1) if status else "", re.M))
     if fields.get("Status") != "Granted." or fields.get("Status description", "unspecified") != "unspecified" or fields.get("Failure info", "unspecified") != "unspecified":
@@ -388,7 +392,8 @@ def stamp_time(token_path):
     """genTime of a bare token, as exact epoch seconds (a Fraction): the one `Time stamp:` line of `openssl ts -reply -token_in -text`
     (no status section exists there). The fraction of a second is KEPT (REQ-CHAIN-002-AC1, Codex security r2 note): 12:00:00.5 is
     after a certificate that ends at 12:00:00."""
-    text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", token_path, "-token_in", "-text"], capture_output=True)).stdout.decode(errors="replace")
+    text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", token_path, "-token_in", "-text"],
+        capture_output=True)).stdout.decode(errors="replace")
     hits = re.findall(r"^Time stamp: (\w{3})\s+(\d+) (\d\d):(\d\d):(\d\d)(?:\.(\d+))? (\d{4}) GMT$", text, re.M)
     if len(hits) != 1:
         raise ValueError("not exactly one genTime in the timestamp token")
@@ -461,7 +466,8 @@ def check_chain(stage, pol, cert_pem, intermediates, tmp):
             f.write(b64d(root["certificate"]).decode())
         # no default file, directory or store: only the policy's root is trusted, whatever SSL_CERT_FILE / SSL_CERT_DIR say
         # the path is found here; its validity is checked at the stamp time by chain_valid_at, once that time is known
-        r = subprocess.run([OPENSSL, "verify", "-no_check_time", "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", rp, "-untrusted", untrusted, leaf_p], capture_output=True)
+        r = subprocess.run([OPENSSL, "verify", "-no_check_time", "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted",
+            rp, "-untrusted", untrusted, leaf_p], capture_output=True)
         if r.returncode == 0:
             return leaf_p, rp, untrusted
     refuse(stage, "certificate does not chain to a root of the policy (root)")
@@ -472,7 +478,8 @@ def chain_valid_at(stage, chain, when):
     Codex security r2): an intermediate that had expired, or was not yet valid, then is refused, not only the leaf."""
     leaf_p, root_p, untrusted = chain
     for t in attimes(when):
-        r = subprocess.run([OPENSSL, "verify", "-attime", str(t), "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", root_p, "-untrusted", untrusted, leaf_p], capture_output=True)
+        r = subprocess.run([OPENSSL, "verify", "-attime", str(t), "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted",
+            root_p, "-untrusted", untrusted, leaf_p], capture_output=True)
         if r.returncode != 0:
             detail = (r.stdout + r.stderr).decode(errors="replace").strip().splitlines()
             refuse(stage, "certificate chain is not valid at the timestamp time %s (validity): %s" % (stamp_text(when), detail[-1] if detail else "openssl verify failed"))
@@ -481,11 +488,13 @@ def chain_valid_at(stage, chain, when):
 def check_signature(stage, leaf_p, ptype, payload, sig, tmp):
     pub = os.path.join(tmp, "leaf.pub")
     with open(pub, "wb") as f:
-        f.write(ssl_done(subprocess.run([OPENSSL, "x509", "-in", leaf_p, "-pubkey", "-noout"], capture_output=True)).stdout)
+        f.write(ssl_done(subprocess.run([OPENSSL, "x509", "-in", leaf_p, "-pubkey", "-noout"],
+            capture_output=True)).stdout)
     for n, data in (("pae.bin", pae(ptype, payload)), ("sig.bin", sig)):
         with open(os.path.join(tmp, n), "wb") as f:
             f.write(data)
-    if subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", pub, "-signature", os.path.join(tmp, "sig.bin"), os.path.join(tmp, "pae.bin")], capture_output=True).returncode != 0:
+    if subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", pub, "-signature", os.path.join(tmp, "sig.bin"),
+        os.path.join(tmp, "pae.bin")], capture_output=True).returncode != 0:
         refuse(stage, "signature does not verify over the payload")
 
 
@@ -517,7 +526,9 @@ def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp, want_kind=
             with open(ip, "w") as f:
                 f.write("".join(b64d(x).decode().rstrip("\n") + "\n" for x in auth.get("intermediates", [])))
             # the TSA's signing certificate and its chain must be valid AT genTime (Codex security r2), not merely ever
-            if all(subprocess.run([OPENSSL, "ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, "-token_in", "-CAfile", cp, "-untrusted", ip, "-attime", str(t)], capture_output=True).returncode == 0 for t in attimes(when)):
+            if all(subprocess.run([OPENSSL, "ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp,
+                "-token_in", "-CAfile", cp, "-untrusted", ip, "-attime", str(t)],
+                capture_output=True).returncode == 0 for t in attimes(when)):
                 stamped = when
                 break
         if stamped is not None:
@@ -722,7 +733,8 @@ def set_is_valid(e, key_pem):
         for name, data in (("key.pem", key_pem.encode()), ("set.bin", canon), ("set.sig", b64d(e["inclusionPromise"]["signedEntryTimestamp"]))):
             with open(os.path.join(d, name), "wb") as f:
                 f.write(data)
-        r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "set.sig"), os.path.join(d, "set.bin")], capture_output=True)
+        r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature",
+            os.path.join(d, "set.sig"), os.path.join(d, "set.bin")], capture_output=True)
     return r.returncode == 0
 
 
@@ -731,7 +743,8 @@ def rekor_log_id(key_pem):
         kp = os.path.join(d, "key.pem")
         with open(kp, "w") as f:
             f.write(key_pem)
-        return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"], capture_output=True)).stdout).hexdigest()
+        return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"],
+            capture_output=True)).stdout).hexdigest()
 
 
 def rekor_body(e):
@@ -921,7 +934,8 @@ def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
     now = parse_now(a.now)
-    product = (a.product if "product" in a else None) or "items.json"      # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
+    # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
+    product = (a.product if "product" in a else None) or "items.json"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
         refuse("build", "product: %r is not a plain file name" % product)
     want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product

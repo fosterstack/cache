@@ -2749,7 +2749,8 @@ replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    step
     "    runs-on: self-hosted\n    steps:\n      - uses: actions/download-artifact" \
   && expect ok "AC14 the scanner steps are cache's: a change there does not change the verdict" "" callers "$work/c16.yml"
 # ---- nosource: no step of Build or Rebuild runs source code outside melange (sandboxed-build rule 1) ----------------
-# The shell closure scripts are held as exact text (line 1 included), the Python ones whole by sha256 (orchestrator ruling of Oct 30, option 1).
+# The shell closure scripts are held as exact text (line 1 included), the Python ones and the six workflow-run files
+# whole by sha256 (orchestrator ruling of Oct 30, option 1).
 # Each row is one mutation of a fresh copy of the closure that the judge must refuse; the word is the message token.
 python3 - "$work/ns" "$root" "$shape" <<'PY' || true      # a failed build shows as the fixture row below
 import importlib.util, os, shutil, sys
@@ -2766,29 +2767,35 @@ adm = dst + "/bin/build-admit.py"
 lines = open(adm).read().split("\n")
 hit = [n for n, l in enumerate(lines) if "[ctx.go," in l and '"verify-freeze"' in l]
 assert len(hit) == 1, "the admission call moved: move this replacement with it"
-lines[hit[0]] = "    rc, err = 0, b\"\""
+lines[hit[0]:hit[0] + 2] = ["    rc, err = 0, b\"\""]      # the call is two physical lines
 open(adm, "w").write("\n".join(lines))
 PY
-# the lists of the closure files for the loops below, and a copy of the judge whose sha256 table matches this fixture (the fixture drops one line of build-admit.py)
-python3 - "$root" "$shape" > "$work/ns.py.list" 2> "$work/ns.sh.list" <<'PY' || true
+# the lists of the closure files for the loops below, and a copy of the judge whose sha256 table matches this fixture
+# (the fixture drops one line of build-admit.py)
+python3 - "$root" "$shape" > "$work/ns.held.list" 2> "$work/ns.sh.list" <<'PY' || true
 import importlib.util, sys
 root, shape = sys.argv[1:3]
 spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
-for p in seen:
-    print(p, file=(sys.stdout if p.endswith(".py") else sys.stderr))
+SIX = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
+       "bin/loopback-get.sh", "bin/rebuild-records-digests.sh")      # held whole with the Python files
+for p in sorted(set(seen) | set(SIX)):
+    held = p.endswith(".py") or p in SIX
+    print(p, file=(sys.stdout if held else sys.stderr))
 PY
 python3 - "$work/ns" "$shape" "$work/shape-fx.py" <<'PY' || true
 import hashlib, re, sys
 ns, shape, out = sys.argv[1:4]
 s = open(shape).read()
-for m in re.finditer(r'"(bin/[A-Za-z0-9_.-]+\.py)": "([0-9a-f]{64})"', s):
+for m in re.finditer(r'"(bin/[A-Za-z0-9_.-]+)": "([0-9a-f]{64})"', s):
     path, old = m.groups()
-    s = s.replace('"%s": "%s"' % (path, old), '"%s": "%s"' % (path, hashlib.sha256(open(ns + "/" + path, "rb").read()).hexdigest()))
+    new = hashlib.sha256(open(ns + "/" + path, "rb").read()).hexdigest()
+    s = s.replace('"%s": "%s"' % (path, old), '"%s": "%s"' % (path, new))
 open(out, "w").write(s)
 PY
-shape_real="$shape"; shape="$work/shape-fx.py"      # the fixture rows below run this judge; the real tree is judged by the real one again after them
+# the fixture rows below run this judge; the real tree is judged by the real one again after them
+shape_real="$shape"; shape="$work/shape-fx.py"
 expect ok "nosource fixture: the closure of the stage scripts is clean without the one known finding" "" \
   nosource "$work/ns"
 nsfresh() { # a fresh copy; when the fixture is missing the copy is an empty tree, so each row still ends in one verdict
@@ -2805,10 +2812,6 @@ nsmf() { # nsmf ID LABEL WORD NEWFILE FILE OLD NEW   (like nsm, and NEWFILE is m
 nsa() { # nsa ID LABEL WORD FILE TEXT   (add TEXT at the end of FILE; \n in TEXT is a newline)
   nsfresh; printf '\n%b\n' "$5" >> "$work/nsm/$4"
   expect caught "$1 $2" "$3" nosource "$work/nsm"
-}
-nsok() { # nsok ID LABEL FILE TEXT   (like nsa, and the judge must accept the copy)
-  nsfresh; printf '\n%b\n' "$4" >> "$work/nsm/$3"
-  expect ok "$1 $2" "" nosource "$work/nsm"
 }
 nsl() { # nsl ID LABEL WORD FILE OP REGEX [TEXT]   (OP after|del|sub|swap acts on the first line matching ^REGEX;
   # swap trades that line with the first line matching ^TEXT)
@@ -2843,15 +2846,18 @@ PY
   expect caught "$1 $2" "$3" nosource "$work/nsm"
 }
 CNT="commands, the grammar has"; EXP=": expected"
-# option 1: each Python closure file is held whole by sha256 (NS_PY_SHA), line 1 of each shell file is held, the stage lines run python3 -I
+# option 1: 21 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
+# the stage lines run python3 -I
 while read -r f; do
-  nsa "H-$f" "nosource a change to $f is a finding: the file is held whole by sha256" "NS_PY_SHA" "$f" "# one more comment"
-done < "$work/ns.py.list"
+  nsa "H-$f" "nosource a change to $f is a finding: the file is held whole by sha256" "NS_SHA" "$f" "# one more comment"
+done < "$work/ns.held.list"
 while read -r f; do
   nsl "L1-$f" "nosource line 1 of $f is held: a changed shebang is a finding" "shebang" "$f" sub '^#!' '#!/tmp/evil'
 done < "$work/ns.sh.list"
-for k in apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
-  nsm "I-$k" "nosource a python3 line of bin/build-stage-$k.sh without -I is a finding" ": expected" "bin/build-stage-$k.sh" 'python3 -I bin/' 'python3 bin/'
+for k in apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk \
+    snapshot-rebuild-assemble; do
+  nsm "I-$k" "nosource a python3 line of bin/build-stage-$k.sh without -I is a finding" ": expected" \
+    "bin/build-stage-$k.sh" 'python3 -I bin/' 'python3 bin/'
 done
 py_noI=$(python3 - "$shape_real" "$root" <<'PY'
 import importlib.util, re, sys
@@ -2867,24 +2873,81 @@ for p in seen:
 PY
 )
 if [ -z "$py_noI" ]; then ok "nosource no closure Python file starts a python3 child without -I"
-else bad "nosource a closure Python file starts a python3 child without -I: $(printf '%s' "$py_noI" | tr '\n' ' ' | cut -c1-200)"; fi
+else bad "nosource a closure Python file starts a python3 child without -I: \
+$(printf '%s' "$py_noI" | tr '\n' ' ' | cut -c1-200)"; fi
 if ! grep -qE '^python3 bin/' "$root"/bin/build-stage-*.sh; then ok "nosource no stage script runs python3 without -I"
-else bad "nosource a stage script still runs python3 without -I: $(grep -lE '^python3 bin/' "$root"/bin/build-stage-*.sh | head -3 | tr '\n' ' ')"; fi
+else bad "nosource a stage script still runs python3 without -I: \
+$(grep -lE '^python3 bin/' "$root"/bin/build-stage-*.sh | head -3 | tr '\n' ' ')"; fi
 if python3 - "$shape_real" "$root" <<'PY'
 import importlib.util, hashlib, sys
 shape, root = sys.argv[1:3]
 spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
+SIX = {"bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
+       "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
 py = {p for p in seen if p.endswith(".py")}
-assert set(S.NS_PY_SHA) == py, (sorted(set(S.NS_PY_SHA) ^ py))
-for p in sorted(py):
-    assert S.NS_PY_SHA[p] == hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest(), p
+held = py | SIX
+# the files the workflows run outside the stage scripts are in the closure
+assert SIX <= set(seen), sorted(SIX - set(seen))
+assert set(S.NS_SHA) == held, (sorted(set(S.NS_SHA) ^ held))
+for p in sorted(held):
+    assert S.NS_SHA[p] == hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest(), p
 for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
     assert p in py, p      # they reach the closure only through chain-verify.py's load_sibling literals
 PY
-then ok "nosource NS_PY_SHA holds exactly the 15 Python closure files with their committed sha256, and chain_common, chain_hostile and chain_items are found in the closure"
-else bad "nosource NS_PY_SHA does not match the Python closure files"; fi
+then ok "nosource NS_SHA holds exactly the 15 Python closure files and the 6 workflow-run files with their \
+committed sha256, and chain_common, chain_hostile and chain_items are found"
+else bad "nosource NS_SHA does not match the closure files"; fi
+# the bin/ scripts the run: lines of the two stage workflows start are exactly the roots of the closure
+# and the two skipped installers
+if python3 - "$shape_real" "$root" <<'PY'
+import glob, importlib.util, re, sys
+shape, root = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("shape", shape)
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+ran = set()
+for wf in ("stage-build.yml", "stage-reproducibility.yml"):
+    for line in open(root + "/.github/workflows/" + wf):
+        if re.match(r"\s+run:", line):
+            ran.update(re.findall(r"bin/[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:sh|py)", line))
+roots = {p.replace(root + "/", "") for g in S.NS_ROOTS for p in glob.glob(root + "/" + g)} | set(S.NS_SKIP)
+assert ran == roots, (sorted(ran - roots), sorted(roots - ran))
+PY
+then ok "nosource the bin/ scripts on the run: lines of stage-build.yml and stage-reproducibility.yml are exactly \
+the roots of the closure plus the skipped installers"
+else bad "nosource a workflow run: line starts a bin/ script outside the closure roots (or a root is not run)"; fi
+# the judge's own guards: a table entry gone, a table entry for a file that is not in the closure,
+# and a file whose children cannot be followed
+shape_save="$shape"
+sed '/^    "bin\/archive-verify.py": "/d' "$work/shape-fx.py" > "$work/shape-miss.py"
+shape="$work/shape-miss.py"
+expect caught "N1 nosource a closure file with no entry in NS_SHA" "no held sha256" nosource "$work/ns"
+zeros=$(printf '%064d' 0)
+sed "s|^NS_SHA = {\$|NS_SHA = {\n    \"bin/not-in-the-closure.py\": \"$zeros\",|" "$work/shape-fx.py" \
+  > "$work/shape-extra.py"
+shape="$work/shape-extra.py"
+expect caught "N2 nosource an entry in NS_SHA for a file that is not in the closure" \
+  "which is not a file of the closure" nosource "$work/ns"
+# nspin ID LABEL WORD FILE BYTES: append BYTES to FILE of a fresh copy and pin the judge's table to the new bytes,
+# so that only the read or parse failure speaks
+nspin() {
+  nsfresh; printf "$5" >> "$work/nsm/$4"
+  python3 - "$work/nsm/$4" "$4" "$work/shape-fx.py" "$work/shape-pin.py" <<'PY'
+import hashlib, re, sys
+f, rel, src, out = sys.argv[1:5]
+s = open(src).read()
+new = hashlib.sha256(open(f, "rb").read()).hexdigest()
+s = re.sub(r'("%s": ")[0-9a-f]{64}' % re.escape(rel), lambda m: m.group(1) + new, s)
+open(out, "w").write(s)
+PY
+  shape="$work/shape-pin.py"; expect caught "$1 $2" "$3" nosource "$work/nsm"
+}
+nspin N3 "nosource a closure Python file that does not read as UTF-8, even re-pinned, is a finding (children lost)" \
+  "cannot be followed" bin/oci-digest.py '\n# \xff\xfe\n'
+nspin N4 "nosource a closure Python file that does not parse, even re-pinned, is a finding (its children are lost)" \
+  "cannot be followed" bin/oci-digest.py '\n(\n'
+shape="$shape_save"
 # the round-one and rerun rows (cz, go, mk, bin1, mel1, apk1, bp1-bp24) keep their labels
 nsmf cz1 "nosource a stage script runs a test-named script that is not a row" "commands, the grammar has" \
   bin/chain-test-local.py bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/chain-test-local.py'
@@ -3100,7 +3163,6 @@ PY
 add_sibling && expect caught "nosource a module chain-verify.py loads with load_sibling that is not a row is refused" \
   "is not a row of chain-scripts.json" nosource "$work/nsm" || bad "nosource the load_sibling mutation did not apply"
 # the sealed-call round (R1-R5, F1-F8): each one a mutation the earlier readers let through
-PA=bin/build-archives.py
 nsl R1 "nosource a ( line then make) inside a case body of a shell helper" "$CNT" bin/build-apk.sh after \
   '^set -euo pipefail' 'case $1 in\n  x)\n(\nmake)\n    ;;\nesac'
 nsl R3 "nosource read -r ignored \"PY3\" added to build-apk.sh" "$CNT" bin/build-apk.sh after '^PY3=' \
@@ -3163,9 +3225,9 @@ expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 shape="$shape_real"
 real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
-if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:456"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
-  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:456) is the ONE finding"
-else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:456 -> ${real_json:0:300}"; fi
+if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:479"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
+  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:479) is the ONE finding"
+else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:479 -> ${real_json:0:300}"; fi
 ns_hits=""
 for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
   ns_hits+=$(grep -rnw "NS_$n" "$root/bin" || true)
@@ -3458,7 +3520,8 @@ PY
 # admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
 # exactly those nine paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json; Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
 TREE=$(mktemp -d)/tree.sh
-{ echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'; sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
+{ echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'
+  sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
 tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
   mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > "$f/f"; done; echo '{}' > admission.json ); echo "$d"; }
 d=$(tree_repo)
@@ -3506,14 +3569,19 @@ has_refusal_block() {
 }
 # AC4 ruling (Oct 30): the two refusals moved into build-apk-helper.py check-buildinfo; fixed strings, whole lines
 CBI='"$PY3" -I -B bin/build-apk-helper.py check-buildinfo "$tmp/buildinfo.txt" "$version"'
+devel_raise='        raise Refused("the binary says (devel): '
+devel_raise+='the source was not stamped", 1)'
+dirty_raise='        raise Refused("the binary was built from a modified (dirty) tree '
+dirty_raise+='(vcs.modified=true)", 1)'
 if grep -Fxq "$CBI" bin/build-apk.sh \
   && grep -Fxq '    if "(devel)" in text:' bin/build-apk-helper.py \
-  && grep -Fxq '        raise Refused("the binary says (devel): the source was not stamped", 1)' bin/build-apk-helper.py \
+  && grep -Fxq "$devel_raise" bin/build-apk-helper.py \
   && grep -Fxq '    if "vcs.modified=true" in text:' bin/build-apk-helper.py \
-  && grep -Fxq '        raise Refused("the binary was built from a modified (dirty) tree (vcs.modified=true)", 1)' bin/build-apk-helper.py \
+  && grep -Fxq "$dirty_raise" bin/build-apk-helper.py \
   && has_refusal_block build/melange.yaml && has_refusal_block build/melange-fips.yaml; then
   msg="REQ-BUILDAPK-001-AC4 tree: the dirty-tree check is still in place"
-  ok "$msg (the check-buildinfo call line in build-apk.sh, the helper's (devel) and vcs.modified refusals) and in each of the two recipes"
+  ok "$msg (the check-buildinfo call line in build-apk.sh, the helper's (devel) and vcs.modified refusals) and in each \
+of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi

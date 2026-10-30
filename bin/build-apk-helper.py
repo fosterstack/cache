@@ -12,28 +12,38 @@ interpreter run on a variable path).
       Nothing else is ever passed: there is no test mode, no inherited name and no prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a
       closed object: any other key or value type is refused (exit 1).
 
-  build-apk-helper.py fips-module FILE
-      prints GOFIPS140=<the module id that FILE (build/locks/fips-module.txt) holds>, read with the grammar the daily refresh reads it with: plain
-      ASCII, exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> (no leading zeros) and a plain newline; exit 1 for anything else
-      (REQ-BUILDAPK-001-AC4).
 
   build-apk-helper.py sealed-call [--sealed-env FILE] ARG...
-      judges the argument list of the privileged melange call, as the driver will run it with raised rights (sandboxed-build ratify Oct 27 2026, rule 2): an ABSOLUTE `env` and
-      `-i`, then NAME=value items only (with --sealed-env: exactly the items FILE yields, in order), then an absolute `unshare -n`, then an absolute melange and `build`, the
-      recipe file, and only the options of MELANGE_FLAGS, each once with one value, `--runner` being `bubblewrap`. Prints the first reason on standard error and exits 1 for
-      anything else (a call without the bubblewrap runner, without the cut network namespace, with a bare program name, another option or an environment that is not the file's).
+      judges the argument list of the privileged melange call, as the driver will run it with raised rights
+      (sandboxed-build ratify Oct 27 2026, rule 2): an ABSOLUTE `env` and
+      `-i`, then NAME=value items only (with --sealed-env: exactly the items FILE yields, in order), then an absolute
+      `unshare -n`, then an absolute melange and `build`, the
+      recipe file, and only the options of MELANGE_FLAGS, each once with one value, `--runner` being `bubblewrap`.
+      Prints the first reason on standard error and exits 1 for
+      anything else (a call without the bubblewrap runner, without the cut network namespace, with a bare program name,
+      another option or an environment that is not the file's).
 
-  The other subcommands are the decisions the build driver makes, so that its script is straight-line text. Each prints its
-  answer or the refusal "<script name>: <reason>" on standard error and exits with the status the script had for that refusal:
-  check-args UNAME_S UNAME_M ARG...     the host, the options, the environment and the inputs; prints "sde" or "build" (exit 2 refused)
-  arg NAME ARG...                       one value of the options (src variant arch goarch version apkver build-date repo keyring
-                                        go-archive melange-lock out render-dir apk-cache-dir); a directory is printed absolute
+  The other subcommands are the decisions the build driver makes, so that its script is straight-line text. Each prints
+  its
+  answer or the refusal "<script name>: <reason>" on standard error and exits with the status the script had for that
+  refusal:
+  check-args UNAME_S UNAME_M ARG...     the host, the options, the environment and the inputs; prints "sde" or "build"
+    (exit 2 refused)
+  arg NAME ARG...                       one value of the options (src variant arch goarch version apkver build-date
+    repo keyring
+                                        go-archive melange-lock out render-dir apk-cache-dir); a directory is printed
+                                        absolute
   abs-file FILE                         FILE as an absolute path
-  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once (exit 1 refused)
-  melange-verdict RC PROBE              the status of the melange call (and of the network probe, empty if none ran): 0, 1 or 4
-  check-buildinfo FILE VERSION          the binary is stamped, clean, and carries the version being built (exit 1 refused)
-  check-revision FILE HEAD VARIANT MODULEFILE   the binary's revision is the source HEAD; the GOFIPS140 records fit the variant
-  go-verdict RC GOOUT BUILDINFO GOERR   buildinfo.txt is the binary's own go version -m output (RC is the go tool's exit status)
+  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once (exit 1
+    refused)
+  melange-verdict RC PROBE              the status of the melange call (and of the network probe, empty if none ran):
+    0, 1 or 4
+  check-buildinfo FILE VERSION          the binary is stamped, clean, and carries the version being built (exit 1
+    refused)
+  check-revision FILE HEAD VARIANT MODULEFILE   the binary's revision is the source HEAD; the GOFIPS140 records fit the
+    variant
+  go-verdict RC GOOUT BUILDINFO GOERR   buildinfo.txt is the binary's own go version -m output (RC is the go tool's
+    exit status)
 
 Exit codes: 0 ok | 1 failed | 2 usage.
 """
@@ -63,7 +73,8 @@ def recipe_facts(recipe, goarch, outfile):
 
 
 def sealed_env_items(datafile):
-    """The NAME=value items of the closed list (None when the file is refused): the fixed items, then each named variable of the environment."""
+    """The NAME=value items of the closed list (None when the file is refused): the fixed items, then each named
+    variable of the environment."""
     try:
         d = json.load(open(datafile))
     except (OSError, ValueError):
@@ -94,8 +105,9 @@ def sealed_env(datafile):
 def read_fips_module(path):
     """GOFIPS140=<the module id> read from the file, or None when the file or its grammar is refused."""
     try:
-        # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle: the shell pre-check of the
-        # path cannot be raced between its test and this open (O_NONBLOCK so a fifo cannot hang the open)
+        # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle:
+        # check_revision's isfile and islink test of the
+        # path cannot be raced between that test and this open (O_NONBLOCK so a fifo cannot hang the open)
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -113,19 +125,14 @@ def read_fips_module(path):
     return "GOFIPS140=" + raw[:-1]
 
 
-def fips_module(path):
-    value = read_fips_module(path)
-    if value is None:
-        return 1
-    sys.stdout.write(value)
-    return 0
-
-
-MELANGE_FLAGS = ("--arch", "--runner", "--signing-key", "--keyring-append", "--repository-append", "--build-date", "--cache-dir", "--source-dir", "--out-dir", "--apk-cache-dir")      # the closed set of the driver's melange call, each once, each with one value
+# the closed set of the driver's melange call, each once, each with one value
+MELANGE_FLAGS = ("--arch", "--runner", "--signing-key", "--keyring-append", "--repository-append", "--build-date",
+    "--cache-dir", "--source-dir", "--out-dir", "--apk-cache-dir")
 
 
 def sealed_call(call, expected_env=None):
-    """None when the call is the sealed one, else the first reason. expected_env: the NAME=value items the sealed environment file yields, in order (None: only their form is judged)."""
+    """None when the call is the sealed one, else the first reason. expected_env: the NAME=value items the sealed
+    environment file yields, in order (None: only their form is judged)."""
     if len(call) < 6 or os.path.basename(call[0]) != "env" or not os.path.isabs(call[0]) or call[1] != "-i":
         return "the call does not start with an absolute path to env and -i"
     i = 2
@@ -133,7 +140,8 @@ def sealed_call(call, expected_env=None):
         i += 1
     if expected_env is not None and call[2:i] != expected_env:
         return "the environment of the call is not exactly the items of the sealed environment file"
-    if i + 3 >= len(call) or os.path.basename(call[i]) != "unshare" or not os.path.isabs(call[i]) or call[i + 1] != "-n":
+    if (i + 3 >= len(call) or os.path.basename(call[i]) != "unshare" or not os.path.isabs(call[i])
+            or call[i + 1] != "-n"):
         return "the call is not run under an absolute unshare -n (the network namespace is not cut)"
     if os.path.basename(call[i + 2]) != "melange" or not os.path.isabs(call[i + 2]) or call[i + 3] != "build":
         return "the program under unshare -n is not an absolute path to melange build"
@@ -158,12 +166,15 @@ def sealed_call(call, expected_env=None):
     return None
 
 
-# ---- the decisions of the build driver: each one prints its answer, or raises Refused with the old message and exit status ----
+# ---- the decisions of the build driver: each one prints its answer, or raises Refused with the old message and exit
+# status ----
 
 PREFIX = "build-apk.sh: "
-VALUE_OPTIONS = ("--variant", "--arch", "--version", "--source-dir", "--repo", "--keyring", "--go-archive", "--melange-lock",
+VALUE_OPTIONS = ("--variant", "--arch", "--version", "--source-dir", "--repo", "--keyring", "--go-archive",
+    "--melange-lock",
                  "--out", "--render-dir", "--apk-cache-dir")
-EXCLUDE_PATHS = ("/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json", "/build-in/", "/witness-build/",
+EXCLUDE_PATHS = ("/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json", "/build-in/",
+    "/witness-build/",
                  "/witness-rapk/", "/policy.json")
 PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 VERSION_GRAMMAR = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?"   # X.Y.Z or X.Y.Z-rcN
@@ -209,7 +220,8 @@ def parse_options(args):
 def check_args(uname_s, uname_m, *args):
     """Every refusal that comes before a tool runs, in the order the script made them. Prints sde or build."""
     if uname_s != "Linux":
-        raise Refused("refusing to run on %s: this script uses sudo, unshare and the sealed build tools, which run on Linux "
+        raise Refused("refusing to run on %s: this script uses sudo, unshare and the sealed build tools, which run on "
+            "Linux "
                       "only (inside a Linux container or on a GitHub runner), never on the Mac itself" % uname_s)
     opts = parse_options(args)
     src = opts.get("source-dir", "")
@@ -234,7 +246,8 @@ def check_variant_arch_version(uname_m, opts):
         raise Refused("--arch must be an apk architecture name: x86_64 or aarch64 (not '%s')" % arch)
     host = {"amd64": "x86_64", "arm64": "aarch64"}.get(uname_m, uname_m)
     if arch != host:
-        raise Refused("refusing to build %s on a %s host: each architecture builds natively on its own runner, no emulation"
+        raise Refused("refusing to build %s on a %s host: each architecture builds natively on its own runner, no "
+            "emulation"
                       % (arch, host))
     # exactly the chain's grammar (the tag minus its v) and the one fixed snapshot version (REQ-CHAIN-004-AC12)
     if not (re.fullmatch(VERSION_GRAMMAR, version) or version == "0.0.0-rc.1"):
@@ -249,7 +262,8 @@ def check_environment():
     if iso_time(epoch) is None:
         raise Refused("SOURCE_DATE_EPOCH %s is not a date" % epoch)
     if os.environ.get("APK_RELEASE_SIGNING_KEY"):
-        raise Refused("the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)")
+        raise Refused("the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is "
+            "defined)")
     if os.environ.get("GOPROXY", "off") != "off":
         raise Refused("GOPROXY must be off or unset (its value is not printed: it can carry a credential)")
     for name in PROXY_NAMES:
@@ -326,7 +340,8 @@ def exclude_file(excl, exdir):
         lines = old.split(b"\n")
         missing = [path for path in EXCLUDE_PATHS if path.encode() not in lines]
         if missing:
-            glue = b"\n" if old and not old.endswith(b"\n") else b""   # a last line with no newline would swallow the pattern
+            # a last line with no newline would swallow the pattern
+            glue = b"\n" if old and not old.endswith(b"\n") else b""
             with open(excl, "ab") as f:
                 f.write(glue + "".join(path + "\n" for path in missing).encode())
     except OSError as e:
@@ -334,13 +349,15 @@ def exclude_file(excl, exdir):
 
 
 def melange_verdict(rc, probe):
-    """rc: the exit status of the sealed melange call; probe: the exit status of the network probe, empty when it did not run."""
+    """rc: the exit status of the sealed melange call; probe: the exit status of the network probe, empty when it did
+    not run."""
     if rc == "0":
         return
     if probe == "":
         raise Refused("melange build failed (exit %s)" % rc, 1)
     if probe == "101":
-        raise Refused("a network attempt was made inside the sealed melange call (the probe confirms the namespace has no route); "
+        raise Refused("a network attempt was made inside the sealed melange call (the probe confirms the namespace "
+            "has no route); "
                       "the build must use only declared inputs", 4)
     raise Refused("melange failed with a network error, but the probe says the namespace is not sealed (exit %s); "
                   "fix the seal first" % probe, 1)
@@ -355,7 +372,8 @@ def read_text(path):
 
 
 def build_values(text, prefix):
-    """The values of the 'build' lines of buildinfo.txt (tab-separated: empty, build, KEY=value) that start with PREFIX."""
+    """The values of the 'build' lines of buildinfo.txt (tab-separated: empty, build, KEY=value) that start with
+    PREFIX."""
     fields = [line.split("\t") for line in text.split("\n")]
     return [f[2][len(prefix):] for f in fields if len(f) > 2 and f[1] == "build" and f[2].startswith(prefix)]
 
@@ -372,7 +390,8 @@ def check_buildinfo(path, version):
             mainver = f[3] if len(f) > 3 else ""
             break
     if mainver != "v" + version:
-        raise Refused("the binary's main module version is '%s', not v%s: the build is not stamped with the version being built "
+        raise Refused("the binary's main module version is '%s', not v%s: the build is not stamped with the version "
+            "being built "
                       "(a tag at the source HEAD is needed)" % (mainver or "none", version), 1)
 
 
@@ -388,13 +407,15 @@ def check_revision(path, head, variant, module_file):
         if recorded:
             raise Refused("the standard binary records GOFIPS140 (%s); only the fips variant may" % recorded, 1)
         return
-    # REQ-BUILDAPK-001-AC4: the module is the one build/locks/fips-module.txt names, read with the grammar the daily refresh reads it with
+    # REQ-BUILDAPK-001-AC4: the module is the one build/locks/fips-module.txt names, read with the grammar the daily
+    # refresh reads it with
     if not os.path.isfile(module_file) or os.path.islink(module_file):
         raise Refused("build/locks/fips-module.txt is missing, not a regular file or a symlink: "
                       "the module the fips binary must record is unknown", 1)
     wanted = read_fips_module(module_file)
     if wanted is None:
-        raise Refused("build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; "
+        raise Refused("build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain "
+            "newline; "
                       "refusing", 1)
     if recorded != wanted:
         raise Refused("the fips binary must record exactly one %s (the module build/locks/fips-module.txt names) "
@@ -411,9 +432,11 @@ def go_verdict(rc, go_out, buildinfo, go_err):
     """rc: the exit status of go version -m on the packaged binary (127: no Go toolchain found)."""
     if rc == "127":
         if os.environ.get("GITHUB_ACTIONS"):
-            raise Refused("no Go toolchain on PATH in CI: the buildinfo.txt cross-check against the packaged binary cannot be "
+            raise Refused("no Go toolchain on PATH in CI: the buildinfo.txt cross-check against the packaged binary "
+                "cannot be "
                           "skipped there; the runner must have Go (put it on the search path)", 1)
-        print(PREFIX + "note: buildinfo.txt not verified against the binary (no Go toolchain found); the check is skipped",
+        print(PREFIX + "note: buildinfo.txt not verified against the binary (no Go toolchain found); the check is "
+            "skipped",
               file=sys.stderr)
         return
     if rc != "0":
@@ -422,12 +445,14 @@ def go_verdict(rc, go_out, buildinfo, go_err):
                 said = f.read(120).decode(errors="replace").rstrip("\n")
         except OSError:
             said = ""
-        raise Refused("'go version -m' failed on the packaged binary (exit %s: %s); the build information cannot be checked, "
+        raise Refused("'go version -m' failed on the packaged binary (exit %s: %s); the build information cannot be "
+            "checked, "
                       "refusing" % (rc, said), 1)
     go_first, go_rest = split_first_line(read_text(go_out).rstrip("\n"))
     info_first, info_rest = split_first_line(read_text(buildinfo))
     if go_first != info_first:
-        raise Refused("the Go toolchain in buildinfo.txt (%s) differs from the one go version -m reports for the packaged binary (%s)"
+        raise Refused("the Go toolchain in buildinfo.txt (%s) differs from the one go version -m reports for the "
+            "packaged binary (%s)"
                       % (info_first, go_first), 1)
     if go_rest != info_rest:
         raise Refused("buildinfo.txt in the apk differs from 'go version -m' of the packaged binary: "
@@ -485,9 +510,9 @@ def main(argv):
         return recipe_facts(argv[2], argv[3], argv[4])
     if len(argv) == 3 and argv[1] == "sealed-env":
         return sealed_env(argv[2])
-    if len(argv) == 3 and argv[1] == "fips-module":
-        return fips_module(argv[2])
-    print("usage: build-apk-helper.py recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | sealed-call ARG... | fips-module FILE | check-args | arg | abs-file | exclude-file | melange-verdict | check-buildinfo | check-revision | go-verdict", file=sys.stderr)
+    print("usage: build-apk-helper.py recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | sealed-call ARG... | "
+        "check-args | arg | abs-file | exclude-file | melange-verdict | check-buildinfo | check-revision | go-verdict",
+        file=sys.stderr)
     return 2
 
 

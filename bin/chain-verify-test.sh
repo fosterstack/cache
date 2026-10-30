@@ -1202,7 +1202,8 @@ SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SE
 # first) and GITHUB_REF are passed THROUGH `env` so
 # sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/cosign-argv.log"; local rc=0
-  "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
+  "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" \
+    GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
     ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
@@ -1975,7 +1976,8 @@ exec "$OPENSSL" "\$@"
 FSSL
 chmod +x "$work/fakebin-openssl"
 cvr=$(mkcv fakessl "$work/fakebin-openssl") \
-  expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback) and removes the output" "openssl" sslfail
+  expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback) \
+and removes the output" "openssl" sslfail
 rm -f "$work/ssl-fail"
 rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
@@ -2085,7 +2087,9 @@ expect_refuse "R2-4 rebuild <- build: a product subject whose digest is a list i
 expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused (at build since r7 B6: the record's own stage, as for its identity)" "build|subject" check-build-record --policy "$work/policy.json" --now "$NOW" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
-rc=0; env PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
+rc=0; env PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign \
+  --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" \
+  --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- Codex security round 3 ----
@@ -2435,9 +2439,12 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-# chain_common.py names its openssl by one fixed absolute path on one TEST-SUBST line, and reads no environment variable for it
-python3 - "$root/bin/chain_common.py" << 'PY' && ok "770 chain_common.py: OPENSSL is one fixed path marked TEST-SUBST, no environment read" \
-  || bad "770 chain_common.py: OPENSSL is not one fixed absolute path on a TEST-SUBST line, or the file reads the environment"
+# chain_common.py names its openssl by one fixed absolute path on one TEST-SUBST line,
+# and reads no environment variable for it
+python3 - "$root/bin/chain_common.py" << 'PY' \
+  && ok "770 chain_common.py: OPENSSL is one fixed path marked TEST-SUBST, no environment read" \
+  || bad "770 chain_common.py: OPENSSL is not one fixed absolute path on a TEST-SUBST line, or the file reads \
+the environment"
 import re, sys
 text = open(sys.argv[1]).read()
 hits = [ln for ln in text.split("\n") if ln.startswith("OPENSSL = ")]

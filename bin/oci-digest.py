@@ -14,17 +14,23 @@
 The decisions of the image assembler (so that its script is straight-line text). Each prints its answer, or the refusal
 "<script name>: <reason>" on standard error with the exit status the script had for it:
   oci-digest.py variant-field V FIELD     pkg, config or baselock of the variant V (production or fips)
-  oci-digest.py check-roots ARCHIVE MELREPO KEYDIR OUT RENDER   the five path arguments: plain ASCII, not empty, no hidden dots, no symlink
+  oci-digest.py check-roots ARCHIVE MELREPO KEYDIR OUT RENDER   the five path arguments: plain ASCII, not empty, no
+    hidden dots, no symlink
   oci-digest.py abs-dir DIR               DIR as an absolute physical path when it is a directory, else as typed
   oci-digest.py abs-file FILE             FILE with its directory made absolute and physical, else as typed
   oci-digest.py apk-version V             the apk version syntax of V: 0.3.0-rc1 -> 0.3.0_rc1, 0.0.0-rc.1 -> 0.0.0_rc1
-  oci-digest.py check-inputs ARCHIVE MELREPO KEYDIR OUT CONFIG BASELOCK   no address, and the directories and files are there
+  oci-digest.py check-inputs ARCHIVE MELREPO KEYDIR OUT CONFIG BASELOCK   no address, and the directories and files are
+    there
   oci-digest.py check-keydir DIR          DIR holds the two key files
-  oci-digest.py check-melrepo DIR PKG APKVER      our apk and an APKINDEX.tar.gz for both architectures are in the melange repository
+  oci-digest.py check-melrepo DIR PKG APKVER      our apk and an APKINDEX.tar.gz for both architectures are in the
+    melange repository
   oci-digest.py check-workdir DIR         none of the three links of the run exists yet in DIR
-  oci-digest.py prepare-render RENDER TMP   prints the render directory: RENDER (made, or empty and not a link) or TMP/render
-  oci-digest.py check-out OUT VARIANT     OUT is a directory that can be listed and holds none of the variant's own names
-  oci-digest.py apko-verdict KIND RC PROBE   the status of a sealed apko call (KIND lock or build) and of the probe: 0, 1 or 4
+  oci-digest.py prepare-render RENDER TMP   prints the render directory: RENDER (made, or empty and not a link) or
+    TMP/render
+  oci-digest.py check-out OUT VARIANT     OUT is a directory that can be listed and holds none of the variant's own
+    names
+  oci-digest.py apko-verdict KIND RC PROBE   the status of a sealed apko call (KIND lock or build) and of the probe: 0,
+    1 or 4
   oci-digest.py pick-sbom DIR             prints the one image SBOM in DIR
 
 apko writes the image as an OCI layout. The image digest a customer pulls is the digest of the OCI INDEX (the blob that
@@ -348,7 +354,8 @@ def render_config(config, out, version):
 
 
 def has_hidden_dots(path):
-    """True when PATH has a . or .. component after another component (it could hide a symlinked root); leading ./ and ../ are allowed"""
+    """True when PATH has a . or .. component after another component (it could hide a symlinked root); leading ./ and
+    ../ are allowed"""
     q = path
     while q.startswith("./"):
         q = q[2:]
@@ -702,10 +709,12 @@ def check_config(path):
         refuse("does not list exactly one repositories block of /work/archive and /work/melange-repo")
 
 
-# ---- the decisions of the image assembler -----------------------------------------------------------------------------------------------------
+# ---- the decisions of the image assembler ----------------------------------------------------------------------------
 
-VARIANTS = {"production": {"pkg": "fscache", "config": "build/apko.yaml", "baselock": "build/locks/apko.base.lock.json"},
-            "fips": {"pkg": "fscache-fips", "config": "build/apko-fips.yaml", "baselock": "build/locks/apko-fips.base.lock.json"}}
+VARIANTS = {"production": {"pkg": "fscache", "config": "build/apko.yaml",
+    "baselock": "build/locks/apko.base.lock.json"},
+            "fips": {"pkg": "fscache-fips", "config": "build/apko-fips.yaml",
+            "baselock": "build/locks/apko-fips.base.lock.json"}}
 ROOT_NAMES = ("--archive", "--melange-repo", "--keyring-dir", "--out", "--render-dir")
 ARCH_NAMES = ("x86_64", "aarch64")
 KEY_FILES = ("wolfi-signing.rsa.pub", "assembly.rsa.pub")
@@ -723,10 +732,12 @@ def variant_field(variant, field):
 
 
 def check_roots(*values):
-    """The five path arguments, one after the other: plain printable ASCII, not empty (the render directory may be), no hidden dots, no symlink."""
+    """The five path arguments, one after the other: plain printable ASCII, not empty (the render directory may be), no
+    hidden dots, no symlink."""
     for name, value in zip(ROOT_NAMES, values):
         if re.search(r"[^\x20-\x7e]", value):
-            raise Refused("%s holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); "
+            raise Refused("%s holds a control character or a byte outside printable ASCII (a newline, a C1 control or "
+                "any byte >= 0x80); "
                           "refusing, the path arguments are plain ASCII text" % name)
         if name == "--render-dir" and not value:
             continue   # no render directory given: a private temporary one is used
@@ -736,10 +747,12 @@ def check_roots(*values):
         while path.endswith("/") and path != "/":   # a trailing slash would hide the symlink from the link test
             path = path[:-1]
         if has_hidden_dots(path):
-            raise Refused("%s %s has a . or .. component after another component (it could hide a symlinked root); give the real path"
+            raise Refused("%s %s has a . or .. component after another component (it could hide a symlinked root); "
+                "give the real path"
                           % (name, path))
         if os.path.islink(path):
-            raise Refused("%s %s is a symlink; refusing (a root of the inputs or the result must be a real directory)" % (name, value))
+            raise Refused("%s %s is a symlink; refusing (a root of the inputs or the result must be a real "
+                "directory)" % (name, value))
 
 
 def abs_dir(path):
@@ -759,7 +772,8 @@ def apk_version(version):
 def check_inputs(archive, melrepo, keydir, out, config, baselock):
     for path in (archive, melrepo, keydir):
         if "://" in path:
-            raise Refused("the archive, the melange repository and the keyring dir must be local directories, not addresses (%s)" % path)
+            raise Refused("the archive, the melange repository and the keyring dir must be local directories, not "
+                "addresses (%s)" % path)
     if not os.path.isdir(archive):
         raise Refused("--archive is not a directory: " + archive)
     if not os.path.isdir(melrepo):
@@ -773,7 +787,8 @@ def check_inputs(archive, melrepo, keydir, out, config, baselock):
 def check_keydir(keydir):
     for key_file in KEY_FILES:
         if not os.path.isfile(os.path.join(keydir, key_file)):
-            raise Refused("the keyring dir %s has no %s: every package is checked against its key (rule 19)" % (keydir, key_file))
+            raise Refused("the keyring dir %s has no %s: every package is checked against its key (rule 19)" % (keydir,
+                key_file))
 
 
 def check_melrepo(melrepo, pkg, apkver):
@@ -789,7 +804,8 @@ def check_workdir(workdir):
         path = "%s/%s" % (workdir, name)
         if os.path.lexists(path):
             what = "a symlink, left by another run or a crashed one" if os.path.islink(path) else "not a symlink"
-            raise Refused("%s already exists (%s)); refusing to replace it: remove it by hand if no other assembly is running" % (path, what))
+            raise Refused("%s already exists (%s)); refusing to replace it: remove it by hand if no other assembly is "
+                "running" % (path, what))
 
 
 def prepare_render(render, tmp):
@@ -808,7 +824,8 @@ def prepare_render(render, tmp):
     except OSError:
         empty = False   # a directory that cannot be listed is not empty
     if not empty:
-        raise Refused("--render-dir %s is not empty or cannot be listed; refusing (a planted file would be used or written through)" % render)
+        raise Refused("--render-dir %s is not empty or cannot be listed; refusing (a planted file would be used or "
+            "written through)" % render)
     return render
 
 
@@ -820,7 +837,8 @@ def check_out(out, variant):
         return
     for name in (variant, variant + ".digest", variant + ".manifests", variant + ".full.lock.json", variant + "-sbom"):
         if os.path.lexists(out + "/" + name):
-            raise Refused("--out %s already holds %s; refusing to mix a new result with stale files (it is not empty)" % (out, name))
+            raise Refused("--out %s already holds %s; refusing to mix a new result with stale files (it is not "
+                "empty)" % (out, name))
     try:
         os.listdir(out)
     except OSError:
@@ -828,7 +846,8 @@ def check_out(out, variant):
 
 
 def apko_verdict(kind, rc, probe):
-    """rc: the exit status of the sealed apko call; probe: the exit status of the network probe, empty when it did not run."""
+    """rc: the exit status of the sealed apko call; probe: the exit status of the network probe, empty when it did not
+    run."""
     if rc == "0":
         return
     if rc == "127":
@@ -836,13 +855,16 @@ def apko_verdict(kind, rc, probe):
     if probe == "":
         raise Refused("apko %s failed (exit %s)" % (kind, rc), 1)
     if probe == "101":
-        raise Refused("a network attempt was made inside the sealed apko call (the probe confirms the namespace has no route); "
+        raise Refused("a network attempt was made inside the sealed apko call (the probe confirms the namespace has "
+            "no route); "
                       "the build must use only declared inputs", 4)
-    raise Refused("apko failed with a network error, but the probe says the namespace is not sealed (exit %s); fix the seal first" % probe, 1)
+    raise Refused("apko failed with a network error, but the probe says the namespace is not sealed (exit %s); fix "
+        "the seal first" % probe, 1)
 
 
 def pick_sbom(folder):
-    """apko's one SBOM, or the multi-architecture index SBOM when it wrote one per architecture too; anything else is refused."""
+    """apko's one SBOM, or the multi-architecture index SBOM when it wrote one per architecture too; anything else is
+    refused."""
     names = sorted(n for n in os.listdir(folder) if not n.startswith("."))
     index = folder + "/sbom-index.spdx.json"
     if len(names) == 1:
@@ -929,7 +951,9 @@ def main():
     elif len(a) == 1:
         print("\n".join(read_digests(a[0])[0]))
     else:
-        print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH | " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
+        print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | "
+            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH "
+            "| " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
         sys.exit(2)
 
 

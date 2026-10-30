@@ -67,7 +67,8 @@ def finished(start):
 def resolve_commit(repo, rev):
     if not rev or rev.startswith("-") or "\0" in rev:
         refuse("commit %r is not a revision" % rev)
-    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", rev + "^{commit}"], capture_output=True, check=False))
+    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", rev + "^{commit}"],
+        capture_output=True, check=False))
     full = out.decode("ascii", "replace").strip()
     if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", full):
         refuse("commit %s does not exist in %s" % (rev, repo))
@@ -75,7 +76,8 @@ def resolve_commit(repo, rev):
 
 
 def blob(repo, commit, path):
-    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "cat-file", "blob", "%s:%s" % (commit, path)], capture_output=True, check=False))
+    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "cat-file", "blob", "%s:%s" % (commit, path)],
+        capture_output=True, check=False))
     return out if rc == 0 else None
 
 
@@ -94,7 +96,8 @@ def strict_object(raw, what):
 
 
 def chain_paths(repo, commit):
-    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", ".github/workflows", ".github/policy"], capture_output=True, check=False))
+    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--",
+        ".github/workflows", ".github/policy"], capture_output=True, check=False))
     if rc != 0:
         refuse("cannot list the files of commit %s" % commit)
     tree = {}
@@ -129,7 +132,8 @@ def chain_paths(repo, commit):
 
 def code_files(repo, commit):
     """The regular files under bin/ and the agent folder's bin/ of the commit, at any depth (what a chain file can name or import)."""
-    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", *CODE_DIRS], capture_output=True, check=False))
+    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--",
+        *CODE_DIRS], capture_output=True, check=False))
     if rc != 0:
         refuse("cannot list the files of commit %s" % commit)
     have = set()
@@ -266,11 +270,13 @@ def check_marker(marker_path, rev, repo):
     """Returns the marker when it validates for the commit; refuses otherwise."""
     m = read_marker(marker_path)
     commit = resolve_commit(repo, rev)
-    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % m["rc_tag"]], capture_output=True, check=False))
+    rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q",
+        "refs/tags/%s^{commit}" % m["rc_tag"]], capture_output=True, check=False))
     rc_commit = out.decode("ascii", "replace").strip()
     if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", rc_commit):
         refuse("the rc tag %s named by the marker does not exist in this repository" % m["rc_tag"])
-    rc2, _ = finished(lambda: subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", rc_commit, commit], capture_output=True, check=False))
+    rc2, _ = finished(lambda: subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", rc_commit, commit],
+        capture_output=True, check=False))
     if rc2 != 0:
         refuse("ancestor: the rc tag %s (%s) is not an ancestor of the commit %s" % (m["rc_tag"], rc_commit, commit))
     have = chain_sha(repo, commit)

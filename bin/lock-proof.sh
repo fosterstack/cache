@@ -62,7 +62,8 @@ for ((i = 0; i + 1 < ${#pass[@]}; i++)); do   # the directories the assembler is
 done
 for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config|--base-lock|--index-record|--key-record) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
 variant= version= melrepo= keydir=
-for ((i = 0; i < ${#pass[@]}; i += 2)); do   # the assembler's four options, each with its value; the assembler takes them in a fixed order
+# the assembler's four options, each with its value; the assembler takes them in a fixed order
+for ((i = 0; i < ${#pass[@]}; i += 2)); do
   case ${pass[$i]} in
     --variant) variant=${pass[$((i + 1))]:-};;
     --version) version=${pass[$((i + 1))]:-};;

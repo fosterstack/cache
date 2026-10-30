@@ -300,7 +300,9 @@ def cmd_verify(a):
                 f.write(b)
         openssl = _openssl()
         try:
-            r = subprocess.run([openssl, "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "sig.bin"), os.path.join(d, "ctrl.bin")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})
+            r = subprocess.run([openssl, "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature",
+                os.path.join(d, "sig.bin"), os.path.join(d, "ctrl.bin")], capture_output=True, text=True,
+                stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})
         except OSError as e:
             refuse("cannot run openssl: %s" % e)
     if r.returncode != 0 or "Verified OK" not in r.stdout:
