@@ -29,6 +29,7 @@ CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*toke
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
+RECORD_ENV_VERIFY_LOCAL = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json"      # the verify job runs the local script: its record is unsigned and local
 RECORD_ENV_VERIFY = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json"      # rc-2 R4: the verify job's own record, checked before it is uploaded
 MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"signed-witness-build", "signed-witness-rebuild", "signed-witness-check", "signed-witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
@@ -110,8 +111,9 @@ def run_of(step):
 
 
 def verify_job(j):
-    """REQ-CHAIN-007-AC1 (Astra R6): the verify job holds contents read and id-token write ONLY (Witness mints its certificate from the identity token), no environment,
-    no secret, no env, no condition: checkout, the Witness install, the downloads release-verify reads, release-verify under Witness, then uploads."""
+    """REQ-CHAIN-007-AC1 (Astra R6; handoff 0713 P2): the verify job holds contents read ONLY (it runs release-verify under the local Witness script with a throwaway key,
+    so it has no identity token and cannot assume the signing role), no environment, no secret, no env, no condition: checkout, the Witness install, the downloads
+    release-verify reads, release-verify under the local Witness script, then uploads."""
     bad = []
     if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}:
         bad.append("verify job: job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}))
@@ -119,8 +121,8 @@ def verify_job(j):
         bad.append("verify job: must need exactly the compare job (needs: compare), got %r" % j.get("needs"))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("verify job: must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
-    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
-        bad.append("verify job: permissions must be exactly contents read and id-token write: %s" % j.get("permissions"))
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("verify job: permissions must be exactly contents read (no id-token): %s" % j.get("permissions"))
     kinds = []
     for s in j.get("steps") or []:
         if set(s) - {"name", "uses", "with", "run"}:
@@ -142,9 +144,9 @@ def verify_job(j):
             bad.append("verify job: uses not allowed: %s" % u)
         elif r == "bash bin/install-scanner.sh witness":
             kinds.append("install:witness")
-        elif r == "bash bin/witnessed.sh release-verify bin/release-verify.sh":
+        elif r == "bash bin/witnessed-local.sh release-verify bin/release-verify.sh":
             kinds.append("W:release-verify")
-        elif r == RECORD_ENV_VERIFY:
+        elif r == RECORD_ENV_VERIFY_LOCAL:
             kinds.append("RE")          # rc-2 R4 (Fable): the verify job holds id-token write and uploads its Witness record, so it checks it for a token first, with no if
         else:
             bad.append("verify job: a step that is none of checkout, the Witness install, download, release-verify, its record check or upload: %r" % (r or s.get("name")))

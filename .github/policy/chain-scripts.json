@@ -364,7 +364,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "c2436463c257c11289f87ec9aa2db9d4f48261b71c720f0d1ac9ea074ab85191",
+      "sha256": "e73388d1d48eb6a07adfef56182548753e304e6973f20f0c26a13fc80e7febc7",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",

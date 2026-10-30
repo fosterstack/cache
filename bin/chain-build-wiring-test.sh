@@ -674,7 +674,7 @@ lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded
 lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
 lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
 lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
-lm lrelease "WIT1 a Release step in the list (Release keeps the keyless helper)" 'snapshot-rebuild|scanners' 'snapshot-rebuild|release-sign|scanners'
+lm lrelease "WIT1 another Release step in the list (only release-verify runs locally; the rest keep the KMS helper)" 'snapshot-rebuild|release-verify|scanners' 'snapshot-rebuild|release-verify|release-sign|scanners'
 lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''

@@ -62,11 +62,6 @@
    "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
   },
   {
-   "workflow": "stage-promote.yml",
-   "job": "verify",
-   "reason": "Release, job verify (REQ-CHAIN-007-AC1, Astra R6): release-verify runs under Witness, whose wrapper fetches the identity token for the keyless record; contents read and id-token write only, no environment, no secret, no packages write; signs no provenance"
-  },
-  {
    "workflow": "go-freshness.yml",
    "job": "persona-uat",
    "reason": "Persona UAT, weekly run (REQ-UAT-001, owner ratified Oct 3 and Oct 4): behind the PERSONA_UAT_ENABLED gate (off unless the repository variable is exactly 'true'), the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, packages read"

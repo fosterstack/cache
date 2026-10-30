@@ -539,7 +539,7 @@ def witnessed_lines():
             'exit "$rc"']
 
 
-LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"
+LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|scanners|acceptance|runtime|arm64"
 
 
 def local_lines():
