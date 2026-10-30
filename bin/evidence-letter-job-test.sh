@@ -112,8 +112,13 @@ mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
 check("AC9: the identity customers verify is named in the workflow header and in the verify guide",
       all(IDENTITY in read(f) for f in (WF, "docs/verify-release.md")))
 rs, pub = read("bin/release-sign.sh"), read("bin/evidence-letter-publish.sh")
-CALL = "cosign sign-blob --yes --signing-config .github/policy/cosign-signing-config.json --bundle"
-check("AC9: the signing call and config are release-sign.sh's", CALL in rs and CALL in pub)
+CALL = ("cosign sign-blob --yes --key awskms:///alias/fosterstack-release-signing"
+        " --signing-config .github/policy/cosign-signing-config.json --bundle")
+check("AC9: the signing call is Sign's KMS shape and the config is release-sign.sh's", CALL in pub
+      and "--signing-config .github/policy/cosign-signing-config.json" in rs)
+for banned in ("--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog", "@refs/heads/main", "keyless",
+               "--identity-token", "--fulcio-url", "--oidc-"):
+    check("F2: the publish script holds no " + banned, banned not in pub, banned)
 check("AC9: no upload may overwrite", "--clobber" not in pub)
 
 
@@ -121,6 +126,7 @@ check("AC9: no upload may overwrite", "--clobber" not in pub)
 STUBS = {
     "cosign": """#!/bin/sh
 echo "cosign $*" >> "$LOG"
+for a in "$@"; do [ "$k" = 1 ] && [ -f "$a" ] && echo "key-file: $(cat "$a")" >> "$LOG"; k=0; [ "$a" = --key ] && k=1; done
 case "$1" in
   verify-blob) [ ! -e "$FIX/bad-signature" ] ;;
   sign-blob)
@@ -133,6 +139,11 @@ case "$*" in *%Y-%m*) cat "$FIX/today" ;; *) exec /bin/date "$@" ;; esac
 """,
     "python3": """#!/bin/sh
 case "$*" in
+  *chain-verify.py*policy*make*--ref*)
+    echo "python3 $*" >> "$LOG"
+    if [ -e "$FIX/bad-manifest" ]; then echo "refused: the key manifest is not signed by the offline root" >&2; exit 1; fi
+    while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
+    echo '{"release_key":{"public_key":"MANIFEST-KEY"}}' > "$out"; exit 0 ;;
   *chain-verify.py*check-list*)
     echo "python3 $*" >> "$LOG"
     if [ -e "$FIX/bad-records" ]; then echo "refused at check: the scanners record is not signed" >&2; exit 1; fi
@@ -333,13 +344,22 @@ def publish(**extra):
 
 p, log, up, letter = publish()
 names = ["evidence-letter-2026-11.md.bundle", "evidence-letter-2026-11.md"]
-check("AC9: a good run signs, verifies the signature under the main identity, then uploads", p.returncode == 0
-      and any(l.startswith("cosign sign-blob --yes --signing-config .github/policy/cosign-signing-config.json --bundle "
-                           + letter + ".bundle") for l in log)
-      and any(l.startswith("cosign verify-blob --bundle " + letter + ".bundle") and "--certificate-identity " + IDENTITY in l
-              and "--certificate-oidc-issuer " + ISSUER in l for l in log), (p.stderr, log))
-check("AC9: the signature is verified before anything is uploaded",
-      [i for i, l in enumerate(log) if "verify-blob" in l][0] < [i for i, l in enumerate(log) if "release upload" in l][0])
+SIGN = ("cosign sign-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config "
+        ".github/policy/cosign-signing-config.json --bundle " + letter + ".bundle " + letter)
+VERIFY = ("cosign verify-blob --key ", " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
+verifies = [l for l in log if l.startswith("cosign verify-blob")]
+check("F2: a good run takes the key from the root-checked manifest (policy make for main), signs with exactly Sign's argv, "
+      "verifies, then uploads", p.returncode == 0 and SIGN in log
+      and any("chain-verify.py policy make --template .github/policy/release-policy.template.json --ref refs/heads/main" in l
+              for l in log)
+      and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1]), (p.stderr, log))
+check("F2: the verify reads the manifest's key file", "key-file: MANIFEST-KEY" in log, log)
+check("F2: the verify names no identity, issuer or ignored log",
+      len(verifies) == 1 and not any(x in verifies[0] for x in ("--certificate-identity", "--certificate-oidc-issuer",
+                                                              "--insecure-ignore-tlog")), verifies)
+idx = lambda needle: next((i for i, l in enumerate(log) if needle in l), -1)
+check("F2: the order is manifest key, sign, verify, upload",
+      0 <= idx("policy make") < idx("sign-blob") < idx("verify-blob") < idx("release upload"), log)
 check("AC9: the bundle is uploaded first, the letter second, no overwrite",
       [os.path.basename(u) for u in up] == names and not any("--clobber" in l for l in log), (up, log))
 pp, lp, upp, _l = publish(TLOG="[]")
@@ -358,8 +378,24 @@ def refused_signature():
 
 
 pq, upq = refused_signature()
-check("AC9: a signature that does not verify under the main identity publishes nothing, in one line",
+check("F2: a signature that does not verify against the manifest key and the pinned log publishes nothing, in one line",
       one_line(pq) and upq == [], pq.stderr)
+
+
+def refused_manifest():
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    open(os.path.join(fix, "bad-manifest"), "w").close()
+    lt = os.path.join(tmp, "evidence-letter-2026-11.md")
+    open(lt, "w").write("a letter\n")
+    q = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-publish.sh"), lt], cwd=ROOT, env=env,
+                       capture_output=True, text=True)
+    return q, open(os.path.join(fix, "uploaded")).read().split(), open(os.path.join(tmp, "log")).read().splitlines()
+
+
+pm, upm, lm = refused_manifest()
+check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed or uploaded, in one line",
+      one_line(pm) and upm == [] and not any("sign-blob" in l or "release upload" in l for l in lm), (pm.stderr, lm))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
 check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",
       one_line(pb) and "HTTP 422" in pb.stderr and "second line" not in pb.stderr and upb == [], (pb.stderr, upb))
