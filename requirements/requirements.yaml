@@ -4795,6 +4795,12 @@ requirements:
         then: "every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3)"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-IMAGE-001-AC13
+        given: "the non-test Go code of the cache, and the linked fscache binaries (amd64 and arm64, plain and FIPS)"
+        when: "bin/check-no-outbound.py reads the source, and lists each binary's symbols (go tool nm: the linker keeps only what main can reach)"
+        then: "our own non-test code imports no HTTP client, dials no address (net, syscall, x/sys/unix, a crypto/tls client), runs no outside program and verifies no certificate; the amd64 and arm64 binaries, plain and FIPS, hold none of the listed symbols; a binary without runtime.main is refused; so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials or verifies a certificate through an unlisted symbol (net.Dialer is in every net/http binary) is not caught by the binary check, and the source scan covers our own code only"
+        verification: { method: unit, release_blocking: true }
+        status: approved
   - id: REQ-GUIDE-001
     title: The v0.3.0 customer verification guide
     statement: >
