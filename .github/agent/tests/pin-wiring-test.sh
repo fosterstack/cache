@@ -243,9 +243,10 @@ GUARD_STEPS = [
         "name": "suite floors only rise (against the merge base on a pull request)",
         "if": "${{ github.base_ref != '' }}",
         "env": {
-            "BASE": "${{ github.base_ref }}"
+            "BASE": "${{ github.base_ref }}",
+            "PR_BODY": "${{ github.event.pull_request.body }}"
         },
-        "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+        "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -427,11 +428,12 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref }}",
+    "PR_BODY": "${{ github.event.pull_request.body }}"
    },
    "if": "${{ github.base_ref != '' }}",
    "name": "suite floors only rise (against the merge base on a pull request)",
-   "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+   "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
   },
   {
    "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
@@ -1148,6 +1150,9 @@ case_ chain-split-setup-dropped   bad "${SC}${S4}['steps'].pop(0)"
 case_ chain-split-shard-missing   bad "${SC}d['jobs'].pop('allowlist-chain-3')"
 case_ chain-split-shard-extra     bad "${SC}d['jobs']['allowlist-chain-5'] = {'name': 'allowlist-chain-5', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ chain-split-guard-dropped   bad "${SC}${S4}['steps'][:] = [x for x in ${S4}['steps'] if 'floors-vs-base' not in (x.get('run') or '')]"
+case_ chain-split-floors-body-in-run bad "${SC}[x.__setitem__('run', 'bash bin/suite-guard.sh floors-vs-base --allow-lowered \"\${{ github.event.pull_request.body }}\" x y') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-env-gone bad "${SC}[x['env'].pop('PR_BODY') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-other-env bad "${SC}[x['env'].__setitem__('PR_BODY', '\${{ github.event.pull_request.title }}') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
 case_ chain-split-old-steps-left  bad "${SC}${GT}['steps'].append(dict(${S1}['steps'][-1]))"
 # AC2: the gate keeps the name, needs every shard, always runs, takes no checkout and no action, and fails on anything but success (incl. a missing or empty result)
 case_ chain-split-gate-renamed    bad "${SC}${GT}['name'] = 'allowlist-chain-gate'"
