@@ -62,5 +62,7 @@ for tag in $tags; do
   done
   verify "$tag" "$dir"
 done
-# published advisories of a public repository are readable by any token; all pages
-gh api --paginate --slurp "repos/$repo/security-advisories?state=published&per_page=100" | jq 'add // []' > "$out/advisories.json"
+# published advisories of a public repository are readable without a token; all pages. A refusal (403, 404) ends the letter.
+advisories=$(gh api --paginate --slurp "repos/$repo/security-advisories?state=published&per_page=100" 2>&1) ||
+  die "the published advisories cannot be read ($(head -n 1 <<< "$advisories")): no letter"
+jq 'add // []' <<< "$advisories" > "$out/advisories.json"

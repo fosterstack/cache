@@ -170,7 +170,9 @@ echo "gh $*" >> "$LOG"
 case "$1 $2" in
   "api --paginate") for a in "$@"; do path=$a; done
     case "$path" in
-      *security-advisories*) cat "$FIX/advisories.json" ;;
+      *security-advisories*)
+        [ ! -e "$FIX/no-advisories" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+        cat "$FIX/advisories.json" ;;
       *) cat "$FIX/pages.json" ;;
     esac ;;
   "api repos/"*) cat "$FIX/assets/${2##*/}" ;;
@@ -278,6 +280,15 @@ check("AC10: it fetches the files the verification needs and no release is downl
 check("AC10: a bad month is refused", fetch("2026-13")[0].returncode == 2)
 check("AC9: a month that is not over is refused, in one line", one_line(fetch("2026-12", today="2026-12")[0]))
 check("AC9: a future month is refused", one_line(fetch("2027-05", today="2026-12")[0]))
+
+def no_advisories(fix):
+    open(os.path.join(fix, "no-advisories"), "w").close()
+
+
+pn = fetch("2026-11", no_advisories)
+check("F15: advisories the token cannot read (a 403 or 404) refuse the letter, in one line that names them",
+      one_line(pn[0]) and "advisories" in pn[0].stderr and "HTTP 404" in pn[0].stderr, pn[0].stderr)
+
 
 # ---- the checks on what was fetched
 ID = "--certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/"
