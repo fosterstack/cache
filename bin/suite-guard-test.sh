@@ -139,7 +139,8 @@ printf '{"suite-a": 40, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 1 "vs-base: a lowered floor fails naming the suite" "suite-a" -- floors-vs-base "$base" test-evidence/suite-floors.json
 expect 0 "vs-base: a lowered floor the PR body names (--allow-lowered) passes" "" -- floors-vs-base --allow-lowered suite-a "$base" test-evidence/suite-floors.json
 expect 1 "vs-base: naming another suite does not excuse it" "suite-a" -- floors-vs-base --allow-lowered suite-b "$base" test-evidence/suite-floors.json
-# the PR body names it: `Lowered floors: A,B` on the first line that starts with exactly those words, read from the environment (ci.yml passes PR_BODY; never from a command line)
+# the PR body names it: `Lowered floors: A,B` on the first line that starts with exactly those words, read from the
+# environment (ci.yml passes PR_BODY; never from a command line)
 printf '{"suite-a": 40, "suite-b": 10}\n' > test-evidence/suite-floors.json
 PR_BODY=$'Fixes things.\nLowered floors: suite-a\nMore text.' expect 0 "vs-base: --allow-from-body takes the suite named on the body's Lowered floors line" "suite-a 50->40" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 PR_BODY=$'Fixes things.\nNo such line here.' expect 1 "vs-base: a body without the line still fails a lowering" "suite-a" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
@@ -149,16 +150,16 @@ PR_BODY=$'Lowered floors: suite-a\r\nmore\r\n' expect 0 "vs-base: a carriage ret
 PR_BODY=$' Lowered floors: suite-a' expect 1 "vs-base: a line that does not start with the words is ignored (leading space)" "suite-a" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 PR_BODY=$'See: Lowered floors: suite-a' expect 1 "vs-base: the words in the middle of a line are ignored" "suite-a" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 PR_BODY=$'lowered floors: suite-a' expect 1 "vs-base: the words are case-sensitive" "suite-a" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
+PR_BODY=$'Lowered floors:  suite-a ,' expect 0 "vs-base: spaces around a name and an empty item after a comma are dropped" "suite-a 50->40" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
+PR_BODY=$(for _ in $(seq 2000); do echo 'Lowered floors: suite-a'; done) expect 0 "vs-base: a 2,000-line body (a pipe would exit 141 silently) still reads its first line" "suite-a 50->40" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 PR_BODY=$'Lowered floors: suite-b\nLowered floors: suite-a' expect 1 "vs-base: only the first Lowered floors line counts" "suite-a" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 PR_BODY=$'Lowered floors: suite-a, suite-b' expect 1 "vs-base: a named suite whose floor is not lowered fails (name exactly what is lowered)" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
-PR_BODY=$'Lowered floors: suite-a' expect 1 "vs-base: --allow-lowered also fails a named suite whose floor is not lowered" "suite-b" -- floors-vs-base --allow-lowered suite-a,suite-b "$base" test-evidence/suite-floors.json
+expect 1 "vs-base: --allow-lowered also fails a named suite whose floor is not lowered" "suite-b" -- floors-vs-base --allow-lowered suite-a,suite-b "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 50}\n' > test-evidence/suite-floors.json
 PR_BODY=$'Lowered floors: suite-b' expect 1 "vs-base: a dropped suite fails even when the body names it" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
-printf '{"suite-a": 50}\n' > test-evidence/suite-floors.json
 expect 1 "vs-base: a dropped suite fails" "suite-b" -- floors-vs-base "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 40, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 0 "vs-base: an allowed lowering says so on the ok line, not 'did not fall' alone" "except the named: suite-a 50->40" -- floors-vs-base --allow-lowered suite-a "$base" test-evidence/suite-floors.json
-printf '{"suite-a": 50}\n' > test-evidence/suite-floors.json
 printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 0 "vs-base: an unchanged file passes" "" -- floors-vs-base "$base" test-evidence/suite-floors.json
 expect 0 "vs-base: a base without a floors file passes (the first PR that adds it)" "" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
@@ -170,7 +171,8 @@ brk=$(git rev-parse HEAD); printf '{"suite-a": 50, "suite-b": 10}\n' > test-evid
 expect 1 "vs-base: a floors file at the base that is not valid JSON fails" "base" -- floors-vs-base "$brk" test-evidence/suite-floors.json
 expect 0 "vs-base: a readable base without the floors file still passes" "no floors file" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
 cd "$root"
-# the wiring: ci.yml reads the body through the step's env only, never as an expression inside run: (the body is public text a contributor writes: an injection route)
+# the wiring: ci.yml reads the body through the step's env only, never as an expression inside run: (the body is public
+# text a contributor writes: an injection route)
 python3 - "$root/.github/workflows/ci.yml" > "$work/wiring.out" 2>&1 <<'PY' && ok "ci.yml: the floors step reads PR_BODY through env and has no expression inside run" || bad "ci.yml floors step wiring: $(head -c 200 "$work/wiring.out")"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -288,7 +290,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=113
+EXPECT=115
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

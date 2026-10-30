@@ -5,12 +5,13 @@
 #                                         number of ok/PASS lines); none, or zero, fails
 #   floor FLOORS SUITE N                  N must be at least the committed floor of SUITE (an unlisted suite, or a floor below 1, fails)
 #   (run and all, which execute suites, are bin/suite-guard-run.py)
-#   floors-vs-base [--allow-lowered A,B | --allow-from-body] REF FLOORS   FLOORS (a path in the working tree) may not lower or drop a floor the file at REF
-#                                         holds, unless the suite is named in --allow-lowered (the PR body names it); no file at REF: passes. A dropped suite
-#                                         always fails. A named suite must be one whose floor is lowered. --allow-from-body reads the environment variable
-#                                         PR_BODY (the pull request's body, passed by ci.yml through env) and takes the rest of its first line that starts exactly
-#                                         with "Lowered floors: " (carriage returns removed): the suites' file names, comma-separated, as written in the floors file.
-#                                         The ok line names each lowering.
+#   floors-vs-base [--allow-lowered A,B | --allow-from-body] REF FLOORS
+#       FLOORS (a path in the working tree) may not lower or drop a floor the file at REF holds, unless the suite is
+#       named in --allow-lowered, or by the body's line with --allow-from-body; no file at REF: passes. A dropped suite
+#       always fails. A named suite must be one whose floor is lowered. --allow-from-body reads the environment variable
+#       PR_BODY (the pull request's body, passed by ci.yml through env) and takes the rest of its first line that starts
+#       exactly with "Lowered floors: " (carriage returns removed): the suites' file names, comma-separated, as written
+#       in the floors file. The ok line names each lowering.
 # Why: a script committed as an empty file exits 0, so "rc 0" proved nothing (release chain PR 3, bin/check-file-allowlist-test.sh).
 set -euo pipefail
 die() { echo "suite-guard: $*" >&2; exit 1; }
@@ -67,8 +68,10 @@ cmd_floor() {
   [ "$3" -ge "$f" ] || die "suite $2 printed $3 cases, below its floor of $f"
   echo "ok $2 $3 >= $f"
 }
-lowered_from_body() { # the rest of the first line of $PR_BODY that starts exactly "Lowered floors: " (carriage returns removed), or nothing
-  printf '%s\n' "${PR_BODY:-}" | tr -d '\r' | sed -n 's/^Lowered floors: //p' | head -n 1
+# the rest of the first line of $PR_BODY that starts exactly "Lowered floors: " (CRs removed), or nothing; one process,
+# so no pipe takes a SIGPIPE on a long body
+lowered_from_body() {
+  sed -n 's/\r//g; /^Lowered floors: /{s/^Lowered floors: //p;q;}' <<< "${PR_BODY:-}"
 }
 cmd_vs_base() {
   local allow=""
@@ -109,5 +112,5 @@ case "$sub" in
   count) cmd_count "$@" ;;
   floor) cmd_floor "$@" ;;
   floors-vs-base) cmd_vs_base "$@" ;;
-  *) echo "usage: suite-guard.sh files [ROOT] | count LOG | floor FLOORS SUITE N | floors-vs-base [--allow-lowered A,B] REF FLOORS" >&2; exit 2 ;;
+  *) echo "usage: suite-guard.sh files [ROOT] | count LOG | floor FLOORS SUITE N | floors-vs-base [--allow-lowered A,B | --allow-from-body] REF FLOORS" >&2; exit 2 ;;
 esac
