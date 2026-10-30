@@ -21,11 +21,12 @@ letter=${1:?the letter file is the first argument}
 repo=${REPO:-fosterstack/cache}
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # the key Release trusts, checked against the offline root: a manifest not vouched for, or a revoked one, ends it first
-refusal=$(bash bin/evidence-letter-verify.sh key "$work/release-key.pub" 2>&1) ||
-  die "${refusal#evidence-letter-verify: }: nothing is signed"
+refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
+  --ref refs/heads/main --out "$work/policy.json" 2>&1 > /dev/null) ||
+  die "the key manifest is not accepted ($(head -n 1 <<< "$refusal")): nothing is signed"
 cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" \
   --signing-config .github/policy/cosign-signing-config.json --bundle "$letter.bundle" "$letter"
-refusal=$(bash bin/evidence-letter-verify.sh pair "$letter" "$work/release-key.pub" 2>&1) ||
+refusal=$(bash bin/evidence-letter-verify.sh "$work/policy.json" "$letter" 2>&1) ||
   die "${refusal#evidence-letter-verify: }: not published"
 tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
 first_line() { head -n 1 <<< "$1"; }

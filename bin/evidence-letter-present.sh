@@ -25,8 +25,9 @@ md="evidence-letter-$month.md"
 jq -c --arg md "$md" '.[] | select([.assets[].name] | (index($md) != null and index($md + ".bundle") != null))' \
   "$work/releases.json" > "$work/copies.jsonl"
 [ -s "$work/copies.jsonl" ] || die "$md and its bundle are on no published release: no letter for $month"
-refusal=$(bash bin/evidence-letter-verify.sh key "$work/release-key.pub" 2>&1) ||
-  die "$month: ${refusal#evidence-letter-verify: }"
+refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
+  --ref refs/heads/main --out "$work/policy.json" 2>&1 > /dev/null) ||
+  die "$month: the key manifest is not accepted ($(head -n 1 <<< "$refusal"))"
 n=0
 while read -r release; do
   n=$((n + 1)); mkdir -p "$work/copy$n"
@@ -34,6 +35,6 @@ while read -r release; do
     id=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id' <<< "$release")
     gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$work/copy$n/$name"
   done
-  refusal=$(bash bin/evidence-letter-verify.sh pair "$work/copy$n/$md" "$work/release-key.pub" 2>&1) ||
+  refusal=$(bash bin/evidence-letter-verify.sh "$work/policy.json" "$work/copy$n/$md" 2>&1) ||
     die "$month, $(jq -r .tag_name <<< "$release"): ${refusal#evidence-letter-verify: }"
 done < "$work/copies.jsonl"
