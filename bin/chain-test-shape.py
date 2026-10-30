@@ -688,8 +688,8 @@ SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": 
              "sign-check": {"digests": "${{ needs.build.outputs.digests }}", "stage": "check", "records": "${{ needs.check.outputs.records }}", "records-arm64": "${{ needs.check.outputs.records-arm64 }}"}}
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
-# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
-# patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
+# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide (no environment, no
+# secret: it cuts no tag since handoff 0713 P8), patch-notes and patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
 LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
@@ -726,7 +726,7 @@ def names_secrets(obj):
         return any(names_secrets(v) for v in obj)
     return False
 NON_CHAIN = {
-    "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": True, "if": DECIDE_IF},
+    "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
     # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
@@ -832,10 +832,10 @@ def graph(path):
         elif spec.get("env"):
             if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
             if names_other_secrets(job, spec.get("secrets", set())):
-                bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's%s)" % (name, "; %s holds only %s" % (name, sorted(spec["secrets"])) if spec.get("secrets") else ""))
+                bad.append("job %s may not use secrets. (only patch-notes holds the App's%s)" % (name, "; %s holds only %s" % (name, sorted(spec["secrets"])) if spec.get("secrets") else ""))
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
-            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+            if names_secrets(job): bad.append("job %s may not use secrets. (only patch-notes holds the App's)" % name)
         if "if" in spec and job.get("if") != spec["if"]:
             bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
         if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:

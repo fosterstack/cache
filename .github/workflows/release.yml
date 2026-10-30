@@ -46,7 +46,6 @@ jobs:
       group: patch-decide
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    environment: agent          # the App's secrets live here (main only)
     permissions:
       contents: read
       checks: read              # wait for the tagged commit's required checks (advisor 0063)
@@ -164,9 +163,9 @@ jobs:
           if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
       # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
-      # if the requirements are byte-for-byte unchanged since it. Admission applies this rule; decide applies the SAME
-      # rule to the same sources first (owner-signed tags), so it never cuts a tag admission must refuse. Otherwise no
-      # cut: it waits for the owner.
+      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources (owner-signed
+      # tags) and cuts no tag at all since handoff 0713 P8 (no signer exists yet); admission accepts an owner-signed patch
+      # tag on the owner's baseline. Otherwise no cut: it waits for the owner.
       - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
         id: basecheck
         if: ${{ steps.decide.outputs.cut == 'true' }}

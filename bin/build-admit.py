@@ -160,19 +160,15 @@ def check_tag_annotated(ctx):
 # ---------------------------------------------------------------- 5. tag-signature (REQ-REL-009-AC6)
 
 def route_tag(ctx):
-    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is refused (every patch tag and every keyless signature included)."""
+    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is refused:
+    a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag, patch tags included."""
     rc, obj, _ = run_cmd(["git", "cat-file", "tag", "refs/tags/" + ctx.tag])
     if rc != 0:
         raise Refusal("tag-signature", "cannot read the tag object of %s" % ctx.tag)
     obj_file = os.path.join(ctx.tmp, "tag-object")
-    tags_file = os.path.join(ctx.tmp, "released-tags")
     with open(obj_file, "wb") as fh:
         fh.write(obj)
-    _, tags, _ = run_cmd(["git", "tag", "-l", "v*"])
-    with open(tags_file, "wb") as fh:
-        fh.write(tags)
-    rc, out, err = run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag,
-                            "--tag-object", obj_file, "--tags", tags_file])
+    rc, out, err = run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag-object", obj_file])
     if rc != 0:
         raise Refusal("tag-signature", "the signer router failed: %s" % one_line(text(err)))
     answer = text(out).strip()
@@ -195,7 +191,7 @@ def verify_tag_ssh(ctx):
 
 
 def check_tag_signature(ctx):
-    route_tag(ctx)      # the router refuses everything but an owner SSH signature on a non-patch tag
+    route_tag(ctx)      # the router refuses everything but an owner SSH signature, on any tag
     ctx.method = OWNER_SSH
     ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
     if not ctx.principal or not ctx.fingerprint:

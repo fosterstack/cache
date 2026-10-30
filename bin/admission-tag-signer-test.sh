@@ -54,7 +54,7 @@ for tag, obj, tags, want, why in [
     ("v0.2.2", SSH + "-----BEGIN SIGNED MESSAGE-----\nB\n-----END SIGNED MESSAGE-----\n", REL, "refuse", "two signatures"),
     ("v0.2.1", X509, REL, "refuse", "the CI identity re-signing an existing tag"),
 ]:
-    got = T.route(tag, obj, tags)
+    got = T.route(obj)
     check("route: %s -> %s" % (why, want), got[0] == want, got)
 import hashlib, json, os, tempfile, io, contextlib
 d = tempfile.mkdtemp(); o = os.path.join(d, "obj"); open(o, "w").write(X509); t = os.path.join(d, "tags"); open(t, "w").write("\n".join(REL) + "\n")
@@ -62,6 +62,10 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = T.main(["route", "--tag", "v0.2.2", "--tag-object", o, "--tags", t])
 check("CLI prints the route first (a keyless patch tag is refused)", rc == 0 and buf.getvalue().split()[0] == "refuse", buf.getvalue())
+buf2 = io.StringIO()
+with contextlib.redirect_stdout(buf2):
+    rc2 = T.main(["route", "--tag-object", o])
+check("CLI routes with only --tag-object (--tag and --tags are optional and ignored)", rc2 == 0 and buf2.getvalue().split()[0] == "refuse", buf2.getvalue())
 check("no route named gitsign is left in the router", 'return "gitsign"' not in open(sys.argv[1]).read(), "the router still returns the gitsign route")
 
 # --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses

@@ -520,7 +520,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "db9f6ef404f895a0daee927cbb5f7bef8ce376f83e7348786310f68aa1923c9b",
+      "sha256": "b0eca17ebaf7223843d95d64755acf36272bf08ce30649496bd62b3e96713dfc",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -715,7 +715,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "d584b81366219bc47445160db233e5afee9dc733581f8e0e31699cc6c0afb26b"
+      "sha256": "bea1b5ca578844ae33b28eb15a6d979e124b6793bca09172c142d201eebf2bd9"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",

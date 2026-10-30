@@ -634,7 +634,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/audit-record-test.sh"
   },
   {
-   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
+   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
   {

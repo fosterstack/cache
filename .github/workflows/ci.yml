@@ -811,7 +811,7 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
       - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
         run: bash bin/audit-record-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
+      - name: admission's tag signer — the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
       - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue (owner Oct 2; handoff 0713 P8)

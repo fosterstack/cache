@@ -31,9 +31,9 @@ def kind(tag_object):
     return BLOCKS[label]
 
 
-def route(tag, tag_object, released):
-    """(route, why) with route in ssh / refuse. `tag` and `released` (the tags already released) are no longer read: with only the owner's key
-    routed, no rule about the tag's kind or the previous patch is left here; the arguments stay so the CLI arguments and the callers do not change."""
+def route(tag_object):
+    """(route, why) with route in ssh / refuse. Only the owner's key is routed, so nothing but the tag object's signature is read:
+    no rule about the tag's name, its kind or the previous patch is left here."""
     k = kind(tag_object)
     if k == "ssh":
         return "ssh", "an SSH signature: the owner's allowed-signers list decides"
@@ -217,9 +217,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="admission-tag-signer")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("route")
-    r.add_argument("--tag", required=True)
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
-    r.add_argument("--tags", required=True, help="file listing the released tags, one per line (excluding this one)")
+    # --tag and --tags are accepted and ignored: this router runs from main while build-admit runs from the tagged commit, so an
+    # older tagged commit still passes them
+    r.add_argument("--tag")
+    r.add_argument("--tags")
     b = sub.add_parser("baseline")
     b.add_argument("--tag", required=True)
     b.add_argument("--owner-baselines", required=True, help="the directory owner-baselines wrote")
@@ -239,8 +241,7 @@ def main(argv=None):
         v, why = baseline(a.tag, freeze, reqs, open(a.requirements, "rb").read())
         print(("use %s" % v) if v else "no", why)
         return 0
-    released = [t.strip() for t in open(a.tags) if t.strip() and t.strip() != a.tag]
-    r, why = route(a.tag, open(a.tag_object).read(), released)
+    r, why = route(open(a.tag_object).read())
     print(r, why)
     return 0
 

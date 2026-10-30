@@ -253,13 +253,12 @@ jobs:
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
-    environment: agent
     permissions:
       contents: read
       checks: read
       issues: write
     steps:
-      - run: echo ${{ secrets.AUDITOR_APP_ID }}
+      - run: echo decide
   patch-notes:
     needs: decide
     if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}

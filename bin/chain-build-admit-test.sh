@@ -758,9 +758,10 @@ else bad "AC4 policy from main: a script of the tagged commit ran on the patch r
 fi
 fresh; commit_move owner "newer"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit GITHUB_SHA="$SHAC"
 expect_refuse "AC4 the re-tag race: a tag that was moved after the event (it no longer points at GITHUB_SHA) is refused" tag-ref sha
-# ---- a patch tag with a REAL PKCS7 signature, unchanged requirements and an owner-approved baseline is still refused (handoff 0713 P8) -------
-# The CI patch path (the baseline of its line, bin/admission-tag-signer.py baseline) is not reachable from admission any more: the router refuses every patch tag
-# first. The baseline subcommands keep their own tests in bin/admission-tag-signer-test.sh.
+# ---- a patch tag with a REAL PKCS7 (keyless) signature, unchanged requirements and an owner-approved baseline is still refused (handoff 0713 P8) ---
+# The CI patch path (the baseline of its line, bin/admission-tag-signer.py baseline) is not reachable from admission any more: the router refuses a keyless
+# signature on every tag, a patch tag included (an owner SSH signature on a patch tag is admitted, above). The baseline subcommands keep their own tests
+# in bin/admission-tag-signer-test.sh.
 patch_setup() { # patch_setup : a signed commit on main and the patch tag v0.3.1 on it, signed as gitsign signs (a real PKCS7 block)
   fresh
   G checkout -q main 2> /dev/null
@@ -794,6 +795,18 @@ expect_refuse "AC6 a marker naming an rc tag that does not exist is refused" rc-
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; G -c user.signingkey="$W/keys/owner" commit -q -S -m "marker removed"; G push -q origin main 2> /dev/null
 G fetch -q origin 2> /dev/null; G checkout -q --detach v0.3.0; run_admit
 expect_refuse "AC6 the marker is read from origin/main: v0.3.0 (whose own tree has a marker) is refused when main has none" rc-proof marker
+# an owner-signed patch tag is admitted like any owner-signed tag (handoff 0713 P8, ruling b: owner SSH on every tag, patch tags included):
+# the marker on main, an approved requirements/releases/v0.3.1.yaml, the checks green; admission.json records owner-ssh and the patch baseline
+fresh; G checkout -q main
+sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_ok "AC4 an owner-SSH-signed patch tag v0.3.1 with the marker, its approved baseline and green checks is admitted"
+jq -e '.tag=="v0.3.1" and .tag_signature.method=="owner-ssh" and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.1"
+       and .baseline=="requirements/releases/v0.3.1.yaml"' "$W/c/repo/admission.json" > /dev/null \
+  && ok "AC4 admission.json of the patch tag records owner-ssh and the baseline v0.3.1" \
+  || bad "AC4 patch admission.json content: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
 # an rc tag is exempt: no marker on main, an owner-signed annotated rc tag with its own baseline, every other check green
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
@@ -829,6 +842,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=138
+EXPECT_TOTAL=140
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

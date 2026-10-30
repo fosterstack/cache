@@ -3,11 +3,11 @@
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
-# - decide runs on main only, in the main-only agent environment, with its own token read-only plus id-token (gitsign)
-#   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release (no base image exists: rules 61, 62)
+# - decide runs on main only, with no environment and its own token read-only plus checks and issues (the standing
+#   "not patch-clean" issue); it holds no id-token and no secret; the critical/high comparison scans the release (no base image exists: rules 61, 62)
 #   and the base-input-changed signal is read from the committed base-input list (.github/policy/base-inputs.json);
-# - the tag is signed keylessly by gitsign (pinned by checksum, no key) under release.yml's identity and pushed with the
-#   auditor App's token (exactly the auditor's scope), which reaches only the push step;
+# - decide cuts NO tag (handoff 0713 P8: no signer exists until the release KMS Sign job signs a patch tag, owner question
+#   O4); its step `cut` records tagged=false;
 # - a failed patch-tag run opens one issue and is never retried;
 # - AC8 wired (advisor 0135): the notes are built before signing and are the signed tag's message; a separate job opens
 #   the changelog-and-clear PR (auto-merge on green) with its own App token; stage-promote posts a patch tag's notes.
@@ -50,21 +50,21 @@ if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&gith
     bad.append("decide does not run on main only: %s" % dec.get("if"))
 if dec.get("concurrency") != {"group": "patch-decide", "cancel-in-progress": "false"}:
     bad.append("decide runs are not serialized (a push and the daily run could both cut)")
-if dec.get("environment") != "agent":
-    bad.append("decide is not in the main-only agent environment")
+if "environment" in dec:
+    bad.append("decide holds an environment: it uses only its own read-only token and needs no secret")
 if dec.get("permissions") != {"contents": "read", "checks": "read", "issues": "write"}:
     bad.append("decide's own token is not contents read + checks read + issues (no id-token: nothing in decide signs; handoff 0713 P8): %s" % dec.get("permissions"))
 if d.get("concurrency"):
     bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
-if set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}:
-    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}))
+if set(dec) - {"if", "concurrency", "runs-on", "permissions", "outputs", "steps"}:
+    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "permissions", "outputs", "steps"}))
 steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
 if re.search(r"(?i)gitsign", yaml.safe_dump(dec)):
     bad.append("decide still names gitsign (keyless signing is out; handoff 0713 P8)")
 # no unsigned tag, ever (advisor ruling 09:52Z): until the release KMS Sign job signs a patch tag (owner question O4), a decided patch cuts NO tag. No step of decide
 # creates, signs or pushes a tag, none mints a token that could push one, and the one output `tagged` comes from a step that sets it false and nothing sets true.
-if re.search(r"git\s+(-c\s+\S+\s+)*tag\b|\btag\s+-s\b|git\s+push|git\s+(-c\s+\S+\s+)*mktag|update-ref\s+refs/tags", text):
+if re.search(r"git\s+(-c\s+\S+\s+)*tag\b|\btag\s+-s\b|git\s+push|git\s+(-c\s+\S+\s+)*mktag|update-ref\s+refs/tags|git/(refs|tags)|gh\s+release\s+create|create-release", text):
     bad.append("a step of decide creates, signs or pushes a tag: no tag may be cut until the release KMS Sign job signs it")
 if "tagged=true" in text.replace(" ", ""):
     bad.append("a step of decide sets tagged=true: nothing in decide cuts a tag")
@@ -350,7 +350,7 @@ J='d["jobs"]'; D="$J['decide']"
 case_ real                    ok  ""
 case_ chain-on-main           bad "$J['build'].pop('if')"
 case_ decide-anywhere         bad "$D['if'] = '\${{ always() }}'"
-case_ decide-no-env           bad "$D.pop('environment')"
+case_ decide-env-agent        bad "$D.__setitem__('environment', 'agent')"
 case_ rcproof-absent          bad "$D.__setitem__('steps', [s for s in $D['steps'] if 'rc-proof' not in (s.get('run') or '')])"
 case_ rcproof-conditional     bad "[s.__setitem__('if', 'always()') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
 case_ rcproof-continue        bad "[s.__setitem__('continue-on-error', 'true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
@@ -375,6 +375,9 @@ case_ add-push-step           bad "$D['steps'].append({'name': 'x', 'run': 'git 
 case_ add-id-token            bad "$D['permissions']['id-token'] = 'write'"
 case_ add-gitsign-install     bad "$D['steps'].append({'name': 'x', 'run': './bin/install-scanner.sh gitsign'})"
 case_ add-app-token-mint      bad "$D['steps'].append({'name': 'x', 'uses': 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510', 'with': {'app-id': '1', 'private-key': 'k'}})"
+case_ decide-refs-api         bad "$D['steps'].append({'run': 'gh api repos/fosterstack/cache/git/refs -f ref=refs/tags/v9.9.9 -f sha=abc'})"
+case_ decide-release-create   bad "$D['steps'].append({'run': 'gh release create v9.9.9'})"
+case_ decide-gh-api-tag       bad "$D['steps'].append({'run': 'gh api -X POST repos/fosterstack/cache/git/tags -f tag=v9.9.9'})"
 case_ cut-sets-true           bad "[s.__setitem__('run', s['run'].replace('tagged=false', 'tagged=true')) for s in $D['steps'] if s.get('id') == 'cut']"
 case_ cut-step-missing        bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'cut']"
 case_ tagged-output-detached  bad "$D['outputs'].__setitem__('tagged', '\${{ steps.checks.outputs.ready }}')"

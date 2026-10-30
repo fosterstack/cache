@@ -1,4 +1,4 @@
 {
- "_note": "Every signing call other than the SLSA provenance Sign writes, with the reason it exists (REQ-CHAIN-001-AC1). None is left: the automatic patch tag's keyless signer is out (handoff 0713 P8), so a signing call anywhere else is a finding.",
+ "_note": "Every signing call other than the SLSA provenance Sign writes, with the reason it exists (REQ-CHAIN-001-AC1). The automatic patch tag's keyless signer is out (handoff 0713 P8), so no tag-signing call is listed. This file lists no other signer either: Sign and Release still sign keyless at this head and are owned by the KMS cutover (KR-CUTOVER), which changes their rows.",
  "signers": []
 }
