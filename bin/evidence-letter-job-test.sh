@@ -130,14 +130,16 @@ STUBS = {
 echo "cosign $*" >> "$LOG"
 for a in "$@"; do [ "$k" = 1 ] && [ -f "$a" ] && echo "key-file: $(cat "$a")" >> "$LOG"; k=0; [ "$a" = --key ] && k=1; done
 case "$1" in
-  verify-blob) [ ! -e "$FIX/bad-signature" ] ;;
+  verify-blob)
+    n=$(grep -c "^cosign verify-blob" "$LOG")
+    [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
   sign-blob)
     while [ $# -gt 0 ]; do [ "$1" = --bundle ] && bundle=$2; shift; done
     echo '{"verificationMaterial":{"tlogEntries":'"$TLOG"'}}' > "$bundle" ;;
 esac
 """,
     "date": """#!/bin/sh
-case "$*" in *%Y-%m*) cat "$FIX/today" ;; *) exec /bin/date "$@" ;; esac
+case "$*" in *%Y-%m-%d*) cat "$FIX/today_full" ;; *%Y-%m*) cat "$FIX/today" ;; *) exec /bin/date "$@" ;; esac
 """,
     "python3": """#!/bin/sh
 case "$*" in
@@ -186,9 +188,11 @@ def sandbox(tmp):
     for name in ("log", "uploaded"):
         open(os.path.join(fix if name == "uploaded" else tmp, name), "w").close()
     open(os.path.join(fix, "today"), "w").write("2026-12\n")
+    open(os.path.join(fix, "today_full"), "w").write("2026-12-10\n")
     open(os.path.join(fix, "advisories.json"), "w").write(json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
-               REAL_PYTHON=sys.executable, TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="")
+               REAL_PYTHON=sys.executable, TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
+               FAIL_VERIFY="", FAIL_VERIFY_AFTER="")
     return fix, env
 
 
@@ -407,6 +411,86 @@ check("AC9: a refused letter upload removes the bundle again, fails closed with 
 pk, lk, upk, _l = publish(FAIL_UPLOAD="letter", FAIL_DELETE="1")
 check("AC9: if the bundle cannot be removed the one line says so",
       one_line(pk) and "could not be removed" in pk.stderr, pk.stderr)
+# ---- the daily presence check (F7): bin/evidence-letter-present.sh, run by a job of supply-chain.yml
+def present(pages, today="2026-12-10", **extra):
+    """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body."""
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    env.update(extra)
+    open(os.path.join(fix, "today_full"), "w").write(today + "\n")
+    out, next_id = [], 500
+    for page in pages:
+        rels = []
+        for tag, draft, assets in page:
+            listed = []
+            for a in assets:
+                name, kind = (a, "ok") if isinstance(a, str) else a
+                tlog = "[]" if kind == "norekor" else "[{}]"
+                body = "a letter\n"
+                if name.endswith(".bundle"):
+                    body = '{"verificationMaterial":{"tlogEntries":%s}}' % tlog
+                open(os.path.join(fix, "assets", str(next_id)), "w").write(body)
+                listed.append({"id": next_id, "name": name})
+                next_id += 1
+            rels.append({"tag_name": tag, "draft": draft, "prerelease": False, "assets": listed})
+        out.append(rels)
+    json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
+    script = os.path.join(ROOT, "bin/evidence-letter-present.sh")
+    p = subprocess.run(["bash", script], cwd=ROOT, env=env, capture_output=True, text=True)
+    return p, open(os.path.join(tmp, "log")).read().splitlines()
+
+
+def pair(m):
+    return ["evidence-letter-%s.md" % m, "evidence-letter-%s.md.bundle" % m]
+
+
+def verifies(log):
+    return sum("cosign verify-blob" in l for l in log)
+
+
+V4 = ("v0.4.0", False, pair("2026-10") + pair("2026-11"))
+pr, lr = present([[V4]])
+check("F7 1: a good pair for last month, with the key and the pinned log, passes", pr.returncode == 0 and any(
+    l.startswith("cosign verify-blob --key ") and "--trusted-root .github/policy/rekor-trusted-root.json" in l
+    for l in lr), (pr.stderr, lr))
+pr, lr = present([[V4]], today="2026-12-02")
+check("F7 2: before the 3rd of the month nothing is checked",
+      pr.returncode == 0 and not any(l.startswith("gh api") for l in lr), (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, ["release-manifest.json"])]])
+check("F7 3: no letter was ever published: quiet", pr.returncode == 0 and verifies(lr) == 0, (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, pair("2026-10"))]])
+check("F7 4: last month's letter is missing: one line naming the month",
+      one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+pr, lr = present([[("v0.4.0", False, pair("2026-10") + ["evidence-letter-2026-11.md"])]])
+check("F7 5: the bundle is missing: one line naming the month", one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+pr, lr = present([[V4]])
+check("F7 6: a good pair on a published release is verified once and exits 0",
+      pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, pair("2026-11"))]], today="2027-01-05")
+check("F7 7: in January the month checked is the December before", one_line(pr) and "2026-12" in pr.stderr, pr.stderr)
+pr, lr = present([[V4]], FAIL_VERIFY="1")
+check("F7 9: a pair whose signature does not verify fails, in one line",
+      one_line(pr) and pr.returncode == 1, (pr.stderr, lr))
+split = [("v0.4.0", False, pair("2026-10") + ["evidence-letter-2026-11.md"]),
+         ("v0.4.1", False, ["evidence-letter-2026-11.md.bundle"])]
+pr, lr = present([split])
+check("F7 10: the .md on one release and the .bundle on another is a missing pair, in one line",
+      one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+pr, lr = present([[("v0.5.0", False, ["release-manifest.json"])], [V4]])
+check("F7 11: a letter on the second page of releases is found",
+      pr.returncode == 0 and any(l.startswith("gh api --paginate") for l in lr), (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, pair("2026-10")), ("v0.4.1", True, pair("2026-11"))]])
+check("F7 12: a draft release carrying the pair does not count", one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+norekor = pair("2026-10") + [("evidence-letter-2026-11.md", "ok"), ("evidence-letter-2026-11.md.bundle", "norekor")]
+pr, lr = present([[("v0.4.0", False, norekor)]])
+check("F7 13: a bundle with no Rekor entry fails in the job too", one_line(pr) and "Rekor" in pr.stderr, pr.stderr)
+pr, lr = present([[("v0.4.0", False, ["evidence-letter-x.md", "evidence-letter-2026-1.md"])]])
+check("F7 14: a name that is only a prefix of a letter does not start the check",
+      pr.returncode == 0 and verifies(lr) == 0, (pr.stderr, lr))
+twice = [V4, ("v0.4.1", False, pair("2026-11"))]
+pr, lr = present([twice], FAIL_VERIFY_AFTER="1")
+check("F7 15: every copy of last month's pair is verified (the second one fails)",
+      pr.returncode == 1 and verifies(lr) == 2, (pr.stderr, lr))
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
