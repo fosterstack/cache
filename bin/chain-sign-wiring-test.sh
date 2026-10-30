@@ -3010,21 +3010,22 @@ case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung t
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
-# the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
+# (the shadowed module must be one bin/chain-verify.py imports: it was fractions until the certificate and timestamp code went, and a control that shadows an unimported module proves nothing)
+# the isolation really works: with a bin/shutil.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
 iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
-printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
+printf 'print("SHADOW-MARKER-%s")\nfrom shutil import *\n' "$$" > "$iso/bin/shutil.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
-case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/fractions.py (not isolated)";;
-  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/fractions.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
+case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/shutil.py (not isolated)";;
+  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/shutil.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
   *) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help did not run: ${out:0:200}";; esac
 rc=0; out=$(cd "$iso" && python3 bin/chain-verify.py --help 2>&1) || rc=$?
-case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/fractions.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
+case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/shutil.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
 # Opus r5 B1: the helper modules are compiled from the bytes that carry the listed sha256, never from a bytecode cache. An UNCHECKED-HASH
 # bin/__pycache__/chain_common.<tag>.pyc that prints a marker must not run; and a changed chain_common.py (bytes no longer the listed ones)
 # is refused before it runs
-rm -f "$iso/bin/fractions.py"
+rm -f "$iso/bin/shutil.py"
 python3 - "$iso/bin" <<'PYC'
 import os, py_compile, sys, tempfile
 b = sys.argv[1]
@@ -3278,7 +3279,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='4b13d7ee70c45b24e0f74f27fabd90e247440fd755d3794faa2ada4ab79a473b'
+FX_PIN='3f7623f772b1dec7e6bc46856091ee0683bec1d0aae8e179541ad48863e25622'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
