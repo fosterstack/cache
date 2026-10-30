@@ -177,7 +177,7 @@ def route_tag(ctx):
     _, tags, _ = outcome(lambda: subprocess.run(["git", "tag", "-l", "v*"], capture_output=True, check=False))
     with open(tags_file, "wb") as fh:
         fh.write(tags)
-    rc, out, err = outcome(lambda: subprocess.run(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag, "--tag-object", obj_file, "--tags", tags_file], capture_output=True, check=False))
+    rc, out, err = outcome(lambda: subprocess.run(["python3", "-I", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag, "--tag-object", obj_file, "--tags", tags_file], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-signature", "the signer router failed: %s" % one_line(text(err)))
     answer = text(out).strip()
@@ -400,7 +400,7 @@ def patch_baseline_version(ctx):
     """A CI-signed patch tag uses the latest OWNER-signed baseline of its line, by main's signer script. Returns the version."""
     script = os.path.join(ctx.policy, os.path.basename(SIGNER))
     owner_dir = os.path.join(ctx.tmp, "owner-baselines")
-    rc, _, err = outcome(lambda: subprocess.run(["python3", script, "owner-baselines", "--tag", ctx.tag, "--allowed-signers", ctx.allowed, "--out", owner_dir], capture_output=True, check=False))
+    rc, _, err = outcome(lambda: subprocess.run(["python3", "-I", script, "owner-baselines", "--tag", ctx.tag, "--allowed-signers", ctx.allowed, "--out", owner_dir], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("baseline", "owner-baselines failed: %s" % one_line(text(err)))
     tagged_req = git_show("%s:requirements/requirements.yaml" % ctx.sha)
@@ -409,7 +409,7 @@ def patch_baseline_version(ctx):
     req_file = os.path.join(ctx.tmp, "tagged-requirements.yaml")
     with open(req_file, "wb") as fh:
         fh.write(tagged_req)
-    rc, out, err = outcome(lambda: subprocess.run(["python3", script, "baseline", "--tag", ctx.tag, "--owner-baselines", owner_dir, "--requirements", req_file], capture_output=True, check=False))
+    rc, out, err = outcome(lambda: subprocess.run(["python3", "-I", script, "baseline", "--tag", ctx.tag, "--owner-baselines", owner_dir, "--requirements", req_file], capture_output=True, check=False))
     answer = text(out).strip()
     parts = answer.split(" ", 2)
     if rc != 0 or len(parts) < 2 or parts[0] != "use" or not BASE_SYNTAX.fullmatch(parts[1]):
@@ -484,7 +484,7 @@ def check_rc_proof(ctx):
     for path, data in ((marker_path, marker), (script_path, script)):
         with open(path, "wb") as fh:
             fh.write(data)
-    rc, _, err = outcome(lambda: subprocess.run(["python3", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha, "--repo", "."], capture_output=True, check=False))
+    rc, _, err = outcome(lambda: subprocess.run(["python3", "-I", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha, "--repo", "."], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("rc-proof", "the rc-proof marker %s does not validate for %s: %s" % (RC_MARKER, ctx.sha, one_line(text(err), 300)))
 

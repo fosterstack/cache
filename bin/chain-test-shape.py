@@ -663,7 +663,8 @@ def listed(path, root):
 #   guard are compared command by command with the lines held here (script, localhelper, shell_exact); a case, a loop, a function, a subshell or a read in a helper
 #   is one more command, so it is a finding. Line 1 of each is held too (the shebang picks the program that runs the file).
 #   Python: the 15 closure files are each held WHOLE by sha256 (NS_PY_SHA). Any change is a finding until NS_PY_SHA is re-pinned in a security-tier change. The stage
-#   lines run python3 -I, so nothing in bin/ shadows a module and no PYTHON* variable changes what runs.
+#   lines and every python3 child that a closure file starts (build-admit.py, chain_items.py) run python3 -I, so a file of bin/ cannot shadow a module for them and
+#   they ignore PYTHON* variables. The program python3 is still found by PATH, and a file written by one step and run by the next is not seen (both: P6, filed).
 # Which scripts are read: the `runs` rows of chain-scripts.json and every bin/ script the code names (also load_sibling and import). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the
 # second review), and install-build-tools.sh compiles nothing; the stage files pin which installs run.
@@ -754,7 +755,7 @@ NS_KNOWN_LINE = '    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", 
 NS_PY_SHA = {
     "bin/admission-tag-signer.py": "d5eab93a9196eabd95a462fc23fb61c46a0dc893f8df181d8280390b539b058a",
     "bin/apk-tool.py": "aeda5885f5bc95a6eb1e73dafb23604ea2a63be5f4c6be57e2d023658cf0097f",
-    "bin/build-admit.py": "78460b5680c9479a17ff7cc80538a11dba9f4af3e1039a0eacd9f54332aad483",
+    "bin/build-admit.py": "d529420ed52238f02328cea694b26dfd5835fb67001a11eaefe2526cc623d8bc",
     "bin/build-apk-helper.py": "4fbf3ce583e3d42279f14579a0f3df94fb7ce36ec882ca7fe01f357e630c2905",
     "bin/build-archives.py": "acebde9792fed0abc5a8dcbf39e4e1e890a8e2f46b28f329df2d9acd9a7f2410",
     "bin/build-version-check.py": "6a956daee6abfbc44d25c80ccad85cc54aaac9881a0f3cd9204a68f47e609f00",
@@ -762,7 +763,7 @@ NS_PY_SHA = {
     "bin/chain-verify.py": "602d47d24c0747596b2d4cf56e9cccb14e0ec916040a4a19666054aa19cbfb0f",
     "bin/chain_common.py": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
     "bin/chain_hostile.py": "f21621004de89da11ff46b20a0745d1d6536c012b736c5be2d04c9f8ede47775",
-    "bin/chain_items.py": "b8bd211eecb5b0993182f289b9e98609e2a2b798eae1f23dc14056975906223f",
+    "bin/chain_items.py": "4b7e1b7398832c8e1c9a1bade1f50f33ab328f0e4be9a7b993558f360f9b003b",
     "bin/go-module-sbom.py": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
     "bin/oci-digest.py": "cd202bae5c57cc7151535f9e07c46bc056cf4a439257a9ecc3f4261ed050e41c",

@@ -2842,12 +2842,7 @@ json.dump(d, open(f, "w"), indent=2)
 PY
   expect caught "$1 $2" "$3" nosource "$work/nsm"
 }
-CNT="commands, the grammar has"; EXP=": expected"; EXL="is not an exact line"
-REF="is refused outside an exact line"; MODL="is not on the closed module list"; ATTR="is not on the closed list"
-LIT="program is not a literal path"
-PYH='import subprocess as _sp, functools as _ft, os as _os, importlib as _il'
-PYS='import subprocess as _sp, sys as _sys'
-EXECL='    exec(compile(src, mod.__file__, "exec"), mod.__dict__)'
+CNT="commands, the grammar has"; EXP=": expected"
 # option 1: each Python closure file is held whole by sha256 (NS_PY_SHA), line 1 of each shell file is held, the stage lines run python3 -I
 while read -r f; do
   nsa "H-$f" "nosource a change to $f is a finding: the file is held whole by sha256" "NS_PY_SHA" "$f" "# one more comment"
@@ -2858,6 +2853,21 @@ done < "$work/ns.sh.list"
 for k in apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
   nsm "I-$k" "nosource a python3 line of bin/build-stage-$k.sh without -I is a finding" ": expected" "bin/build-stage-$k.sh" 'python3 -I bin/' 'python3 bin/'
 done
+py_noI=$(python3 - "$shape_real" "$root" <<'PY'
+import importlib.util, re, sys
+shape, root = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("shape", shape)
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+seen, bad = S.ns_closure(root)
+for p in seen:
+    if p.endswith(".py"):
+        for n, line in enumerate(open(root + "/" + p).read().split("\n"), 1):
+            if re.search(r'\["python3", ', line) and '["python3", "-I"' not in line:
+                print("%s:%d" % (p, n))
+PY
+)
+if [ -z "$py_noI" ]; then ok "nosource no closure Python file starts a python3 child without -I"
+else bad "nosource a closure Python file starts a python3 child without -I: $(printf '%s' "$py_noI" | tr '\n' ' ' | cut -c1-200)"; fi
 if ! grep -qE '^python3 bin/' "$root"/bin/build-stage-*.sh; then ok "nosource no stage script runs python3 without -I"
 else bad "nosource a stage script still runs python3 without -I: $(grep -lE '^python3 bin/' "$root"/bin/build-stage-*.sh | head -3 | tr '\n' ' ')"; fi
 if python3 - "$shape_real" "$root" <<'PY'
@@ -2875,7 +2885,6 @@ for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
 PY
 then ok "nosource NS_PY_SHA holds exactly the 15 Python closure files with their committed sha256, and chain_common, chain_hostile and chain_items are found in the closure"
 else bad "nosource NS_PY_SHA does not match the Python closure files"; fi
-PCZ='    run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER))])'
 # the round-one and rerun rows (cz, go, mk, bin1, mel1, apk1, bp1-bp24) keep their labels
 nsmf cz1 "nosource a stage script runs a test-named script that is not a row" "commands, the grammar has" \
   bin/chain-test-local.py bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/chain-test-local.py'

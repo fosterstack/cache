@@ -529,7 +529,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "78460b5680c9479a17ff7cc80538a11dba9f4af3e1039a0eacd9f54332aad483",
+      "sha256": "d529420ed52238f02328cea694b26dfd5835fb67001a11eaefe2526cc623d8bc",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -613,7 +613,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "b8bd211eecb5b0993182f289b9e98609e2a2b798eae1f23dc14056975906223f"
+      "sha256": "4b7e1b7398832c8e1c9a1bade1f50f33ab328f0e4be9a7b993558f360f9b003b"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
