@@ -864,7 +864,74 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   exit 0
 fi
 
+# Fan-out (CI speed, advisor 0643; the pattern of check-action-pins-test.sh): an unsharded run re-runs this file as
+# PINW_JOBS (default 4) shards, one background process each, and prints their output as if one process had run every
+# unit in file order. A unit is one case_, gitcase, textcase or gvgate_mut call, one loop pass, or one inline check,
+# numbered 1.. in file order by take(). Shard I of N runs the units whose number is I (mod N) and writes each unit's
+# output to $PINW_OUT/u.<number>. The parent fails unless every shard exited 0 and units 1..T exist once each and
+# add up to the T every shard reports. PINW_SERIAL=1 runs everything in this process.
+unit_n=0 unit_run=0 shard_i=0 shard_n=1
+if [ -z "${PINW_SHARD:-}" ] && [ -z "${PINW_SERIAL:-}" ]; then
+  jobs_n=${PINW_JOBS:-4}
+  [[ "$jobs_n" =~ ^[1-9][0-9]*$ ]] || { echo "PINW_JOBS must be a positive integer, got '$jobs_n'" >&2; exit 2; }
+  fan=$(mktemp -d); trap 'rm -rf "$fan" "$work"' EXIT
+  pids=()
+  for i in $(seq 0 $((jobs_n-1))); do
+    PINW_SHARD=$i/$jobs_n PINW_OUT=$fan bash "$0" > "$fan/shard.$i.log" 2>&1 & pids+=($!)
+  done
+  bad=0 rcs=()
+  for p in "${pids[@]}"; do wait "$p" && rcs+=(0) || rcs+=($?); done
+  # one T from every shard, the shards' ran counts add up to it, and unit files 1..T exist once each
+  total="" ran=0 pass=0 failn=0 nfiles=0
+  for i in $(seq 0 $((jobs_n-1))); do
+    l=$fan/shard.$i.log
+    shard_line=$(grep '^pin-wiring: shard ' "$l")
+    if [[ "$shard_line" =~ ^pin-wiring:\ shard\ [0-9]+/[0-9]+\ units=([0-9]+)\ ran=([0-9]+)$ ]]; then
+      [ -z "$total" ] || [ "$total" = "${BASH_REMATCH[1]}" ] || bad=1
+      total=${BASH_REMATCH[1]}; ran=$((ran+BASH_REMATCH[2]))
+    else
+      bad=1
+    fi
+    if [[ "$(grep '^pin-wiring: [0-9]* passed' "$l")" =~ ^pin-wiring:\ ([0-9]+)\ passed,\ ([0-9]+)\ failed$ ]]; then
+      pass=$((pass+BASH_REMATCH[1])); failn=$((failn+BASH_REMATCH[2]))
+      # a shard exits 1 when a case failed, else 0; any other status is a shard that died or was killed
+      [ "${rcs[$i]}" -eq "$([ "${BASH_REMATCH[2]}" -eq 0 ] && echo 0 || echo 1)" ] || bad=1
+    else
+      bad=1
+    fi
+  done
+  for u in "$fan"/u.*; do [ -f "$u" ] && nfiles=$((nfiles+1)); done
+  [ "${total:-0}" -gt 0 ] && [ "$ran" -eq "$total" ] && [ "$nfiles" -eq "$total" ] || bad=1
+  if [ "$bad" -eq 0 ]; then
+    for k in $(seq 1 "$total"); do [ -f "$fan/u.$k" ] || bad=1; done
+  fi
+  if [ "$bad" -eq 0 ]; then
+    for k in $(seq 1 "$total"); do cat "$fan/u.$k"; done
+  else
+    cat "$fan"/shard.*.log
+    echo "FAIL fan-out → a shard died or units did not run once (units=${total:-none}, ran=$ran, files=$nfiles)"
+    failn=$((failn+1))
+  fi
+  echo "pin-wiring: $pass passed, $failn failed"
+  [ "$bad" -eq 0 ] && [ "$failn" -eq 0 ]
+  exit $?
+fi
+if [ -n "${PINW_SHARD:-}" ]; then
+  [[ "$PINW_SHARD" =~ ^([0-9]+)/([1-9][0-9]*)$ ]] && [ "${BASH_REMATCH[1]}" -lt "${BASH_REMATCH[2]}" ] \
+    || { echo "PINW_SHARD must be <i>/<n> with 0 <= i < n, got '$PINW_SHARD'" >&2; exit 2; }
+  shard_i=${BASH_REMATCH[1]} shard_n=${BASH_REMATCH[2]}
+  exec 9>&1
+fi
+take() {   # take <name>: 0 when this process runs the unit; a shard sends the unit's output to its own file
+  unit_n=$((unit_n+1))
+  [ -n "${PINW_SHARD:-}" ] || return 0
+  [ $((unit_n % shard_n)) -eq "$shard_i" ] || return 1
+  unit_run=$((unit_run+1))
+  exec > "$PINW_OUT/u.$unit_n"
+}
+
 case_() {  # case_ <name> <expect ok|bad> <python edit of the parsed copy, or empty>
+  take "$1" || return 0
   local f="$work/$1.yml"
   cp "$here/.github/workflows/ci.yml" "$f"
   # an edit that cannot apply (its step is missing) is a failed case, not an aborted run
@@ -1042,6 +1109,7 @@ case_ chain-verify-no-netcut bad "[s for s in $csteps if 'chain-verify-test.sh' 
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
 # does nothing else; exit 1 and the reasons when it fails
 gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
+  take "git:$1" || return 0
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
@@ -1190,7 +1258,8 @@ case_ chain-split-copy-in-pa        bad "${SC}d['jobs']['allowlist-pins-auditor'
 case_ chain-split-original-kept     bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/assemble-image-test.sh'}]}"
 # installed state does not cross jobs: every shard that runs a consumer of the installed grype (vex-both-scanners-test, the suite-floor re-run) must also run the installer step
 # and run it BEFORE the consumer. Checked on the split form the helper builds from the real ci.yml (independent of the judge's groups).
-if python3 - "$here/.github/workflows/ci.yml" "$work/split.py" > "$work/dep.out" 2>&1 <<'PYD'
+if ! take chain-split-grype-installer-with-consumers; then :
+elif python3 - "$here/.github/workflows/ci.yml" "$work/split.py" > "$work/dep.out" 2>&1 <<'PYD'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])); exec(open(sys.argv[2]).read()); split_chain(d)
 inst, cons, bad = "install-scanner.sh grype", ("vex-both-scanners-test.sh", "suite-guard-run.py all"), []
@@ -1295,6 +1364,7 @@ case_ scanguard-other-job       bad "s = $sg; $steps.remove(s); d['jobs']['requi
 gitcase scanguard-removed-at-a-commit bad "$steps[:] = [s for s in $steps if 'scan-no-workflow-call-test.sh' not in (s.get('run') or '')]"
 # duplicate keys can only be written as text, so these edit the YAML text of a copy
 textcase() {  # textcase <name> <expect> <python expression editing the text variable t>
+  take "$1" || return 0
   local f="$work/t-$1.yml"; cp "$here/.github/workflows/ci.yml" "$f"
   python3 - "$f" "$3" <<'PY'
 import sys
@@ -1321,13 +1391,16 @@ bad = [j for j in ("judge", "sweep") if not (d["jobs"][j].get("timeout-minutes",
 print(",".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 }
-if out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pass=$((pass+1)); echo "PASS gate judge+sweep have timeout-minutes"
+if ! take gate-judge-sweep-timeouts; then :
+elif out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pass=$((pass+1)); echo "PASS gate judge+sweep have timeout-minutes"
 else failn=$((failn+1)); echo "FAIL gate jobs without timeout-minutes: $out"; fi
 cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.bak '/^    timeout-minutes:/d' "$work/gate-mut.yml"
-if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
+if ! take gate-without-timeouts; then :
+elif gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
 
 # a job in ANOTHER workflow file that takes a protected check name, or can render as one, or a workflow that cannot be read
 for mut in "name" "id" "expr" "garbage" "okexpr" "checks" "checks-top" "quoted" "noperms"; do
+  take "other-workflow-$mut" || continue
   rm -rf "$work/wf-$mut"; mkdir -p "$work/wf-$mut"; cp "$here"/.github/workflows/*.y*ml "$work/wf-$mut/"
   case "$mut" in
     name) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: allowlist-persona\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
@@ -1359,6 +1432,7 @@ done
 
 # the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
+  take "policy-$mut" || continue
   python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rc = d["required_checks"]
@@ -1377,8 +1451,10 @@ PY
 done
 
 gvgate_ci="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}/ci.yml"
-if gvgate_judge "$gvgate_ci" "$here/tools/govulncheck/go.mod"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi
+if ! take govulncheck-gate-real-job; then :
+elif gvgate_judge "$gvgate_ci" "$here/tools/govulncheck/go.mod"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi
 gvgate_mut() { # gvgate_mut LABEL OLD NEW : the ci.yml with one change inside the govulncheck job must be refused
+  take "govulncheck-gate $1" || return 0
   python3 - "$gvgate_ci" "$work/gvgate-ci.yml" "$2" "$3" <<'PY'
 import sys
 t = open(sys.argv[1]).read(); a, b = sys.argv[3], sys.argv[4]
@@ -1404,5 +1480,9 @@ gvgate_mut "planted-binary-step" '      - name: govulncheck (the same judgment a
         run: cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck
       - name: govulncheck (the same judgment as Check)'
 
+if [ -n "${PINW_SHARD:-}" ]; then
+  exec >&9
+  echo "pin-wiring: shard $shard_i/$shard_n units=$unit_n ran=$unit_run"
+fi
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
