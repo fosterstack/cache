@@ -67,6 +67,21 @@ check(set(trust) <= {"_note", "rekor_sha256"} and "rekor_sha256" in trust, "sigs
 der = subprocess.run(["openssl", "pkey", "-pubin", "-in", os.path.join(pol, "rekor.pub"), "-outform", "DER"], capture_output=True).stdout
 check(trust.get("rekor_sha256") == hashlib.sha256(der).hexdigest(), "the pinned rekor_sha256 is the sha256 of rekor.pub's DER")
 
+import base64
+tr = load("rekor-trusted-root.json")
+check(tr.get("mediaType", "").startswith("application/vnd.dev.sigstore.trustedroot"), "rekor-trusted-root.json is a Sigstore trusted root")
+check(tr.get("certificateAuthorities") == [] and tr.get("ctlogs") == [] and tr.get("timestampAuthorities") == [],
+      "rekor-trusted-root.json holds no certificate authority, no certificate log and no timestamp authority")
+tl = tr.get("tlogs")
+check(isinstance(tl, list) and len(tl) == 1, "rekor-trusted-root.json holds exactly one transparency log")
+t0 = tl[0] if isinstance(tl, list) and tl else {}
+raw = base64.b64decode(t0.get("publicKey", {}).get("rawBytes", ""))
+check(hashlib.sha256(raw).hexdigest() == trust.get("rekor_sha256"), "the key in rekor-trusted-root.json hashes to rekor_sha256")
+check(raw == der, "the key in rekor-trusted-root.json is rekor.pub's DER")
+check(base64.b64decode(t0.get("logId", {}).get("keyId", "")) == hashlib.sha256(raw).digest(), "its log id is the sha256 of that key")
+check(t0.get("baseUrl") == "https://rekor.sigstore.dev" and t0.get("publicKey", {}).get("keyDetails") == "PKIX_ECDSA_P256_SHA_256",
+      "its log is Rekor v1 with a P-256 key")
+
 cfg = load("cosign-signing-config.json")
 check(cfg.get("caUrls") == [], "cosign-signing-config.json names no certificate authority (caUrls is empty)")
 check(cfg.get("oidcUrls") == [], "cosign-signing-config.json names no sign-in service (oidcUrls is empty)")
