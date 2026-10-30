@@ -719,6 +719,7 @@ class LiveNet:
         if pulls is None:
             raise Fail("could not list the open pull requests")
         for p in pulls:
+            phase(f"pull request #{p['number']}")
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
@@ -750,6 +751,7 @@ class LiveNet:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
         for p in json.loads(r.stdout or "[]"):
+            phase(f"pull request #{p['number']}")
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
@@ -1227,6 +1229,32 @@ def _split_key(k):
     return (kind, name, version)
 
 
+PHASE = ["start"]   # the last phase marker printed: the deadline names it
+
+
+def phase(name):
+    """Print a phase marker (the logs of a run that never ends say where it was) and remember it."""
+    PHASE[0] = name
+    print(f"audit: phase: {name}", flush=True)
+
+
+def deadline_for(a):
+    """Seconds the whole run may take: --deadline, else 900 for the daily run (a 20-minute job),
+    600 for --rerun-held and pull request mode (15-minute jobs)."""
+    if a.deadline is not None:
+        return a.deadline
+    return 600 if (a.rerun_held or a.base) else 900
+
+
+def _deadline_passed(seconds):
+    """The run did not finish: say where it was, flushed, and end it. os._exit, because a timer thread's
+    sys.exit would only end that thread. Exit 2 is never a clean day."""
+    sys.stdout.flush()
+    sys.stderr.write(f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n")
+    sys.stderr.flush()
+    os._exit(2)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -1239,7 +1267,22 @@ def main(argv=None):
     ap.add_argument("--rerun-held", action="store_true")
     ap.add_argument("--observations-out", help="write the cumulative tag observations (state.json) FIRST, before judging anything")
     ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
+    ap.add_argument("--deadline",
+                    help="seconds the whole run may take before it ends itself with exit 2 "
+                         "(default 900; 600 for --rerun-held and --base)")
     a = ap.parse_args(argv)
+    if a.deadline is not None:
+        if not re.fullmatch(r"[1-9][0-9]*", a.deadline):
+            print("audit: cannot do its job: --deadline must be a whole number of seconds, 1 or more", file=sys.stderr)
+            return 2
+        a.deadline = int(a.deadline)
+    if hasattr(sys.stdout, "reconfigure"):
+        # under Actions stdout is a pipe: without this a killed run loses every line it printed
+        sys.stdout.reconfigure(line_buffering=True)
+    seconds = deadline_for(a)
+    timer = threading.Timer(seconds, _deadline_passed, args=(seconds,))
+    timer.daemon = True
+    timer.start()
     try:
         fx = None
         if a.fixtures:
@@ -1253,10 +1296,12 @@ def main(argv=None):
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
         if a.rerun_held:
+            phase("re-run of held pull requests")
             rerun_held(gh, net, now)
             return 0
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
+        phase("history")
         try:
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
             if a.base:
@@ -1278,6 +1323,7 @@ def main(argv=None):
                 raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
         if a.observations_out and not a.base:
+            phase("tag observations")
             state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
             os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
             with open(a.observations_out, "w") as f:
@@ -1294,6 +1340,7 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
+        phase("judging")
         notes, findings, incomplete, log = [], [], False, RulingLog()
         held = list(audited)   # AC15: the pins the run inventories (main and its 90-day history); the pins of open pull requests are added below
         for it in audited:
@@ -1316,6 +1363,7 @@ def main(argv=None):
         pr_actions = []
         if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
             seen_keys = {i.key for i in audited}
+            phase("open pull requests")
             try:
                 open_prs = net.open_pr_items()
             except (Fail, age.CouldNotLook) as e:
@@ -1343,6 +1391,7 @@ def main(argv=None):
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
         seen = {it.key for it in audited} | set(head)
         queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [(it, 0) for it in pr_actions if it.kind == "action"]
+        phase("nested references")
         while queue:
             def nested_safe(q):
                 try:
@@ -1400,6 +1449,7 @@ def main(argv=None):
             queue = nxt
         for n in notes:
             print(f"audit: {clean(n)}")
+        phase("exceptions")
         # AC15: the daily run over the checked-in file only
         lapsed, dead, dormant = ([], [], []) if (a.base or a.exceptions) else undecided_exceptions(exceptions, log, held, net)
         for e in lapsed:
@@ -1449,6 +1499,7 @@ def main(argv=None):
                          "body": body_of(first, None, False, False, today), "owner": False})
         if plan:
             if not a.report_only:
+                phase("issues")
                 file_issues(gh, plan, today)
             return 1
         unchecked = [i for i in audited if not net.covered(i)]
@@ -1466,6 +1517,8 @@ def main(argv=None):
     except (Fail, age.CouldNotLook) as e:
         print(f"audit: cannot do its job: {e}", file=sys.stderr)
         return 2
+    finally:
+        timer.cancel()
 
 
 if __name__ == "__main__":

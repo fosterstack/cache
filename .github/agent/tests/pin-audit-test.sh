@@ -1058,5 +1058,86 @@ else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
 PY
 
+
+# --- the total deadline and the phase markers (cache supply-chain.yml timed out at 15 and 20 minutes with an empty log: no scheduled run since Oct 7) --------------
+# A hanging gh: every call sleeps. With --deadline 2 the audit must end by itself: exit 2 within seconds, stderr naming the phase it was in, and the phase
+# lines it had printed must have reached the file (stdout is line-buffered, so the kill loses nothing). A rate limit is not this case: gh answers at once and
+# the audit fails at once (the "rate-limited GitHub API" case above), so no retry and no sleep is added anywhere.
+printf '#!/bin/sh\nsleep 60\n' >"$work/gh-hang"; chmod +x "$work/gh-hang"
+mkrepo "$work/r-hang" "5:$CLEANSHA"
+start=$(date +%s); rc=0
+( cd "$work" && timeout 40 python3 "$aud" --root "$work/r-hang" --now "$NOW" --gh "$work/gh-hang" --deadline 2 >"$work/hang.out" 2>"$work/hang.err" ) || rc=$?
+elapsed=$(( $(date +%s) - start ))
+CASE="deadline: a hanging gh ends the audit by itself with exit 2 in seconds, not at the job timeout"
+check test "$rc" -eq 2 -a "$elapsed" -le 15 -a "$(grep -c '^audit: phase: ' "$work/hang.out")" -ge 1
+CASE="deadline: stderr names the phase it was in and the deadline: 'audit: could not finish: still in judging after 2 s'"
+check grep -qx 'audit: could not finish: still in judging after 2 s' "$work/hang.err"
+CASE="deadline: the phase lines printed before the kill are in the file, in order (line-buffered stdout)"
+check python3 - "$work/hang.out" <<'PY'
+import sys
+lines = [l.strip() for l in open(sys.argv[1]) if l.startswith("audit: phase: ")]
+assert lines == ["audit: phase: history", "audit: phase: judging"], lines
+PY
+CASE="deadline: the deadline message is the LAST thing on stderr and nothing is printed after it (the flush happens before os._exit)"
+check test "$(tail -n 1 "$work/hang.err")" = "audit: could not finish: still in judging after 2 s"
+# the same, for the options and defaults
+CASE="deadline: defaults are 900 s for the daily run and 600 s for --rerun-held and for pull request mode; --deadline overrides; a value below 1 or not a number is refused (exit 2)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys, argparse
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+ns = lambda **k: argparse.Namespace(**{"deadline": None, "rerun_held": False, "base": None, **k})
+assert pa.deadline_for(ns()) == 900
+assert pa.deadline_for(ns(rerun_held=True)) == 600
+assert pa.deadline_for(ns(base="abc")) == 600
+assert pa.deadline_for(ns(deadline=7, base="abc")) == 7 and pa.deadline_for(ns(deadline=7)) == 7
+PY
+echo "$CLEAN" >"$work/clean.fx.json"
+for bad in 0 -3 abc 1.5; do
+  rc=0; ( cd "$work" && python3 "$aud" --root "$work/r-clean" --now "$NOW" --gh "$work/gh" --fixtures "$work/clean.fx.json" --deadline "$bad" >"$work/dl.out" 2>"$work/dl.err" ) || rc=$?
+  CASE="deadline: --deadline $bad is refused with exit 2, by the audit's own message, and nothing is audited"
+  check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a "$(grep -c 'audit: cannot do its job: --deadline must be a whole number of seconds, 1 or more' "$work/dl.err")" -eq 1
+done
+# the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
+phases() { python3 - "$1" <<'PY'
+import sys
+print(",".join(l.strip()[len("audit: phase: "):] for l in open(sys.argv[1]) if l.startswith("audit: phase: ")))
+PY
+}
+run phclean "$CLEAN" "$work/r-clean"
+CASE="markers: a clean daily run prints history, judging, open pull requests, nested references, exceptions, in that order; exit 0 as before"
+check test "$rc" -eq 0 -a "$(phases "$work/phclean.out")" = "history,judging,open pull requests,nested references,exceptions"
+run phobs "$CLEAN" "$work/r-clean" --observations-out "$work/obs/state.json"
+CASE="markers: with --observations-out the tag observations phase comes after history and before judging"
+check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,judging,open pull requests,nested references,exceptions"
+run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
+CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
+check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,nested references,exceptions,issues"
+run phrh "$CLEAN" "$work/r-clean" --rerun-held
+CASE="markers: --rerun-held prints its own phase and exits 0 as before"
+check test "$rc" -eq 0 -a "$(phases "$work/phrh.out")" = "re-run of held pull requests"
+run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only
+CASE="markers: pull request mode (--base) prints history, judging, nested references and exceptions, never the daily-only phases"
+check test "$(phases "$work/phbase.out")" = "history,judging,nested references,exceptions"
+# one line per pull request in both live walks: the PR walk is the lead suspect of the hang
+CASE="markers: both live open-pull-request walks print 'audit: phase: pull request #N' for every PR before they fetch it"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, subprocess, sys, contextlib, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+os.environ["GITHUB_REPOSITORY"] = "o/r"
+def fail_fetch(cmd, **kw):
+    if cmd[:2] == ["gh", "pr"] or (len(cmd) > 2 and cmd[1:3] == ["pr", "list"]):
+        return subprocess.CompletedProcess(cmd, 0, stdout='[{"number": 7, "title": "a", "headRefOid": "a", "baseRefName": "main"}, {"number": 9, "title": "b", "headRefOid": "b", "baseRefName": "main"}]', stderr="")
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no")   # every fetch fails: the PR is skipped, after its marker
+pa._run = fail_fetch
+pa.age._gh_pages = lambda path: [{"number": 7, "base": {"ref": "main"}, "head": {"sha": "a"}}, {"number": 9, "base": {"ref": "main"}, "head": {"sha": "b"}}]
+net = pa.LiveNet(["gh"], ".")
+for walk in (net.open_pr_items, net.prs):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        walk()
+    got = [l for l in buf.getvalue().splitlines() if l.startswith("audit: phase: pull request")]
+    assert got == ["audit: phase: pull request #7", "audit: phase: pull request #9"], (walk.__name__, got)
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
