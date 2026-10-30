@@ -11,9 +11,8 @@ case "${1:-}" in
   key)
     out=${2:?the key file is the second argument}
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-    make_policy=(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json
-      --ref refs/heads/main --out "$tmp/policy.json")
-    refusal=$("${make_policy[@]}" 2>&1 > /dev/null) ||
+    refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
+      --ref refs/heads/main --out "$tmp/policy.json" 2>&1 > /dev/null) ||
       die "the key manifest is not accepted ($(head -n 1 <<< "$refusal"))"
     jq -r .release_key.public_key "$tmp/policy.json" > "$out" ;;
   pair)

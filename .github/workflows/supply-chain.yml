@@ -5,6 +5,7 @@ name: supply-chain
 #                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 #   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
+#   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a published release and verify (REQ-REL-013). Read-only.
 # It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
 
 on:
@@ -112,3 +113,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 .github/agent/supply-chain/pin-audit.py --rerun-held
+
+  evidence-letter-present:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read    # the monthly evidence letter's daily presence check reads published releases and writes nothing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
+      - name: Last month's evidence letter is on a published release and verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/evidence-letter-present.sh

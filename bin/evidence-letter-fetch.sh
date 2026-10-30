@@ -58,7 +58,7 @@ for tag in $tags; do
   for step in scanners acceptance runtime arm64; do
     asset "$dir/release.json" "$step-collection.json" "$dir"
     mkdir -p "$dir/witness-check/witness-$step"
-    cp "$dir/$step-collection.json" "$dir/witness-check/witness-$step/"
+    cat "$dir/$step-collection.json" > "$dir/witness-check/witness-$step/$step-collection.json"
   done
   verify "$tag" "$dir"
 done
