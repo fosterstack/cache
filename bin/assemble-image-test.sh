@@ -2170,6 +2170,7 @@ case("abs-file: a file", ["abs-file", W + "/real/f.txt"], out=W + "/real/f.txt")
 case("abs-file: the directory of the file is resolved", ["abs-file", W + "/via/f.txt"], out=W + "/real/f.txt")
 case("abs-file: a relative name", ["abs-file", "real/f.txt"], out=W + "/real/f.txt", cwd=W)
 case("abs-file: a name that is not there yet", ["abs-file", "real/new"], out=W + "/real/new", cwd=W)
+case("abs-file: a trailing slash is dropped (the shell basename did)", ["abs-file", "real/f.txt/"], out=W + "/real/f.txt", cwd=W)
 case("abs-file: a bare name", ["abs-file", "f.txt"], out=W + "/real/f.txt", cwd=W + "/real")
 case("abs-file: a directory that is not there stays as typed", ["abs-file", "nope/x"], out="nope/x", cwd=W)
 

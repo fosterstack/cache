@@ -6,13 +6,10 @@
                                           digest (one line) to DIGEST and "<arch> sha256:<hex>" lines to MANIFESTS
   oci-digest.py make-view REC ARCHIVE VIEW        link the archive's apks and its recorded index into VIEW/<arch>/
   oci-digest.py render-config CONFIG OUT VERSION  CONFIG with @FSCACHE_VERSION@ replaced
-  oci-digest.py check-dots NAME           exit 1 for a . or .. component after another component
-  oci-digest.py check-version V           exit 1 unless V is X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1
   oci-digest.py lock compare|arch-check|verify-archive|evidence ...   the lock-file checks of the image build
   oci-digest.py check-keys REC DIR        the keyring directory holds exactly the recorded keys
   oci-digest.py check-index REC ARCHIVE   print "<arch><TAB><path>" of the recorded package index per architecture
   oci-digest.py render-date EPOCH         print EPOCH as YYYY-MM-DDTHH:MM:SSZ
-  oci-digest.py is-empty DIR              exit 0 when DIR can be listed and is empty
 
 The decisions of the image assembler (so that its script is straight-line text). Each prints its answer, or the refusal
 "<script name>: <reason>" on standard error with the exit status the script had for it:
@@ -350,12 +347,6 @@ def render_config(config, out, version):
         fh.write(text.replace("@FSCACHE_VERSION@", version))
 
 
-def check_version(v):
-    """exit 1 unless V is exactly the chain's grammar: X.Y.Z, X.Y.Z-rcN (N digits, no leading zero, no dot) or the snapshot version 0.0.0-rc.1"""
-    if not (re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?", v) or v == "0.0.0-rc.1"):
-        sys.exit(1)
-
-
 def has_hidden_dots(path):
     """True when PATH has a . or .. component after another component (it could hide a symlinked root); leading ./ and ../ are allowed"""
     q = path
@@ -365,12 +356,6 @@ def has_hidden_dots(path):
         q = q[3:]
     parts = ("/" + q + "/")
     return "/./" in parts or "/../" in parts
-
-
-def check_dots(path):
-    """exit 1 when NAME has a . or .. component after another component"""
-    if has_hidden_dots(path):
-        sys.exit(1)
 
 
 def write_layout(members, standard, dest):
@@ -762,6 +747,7 @@ def abs_dir(path):
 
 
 def abs_file(path):
+    path = path.rstrip("/") or path
     folder = os.path.dirname(path) or "."
     return os.path.join(os.path.realpath(folder), os.path.basename(path)) if os.path.isdir(folder) else path
 
@@ -928,12 +914,8 @@ def main():
         render_config(a[1], a[2], a[3])
     elif len(a) == 2 and a[0] == "check-config":
         check_config(a[1])
-    elif len(a) == 2 and a[0] == "check-dots":
-        check_dots(a[1])
     elif len(a) >= 1 and a[0] == "lock":
         lock_main(a[1:])
-    elif len(a) == 2 and a[0] == "check-version":
-        check_version(a[1])
     elif len(a) == 3 and a[0] == "check-keys":
         check_keys(a[1], a[2])
     elif len(a) == 3 and a[0] == "check-index":
@@ -944,15 +926,10 @@ def main():
             print(datetime.datetime.fromtimestamp(int(a[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         except (ValueError, OverflowError, OSError):
             sys.exit(2)
-    elif len(a) == 2 and a[0] == "is-empty":
-        try:
-            sys.exit(0 if not os.listdir(a[1]) else 1)
-        except OSError:
-            sys.exit(1)
     elif len(a) == 1:
         print("\n".join(read_digests(a[0])[0]))
     else:
-        print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | render-config CONFIG OUT VERSION | check-dots NAME | check-version V | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH | is-empty DIR | " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
+        print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH | " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
         sys.exit(2)
 
 

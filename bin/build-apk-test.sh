@@ -258,11 +258,11 @@ imc "rule 15" "manifest assertion: the apk environment alone holding the first p
 imc "rule 15" "manifest assertion: an empty manifest fails" fail empty
 imc "rule 15" "manifest assertion: a repeated key whose first copy holds the first pin with 0 appended fails (a later copy must not win)" fail repeated-key
 # post-build checks of the stamp and the FIPS record
-sf "rule 24" "a binary that says (devel) is refused before hand-off" 'devel' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
+sf "rule 24" "a binary that says (devel) is refused before hand-off" 'says \(devel\)' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 sf "rule 24" "a binary built from a dirty tree (vcs.modified=true) is refused" 'modified|dirty' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/dirty.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 # the EXIT trap cannot change the refusal's status: a cleanup (rm) that fails still leaves exit 1 (Oct 30 CI ruling)
-mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 1\n' >"$work/failrm/rm"; chmod +x "$work/failrm/rm"
-printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 1;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; chmod +x "$work/rmfailsudo"
+mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 7\n' >"$work/failrm/rm"; chmod +x "$work/failrm/rm"
+printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 7;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; chmod +x "$work/rmfailsudo"
 run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/rmfailsudo" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/devel.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 t "rule 40" "a refusal (a binary that says (devel), exit 1) whose cleanup (rm and sudo rm) fails still exits 1, the script's own status" test "$(rc)" = 1
 sf "rule 20" "a module list that does not match the binary (extra dependency) fails the build" 'example\.org/evil|module|mismatch' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/extra.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
@@ -894,8 +894,7 @@ t "chain" "the entry mentions none of the protected names outside a pure \$NAME 
 import re, sys
 t = open(sys.argv[1]).read()
 phrase = "no Go toolchain on PATH in CI"   # the one message an existing case fixes by name (now go-verdict's)
-assert t.count(phrase) <= 1, "the CI message is the one allowed mention"
-t = t.replace(phrase, "")
+assert t.count(phrase) == 0, "build-apk.sh holds no mention of the CI message (go-verdict has it)"
 rx = re.compile(r"(?<![A-Za-z0-9_])(PATH|BASH_ENV|ENV|LD_[A-Za-z0-9_]+|PYTHON[A-Za-z0-9_]*|NODE_OPTIONS|IFS|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|PS4|PROMPT_COMMAND)(?![A-Za-z0-9_])")
 bad = [m.group(1) for m in rx.finditer(t) if not (t[max(0, m.start() - 1):m.start()] == "$" or (t[max(0, m.start() - 2):m.start()] == "${" and t[m.end():m.end() + 1] == "}"))]
 sys.exit("mentions %s" % sorted(set(bad)) if bad else 0)
@@ -1511,7 +1510,7 @@ for name, pairs in M.items():
     open("%s/%s.sh" % (sys.argv[2], name), "w").write(t)
 PY
 rs_refused() { local m=$1 tool=$2 desc=$3
-  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/rs-copy.sh' '$rpm/$m.sh'"
+  t "AC9" "$m exists and differs from the copy it was made from" bash -c "[ -f '$rpm/$m.sh' ] && ! cmp -s '$work/rs-copy.sh' '$rpm/$m.sh'"
   rp_sign_dirs rpC rpD; rp_extra=(); rp_sign "$rpm/$m.sh" "$work/rpC" "$work/rpD"
   if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)|(not found|No such file or directory).*$tool" "$work/rp.log" && ! grep -q '^melange sign' "$CALLS"; then ok
   else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found, nothing signed)"; fi; }
@@ -1532,9 +1531,9 @@ a = '[sys.argv[2], "rsa", "-pubout"'
 assert src.count(a) == 1
 open(out + "/rs-pyopenssl.sh", "w").write(src.replace(a, '["openssl", "rsa", "-pubout"'))
 tool = open(sys.argv[3]).read()
-b = 'r = subprocess.run([_openssl(), "dgst"'
+b = 'openssl = _openssl()'
 assert tool.count(b) == 1
-open(out + "/here/apk-tool.py", "w").write(tool.replace(b, 'r = subprocess.run(["openssl", "dgst"'))
+open(out + "/here/apk-tool.py", "w").write(tool.replace(b, 'openssl = "openssl"'))
 assert src.count("-I -B bin/apk-tool.py") >= 6
 open(out + "/rs-tool-openssl.sh", "w").write(src.replace("-I -B bin/apk-tool.py", "-I -B " + out + "/here/apk-tool.py"))   # the mutated copy of the tool, named by its absolute path
 PYM

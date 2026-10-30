@@ -2749,7 +2749,7 @@ replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    step
     "    runs-on: self-hosted\n    steps:\n      - uses: actions/download-artifact" \
   && expect ok "AC14 the scanner steps are cache's: a change there does not change the verdict" "" callers "$work/c16.yml"
 # ---- nosource: no step of Build or Rebuild runs source code outside melange (sandboxed-build rule 1) ----------------
-# The shell closure scripts are held as exact text, the Python ones by exact start lines and closed lists of names.
+# The shell closure scripts are held as exact text (line 1 included), the Python ones whole by sha256 (orchestrator ruling of Oct 30, option 1).
 # Each row is one mutation of a fresh copy of the closure that the judge must refuse; the word is the message token.
 python3 - "$work/ns" "$root" "$shape" <<'PY' || true      # a failed build shows as the fixture row below
 import importlib.util, os, shutil, sys
@@ -2769,6 +2769,26 @@ assert len(hit) == 1, "the admission call moved: move this replacement with it"
 lines[hit[0]] = "    rc, err = 0, b\"\""
 open(adm, "w").write("\n".join(lines))
 PY
+# the lists of the closure files for the loops below, and a copy of the judge whose sha256 table matches this fixture (the fixture drops one line of build-admit.py)
+python3 - "$root" "$shape" > "$work/ns.py.list" 2> "$work/ns.sh.list" <<'PY' || true
+import importlib.util, sys
+root, shape = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("shape", shape)
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+seen, bad = S.ns_closure(root)
+for p in seen:
+    print(p, file=(sys.stdout if p.endswith(".py") else sys.stderr))
+PY
+python3 - "$work/ns" "$shape" "$work/shape-fx.py" <<'PY' || true
+import hashlib, re, sys
+ns, shape, out = sys.argv[1:4]
+s = open(shape).read()
+for m in re.finditer(r'"(bin/[A-Za-z0-9_.-]+\.py)": "([0-9a-f]{64})"', s):
+    path, old = m.groups()
+    s = s.replace('"%s": "%s"' % (path, old), '"%s": "%s"' % (path, hashlib.sha256(open(ns + "/" + path, "rb").read()).hexdigest()))
+open(out, "w").write(s)
+PY
+shape_real="$shape"; shape="$work/shape-fx.py"      # the fixture rows below run this judge; the real tree is judged by the real one again after them
 expect ok "nosource fixture: the closure of the stage scripts is clean without the one known finding" "" \
   nosource "$work/ns"
 nsfresh() { # a fresh copy; when the fixture is missing the copy is an empty tree, so each row still ends in one verdict
@@ -2828,6 +2848,33 @@ LIT="program is not a literal path"
 PYH='import subprocess as _sp, functools as _ft, os as _os, importlib as _il'
 PYS='import subprocess as _sp, sys as _sys'
 EXECL='    exec(compile(src, mod.__file__, "exec"), mod.__dict__)'
+# option 1: each Python closure file is held whole by sha256 (NS_PY_SHA), line 1 of each shell file is held, the stage lines run python3 -I
+while read -r f; do
+  nsa "H-$f" "nosource a change to $f is a finding: the file is held whole by sha256" "NS_PY_SHA" "$f" "# one more comment"
+done < "$work/ns.py.list"
+while read -r f; do
+  nsl "L1-$f" "nosource line 1 of $f is held: a changed shebang is a finding" "shebang" "$f" sub '^#!' '#!/tmp/evil'
+done < "$work/ns.sh.list"
+for k in apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
+  nsm "I-$k" "nosource a python3 line of bin/build-stage-$k.sh without -I is a finding" ": expected" "bin/build-stage-$k.sh" 'python3 -I bin/' 'python3 bin/'
+done
+if ! grep -qE '^python3 bin/' "$root"/bin/build-stage-*.sh; then ok "nosource no stage script runs python3 without -I"
+else bad "nosource a stage script still runs python3 without -I: $(grep -lE '^python3 bin/' "$root"/bin/build-stage-*.sh | head -3 | tr '\n' ' ')"; fi
+if python3 - "$shape_real" "$root" <<'PY'
+import importlib.util, hashlib, sys
+shape, root = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("shape", shape)
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+seen, bad = S.ns_closure(root)
+py = {p for p in seen if p.endswith(".py")}
+assert set(S.NS_PY_SHA) == py, (sorted(set(S.NS_PY_SHA) ^ py))
+for p in sorted(py):
+    assert S.NS_PY_SHA[p] == hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest(), p
+for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
+    assert p in py, p      # they reach the closure only through chain-verify.py's load_sibling literals
+PY
+then ok "nosource NS_PY_SHA holds exactly the 15 Python closure files with their committed sha256, and chain_common, chain_hostile and chain_items are found in the closure"
+else bad "nosource NS_PY_SHA does not match the Python closure files"; fi
 PCZ='    run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER))])'
 # the round-one and rerun rows (cz, go, mk, bin1, mel1, apk1, bp1-bp24) keep their labels
 nsmf cz1 "nosource a stage script runs a test-named script that is not a row" "commands, the grammar has" \
@@ -2855,16 +2902,6 @@ nsm mel1 "nosource melange started outside build-apk.sh" "commands, the grammar 
   'unset GH_TOKEN' 'unset GH_TOKEN\nmelange build x.yaml'
 nsm apk1 "nosource apko started through a path (a path-qualified word is judged first)" "commands, the grammar has" \
   bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n/usr/local/bin/apko build a b'
-nsm pyg1 "nosource a Go build started by a Python helper" "is not an exact line" bin/build-version-check.py \
-  '[GO_TOOL, "version", "-m", binary]' '[GO_TOOL, "build", "-o", binary]'
-nsm pym1 "nosource make started by a Python helper" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp; _sp.run(["make"])\nimport '
-nsm pysh "nosource a Python helper starting a program through a shell" "is not an exact line" bin/build-archives.py \
-  'import ' 'import subprocess as _sp; _sp.run("echo", shell=True)\nimport '
-nsm pyos "nosource os.system in a Python helper" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  'import os as _os; _os.system("true")\nimport '
-nsm pyin "nosource the interpreter started on inline code" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp, sys as _sys; _sp.run([_sys.executable, "-c", "pass"])\nimport '
 nsm row1 "nosource a script a stage script starts that is not a row" "is not a row of chain-scripts.json" \
   .github/policy/chain-scripts.json '"path": "bin/oci-digest.py"' '"path": "bin/oci-digest-x.py"'
 nsm bp1 "nosource bash -c with a Go build inside" "commands, the grammar has" bin/build-stage-apk.sh \
@@ -2897,30 +2934,10 @@ nsm bp14 "nosource a compiler nobody listed" "commands, the grammar has" bin/bui
   'unset GH_TOKEN\ntsc --build'
 nsm bp15 "nosource a trap handler that builds" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
   'unset GH_TOKEN\ntrap "go build ./..." EXIT'
-nsm bp16 "nosource a Python command line held in a variable" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\ncmd = ["make", "all"]\n_sp.run(cmd)\nimport '
-nsm bp17 "nosource a Python command line that is a call" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\n_sp.run(str("x").split())\nimport '
-nsm bp18 "nosource os.execv" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  'import os as _os\n_os.execv("/bin/sh", ["sh"])\nimport '
-nsm bp19 "nosource bash -c in a Python helper" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\n_sp.run(["bash", "-c", "go build"])\nimport '
-nsm bp20 "nosource python3 -c in a Python helper" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\n_sp.run(["python3", "-c", "pass"])\nimport '
-nsm bp21 "nosource the open exception does not travel: the same go run in another script" "is not an exact line" \
-  bin/build-archives.py 'import ' \
-  'import subprocess as _sp\n_sp.run(["go", "-C", "tools/requirements", "run", ".", "verify-freeze", "x"])\nimport '
 nsm bp22 "nosource a script a closure script names but no runs row lists is read too" "commands, the grammar has" \
   bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/chain-new-helper.sh'
 nsm bp24 "nosource an array expansion standing for the program" "commands, the grammar has" \
   bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"${tool[@]}" build'
-nsm cl1 \
-  "nosource a sibling module chain-verify.py loads (load_sibling) is read: a program started in chain_items.py" \
-  "is not an exact line" bin/chain_items.py 'import ' 'import subprocess as _sp\n_sp.run(["make"])\nimport '
-nsm cl3 "nosource chain_common.py is read too" "is not an exact line" bin/chain_common.py 'import ' \
-  'import subprocess as _sp\n_sp.run(["make"])\nimport '
-nsm cl4 "nosource chain_hostile.py is read too" "is not an exact line" bin/chain_hostile.py 'import ' \
-  'import subprocess as _sp\n_sp.run(["make"])\nimport '
 nsm sh1 "nosource a substitution inside an array assignment" "commands, the grammar has" bin/build-stage-apk.sh \
   'unset GH_TOKEN' 'unset GH_TOKEN\nx=("$(go build ./...)")'
 nsm sh2 "nosource a substitution inside a parameter expansion" "commands, the grammar has" bin/build-stage-apk.sh \
@@ -2969,72 +2986,6 @@ nsm sh12 "nosource sed with the e flag" "commands, the grammar has" bin/build-st
   'unset GH_TOKEN\nsed -n "s/x/go build/e" f'
 nsm sh13 "nosource a substitution inside arithmetic" "commands, the grammar has" bin/build-stage-apk.sh \
   'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(( $(go build ./...) ))'
-nsm py1 "nosource a Python program that is not on the script's list" "is not an exact line" bin/build-archives.py \
-  'import ' 'import subprocess as _sp\n_sp.run(["true", "x"])\nimport '
-nsm py2 "nosource executable= in a Python start" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\n_sp.run(["git"], executable="/bin/sh")\nimport '
-nsm py3 "nosource a call of exec in a Python helper" "is refused outside an exact line" bin/build-archives.py \
-  'import ' 'exec("x = 1")\nimport '
-nsm py4 "nosource a name bound to a program-starting function" "is refused outside an exact line" \
-  bin/build-archives.py 'import ' 'import subprocess as _sp\nr = _sp.run\nimport '
-nsm py5 "nosource the interpreter on a file outside bin/ after an option" "is not an exact line" \
-  bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["python3", "-I", "tools/helper.py"])\nimport '
-nsm py6 "nosource a call of exec outside the reviewed loader function of chain-verify.py" \
-  "is refused outside an exact line" bin/chain-verify.py 'import ' \
-  'import os\ndef _zz():\n    exec("x = 1")\nimport '
-nsm py7 "nosource the OPENSSL module constant is allowed only in chain_common.py" "is not an exact line" \
-  bin/chain-verify.py 'import ' 'import subprocess as _sp\nOPENSSL = "openssl"\n_sp.run([OPENSSL, "x"])\nimport '
-nsm py8 "nosource a program list is per script: git is not on build-archives.py's" "is not an exact line" \
-  bin/build-archives.py 'import ' 'import subprocess as _sp\n_sp.run(["git", "status"])\nimport '
-nsm pa1 "nosource getattr of a start function" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\n_x = getattr(_sp, '\''run'\'')\nimport '
-nsm pa2 "nosource getattr called at once" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\ngetattr(_sp, '\''run'\'')(['\''make'\''])\nimport '
-nsm pa3 "nosource functools.partial of a start function" "is refused outside an exact line" bin/build-archives.py \
-  'import ' "$PYH"'\n_p = _ft.partial(_sp.run, ['\''make'\''])\nimport '
-nsm pa4 "nosource a ** call of a start function" "is not an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\n_k = {}\n_sp.run(['\''git'\''], **_k)\nimport '
-nsm pa5 "nosource a * call of a start function" "is not an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\n_a = ['\''git'\'']\n_sp.run(*_a)\nimport '
-nsm pa6 "nosource the subprocess module bound to another name" "is refused outside an exact line" \
-  bin/build-archives.py 'import ' "$PYH"'\n_m = _sp\n_m.run(['\''make'\''])\nimport '
-nsm pa7 "nosource from subprocess import *" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\nfrom subprocess import *\nimport '
-nsm pa8 "nosource importlib.import_module" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\n_il.import_module('\''subprocess'\'')\nimport '
-nsm pa9 "nosource __import__" "is refused outside an exact line" bin/build-archives.py 'import ' \
-  "$PYH"'\n__import__('\''subprocess'\'').run(['\''make'\''])\nimport '
-nsm pa10 "nosource check_output on an owner the judge cannot trace" "is refused outside an exact line" \
-  bin/build-archives.py 'import ' "$PYH"'\ndef _f(p):\n    p.check_output(['\''make'\''])\nimport '
-nsm pa11 "nosource a start function returned as a value" "is refused outside an exact line" bin/build-archives.py \
-  'import ' "$PYH"'\ndef _f():\n    return _sp.run\nimport '
-nsm pa12 "nosource the interpreter on a bin/ script outside the closure" "is not an exact line" \
-  bin/build-archives.py 'import ' \
-  "$PYH"'\nimport sys as _sys\n_sp.run([_sys.executable, '\''bin/not-in-closure.py'\''])\nimport '
-nsm pl1 "nosource a command list assigned twice" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd = ['make']\n_sp.run(cmd)\nimport '
-nsm pl2 "nosource a command list appended to" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd.append('x')\n_sp.run(cmd)\nimport '
-nsm pl3 "nosource a command list item replaced" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd[0] = 'make'\n_sp.run(cmd)\nimport '
-nsm pl4 "nosource a command list extended with +=" "is not an exact line" bin/build-archives.py 'import ' \
-  'import subprocess as _sp\ncmd = ['git', 'status']\ncmd += ['x']\n_sp.run(cmd)\nimport '
-nsm ex1 "nosource the approved call of exec duplicated in the reviewed loader" "is refused outside an exact line" \
-  bin/chain-verify.py "$EXECL" "$EXECL\n$EXECL"
-nsm ex2 "nosource the loader call of exec with other arguments" "is refused outside an exact line" \
-  bin/chain-verify.py 'exec(compile(src, mod.__file__, "exec"), mod.__dict__)' \
-  'exec(compile(src, mod.__file__, "exec"), {})'
-nsm ex3 "nosource a call of exec at module level of another script" "is refused outside an exact line" \
-  bin/build-archives.py 'import ' 'exec('\''x'\'')\nimport '
-nsm pc1 "nosource a computed interpreter operand in another script" "is not an exact line" bin/build-archives.py \
-  'import ' 'import subprocess as _sp, os as _os\n_sp.run(["python3", _os.path.join(ctx.policy, "x.py")])\nimport '
-nsm pc2 "nosource the policy-folder operand in a function that is not reviewed" "is not an exact line" \
-  bin/build-admit.py 'def check_rc_proof(ctx):' 'def zz(ctx):\n'"$PCZ"'\n\n\ndef check_rc_proof(ctx):'
-nsm pc3 "nosource script assigned twice in patch_baseline_version" "is not an exact line" bin/build-admit.py \
-  '    script = os.path.join(ctx.policy, os.path.basename(SIGNER))' \
-  '    script = os.path.join(ctx.policy, os.path.basename(SIGNER))\n    script = '\''x.py'\'''
-nsm pc4 "nosource SIGNER assigned twice" "is not an exact line" bin/build-admit.py \
-  'SIGNER = "bin/admission-tag-signer.py"' 'SIGNER = "bin/admission-tag-signer.py"\nSIGNER = "/tmp/x.py"'
 nsm sv1 "nosource SUDO assigned twice" "commands, the grammar has" bin/build-apk.sh 'SUDO=/usr/bin/sudo' \
   'SUDO=/usr/bin/sudo\nSUDO=/tmp/x'
 nsm sv2 "nosource GIT assigned twice on one line" ": expected" bin/build-apk.sh 'GIT=/usr/bin/git ' \
@@ -3118,22 +3069,6 @@ nsm cf2 "nosource a case on one line" "commands, the grammar has" bin/build-stag
   'unset GH_TOKEN\ncase $1 in a) true;; esac'
 nsm cf3 "nosource two arms on one line" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
   'unset GH_TOKEN\ncase $1 in\n  a) true;; b) true;;\nesac'
-nsm pe1 "nosource python executable -m" "is not an exact line" bin/build-archives.py 'import ' \
-  "$PYS"'\n_sp.run([_sys.executable, '\''-m'\'', '\''x'\''])\nimport '
-nsm pe2 "nosource python executable - (stdin)" "is not an exact line" bin/build-archives.py 'import ' \
-  "$PYS"'\n_sp.run([_sys.executable, '\''-'\'', '\''bin/chain-verify.py'\''])\nimport '
-nsm pa13 "nosource an annotated alias of the subprocess module" "is refused outside an exact line" \
-  bin/build-archives.py 'import ' \
-  "$PYS"'\nimport subprocess\nsp: object = subprocess\nsp.run(['\''make'\''])\nimport '
-nsm pa14 "nosource the subprocess module passed on" "is refused outside an exact line" bin/build-archives.py \
-  'import ' "$PYS"'\nprint(_sp)\nimport '
-nsm pl5 "nosource a command list aliased and the alias changed" "is not an exact line" bin/build-archives.py \
-  'import ' \
-  "$PYS"'\ncmd = ['\''git'\'', '\''status'\'']\nother = cmd\nother[0] = '\''make'\''\n_sp.run(cmd)\nimport '
-nsm pl6 "nosource a command list changed through __setitem__" "is not an exact line" bin/build-archives.py 'import ' \
-  "$PYS"'\ncmd = ['\''git'\'', '\''status'\'']\ncmd.__setitem__(0, '\''make'\'')\n_sp.run(cmd)\nimport '
-nsm pl7 "nosource a command list passed to a function" "is not an exact line" bin/build-archives.py 'import ' \
-  "$PYS"'\ncmd = ['\''git'\'', '\''status'\'']\nprint(cmd)\n_sp.run(cmd)\nimport '
 nsm sv7 "nosource read -r ignored PY3 (a later operand of read)" "commands, the grammar has" bin/build-apk.sh \
   'PY3=/usr/bin/python3' 'PY3=/usr/bin/python3\nread -r ignored PY3 <<< "x ./tools/python3"'
 nsm sv8 "nosource unset PY3" "commands, the grammar has" bin/build-apk.sh 'PY3=/usr/bin/python3' \
@@ -3159,15 +3094,8 @@ add_sibling && expect caught "nosource a module chain-verify.py loads with load_
 PA=bin/build-archives.py
 nsl R1 "nosource a ( line then make) inside a case body of a shell helper" "$CNT" bin/build-apk.sh after \
   '^set -euo pipefail' 'case $1 in\n  x)\n(\nmake)\n    ;;\nesac'
-nsa R2 "nosource a local def run(argv) that appends to the list before subprocess.run starts make" "$EXL" $PA \
-  "def run(argv):\n    argv.append('make')\n    subprocess.run(argv)\nrun(['x'])"
 nsl R3 "nosource read -r ignored \"PY3\" added to build-apk.sh" "$CNT" bin/build-apk.sh after '^PY3=' \
   'read -r ignored "PY3"'
-nsa R4 "nosource a path accepted by its basename: subprocess.run of ./tools/git" "$EXL" $PA \
-  "subprocess.run(['./tools/git', 'status'])"
-nsa R5a "nosource a reused as name erasing an alias entry" "$REF" $PA \
-  "import subprocess as s\nimport json as s\ns.run(['make'])"
-nsa R5b "nosource subprocess.__dict__ reaching run" "$REF" $PA "subprocess.__dict__['run'](['make'])"
 nsm F1 "nosource a path word before the command word" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
   'unset GH_TOKEN\n/tmp/evil/go build'
 nsm F2 "nosource the interpreter with an option" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
@@ -3175,97 +3103,10 @@ nsm F2 "nosource the interpreter with an option" "$CNT" bin/build-stage-apk.sh '
 nsm F3 "nosource sed with an e flag" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nsed -n "s/x/y/e" f'
 nsm F4 "nosource esac and ;; sharing a line" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
   'unset GH_TOKEN\ncase $1 in\n  a) true\n  ;; esac'
-nsa F5 "nosource the subprocess module name used other than as module.attr" "$REF" $PA "_zz = subprocess"
-nsa F6 "nosource a start command list built elsewhere" "$EXL" $PA "_cmd = ['git', 'status']\nsubprocess.run(_cmd)"
 nsm F7 "nosource a variable name that is not bare: \${PY3}" "$EXP" bin/apko-lock.sh '"$PY3" -I' '"${PY3}" -I'
-nsm F8 "nosource the approved exec duplicated" "$REF" bin/chain-verify.py "$EXECL" "$EXECL\n$EXECL"
 # refused names, one mutant each (an identifier in any position: bare name, attribute, import name, keyword)
-nsa N01 "nosource subprocess outside a start line" "$REF" $PA "_zz = subprocess.PIPE"
-nsa N02 "nosource os used bare" "$REF" $PA "_zz = os"
-nsa N03 "nosource a bare os passed on" "$REF" $PA "print(os)"
-nsa N04 "nosource os.system" "$ATTR" $PA "os.system('true')"
-nsa N05 "nosource os.popen" "$ATTR" $PA "os.popen('true')"
-nsa N06 "nosource os.execv" "$ATTR" $PA "os.execv('/bin/sh', ['sh'])"
-nsa N07 "nosource os.environ assigned outside an exact line" "$REF" $PA "os.environ['PYTHONPATH'] = '/tmp'"
-nsa N08 "nosource os.environ read outside an exact line" "$REF" $PA "_zz = os.environ.get('PYTHONPATH')"
-nsa N09 "nosource the attribute after os.path is closed too" "$ATTR" $PA "_zz = os.path.os"
-nsa N10 "nosource shutil.os" "$REF" $PA "import shutil\n_zz = shutil.os"
-nsa N11 "nosource glob.os" "$REF" $PA "_zz = glob.os"
-nsa N12 "nosource tempfile._os" "$REF" $PA "import tempfile\n_zz = tempfile._os"
-nsa N13 "nosource any attribute starting with _ on an imported module" "$REF" $PA "_zz = sys._getframe"
-nsa N14 "nosource types.FunctionType" "$REF" $PA "import types\n_zz = types.FunctionType"
-nsa N15 "nosource types.ModuleType outside the loader" "$REF" $PA "import types\n_zz = types.ModuleType('x')"
-nsa N16 "nosource yaml.load" "$ATTR" bin/build-admit.py "_zz = yaml.load('a: 1')"
-nsa N17 "nosource import pty" "$MODL" $PA "import pty"
-nsa N18 "nosource import asyncio" "$MODL" $PA "import asyncio"
-nsa N19 "nosource import importlib" "$MODL" $PA "import importlib"
-nsa N20 "nosource import runpy" "$MODL" $PA "import runpy"
-nsa N21 "nosource import multiprocessing" "$MODL" $PA "import multiprocessing"
-nsa N22 "nosource import ctypes" "$MODL" $PA "import ctypes"
-nsa N23 "nosource import functools" "$MODL" $PA "import functools"
-nsa N24 "nosource the name pty without an import" "$REF" $PA "pty.spawn(['x'])"
-nsa N25 "nosource the name asyncio without an import" "$REF" $PA "asyncio.run(x)"
-nsa N26 "nosource the name importlib without an import" "$REF" $PA "importlib.import_module('x')"
-nsa N27 "nosource the name runpy without an import" "$REF" $PA "runpy.run_path('x')"
-nsa N28 "nosource the name multiprocessing without an import" "$REF" $PA "multiprocessing.Process()"
-nsa N29 "nosource the name ctypes without an import" "$REF" $PA "ctypes.CDLL('x')"
-nsa N30 "nosource a bare exec" "$REF" $PA "exec('x = 1')"
-nsa N31 "nosource a bare eval" "$REF" $PA "eval('1')"
-nsa N32 "nosource a bare compile (re.compile is fine)" "$REF" $PA "compile('1', 'x', 'eval')"
-nsa N33 "nosource __import__" "$REF" $PA "__import__('os')"
-nsa N34 "nosource getattr" "$REF" $PA "getattr(sys, 'exit')"
-nsa N35 "nosource setattr" "$REF" $PA "setattr(sys, 'x', 1)"
-nsa N36 "nosource globals" "$REF" $PA "globals()"
-nsa N37 "nosource vars" "$REF" $PA "vars()"
-nsa N38 "nosource __dict__" "$REF" $PA "_zz = sys.__dict__"
-nsa N39 "nosource __builtins__" "$REF" $PA "_zz = __builtins__"
-nsa N40 "nosource breakpoint" "$REF" $PA "breakpoint()"
-nsa N41 "nosource help" "$REF" $PA "help()"
-nsa N42 "nosource a dunder chain through subclasses" "$REF" $PA "_zz = ().__class__.__base__.__subclasses__()"
-nsa N43 "nosource a dunder that is not on the short list" "$REF" $PA "_zz = sys.__class__"
-nsa N44 "nosource a refused name as a keyword" "$REF" $PA "_zz = dict(eval=1)"
-nsa N45 "nosource a refused name as an import name" "$REF" $PA "from json import eval"
-nsa N46 "nosource a refused name as an attribute after a dot" "$REF" $PA "_zz = sys.exec"
-nsa N47 "nosource import subprocess as sp" "$REF" $PA "import subprocess as sp"
-nsa N48 "nosource import json as j" "$REF" $PA "import json as j"
-nsa N49 "nosource from json import loads as l" "$REF" $PA "from json import loads as l"
-nsa N50 "nosource from os import system" "$ATTR" $PA "from os import system"
-nsa N51 "nosource from subprocess import run" "$ATTR" $PA "from subprocess import run"
-nsa N52 "nosource import *" "$REF" $PA "from json import *"
-nsok O1 "nosource re.compile is fine" bin/build-admit.py "_zz = re.compile('a')"
-nsok O2 "nosource __name__ and __doc__ are fine" $PA "_zz = (__name__, __doc__)"
-nsok O3 "nosource yaml.safe_load is fine" bin/build-admit.py "_zz = yaml.safe_load('a: 1')"
 # starts: what may stand in a program start
-nsa S01 "nosource a *args unpacking inside the list" "$EXL" $PA "subprocess.run(['git', *extra])"
-nsa S02 "nosource a *args call" "$EXL" $PA "subprocess.run(*extra)"
-nsa S03 "nosource a **kw call" "$EXL" $PA "subprocess.run(['git', 'status'], **kw)"
-nsa S04 "nosource shell=True" "$EXL" $PA "subprocess.run(['git', 'status'], shell=True)"
-nsa S05 "nosource executable=" "$EXL" $PA "subprocess.run(['git', 'status'], executable='/bin/sh')"
-nsa S06 "nosource a computed env=" "$EXL" $PA "subprocess.run(['git', 'status'], env=dict(zip(a, b)))"
-nsa S07 "nosource a computed program like ctx.go" "$LIT" $PA "subprocess.run([ctx.go, 'x'])"
-nsa S08 "nosource a NAME program assigned twice" "$LIT" $PA \
-  "PROG = '/usr/bin/git'  # TEST-SUBST\nPROG = '/usr/bin/git'  # TEST-SUBST\nsubprocess.run([PROG, 'x'])"
-nsa S09 "nosource a NAME program whose assignment lacks TEST-SUBST" "$LIT" $PA \
-  "PROG = '/usr/bin/git'\nsubprocess.run([PROG, 'x'])"
-nsa S10 "nosource sys.executable without -I -B" "$EXL" $PA "subprocess.run([sys.executable, 'bin/apk-tool.py'])"
-nsa S11 "nosource sys.executable with -I only" "$EXL" $PA "subprocess.run([sys.executable, '-I', 'bin/apk-tool.py'])"
-nsa S12 "nosource sys.executable with -B -I in the wrong order" "$EXL" $PA \
-  "subprocess.run([sys.executable, '-B', '-I', 'bin/apk-tool.py'])"
-nsa S13 "nosource sys.executable on an operand outside the closure" "$EXL" $PA \
-  "subprocess.run([sys.executable, '-I', '-B', 'bin/not-in-closure.py'])"
-nsl pv1 "nosource OPENSSL assigned twice" "$LIT" bin/chain_common.py after '^OPENSSL = ' \
-  'OPENSSL = "/usr/bin/make"  # TEST-SUBST'
-nsa pv2 "nosource OPENSSL reassigned in a function" "$LIT" bin/chain_common.py \
-  "def zz():\n    global OPENSSL\n    OPENSSL = '/usr/bin/make'"
-nsl pv3 "nosource OPENSSL given another program" "$EXL" bin/chain_common.py sub '^OPENSSL = ' \
-  'OPENSSL = "/usr/bin/make"  # TEST-SUBST'
 # the load_sibling lines are exempt exact lines; changing one is refused
-nsm L1 "nosource the ModuleType line of load_sibling changed" "$REF" bin/chain-verify.py 'types.ModuleType(name)' \
-  'types.ModuleType(name + "x")'
-nsm L2 "nosource the sys.modules line of load_sibling changed" "$REF" bin/chain-verify.py 'sys.modules[name] = mod' \
-  'sys.modules[name + "x"] = mod'
-nsm L3 "nosource the __file__ line of load_sibling changed" "$REF" bin/chain-verify.py \
-  'mod.__file__ = os.path.join(here, name + os.extsep + "py")' 'mod.__file__ = os.path.join(here, name)'
 # closure files without a row, and files that cannot be read
 nsrow K1 "nosource apko-lock.sh has no row" "is not a row of chain-scripts.json" bin/apko-lock.sh
 nsrow K2 "nosource build-apk.sh has no row" "is not a row of chain-scripts.json" bin/build-apk.sh
@@ -3273,7 +3114,6 @@ nsrow K3 "nosource vex-index.py has no row" "is not a row of chain-scripts.json"
 nsrow K4 "nosource chain_common.py has no row" "is not a row of chain-scripts.json" bin/chain_common.py
 nsfresh; printf '\xff\xfe\n' >> "$work/nsm/bin/oci-digest.py"
 expect caught "K5 nosource a Python closure file that is not valid UTF-8" "cannot be read" nosource "$work/nsm"
-nsa K6 "nosource a Python closure file with a syntax error" "cannot be read" bin/oci-digest.py "def ("
 nsfresh; printf '{' > "$work/nsm/.github/policy/chain-scripts.json"
 expect caught "K7 nosource a chain-scripts.json that does not parse" "cannot be read" nosource "$work/nsm"
 nsfresh; rm -f "$work/nsm/.github/policy/chain-scripts.json"
@@ -3314,6 +3154,7 @@ expect ok "AC1/AC2 the real stage-build.yml is exactly the Build grammar" "" sta
 expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild grammar" "" stage "$root/.github/workflows/stage-reproducibility.yml" \
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
+shape="$shape_real"
 real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
 if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:456"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
   ok "nosource the real tree: the admission step's go run (bin/build-admit.py:456) is the ONE finding"
@@ -3664,8 +3505,8 @@ if grep -Fxq "$CBI" bin/build-apk.sh \
   && grep -Fxq '    if "vcs.modified=true" in text:' bin/build-apk-helper.py \
   && grep -Fxq '        raise Refused("the binary was built from a modified (dirty) tree (vcs.modified=true)", 1)' bin/build-apk-helper.py \
   && has_refusal_block build/melange.yaml && has_refusal_block build/melange-fips.yaml; then
-  msg="REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh"
-  ok "$msg (the check-buildinfo call line and the helper's (devel) and vcs.modified refusals) and in each of the two recipes"
+  msg="REQ-BUILDAPK-001-AC4 tree: the dirty-tree check is still in place"
+  ok "$msg (the check-buildinfo call line in build-apk.sh, the helper's (devel) and vcs.modified refusals) and in each of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi

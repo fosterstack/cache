@@ -17,7 +17,7 @@
 # signed with the committed, non-secret assembly key build/keys/assembly.rsa (rule 22) and nothing else.
 #
 # In this order (the tests fix it):
-#   1. refusals, before any tool runs (exit 2, the message names the thing);
+#   1. refusals, before any build tool runs (exit 2, the message names the thing);
 #   2. render the recipe (build/melange.yaml, or build/melange-fips.yaml for --variant fips) with @VERSION@ replaced;
 #   3. pre-seed the Go tarball from the archive into melange's cache dir as sha256:<hex>, after checking its sha256
 #      against the recipe's pin (rule 12), so the recipe's go.dev fetch step finds it offline;

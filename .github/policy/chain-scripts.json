@@ -453,7 +453,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "def62ef70604658d4bf69113c02577addeedf7797e5da98754bce548fad6b96e",
+      "sha256": "b2c906817f3613fa2551e1ebce396225b5ccafb16a87aef0e48e5a0a35c65c11",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -474,7 +474,7 @@
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "b07a7d56a6c1c37e6bb86cb5143b16d329cf9e966b25b843fa14d1552758c3c0"
+      "sha256": "089bdcca6de85fde6881dc30faea7f364481ce8ffbbd2fb9004a5da26c94b4b3"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -488,7 +488,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "7a1d4667a1e7e46f02278f6d8b221b062d43aa9d6f03b67ddaa0963004ad2bc5"
+      "sha256": "804157671c94fc7ddc0415688ff7f5b8c70c52774221ad8d94a28a683461427e"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -505,7 +505,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "572adc34d48b285fcb2bb6a884bec99b2377b198a1064efa64565f69e3ad709f"
+      "sha256": "cb8966d17a831141be2655b319fff4c8db24295af2a7024692396165d1c5891c"
     },
     {
       "path": "bin/build-admit.py",
@@ -629,7 +629,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
-      "sha256": "dd63810714b7e024842018b7353c1ca9953943d78c62f5f12ab514aa25aa6f6a",
+      "sha256": "dc18aa249745dcfeb292420cb451cb8b0baa1e678dbcff905ad98560410f96fd",
       "exceptions": [
         {
           "rule": "deny",
@@ -661,7 +661,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "fd57429dcae7f905a50d4ed580066a5b8a52fed0fc765ee2ede38cff43f0ad26"
+      "sha256": "aa701ea7e23c41aefbfb4b7a16298d0beec614a02f37e5a8f715b825582d843c"
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
@@ -678,7 +678,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
-      "sha256": "1dfce5c4c3e1ce3840c94ac8053e5c605244786043e0a547b1619767e624e3df",
+      "sha256": "68d336c6ad6d4835b33e767e43a38c16b3c3ed3f575ada1c2b711dc4ac58126d",
       "exceptions": [
         {
           "rule": "deny",
@@ -710,7 +710,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "45fe2941df5fcadcb111c3fb2279ef4282576671b12db93c5b1c8410268b8d45"
+      "sha256": "fc258d326bc6c958586c78675b55573cb79c14fd8a784d0e35b74a2b73fbf07d"
     },
     {
       "path": "bin/admission-tag-signer.py",
@@ -2158,7 +2158,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "c9b2a9d5472bdb6164e37e70b5a5ea24d676091c8096f63b2289bd110c0d02d7",
+      "sha256": "4fbf3ce583e3d42279f14579a0f3df94fb7ce36ec882ca7fe01f357e630c2905",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2260,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "f9cdbef56a7256ae86928635b09bee2eb3e710cd2f2672f69a20be1613c0eabc",
+      "sha256": "78fdb985da16948e6200000743b244da1f0f64fe95599ea6a13e68714ad7fd4a",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2391,7 +2391,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "22daba1ff652f661419a45225e33836937973b34d981aa1d38a0b589ba0b0f89",
+      "sha256": "cd202bae5c57cc7151535f9e07c46bc056cf4a439257a9ecc3f4261ed050e41c",
       "exceptions": [
         {
           "rule": "script-name",

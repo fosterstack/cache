@@ -3,8 +3,6 @@
 ruling Oct 12, handoff 0393: the release chain's judge admits no inline Python, no assignment of a protected variable and no
 interpreter run on a variable path).
 
-  build-apk-helper.py build-date EPOCH
-      prints EPOCH (digits) as an ISO 8601 UTC time (2026-09-21T00:59:40Z); exit 1 when it is not a date.
   build-apk-helper.py recipe-facts RECIPE GOARCH OUTFILE
       writes name=, file=, sha= (this architecture's toolchain fetch) and one pin= line per pinned build package; exit 1 when the
       recipe cannot be read or has not exactly one such fetch for GOARCH.
@@ -47,14 +45,6 @@ import stat
 import sys
 
 
-def build_date(epoch):
-    iso = iso_time(epoch)
-    if iso is None:
-        return 1
-    print(iso)
-    return 0
-
-
 def recipe_facts(recipe, goarch, outfile):
     import yaml
     try:
@@ -72,43 +62,33 @@ def recipe_facts(recipe, goarch, outfile):
     return 0
 
 
-def sealed_env(datafile):
+def sealed_env_items(datafile):
+    """The NAME=value items of the closed list (None when the file is refused): the fixed items, then each named variable of the environment."""
     try:
         d = json.load(open(datafile))
-        keys = {"closed", "from_environment"}
-        if not isinstance(d, dict) or set(d) != keys:
-            return 1
-        fixed = d["closed"]
-        if not isinstance(fixed, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in fixed.items()):
-            return 1
-        for k in keys - {"closed"}:
-            if not isinstance(d[k], list) or not all(isinstance(x, str) for x in d[k]):
-                return 1
     except (OSError, ValueError):
-        return 1
+        return None
+    if not isinstance(d, dict) or set(d) != {"closed", "from_environment"}:
+        return None
+    fixed, names = d["closed"], d["from_environment"]
+    if not isinstance(fixed, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in fixed.items()):
+        return None
+    if not isinstance(names, list) or not all(isinstance(x, str) for x in names):
+        return None
     out = ["%s=%s" % kv for kv in fixed.items()]
-    for name in d["from_environment"]:
+    for name in names:
         if name not in os.environ:
-            return 1
+            return None
         out.append("%s=%s" % (name, os.environ[name]))
+    return out
+
+
+def sealed_env(datafile):
+    out = sealed_env_items(datafile)
+    if out is None:
+        return 1
     sys.stdout.buffer.write(b"".join(x.encode() + b"\0" for x in out))
     return 0
-
-
-def sealed_env_items(datafile):
-    """The NAME=value items sealed_env prints, as a list (None when the file is refused)."""
-    try:
-        d = json.load(open(datafile))
-        if not isinstance(d, dict) or set(d) != {"closed", "from_environment"}:
-            return None
-        out = ["%s=%s" % kv for kv in d["closed"].items()]
-        for name in d["from_environment"]:
-            if name not in os.environ:
-                return None
-            out.append("%s=%s" % (name, os.environ[name]))
-        return out
-    except (OSError, ValueError, AttributeError, TypeError):
-        return None
 
 
 def read_fips_module(path):
@@ -501,15 +481,13 @@ def main(argv):
             print(why, file=sys.stderr)
             return 1
         return 0
-    if len(argv) == 3 and argv[1] == "build-date":
-        return build_date(argv[2])
     if len(argv) == 5 and argv[1] == "recipe-facts":
         return recipe_facts(argv[2], argv[3], argv[4])
     if len(argv) == 3 and argv[1] == "sealed-env":
         return sealed_env(argv[2])
     if len(argv) == 3 and argv[1] == "fips-module":
         return fips_module(argv[2])
-    print("usage: build-apk-helper.py build-date EPOCH | recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | sealed-call ARG... | fips-module FILE | check-args | arg | abs-file | exclude-file | melange-verdict | check-buildinfo | check-revision | go-verdict", file=sys.stderr)
+    print("usage: build-apk-helper.py recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | sealed-call ARG... | fips-module FILE | check-args | arg | abs-file | exclude-file | melange-verdict | check-buildinfo | check-revision | go-verdict", file=sys.stderr)
     return 2
 
 

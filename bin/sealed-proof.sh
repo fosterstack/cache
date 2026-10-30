@@ -63,8 +63,6 @@ for w in shlex.split(sys.argv[1]): sys.stdout.write(w+"\0")' "$aargs")   # quote
 for ((i = 0; i < ${#bwords[@]}; i++)); do case ${bwords[$i]} in --source-dir|--out|--render-dir|--apk-cache-dir) die "${bwords[$i]} in --build-args: this option is supplied by the proof; refusing" 2;; --recipe) die "--recipe in --build-args: the build uses the committed recipe; refusing" 2;; esac; done
 for ((i = 0; i < ${#awords[@]}; i++)); do case ${awords[$i]} in --archive|--out|--render-dir) die "${awords[$i]} in --assemble-args: this option is supplied by the proof; refusing" 2;; --apko-config|--base-lock|--index-record|--key-record) die "${awords[$i]} in --assemble-args: the assembly uses the committed files; refusing" 2;; esac; done
 # the victim is a package the image uses: the first package of the BASE LOCK by (name, architecture), the same choice lock-proof makes
-bl=
-for ((i = 0; i < ${#awords[@]}; i++)); do [ "${awords[$i]}" = --base-lock ] && bl=${awords[$((i + 1))]:-}; done
 variant= version= melrepo= keydir=
 for ((i = 0; i < ${#awords[@]}; i += 2)); do   # the assembler's four options, each with its value; the assembler takes them in a fixed order
   case ${awords[$i]} in
@@ -75,8 +73,9 @@ for ((i = 0; i < ${#awords[@]}; i += 2)); do   # the assembler's four options, e
     *) die "unknown argument in --assemble-args: ${awords[$i]}" 2;;
   esac
 done
-if [ -z "$bl" ]; then case $variant in production) bl=$here/../build/locks/apko.base.lock.json;; fips) bl=$here/../build/locks/apko-fips.base.lock.json;; esac; fi
-[ -f "$bl" ] || die "the base lock for the negative case cannot be found (pass --base-lock in --assemble-args)"
+bl=
+case $variant in production) bl=$here/../build/locks/apko.base.lock.json;; fips) bl=$here/../build/locks/apko-fips.base.lock.json;; esac
+[ -f "$bl" ] || die "the base lock for the negative case cannot be found (the variant is production or fips)"
 victim=$("$PY3" -I -B - "$bl" "sealed-proof.sh" <<'PY'
 import json, re, sys
 e = sorted(json.load(open(sys.argv[1]))["contents"]["packages"], key=lambda e: (e["name"], e["architecture"]))[0]
