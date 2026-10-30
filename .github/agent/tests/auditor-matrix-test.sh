@@ -3530,7 +3530,7 @@ ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch
     # judged by main's
     # script; its verdict is a job output
     and on["workflow_run"].get("workflows")==["CI"]
-    and set(on["workflow_run"].get("types",[]))=={"requested","completed"}
+    and on["workflow_run"].get("types")==["requested"]
     and "environment" not in q and q.get("permissions")=={"contents":"read"}
     and "secrets." not in yaml.safe_dump(q) and not tok(q) and "verdict" in (q.get("outputs") or {})
     and q.get("if")=="github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'"
@@ -3546,7 +3546,7 @@ ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch
     and "!cancelled()" in str(qp.get("if")) and "github.event.workflow_run.event == 'merge_group'" in str(qp.get("if"))
     and scoped(tok(qp)) and "actions/checkout" not in yaml.safe_dump(qp) and "git " not in runs(qp)
     and "refs/pull" not in runs(qp)
-    and "[0-9a-f]{40}" in runs(qp) and "github.event.workflow_run.head_sha" in yaml.safe_dump(qp)
+    and "${#HEAD_SHA}" in runs(qp) and "[!0-9a-f]" in runs(qp) and "github.event.workflow_run.head_sha" in yaml.safe_dump(qp)
     and "needs.queue-judge.outputs.verdict" in yaml.safe_dump(qp) and "-f name=auditor-review-gate" in runs(qp)
     and "RUN_LINK" in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(q)
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
@@ -3567,7 +3567,7 @@ ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch
     and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
     and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and "auditor-review-gate.py" not in wr
     and 'check-action-pins.py --verify-tags --git "$sha"' in wr and "PIN_WIRING_JUDGE_GIT=\"$sha\"" in wr
-    and "checkout" not in wr and "statuses" not in src)
+    and "checkout" not in wr and "statuses" not in src and "gh-readonly-queue" not in wr)
 # the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]

@@ -34,20 +34,14 @@ name: Agent review gate
 #   executed; it runs only the default branch's gate script.
 #
 # THE MERGE QUEUE (REQ-DEP-005-AC3, cache#542). The required check `auditor-review-gate` must also be posted on the
-# merge queue's commit, by the App. Why the queue judge is a `workflow_run` job and not a `merge_group` job:
-# - A `merge_group` run has GITHUB_REF = the ref of the merge group, never the default branch. GitHub: "The deployment
-#   branch or tag rule is matched against the GITHUB_REF of the workflow run", so a merge_group job cannot reach the
-#   `agent` environment, which holds the App credentials and is restricted to the default branch. That rule is not
-#   widened. Which copy of the workflow a merge_group run uses is not documented either; if it were the queue commit's
-#   own copy, a pull request would edit the gate that judges it.
-# - `workflow_run` runs the default branch's copy of this file ("This event will only trigger a workflow run if the
-#   workflow file exists on the default branch"), with GITHUB_REF the default branch, and "is able to access secrets
-#   and write tokens, even if the previous workflow was not". GitHub warns that running untrusted code on this trigger
-#   may lead to security vulnerabilities, so the job runs no code of the group: the group's head is fetched as a git
-#   object, validated first, and only .github/agent/bin/queue-gate-judge.sh (main's copy) reads it, as git objects.
-# - `requested` fires when the queue starts CI (the verdict is posted early); `requested` does not occur on a re-run,
-#   so `completed` covers that. The sweep below also lists the queue refs as the fallback (up to 10 minutes later).
-# - Every failure to read, validate or judge publishes failure, never success: the queue judge fails closed.
+# merge queue's head, by the App. The queue judge is a `workflow_run` job, not a `merge_group` job, because a
+# merge_group run has a GITHUB_REF that is never the default branch, so it cannot reach the `agent` environment that
+# holds the App credentials. `workflow_run` runs the default branch's copy of this file, so the group never edits it.
+# - queue-judge holds no secret and runs no code of the group: the head is fetched as a git object and only main's
+#   .github/agent/bin/queue-gate-judge.sh reads it. queue-publish holds the App token and touches no group data.
+# - `requested` fires when the queue starts CI, so the verdict is posted early. A missing verdict leaves the check
+#   absent and the queue ejects the group at its timeout: that fails closed, and no sweep covers it.
+# - Every failure to read, validate or judge publishes failure, never success.
 
 on:
   pull_request_target:
@@ -55,7 +49,7 @@ on:
   # the merge queue's CI run (REQ-DEP-005-AC3): the job `queue-judge` only; every other job tests event_name
   workflow_run:
     workflows: [CI]
-    types: [requested, completed]
+    types: [requested]
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
@@ -75,7 +69,8 @@ concurrency:
   group: >-
     agent-review-gate-${{ github.event.pull_request.number
     || (inputs.audit_head != '' && format('record-{0}', inputs.audit_pr))
-    || (github.event_name == 'workflow_run' && format('queue-{0}', github.event.workflow_run.head_sha))
+    || (github.event_name == 'workflow_run'
+        && format('queue-{0}-{1}', github.event.workflow_run.event, github.event.workflow_run.head_sha))
     || 'sweep' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
@@ -229,11 +224,7 @@ jobs:
           AUDIT_HEAD: ${{ inputs.audit_head }}
         run: bash bin/audit-record-judge.sh "$AUDIT_HEAD" main
 
-  # REQ-DEP-005-AC3: the review gate on the merge queue's head. Runs from the default branch's copy (workflow_run), so
-  # the group never edits or skips it (see the header). Two jobs, as for pull requests: queue-judge reads the group's
-  # commits as git objects through main's .github/agent/bin/queue-gate-judge.sh and holds no secret and no environment;
-  # queue-publish holds the App token, checks nothing out and touches no group data. Anything unreadable, invalid or
-  # failing posts failure, never success.
+  # REQ-DEP-005-AC3: the review gate on the merge queue's head (see the header).
   queue-judge:
     name: agent review gate — queue judge
     if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'
@@ -255,27 +246,25 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          GH_TOKEN: ${{ github.token }}   # read-only: tag lookups and the passed-audit records
+          GH_TOKEN: ${{ github.token }}   # read-only: tag lookups, the passed-audit records, the pull request's head branch
         run: |
           set -uo pipefail
           verdict=failure
-          if [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
-             && [[ "$HEAD_BRANCH" =~ ^gh-readonly-queue/main/pr-[0-9]+-[0-9a-f]{40}$ ]]; then
-            if git fetch --no-tags -q origin "+refs/heads/main:refs/remotes/origin/main" \
-               && git fetch --no-tags -q origin "+refs/heads/${HEAD_BRANCH}:refs/remotes/queue/head" \
-               && [ "$(git rev-parse refs/remotes/queue/head)" = "$HEAD_SHA" ]; then
-              bash .github/agent/bin/queue-gate-judge.sh "$HEAD_SHA" "$HEAD_BRANCH" && verdict=success
-            else
-              echo "::error::the queue head could not be fetched, or it moved; a newer run judges it" >&2
-            fi
-          else
-            echo "::error::the queue head or its ref is not in the expected form" >&2
+          case "$HEAD_BRANCH" in
+            gh-readonly-queue/main/*[!A-Za-z0-9._/-]* | *..* | gh-readonly-queue/main/) HEAD_BRANCH= ;;
+            gh-readonly-queue/main/*) ;;
+            *) HEAD_BRANCH= ;;
+          esac
+          # the fetched tip must be the event's head: that, not the ref's name, ties the ref to the head
+          if [ "${#HEAD_SHA}" -eq 40 ] && [[ "$HEAD_SHA" != *[!0-9a-f]* ]] && [ -n "$HEAD_BRANCH" ] \
+             && git fetch --no-tags -q origin "+refs/heads/main:refs/remotes/origin/main" \
+             && git fetch --no-tags -q origin "+refs/heads/${HEAD_BRANCH}:refs/remotes/queue/head" \
+             && [ "$(git rev-parse refs/remotes/queue/head)" = "$HEAD_SHA" ] \
+             && bash .github/agent/bin/queue-gate-judge.sh "$HEAD_SHA" "$HEAD_BRANCH"; then
+            verdict=success
           fi
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-
-      - name: fail the job when the verdict is not success
-        if: ${{ always() && steps.judge.outputs.verdict != 'success' }}
-        run: exit 1
+          [ "$verdict" = success ]
 
   queue-publish:
     name: agent review gate — queue publish
@@ -304,7 +293,7 @@ jobs:
           RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+          [ "${#HEAD_SHA}" -eq 40 ] && [[ "$HEAD_SHA" != *[!0-9a-f]* ]] \
             || { echo "::error::the queue head is not 40 lower-case hex" >&2; exit 1; }
           if [ "$VERDICT" = "success" ]; then
             conclusion=success
@@ -393,42 +382,4 @@ jobs:
               -f "output[summary]=Judged by the scheduled sweep (the PR's own run had no App credentials)." >/dev/null || fail=1
             echo "PR #${n} ${sha:0:7}: ${conclusion}"
           done < "$RUNNER_TEMP/prs.txt"
-          # the merge queue's refs (REQ-DEP-005-AC3), the fallback of the queue-judge job: the same once-per-head
-          # rule. The refs API is read with the read-only token; a ref is used only if it is exactly
-          # gh-readonly-queue/main/pr-N-<40 hex>
-          GH_TOKEN="$LIST_TOKEN" gh api --paginate \
-            "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/gh-readonly-queue/main/" \
-            --jq '.[] | "\(.ref) \(.object.sha)"' > "$RUNNER_TEMP/queue.txt" || fail=1
-          git fetch --no-tags -q origin "+refs/heads/${DEFAULT}:refs/remotes/origin/main" || fail=1
-          while read -r qref sha; do
-            [ -n "$qref" ] || continue
-            qname="${qref#refs/heads/}"
-            if ! [[ "$qname" =~ ^gh-readonly-queue/main/pr-[0-9]+-[0-9a-f]{40}$ ]] \
-               || ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::unexpected queue ref"; fail=1; continue
-            fi
-            last="$(GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
-                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
-                      elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end")" \
-              || { fail=1; continue; }
-            case "$last" in success|stale) continue ;; esac
-            git fetch --no-tags -q origin "+refs/heads/${qname}:refs/remotes/queue/sweep" || { fail=1; continue; }
-            [ "$(git rev-parse refs/remotes/queue/sweep)" = "$sha" ] || continue     # moved: next sweep
-            conclusion=failure
-            if GH_TOKEN="$LIST_TOKEN" bash .github/agent/bin/queue-gate-judge.sh "$sha" "$qname"; then
-              conclusion=success
-            fi
-            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then
-              echo "queue ${sha:0:7}: still failure"; continue
-            fi
-            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
-              -f name=auditor-review-gate -f head_sha="$sha" \
-              -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
-              -f "output[title]=auditor review gate: ${conclusion}" \
-              -f "output[summary]=Judged by the scheduled sweep (the merge queue judge had not posted a verdict)." \
-              >/dev/null || fail=1
-            echo "queue ${sha:0:7}: ${conclusion}"
-          done < "$RUNNER_TEMP/queue.txt"
           exit "$fail"

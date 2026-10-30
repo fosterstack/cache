@@ -136,12 +136,12 @@ risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
 def is_risky(k):
     return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
 steps_all = job.get("steps", [])
-# the two steps whose env is judged exactly below are exempt from the name list (BASE, GITHUB_HEAD_REPO)
+# the two steps whose env is judged exactly below are exempt from the name list (BASE, GITHUB_HEAD_REPO, GITHUB_QUEUE_REF)
 for where, env in [("the workflow", d.get("env")), ("the allowlist job", job.get("env"))] + \
         [(f"step {i}", st.get("env")) for i, st in enumerate(steps_all)]:
     if isinstance(env, dict):
         for k in sorted(k for k in env if is_risky(k)):
-            if where == "step 2" and k == "GITHUB_HEAD_REPO":
+            if where == "step 2" and k in ("GITHUB_HEAD_REPO", "GITHUB_QUEUE_REF"):
                 continue
             bad.append(f"{where} sets env {k}")
 # nothing that reaches every step of the allowlist job from above
@@ -196,7 +196,9 @@ else:
         if k in steps_[0]:
             bad.append(f"the allowlist checkout has `{k}`")
 for name, want_env in (("fetch", {"BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"}),
-                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}"})):
+                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}",
+                                  "GITHUB_QUEUE_REF": "${{ github.event.merge_group.head_ref }}",
+                                  "GH_TOKEN": "${{ github.token }}"})):
     if len(idx[name]) != 1:
         bad.append(f"the allowlist job does not have exactly one {name} step with the exact command")
         continue
@@ -630,7 +632,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/audit-record-test.sh"
   },
   {
-   "name": "the review gate in the merge queue \u2014 the judge of a queue's temporary branch, from main's copy, fails closed (REQ-DEP-005-AC3)",
+   "name": "the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)",
    "run": "bash .github/agent/tests/queue-gate-judge-test.sh"
   },
   {
@@ -952,6 +954,8 @@ case_ allowlist-shell-override  bad "$ck['shell'] = \"bash -c 'true' {0}\""
 case_ allowlist-workdir         bad "$ck['working-directory'] = 'bin'"
 case_ allowlist-env-removed     bad "$ck.pop('env')"
 case_ allowlist-env-changed     bad "$ck['env'] = {'GITHUB_HEAD_REPO': ''}"
+case_ allowlist-queue-ref-changed bad "$ck['env']['GITHUB_QUEUE_REF'] = 'other'"
+case_ allowlist-queue-token-gone  bad "$ck['env'].pop('GH_TOKEN')"
 case_ fetch-removed             bad "$steps[:] = [s for s in $steps if 'git fetch' not in (s.get('run') or '')]"
 case_ fetch-or-true             bad "$fe['run'] = $fe['run'].rstrip() + ' || true'"
 case_ fetch-if-false            bad "$fe['if'] = 'false'"

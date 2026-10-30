@@ -357,6 +357,24 @@ SUPPRESSION_PATTERNS=(
   # through the auditor lane's auditor/panel branch
   '^\.auditor/panel-state\.json$'
 )
+# The merge queue's commit has no pull request head branch (GITHUB_QUEUE_REF is set there, to the queue ref). The pull
+# request the ref names (gh-readonly-queue/main/pr-<N>-<sha>) is read through the API, one call, and its head branch and
+# repository stand in for GITHUB_HEAD_REF and GITHUB_HEAD_REPO, so the lane rule below is the same one. An unclear
+# or failed lookup stops the check: there is no fallback to the queue ref's name.
+if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
+  _q="${GITHUB_QUEUE_REF#refs/heads/}"
+  case "$_q" in gh-readonly-queue/main/pr-[0-9]*-*) ;; *) echo "blocked — not a merge queue ref: ${GITHUB_QUEUE_REF}" >&2; exit 1 ;; esac
+  _n="${_q#gh-readonly-queue/main/pr-}"; _n="${_n%%-*}"
+  [[ "$_n" != *[!0-9]* ]] || { echo "blocked — no pull request number in the merge queue ref" >&2; exit 1; }
+  _answer="$(gh api "repos/${GITHUB_REPOSITORY:-}/pulls/${_n}" --jq '[.head.ref // "", .head.repo.full_name // ""] | @tsv')" \
+    || { echo "blocked — the head branch of pull request ${_n} could not be looked up" >&2; exit 1; }
+  _tab="$(printf '\t')"
+  case "$_answer" in *"$_tab"*) ;; *) _answer= ;; esac
+  GITHUB_HEAD_REF="${_answer%%"$_tab"*}"; GITHUB_HEAD_REPO="${_answer#*"$_tab"}"
+  if [ -z "$_answer" ] || [ -z "$GITHUB_HEAD_REF" ] || [ -z "$GITHUB_HEAD_REPO" ] || [ "$(printf '%s\n' "$_answer" | wc -l)" -ne 1 ]; then
+    echo "blocked — pull request ${_n} did not name one head branch and repository" >&2; exit 1
+  fi
+fi
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves
 # to a non-auditor branch, i.e. suppression paths stay blocked by default.

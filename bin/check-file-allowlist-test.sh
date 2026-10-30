@@ -168,7 +168,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "39687d6ce4b61a3c74d9fd41f219554ea81a753bb41fa109930a34da01103777"
+PINNED_SHA256 = "8f897cfe4774a2066ab85e203314df7f34568229f10bbd684cfa284633e86653"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -817,6 +817,59 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss ref
 # round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
+
+# The merge queue (REQ-DEP-005-AC1): the queue's commit has no pull request head branch, so the script looks up the
+# pull request named by GITHUB_QUEUE_REF through the API, with one call, and applies the same lane rule: only an
+# auditor/* branch of this repository may change a suppression file. A lookup that fails or is unclear fails the check.
+QSHA="$(printf 'a%.0s' $(seq 40))"
+QREF="refs/heads/gh-readonly-queue/main/pr-12-$QSHA"
+mkdir -p "$TMPROOT/qgh"
+cat > "$TMPROOT/qgh/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$QGH_LOG"
+[ "${QGH_FAIL:-}" = 1 ] && { echo "gh: HTTP 500" >&2; exit 1; }
+printf '%b' "${QGH_OUT-}"
+EOF
+chmod +x "$TMPROOT/qgh/gh"
+# qrun <expect> <desc> <queue ref> <gh output> <paths...>: the queue case, run inside $R (GITHUB_HEAD_REF is empty there)
+qrun() {
+  local expect="$1" desc="$2" qref="$3" ghout="$4"; shift 4
+  local out rc
+  : > "$TMPROOT/qgh.log"
+  out="$(cd "$R" && printf '%s\n' "$@" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
+    GITHUB_HEAD_REF="" GITHUB_REF_NAME="${qref#refs/heads/}" GITHUB_QUEUE_REF="$qref" GITHUB_REPOSITORY=o/r \
+    "$ABS_SCRIPT" 2>&1)"; rc=$?
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+mkrepo "$R"; ( cd "$R" && echo '{"a":9}' > $PS && mkdir -p internal && echo 'package y' > internal/other.go && g add -A && g commit -qm edit )
+qrun pass "queue: an auditor/* branch of this repository may change a suppression file" "$QREF" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: any other branch may not change a suppression file" "$QREF" 'feature/x\to/r\n' "$PS"
+qrun fail "queue: main as the head branch is not the suppression lane" "$QREF" 'main\to/r\n' "$PS"
+qrun fail "queue: an auditor/* branch of a fork may not change a suppression file" "$QREF" 'auditor/x\tfork/r\n' "$PS"
+qrun fail "queue: an auditor/* look-alike prefix may not change a suppression file" "$QREF" 'auditorX/x\to/r\n' "$PS"
+qrun pass "queue: an ordinary file passes for any branch" "$QREF" 'feature/x\to/r\n' internal/other.go
+
+QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" "$QREF" '' internal/other.go
+QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" "$QREF" '' "$PS"
+qrun fail "queue: an empty answer is a failure" "$QREF" '' "$PS"
+qrun fail "queue: two answers are ambiguous, a failure" "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' "$PS"
+qrun fail "queue: an answer with no repository is a failure" "$QREF" 'auditor/x\t\n' "$PS"
+qrun fail "queue: an answer with no branch is a failure" "$QREF" '\to/r\n' "$PS"
+qrun fail "queue: a queue ref with no pull request number is refused" "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: a queue ref with a non-numeric pull request number is refused" "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: a ref that is not a queue ref is refused" "refs/heads/feature/x" 'auditor/x\to/r\n' "$PS"
+qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun pass "queue: one lookup" "$QREF" 'auditor/x\to/r\n' "$PS"
+[ "$(wc -l < "$TMPROOT/qgh.log")" -eq 1 ] && gp "queue: the lookup is exactly one gh call" || gf "queue: the lookup is exactly one gh call" "$(cat "$TMPROOT/qgh.log")"
+grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call reads pull request 12 of this repository" || gf "queue: the call reads pull request 12 of this repository" "$(cat "$TMPROOT/qgh.log")"
+: > "$TMPROOT/qgh.log"
+( cd "$R" && printf '%s\n' "$PS" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" GITHUB_HEAD_REF=auditor/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main \
+    GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
+[ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
