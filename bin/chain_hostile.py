@@ -20,7 +20,7 @@ ALL_ROWS = ATTEMPTS + ["positive_control"]
 ROW_STAGES = ("runner", "build", "sign", "rebuild", "check", "release")
 # (allowed stages, cause words) per attempt; a refusal counts only when stage and cause fit
 FITS = {
-    "mint_sign_cert": (("sign", "release"), ("stage-sign.yml", "identity")),
+    "mint_sign_cert": (("sign", "release"), ("stage-sign.yml", "identity", "manifest key")),      # keyed: a record made with a key the manifest does not name
     "read_sign_token": (("runner",), ("nothing usable",)),
     "read_sign_key": (("runner",), ("nothing usable",)),
     "hand_sign_code": (("sign",), ("digest", "format")),

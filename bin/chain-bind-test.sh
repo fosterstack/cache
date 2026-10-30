@@ -709,7 +709,7 @@ def sr_expect_check(root, groups=(("check-records.json", ("witness-scanners", "w
 
 def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
     dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else ["witness-scanners", "witness-acceptance", "witness-runtime", "witness-arm64"] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
-    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
+    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--keys-dir", KEYS_DIR, "--digests", "digests.json", "--out", out]
     if stage == "rebuild" and expect:
         a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
     if stage == "check" and expect:
@@ -726,6 +726,28 @@ def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
 
 REPO_ROOT = root
 REPO_TEMPLATE = root + "/.github/policy/release-policy.template.json"
+
+
+def make_keys_dir():
+    """A key manifest made here (handoff 0713): an offline root key and a release key from openssl, the manifest signed by the root key. The
+    committed manifest does not exist yet (the owner makes the root key), and sign-records checks one before it reads a record."""
+    d = work + "/keys"
+    os.makedirs(d)
+    def ssl(*a, **kw):
+        return subprocess.run(("openssl",) + a, check=True, capture_output=True, **kw).stdout
+    for n in ("root", "rel"):
+        ssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", "%s/%s.key" % (d, n))
+        ssl("pkey", "-in", "%s/%s.key" % (d, n), "-pubout", "-out", "%s/%s.pub" % (d, n))
+    der = ssl("pkey", "-pubin", "-in", d + "/rel.pub", "-outform", "DER")
+    body = json.dumps({"public_key": open(d + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"
+    open(d + "/release-key-manifest.json", "wb").write(body)
+    sig = ssl("dgst", "-sha256", "-sign", d + "/root.key", d + "/release-key-manifest.json")
+    open(d + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    shutil.copy(d + "/root.pub", d + "/release-key-root.pub")
+    return d
+
+
+KEYS_DIR = make_keys_dir()
 
 
 def sr(label, root, stage, want_rc, words=(), env=None, args=None, at=None):

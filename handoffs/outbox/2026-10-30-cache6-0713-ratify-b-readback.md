@@ -1,0 +1,17 @@
+# cache6 read-back: what ratify B changes in 0713 P1-P9 (no deletion, no code before your ack)
+
+1. Q1 is reversed. My uncommitted tree had dropped the rekor row (bin/chain-bytes-sha.py, bin/marker-gate-test.sh, bin/release-assets.sh, bin/release-metadata.py: rekor lines 2, 3, 2, 2 at HEAD, 0 now) and cut bin/chain-verify.py from 65 rekor lines to 1. All of that goes back, now meaning "the KMS key's signature plus its Rekor entry". P1 gets the Rekor entry check back in key form (no certificate): the entry is checked against rekor.pub, and Release refuses a signature without its entry. The removed Rekor cases return in key form; I have them in the scratch folder, cases-drop.txt.
+2. P5: nothing is deleted. My tree had four trust files staged as deleted; I restored them to HEAD today (the full diff is saved in my scratchpad first). Proposal, from a grep at HEAD, not yet checked against the new code: fulcio-chain.pem and tsa-chain.pem go (their readers at HEAD are chain-verify.py's certificate path and its tests, which 0713 removes; nothing key-based reads them). rekor.pub STAYS (reader: the Rekor entry check, pinned by sha256 in sigstore-trust.json). sigstore-trust.json STAYS, cut to the Rekor pin only (its Fulcio and TSA root hashes go).
+3. P3: cosign-signing-config.json is not the empty no-upload switch any more. At HEAD it names Fulcio, the OIDC issuer, Rekor v1 and a TSA; the key path needs only the Rekor v1 entry (rekorTlogUrls and its selector), so I propose caUrls, oidcUrls and tsaUrls emptied and Rekor kept. T1 must show this with the pinned cosign v3.1.3 and --key awskms; I cannot show an upload without calling a public Rekor.
+4. The guide has two paths: connected (public key + Rekor entry, the entry checked against the published rekor.pub) and air-gapped (public key alone, proven by running the pinned cosign with no network route, unshare -n). The Release job waits and retries when Rekor is down.
+5. Not built: the key-use alarm and the Rekor watcher (they wait for the owner's "code it"). Test order: restore the Rekor cases and the rekor row (P1/P6), then P5 file list, then P3 config and P4 workflow wiring.
+
+Questions for the orchestrator:
+- Q-a: "waits/retries when Rekor is down": how many tries and how long (a number, so a test can assert it)?
+- Q-b: the Rekor incident rule says no public service in any test. A real upload proof then needs a local stand-in Rekor, or it waits for the first real chain run (as T2 does). Which?
+- Q-c: is the TSA gone with Fulcio, or does the Rekor entry check still want a timestamp authority?
+
+## Answers received (orchestrator 0305) and what I will build
+- Rekor down: one try plus six retries (seven tries in all), six waits of 1, 2, 4, 8, 16 and 32 seconds (about 63 seconds), then Release fails closed with one line naming Rekor; a re-run continues. Reason: a short outage clears inside a minute, and a longer one should stop the release. bin/chain-rekor-key-test.sh asserts the seven tries, the six waits and the one-line refusal.
+- Tests use recorded Rekor fixtures and a local stand-in only. Nothing in a test writes to the public Rekor. The real upload proof is the first real chain run, quoted.
+- TSA: I know of no kept reader, since the key path reads the Rekor integrated time. tsa-chain.pem goes with Fulcio in P5, unless the new Rekor check code turns up a reader; I will name it before deleting.

@@ -14,7 +14,7 @@
 # where <stage> is the stage whose record it was (verify --stage S: S; stage-start: --previous; check-build-record, sign --check and record-env: build;
 # rebuild-compare: rebuild). The stages and (stage, previous) pairs are read from chain-verify.py's own tables, so a new one needs a case. Nothing in
 # this test needs a key, a network or OpenSSL beyond what `policy make` uses for the committed trust files: the fixtures are unsigned DSSE envelopes with
-# one dummy signature entry, so a record named build gets past the name check and is refused LATER for what it is (a certificate that is not one). That is
+# one dummy signature entry, so a record named build gets past the name check and is refused LATER for what it is (a signature that does not verify). That is
 # the control of every case: the same fixture named build is refused, but never as a snapshot record; a refusal that fires for both would prove nothing.
 # The full acceptance of a genuine, signed build record is proven by bin/chain-verify-test.sh.
 #
@@ -30,10 +30,15 @@ import atexit, base64, importlib.util, json, os, shutil, subprocess, sys, tempfi
 
 root = sys.argv[1]
 CV = root + "/bin/chain-verify.py"
-TEMPLATE = root + "/.github/policy/release-policy.template.json"
 work = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, work, ignore_errors=True)
 passed = failed = 0
+TEMPLATE = work + "/pol/release-policy.template.json"      # the committed template beside a throwaway key manifest (handoff 0713): `policy make` reads the manifest from the template's directory
+os.makedirs(work + "/pol")
+shutil.copy(root + "/.github/policy/release-policy.template.json", TEMPLATE)
+for _f in ("rekor.pub", "sigstore-trust.json"):      # `policy make` pins the Rekor key from the committed files beside the template (ratify B)
+    shutil.copy(root + "/.github/policy/" + _f, work + "/pol/" + _f)
+subprocess.run([sys.executable, root + "/bin/chain-test-harness.py", "keys", work + "/pol"], check=True, capture_output=True)
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:digests.json"
 
 
@@ -64,7 +69,7 @@ def record(path, name, files=()):
     statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
                  "subject": subjects, "predicate": {"name": name, "attestations": []}}
     envelope = {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
-                "signatures": [{"sig": base64.b64encode(b"x").decode(), "certificate": base64.b64encode(b"x").decode()}]}
+                "signatures": [{"sig": base64.b64encode(b"x").decode()}]}
     with open(os.path.join(work, path), "w") as f:
         json.dump(envelope, f)
 
@@ -150,7 +155,7 @@ for name, want_snapshot in (("snapshot-build", True), ("build", False)):
 
 def raw_record(path, statement):
     envelope = {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
-                "signatures": [{"sig": base64.b64encode(b"x").decode(), "certificate": base64.b64encode(b"x").decode()}]}
+                "signatures": [{"sig": base64.b64encode(b"x").decode()}]}
     with open(os.path.join(work, path), "w") as f:
         json.dump(envelope, f)
 

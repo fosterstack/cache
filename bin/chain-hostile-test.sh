@@ -327,11 +327,24 @@ fi
 mkdir -p "$work/stepsign" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepsign/fns.sh"
 printf 'attempt_mint_sign_cert\nattempt_forge_provenance\n' >> "$work/stepsign/fns.sh"
 (cd "$work/stepsign" && env -i PATH="$PATH" HOME="$work" bash fns.sh > /dev/null 2>&1)
-(cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$root/.github/policy/release-policy.template.json" --ref refs/tags/v0.3.0-rc1 --out policy.json > /dev/null 2>&1)
+# the policy needs a key manifest (handoff 0713): made here with a throwaway root key and release key, since the committed manifest is the owner's
+mkdir -p "$work/keys"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/root.key" 2> /dev/null && openssl pkey -in "$work/keys/root.key" -pubout -out "$work/keys/release-key-root.pub" \
+  && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/rel.key" 2> /dev/null && openssl pkey -in "$work/keys/rel.key" -pubout -out "$work/keys/rel.pub" \
+  && python3 - "$work/keys" <<'PY' && openssl dgst -sha256 -sign "$work/keys/root.key" -out "$work/keys/sig.der" "$work/keys/release-key-manifest.json" \
+  && python3 -c 'import base64,sys; sys.stdout.write(base64.b64encode(open(sys.argv[1], "rb").read()).decode() + "\n")' "$work/keys/sig.der" > "$work/keys/release-key-manifest.sig" \
+  || { bad "hostile step (Sign refusals): the throwaway key manifest could not be made"; }
+import hashlib, json, subprocess, sys
+d = sys.argv[1]
+der = subprocess.run(["openssl", "pkey", "-pubin", "-in", d + "/rel.pub", "-outform", "DER"], capture_output=True, check=True).stdout
+json.dump({"public_key": open(d + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, open(d + "/release-key-manifest.json", "w"), sort_keys=True, indent=1)
+PY
+prc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$root/.github/policy/release-policy.template.json" --keys-dir "$work/keys" --ref refs/tags/v0.3.0-rc1 --out policy.json 2> policy-make.err > /dev/null) || prc=$?
+[ "$prc" = 0 ] && [ -s "$work/stepsign/policy.json" ] || bad "hostile step (Sign refusals): policy make failed (exit $prc: $(head -c 200 "$work/stepsign/policy-make.err" 2> /dev/null | tr '\n' ' '))"
 for a in mint_sign_cert forge_provenance; do
   vrc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" verify --stage sign --record "attempts/$a.json" --policy policy.json 2> "$a.err") || vrc=$?
   hrc=0; (cd "$work/stepsign" && mkdir -p results && python3 "$root/bin/chain-verify.py" hostile-row --attempt "$a" --exit-code "$vrc" --stderr "$a.err" --out "results/$a.json" > /dev/null 2>&1) || hrc=$?
-  if [ -s "$work/stepsign/attempts/$a.json" ] && [ "$vrc" = 1 ] && grep -q "refused at sign" "$work/stepsign/$a.err" && grep -q "stage-sign.yml" "$work/stepsign/$a.err" && [ "$hrc" = 0 ] && [ -s "$work/stepsign/results/$a.json" ]; then ok "hostile step: the real $a attempt leaves a throwaway-key record without any token, the real verifier refuses it at sign naming stage-sign.yml, and hostile-row counts the refusal"; else bad "hostile step: $a material and refusal" "verify rc $vrc, row rc $hrc, $(head -c 200 "$work/stepsign/$a.err" 2>&1)"; fi
+  if [ -s "$work/stepsign/attempts/$a.json" ] && [ "$vrc" = 1 ] && grep -q "refused at sign" "$work/stepsign/$a.err" && grep -q "manifest key" "$work/stepsign/$a.err" && [ "$hrc" = 0 ] && [ -s "$work/stepsign/results/$a.json" ]; then ok "hostile step: the real $a attempt leaves a throwaway-key record without any token, the real verifier refuses it at sign naming stage-sign.yml, and hostile-row counts the refusal"; else bad "hostile step: $a material and refusal" "verify rc $vrc, row rc $hrc, $(head -c 200 "$work/stepsign/$a.err" 2>&1)"; fi
 done
 xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
