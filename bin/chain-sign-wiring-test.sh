@@ -2741,8 +2741,18 @@ PY
 expect ok "AC1 evidence-letter.yml is admitted beside stage-sign.yml when its signing job is on the id-token list" tree "$d"
 d=$(mk t_letter_unlisted); addletter "$d"
 expect caught "AC1 evidence-letter.yml's signing job must be on the id-token list" tree "$d"
-d=$(mk t_letter_third); addletter "$d"; cp "$good" "$d/.github/workflows/stage-extra.yml"
-expect caught "AC1 a third new workflow file is still refused, with evidence-letter.yml present" tree "$d"
+# the third file must be refused for being a third file: evidence-letter.yml is listed on the id-token list and stage-extra.yml signs nothing,
+# so the only finding left is the workflow-name one (F3 of the cache#777 round-one ruling)
+d=$(mk t_letter_third); addletter "$d"; printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n        with:\n          persist-credentials: false\n' "$sha" > "$d/.github/workflows/stage-extra.yml"
+python3 - "$d/.github/policy/id-token-jobs.json" <<'PY'
+import json, sys
+p = sys.argv[1]; j = json.load(open(p))
+j["jobs"].append({"workflow": "evidence-letter.yml", "job": "sign", "reason": "the monthly evidence letter's one signing job (REQ-REL-013-AC9)"})
+json.dump(j, open(p, "w"))
+PY
+out=$(judge tree "$d" 2>/dev/null) || true
+if [ "$out" = "AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52) and at most evidence-letter.yml (the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md), found ['evidence-letter.yml', 'stage-extra.yml', 'stage-sign.yml']" ]; then pass=$((pass + 1)); echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone, with evidence-letter.yml listed"
+else failn=$((failn + 1)); echo "FAIL AC1 third new workflow file -> ${out:0:500}"; fi
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
@@ -3294,7 +3304,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='1f2b96f6030d87bd596454f12a6368e69824fd145c5ceb60b344206ab2f21f1b'
+FX_PIN='ab36ddaf5bbf70cf8612f622977af47c7ab76c8bc6e4574ec4eea928ba4d9b1e'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
