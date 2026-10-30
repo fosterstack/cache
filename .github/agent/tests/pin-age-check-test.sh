@@ -5160,5 +5160,41 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
 assert rc == 2 and err.getvalue().count("\n") == 1 and "not a pass" in err.getvalue() and "Traceback" not in err.getvalue(), (rc, err.getvalue())
 assert ac._checked_pins({"gcr.io/a/b": {"keyless": [ID], "source": "a note", "key_source": "a note"}})
 PY
+CASE="pin age (error lines): an error that carries a path with newlines is one line at every print site"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ac)
+root = sys.argv[2]
+EVIL = "a\n::warning::x\n\x1b[31m##[warning]y/requirements.txt is too large to read safely"
+def run(argv):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(argv)
+    return rc, err.getvalue()
+def one_line(label, rc, text):
+    lines = text.split("\n")
+    ok = rc == 2 and len(lines) == 2 and lines[1] == "" and not any(l.startswith("::") for l in lines)
+    assert ok, (label, rc, text)
+    assert "::warning::x" in lines[0] and "too large to read safely" in lines[0], (label, text)
+    assert "\x1b" not in lines[0] and "##[" not in lines[0], (label, text)
+def raising(error):
+    def boom(*a, **k):
+        raise error
+    return boom
+SCAN = ["--root", root, "--base", "HEAD", "--head", "HEAD"]
+VERIFY = ["cosign-verify", "--root", root, "--head", "HEAD"]
+ac.inv.load_at = raising(RuntimeError(EVIL))      # the tree read: its error carries a path of the pull request
+one_line("cosign-verify, a tree read error", *run(VERIFY + ["--cosign-image", "gcr.io/x/y@sha256:" + "0" * 64]))
+one_line("the age check, a tree read error", *run(SCAN))
+ac._json_file = raising(OSError(EVIL))
+one_line("cosign-verify, a tools file error", *run(VERIFY + ["--tools-file", "x"]))
+ac.inv.load_at = lambda *a, **k: {}
+ac._run = raising(RuntimeError(EVIL))
+one_line("the age check, a RuntimeError while it runs", *run(SCAN))
+ac._run = raising(ac.CouldNotLook(EVIL))
+one_line("the age check, a CouldNotLook", *run(SCAN))
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
