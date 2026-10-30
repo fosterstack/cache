@@ -1512,6 +1512,28 @@ mappings:
   - ac: REQ-VEND-001-AC15
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC16
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records_cli.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_signed_commit.py" }
+  - ac: REQ-VEND-001-AC17
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records_cli.py" }
+  - ac: REQ-VEND-001-AC18
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records.py" }
+  - ac: REQ-VEND-001-AC19
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_signed_commit.py" }
+  - ac: REQ-VEND-001-AC20
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_signed_commit.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records.py" }
+  - ac: REQ-VEND-001-AC21
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_vendor_records_cli.py" }
   - ac: REQ-BUILDAPK-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
@@ -1717,6 +1739,9 @@ mappings:
   - ac: REQ-IMAGE-001-AC12
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/check-no-outbound-test.sh" }
   - ac: REQ-GUIDE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
