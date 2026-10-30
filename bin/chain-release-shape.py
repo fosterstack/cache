@@ -430,6 +430,8 @@ def graph(path):
             bad.append("job %s has continue-on-error or secrets" % n)
     # no job of release.yml creates a tag or a release, decide included (handoff 0713 P8: nothing here signs a tag, so nothing cuts one)
     rest = json.dumps(jobs)
+    # matches `gh api repos/o/r/git/refs -f ref=refs/tags/v9.9.9` (the refs API makes a tag); refuses nothing in
+    # `gh api repos/o/r/git/commits/abc` (reading a commit makes no tag)
     if re.search(r"git tag|git push|git/(refs|tags)|create-release|gh release create", rest):
         bad.append("release.yml creates a tag or a release (git tag, git push, the refs API or gh release create): no job may")
     return bad

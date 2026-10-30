@@ -22,7 +22,7 @@ files = listing.stdout.decode().split("\0")
 # not scanned: documents and history, evidence, and every test (a test may name what it proves is refused)
 SKIP = re.compile(r"^(docs/|requirements/|results/|test-evidence/)|(^|/)tests?/|-test\.(sh|py)$"
                   r"|(^|/)test_[^/]*\.py$|\.md$")
-WORDS = re.compile(r"gitsign|smimesign|gpg\.format\s*=\s*x509|gpg\.x509\.program", re.I)
+WORDS = re.compile(r"gitsign|smimesign|gpg\.format[\s=]+x509|gpg\.x509\.program", re.I)
 passed = failed = 0
 
 
@@ -42,6 +42,8 @@ for word in ("gitsign", "smimesign", "gpg.format=x509", "gpg.x509.program"):
           WORDS.search("run: " + word.title() + " sign"), "the scan finds %s in lower, upper and title case" % word)
 check(WORDS.search("git -c gpg.format = x509 tag -s v1"),
       "the scan finds gpg.format = x509 with spaces around the equals sign")
+check(WORDS.search("git config gpg.format x509"),
+      "the scan finds the config form git config gpg.format x509 (a space, no equals sign)")
 check(not WORDS.search("git tag -s v1 with gpg.format=ssh and a signing key"),
       "the scan does not flag an SSH-signed tag")
 
