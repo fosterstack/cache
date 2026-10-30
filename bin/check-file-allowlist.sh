@@ -317,10 +317,10 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
-  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish and verify scripts, the two tests
-  # and the signatory text.
+  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
+  # two tests and the signatory text.
   '^bin/evidence-letter\.py$'
-  '^bin/evidence-letter(-fetch|-publish|-verify|-test|-job-test)\.sh$'
+  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
   '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
