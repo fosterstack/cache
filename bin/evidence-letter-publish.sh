@@ -11,6 +11,11 @@
 #   the KMS federation of the Sign role reaches this job (cache6's P3); until then it fails closed.
 set -euo pipefail
 die() { echo "evidence-letter-publish: $*" >&2; exit 1; }
+if [ -z "${RELEASE_KMS_KEY_REF:-}" ]; then echo "evidence-letter-publish: RELEASE_KMS_KEY_REF is unset" >&2; exit 2; fi
+case $RELEASE_KMS_KEY_REF in
+  awskms:///?*) ;;
+  *) die "RELEASE_KMS_KEY_REF is not an awskms:/// reference: nothing is signed" ;;
+esac
 letter=${1:?the letter file is the first argument}
 [ -f "$letter" ] && [ ! -L "$letter" ] || die "$letter is not a regular file"
 repo=${REPO:-fosterstack/cache}
@@ -18,7 +23,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # the key Release trusts, checked against the offline root: a manifest not vouched for, or a revoked one, ends it first
 refusal=$(bash bin/evidence-letter-verify.sh key "$work/release-key.pub" 2>&1) ||
   die "${refusal#evidence-letter-verify: }: nothing is signed"
-cosign sign-blob --yes --key awskms:///alias/fosterstack-release-signing \
+cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" \
   --signing-config .github/policy/cosign-signing-config.json --bundle "$letter.bundle" "$letter"
 refusal=$(bash bin/evidence-letter-verify.sh pair "$letter" "$work/release-key.pub" 2>&1) ||
   die "${refusal#evidence-letter-verify: }: not published"

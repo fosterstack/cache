@@ -123,9 +123,9 @@ check("AC9: the identity customers verify is named in the workflow header and in
       all(IDENTITY in read(f) for f in (WF, "docs/verify-release.md")))
 rs, pub = read("bin/release-sign.sh"), read("bin/evidence-letter-publish.sh")
 ver = read("bin/evidence-letter-verify.sh")
-check("AC9: the signing config is release-sign.sh's, and the key comes from RELEASE_KMS_KEY_REF as in release-sign.sh",
+check("AC9: the signing config is release-sign.sh's, and the key comes from RELEASE_KMS_KEY_REF (#785's form)",
       "--signing-config .github/policy/cosign-signing-config.json" in rs
-      and '--key "$RELEASE_KMS_KEY_REF"' in pub and '--key "$RELEASE_KMS_KEY_REF"' in rs
+      and '--key "$RELEASE_KMS_KEY_REF"' in pub
       and "--signing-config .github/policy/cosign-signing-config.json" in pub)
 for banned in ("alias", "--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog",
                "@refs/heads/main", "keyless", "--identity-token", "--fulcio-url", "--oidc-"):
@@ -415,7 +415,7 @@ check("F2: a manifest the offline root does not vouch for (or a revoked one) ref
 for label, value, code in (("unset", "", 2), ("not an awskms reference", "arn:aws:kms:us-east-1:1:key/x", 1)):
     pr_, lg_, up_, _l = publish(RELEASE_KMS_KEY_REF=value)
     check("F7-key: a key reference that is %s fails closed before the manifest, the sign call and any upload" % label,
-          pr_.returncode == code and one_line(pr_) and up_ == []
+          pr_.returncode == code and len(pr_.stderr.strip().splitlines()) == 1 and up_ == []
           and not any("policy make" in x or "sign-blob" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
 check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",

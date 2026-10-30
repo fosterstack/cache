@@ -98,4 +98,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MONTH: ${{ needs.draft.outputs.month }}
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/evidence-letter-publish.sh "letter/evidence-letter-$MONTH.md"
