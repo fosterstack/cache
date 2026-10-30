@@ -107,8 +107,10 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 bin/layout-archive.sh bin/layout-archive-test.sh
+bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
+bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 """.split())
-if len(DECLARED) != 56: errs.append("declared list is not 56 paths: %d" % len(DECLARED))
+if len(DECLARED) != 62: errs.append("declared list is not 62 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -118,8 +120,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 201 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 201, 6
+# 204 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K), plus the three evidence-letter patterns
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 204, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0

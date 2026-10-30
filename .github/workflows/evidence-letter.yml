@@ -1,0 +1,97 @@
+name: Evidence letter
+
+# The monthly signed evidence letter (REQ-REL-013; owner Oct 27, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md). Once a month a job without
+# an identity token fetches the month's release assets and makes the letter (bin/evidence-letter.py reads every line back from them); a second job,
+# the only one with an identity token, signs it keyless by the call of bin/release-sign.sh and attaches it to the latest published release.
+# Customers verify the signature against this workflow's identity:
+#   https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main      (docs/verify-release.md)
+# If any check fails, or the signatory is still the placeholder, the first job fails and nothing is signed or published.
+
+on:
+  schedule:
+    - cron: '17 6 2 * *'
+  workflow_dispatch:
+    inputs:
+      month:
+        description: 'Month to make the letter for, YYYY-MM (default: last month)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evidence-letter
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    name: draft
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      month: ${{ steps.month.outputs.month }}
+      made: ${{ steps.letter.outputs.made }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: the month
+        id: month
+        env:
+          INPUT_MONTH: ${{ inputs.month }}
+        run: |
+          month="${INPUT_MONTH:-$(date -u -d "$(date -u +%Y-%m-01) -1 month" +%Y-%m)}"
+          echo "month=$month" >> "$GITHUB_OUTPUT"
+
+      - name: fetch the release assets and the advisories
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MONTH: ${{ steps.month.outputs.month }}
+        run: bash bin/evidence-letter-fetch.sh "$MONTH" work
+
+      - name: make the letter and read it back
+        id: letter
+        env:
+          MONTH: ${{ steps.month.outputs.month }}
+        run: |
+          python3 -I bin/evidence-letter.py --month "$MONTH" --releases work/rel --advisories work/advisories.json \
+            --controls docs/controls.md --signatory docs/evidence-letter-signatory.txt --out letter
+          if [ -f "letter/evidence-letter-$MONTH.md" ]; then echo "made=true" >> "$GITHUB_OUTPUT"; else echo "made=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ steps.letter.outputs.made == 'true' }}
+        with:
+          name: evidence-letter
+          path: letter
+          if-no-files-found: error
+
+  sign:
+    name: sign
+    needs: draft
+    if: ${{ needs.draft.outputs.made == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: evidence-letter
+          path: letter
+
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
+
+      - name: sign the letter and attach it to the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MONTH: ${{ needs.draft.outputs.month }}
+        run: bash bin/evidence-letter-publish.sh "letter/evidence-letter-$MONTH.md"
