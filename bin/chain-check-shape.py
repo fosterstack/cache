@@ -61,35 +61,44 @@ GV_IDS = "${{ needs.govulncheck-build.outputs.artifact-id }}"
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # the keyless helper keeps only Release's six; Check's steps run under the local helper (REQ-REL-011-AC1)
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "SIGSTORE_ID_TOKEN"]   # PR 2's; never github or slsa
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
 
 
 def witnessed_lines():
-    """PR 2's canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list."""
+    """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list. Handoff 0713: Witness signs with the release KMS key
+    by its alias; the identity token (audience sts.amazonaws.com) goes to a file in a private directory under RUNNER_TEMP that a trap removes, the AWS SDK reads it through
+    AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN, and every step but release-sign runs its script without those two variables."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in %s) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac' % STEP_LIST,
             'mkdir -p "witness-${step#snapshot-}"',
-            "oidc_token() {",
-            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" '
-            '"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value',
-            "}",
-            "tok=$(oidc_token)",
+            ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
+            ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
+            ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
+            'case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) echo "witnessed: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1 ;; esac',
+            "umask 077",
+            'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
+            "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
+            'sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" '
+            '"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
+            'tok=$(cat "$td/token")',
+            '[ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
             'echo "::add-mask::$tok"',
-            "unset SIGSTORE_ID_TOKEN",
-            'if [ "$step" = release-sign ]; then',
-            "  sig=$(oidc_token)",
-            '  [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }',
-            '  echo "::add-mask::$sig"',
-            '  export SIGSTORE_ID_TOKEN="$sig"',
-            "fi",
+            'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"',
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
-            "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
-            '--signer-fulcio-token-path <(printf %%s "$tok") -t https://timestamp.sigstore.dev/api/v1/timestamp '
+            'if [ "$step" = release-sign ]; then',
+            "  wrap=()",
+            "else",
+            "  wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)",
+            "fi",
+            "rc=0",
+            'witness run --step "$step" --signer-kms-ref "$RELEASE_KMS_KEY_REF" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"' % keys]
+            '-o "witness-${step#snapshot-}/$step-collection.json" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?' % keys,
+            'rm -rf "$td"',
+            '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
+            'exit "$rc"']
 
 
 def commands_of(raw):

@@ -146,11 +146,11 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|manifest)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
   '^\.github/policy/rekor\.pub$'
+  '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the

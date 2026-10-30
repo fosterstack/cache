@@ -128,46 +128,6 @@ stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n    
           + "      - id: records-arm64\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"\n"
           + up("witness-check-arm64", "witness-arm64") + up("check-results-arm64", "check-results"))
 open(w + "/stage.yml", "w").write(stage)
-open(w + "/witnessed.sh", "w").write("""#!/usr/bin/env bash
-# PR 2's helper (origin/pipeline-chain-build-rebuild) with PR 3's three steps in the closed list.
-set -euo pipefail
-step="$1"
-shift
-case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
-mkdir -p "witness-${step#snapshot-}"
-oidc_token() {
-  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \\
-    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value
-}
-tok=$(oidc_token)
-echo "::add-mask::$tok"
-unset SIGSTORE_ID_TOKEN
-if [ "$step" = release-sign ]; then
-  sig=$(oidc_token)
-  [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }
-  echo "::add-mask::$sig"
-  export SIGSTORE_ID_TOKEN="$sig"
-fi
-unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
-unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
-exec witness run --step "$step" \\
-  --signer-fulcio-url https://fulcio.sigstore.dev \\
-  --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com \\
-  --signer-fulcio-oidc-client-id sigstore \\
-  --signer-fulcio-token-path <(printf %s "$tok") \\
-  -t https://timestamp.sigstore.dev/api/v1/timestamp \\
-  -a environment,git,material,product \\
-  --env-filter-sensitive-vars \\
-  --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' \\
-  --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \\
-  --env-add-sensitive-key GH_TOKEN \\
-  --env-add-sensitive-key GITHUB_TOKEN \\
-  --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \\
-  --env-add-sensitive-key DOCKERHUB_USERNAME \\
-  --env-add-sensitive-key DOCKERHUB_TOKEN \\
-  --env-add-sensitive-key SIGSTORE_ID_TOKEN \\
-  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
-""")
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
 PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results",
                     "python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results"]),
@@ -237,6 +197,7 @@ os.makedirs(w + "/plain", exist_ok=True)
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}" + (".py" if n == "check-govulncheck" else ".sh"), "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
+cp "$root/bin/witnessed.sh" "$work/witnessed.sh"      # the known-good helper is the canonical text (handoff 0713: KMS signer); the cases below break it one property at a time
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
 printf '{"scanners": ["grype", "osv-scanner"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "inspector"]}\n' > "$work/scanners.json"
@@ -418,28 +379,28 @@ m s_xupdup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a8
 m s_xrec 'witness-runtime\n' 'witness-runtime\n            witness-extra\n' 'check step' "AC1 round 1 F6: the witness-check upload holds an extra record directory"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
-hm h_notmo   ' -- timeout -k 20 540 bash "\$@"'                      ' -- bash "$@"'                                          'the helper'        "AC11 no timeout around the wrapped command"
-hm h_600     'timeout -k 20 540'                                'timeout -k 20 600'                                            'the helper'        "AC11 a cap of 10 minutes (the certificate lifetime)"
-hm h_nok     'timeout -k 20 540'                                'timeout 540'                                            'the helper'        "AC11 round 1: the timeout without its kill-after (a command that ignores TERM would hold the job)"
-hm h_k30     'timeout -k 20 540'                                'timeout -k 30 540'                                      'the helper'        "AC11 round 1: another kill-after"
-hm h_k0      'timeout -k 20 540'                                'timeout -k 0 540'                                       'the helper'        "AC11 round 1: a kill-after of zero"
-hm h_two     'echo "::add-mask'                                 'timeout 540 true\necho "::add-mask'                      'the helper'        "AC11 timeout stated twice"
 hm h_twowit  'unset ACTIONS_RUNTIME_TOKEN'                      'witness run --step x -- true\nunset ACTIONS_RUNTIME_TOKEN' 'the helper'     "AC11 a second witness run"
 hm h_dflag   '  -o "witness-'                                   '  -d out -o "witness-'                                   'the helper'        "AC9 the working-directory flag"
 hm h_gh      '-a environment,git,material,product'              '-a environment,git,github,product'                      'the helper'        "AC9 the github attestor (it embeds the raw OIDC token)"
 hm h_slsa    '-a environment,git,material,product'              '-a environment,git,material,product,slsa'               'the helper'        "AC9 the slsa attestor (Sign's alone)"
-hm h_ts      '-t https://timestamp.sigstore.dev/api/v1/timestamp' '-t https://timestamp.example.com/api'                  'the helper'        "AC9 another timestamp authority"
-hm h_fulcio  '--signer-fulcio-url https://fulcio.sigstore.dev'  '--signer-fulcio-url https://fulcio.example.com'          'the helper'        "AC9 another Fulcio"
 hm h_nofilt  '  --env-filter-sensitive-vars \\\n'             ''                                                       'the helper'        "AC9 the environment filter dropped"
 hm h_tok     '--env-add-sensitive-key GITHUB_TOKEN'             '--env-add-sensitive-key SOMETHING_ELSE'                  'the helper'        "AC9 a token variable no longer filtered"
 hm h_out     '-o "witness-\$\{step#snapshot-\}/\$step-collection.json"' '-o elsewhere.json'                                'the helper'        "AC9 the record written elsewhere"
 hm h_mask    'echo "::add-mask::\$tok"'                        'echo hi'                                                'the helper'        "AC9 the token is no longer masked"
 hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
-hm h_tokfile '<\(printf %s "\$tok"\)'                         '"$RUNNER_TEMP/tok"'                                     'the helper'        "AC9 the token passed through a file (PR 2: one-read process substitution)"
 hm h_noset   'set -euo pipefail\n'                              ''                                                       'the helper'        "AC11 the helper without set -euo pipefail"
 hm h_nostep  'release-verify\|release-apks\|'              ''                                                      'the helper'        "AC11 two of Release's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
 hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
+hm h_kref    '--signer-kms-ref "\$RELEASE_KMS_KEY_REF"'    '--signer-kms-ref awskms:///alias/other'                 'the helper'        "AC9 another KMS key reference"
+hm h_fulcio  '--signer-kms-ref'                                '--signer-fulcio-url https://fulcio.example.com --signer-kms-ref' 'the helper'  "AC9 a Fulcio flag (keyless signing is gone)"
+hm h_ts      '--signer-kms-ref'                                '-t https://timestamp.example.com/api --signer-kms-ref'  'the helper'        "AC9 a timestamp authority flag"
+hm h_aud     'audience=sts.amazonaws.com'                      'audience=sigstore'                                      'the helper'        "AC9 the token asked for another audience"
+hm h_notrap  'trap [^\n]*EXIT HUP INT TERM\n'                  ''                                                       'the helper'        "AC9 no trap: the token directory outlives an interrupted run"
+hm h_wrap0   'wrap=\(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN\)' 'wrap=()'                                    'the helper'        "AC9 the wrapped script keeps both AWS variables"
+hm h_sens    '--env-add-sensitive-key AWS_ROLE_ARN'            ''                                                       'the helper'        "AC9 the role variable is not a sensitive key"
+hm h_exec    'witness run --step'                              'exec witness run --step'                                'the helper'        "AC9 witness exec'd (the cleanup after it would never run)"
+hm h_ign     '\|\| rc=\$\?'                                    '|| true'                                                'the helper'        "AC9 a failure of the witnessed command is ignored"
 # ---- AC14: the kind check and the cluster ------------------------------------------------------------------------------
 cm() { if mutate "$work/k8s.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" cluster "$work/$1.sh"; fi; }
 cm c8_tag    '@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5' ''                             'by digest'          "AC14 the node image by tag only"
@@ -683,7 +644,7 @@ expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github
 expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
 for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
-expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
+expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the KMS signer (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, sign, sign-rebuild and sign-check" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh

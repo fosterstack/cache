@@ -21,13 +21,13 @@ step="$1"
 shift
 case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
-unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN
+unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN
 umask 077
 kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")
 trap 'rm -rf "$kd"' EXIT HUP INT TERM
 openssl genpkey -algorithm ed25519 -out "$kd/key.pem"
 rc=0
-witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN --env-add-sensitive-key GH_TOKEN --env-add-sensitive-key GITHUB_TOKEN --env-add-sensitive-key APK_RELEASE_SIGNING_KEY --env-add-sensitive-key DOCKERHUB_USERNAME --env-add-sensitive-key DOCKERHUB_TOKEN --env-add-sensitive-key SIGSTORE_ID_TOKEN -o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?
+witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN --env-add-sensitive-key GH_TOKEN --env-add-sensitive-key GITHUB_TOKEN --env-add-sensitive-key APK_RELEASE_SIGNING_KEY --env-add-sensitive-key DOCKERHUB_USERNAME --env-add-sensitive-key DOCKERHUB_TOKEN --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE --env-add-sensitive-key AWS_ROLE_ARN -o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?
 rm -rf "$kd"
 [ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }
 exit "$rc"

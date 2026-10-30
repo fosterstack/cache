@@ -110,11 +110,12 @@ def witness_block(spec_):       # the stage's Witness step(s): one line through 
     return out + "      - name: %s under Witness\n        if: %s\n        run: %s\n" % (S.SNAPSHOT_STEP[spec_["step"]], S.MODE_SNAPSHOT_IF, snap)
 
 
-def witnessed_text():           # bin/witnessed-local.sh, the exec line broken at its flag groups (the fixture side of the seam, 2/2)
+def witnessed_text():           # bin/witnessed.sh, the witness line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
-    for flag in (" --signer-fulcio-url", " -t ", " -a ", " -o "):
-        lines[-1] = lines[-1].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[-1].replace(flag, " \\\n " + flag, 1)
-    comment = "# run one stage script under Witness: keyless Fulcio, the timestamp authority, the attestors, `timeout 540` (rule 68)"
+    i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
+    for flag in (" --signer-kms-ref", " -a ", " -o "):
+        lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
+    comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
     return "#!/usr/bin/env bash\n" + comment + "\n" + "\n".join(lines) + "\n"
 
 
@@ -596,16 +597,6 @@ expect caught "AC1 stage-admission.yml still present" "still exists" workflows "
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm tnone   "AC2 no timeout (a build could outlive Fulcio's 10-minute certificate)" '-- timeout -k 20 540 bash "$@"' '-- bash "$@"'
-hm t600    "AC2 timeout 600 (past the certificate's life)" '-- timeout -k 20 540' '-- timeout -k 20 600'
-hm t0      "AC2 timeout 0 (no limit)" '-- timeout -k 20 540' '-- timeout -k 20 0'
-hm tvar    "AC2 the limit from a variable" '-- timeout -k 20 540' '-- timeout -k 20 "$T"'
-hm tnok    "AC2 round 1: no kill-after (a command that ignores TERM would hold the job)" '-- timeout -k 20 540' '-- timeout 540'
-hm tk30    "AC2 round 1: another kill-after" '-- timeout -k 20 540' '-- timeout -k 30 540'
-hm tbefore "AC2 the timeout around Witness instead of the command (the certificate is requested before it starts)" 'exec witness run' \
-       'exec timeout 540 witness run'
-hm furl    "AC2 another Fulcio address" 'https://fulcio.sigstore.dev' 'http://fulcio.evil.example'
-hm ftsa    "AC2 another timestamp authority" 'https://timestamp.sigstore.dev/api/v1/timestamp' 'https://tsa.example/ts'
 hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-${step#snapshot-}' '-d out -o "witness-${step#snapshot-}'
 hm fextra  "AC2 an extra Witness flag" '--env-filter-sensitive-vars' '--enable-archivista --env-filter-sensitive-vars'
 hm fnoflt  "AC8 no environment filter flag (tokens would be recorded)" '--env-filter-sensitive-vars' ''
@@ -616,20 +607,27 @@ hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
 hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
 hm fopen   "AC2 the step list is open" 'release-verify' '*'
-hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value' '| jq -r .value | tee /tmp/leak'
-hm ffile "AC2 the token in a file again (the older form): a file under the runner temp folder while the command runs" \
-       '<(printf %s "$tok")' '"$RUNNER_TEMP/tok"'
-hm ffileb "AC2 the token written to a file before the exec" 'echo "::add-mask::$tok"' 'echo "::add-mask::$tok"\nprintf %s "$tok" > "$RUNNER_TEMP/tok"'
 hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
 hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
-hm fcat    "AC2 the token read through a second process substitution" '<(printf %s "$tok")' '<(cat <(printf %s "$tok"))'
-hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout -k 20 540 bash "$@"' '-- timeout -k 20 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
-hm sigall "AC15 a helper that gives the sigstore token to every step but one (not to release-sign alone) is refused" 'if [ "$step" = release-sign ]; then' 'if [ "$step" != apk ]; then'
-hm signomask "AC15 a helper that exports the sigstore token without masking it is refused" $'  echo "::add-mask::$sig"\n  export' '  export'
-hm signofail "AC15 a helper that does not stop on an empty sigstore token is refused" $'  [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }\n' ''
+hm kref    "AC2 another KMS key reference" '--signer-kms-ref "$RELEASE_KMS_KEY_REF"' '--signer-kms-ref awskms:///alias/other'
+hm kfulcio "AC2 a Fulcio flag (keyless signing is gone)" '--signer-kms-ref' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-kms-ref'
+hm ktsa    "AC2 a timestamp authority flag (the Rekor entry carries the time)" '--signer-kms-ref' '-t https://tsa.example/ts --signer-kms-ref'
+hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts.amazonaws.com)" 'audience=sts.amazonaws.com' 'audience=sigstore'
+hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
+hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
+hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
+hm kwrap0  "AC2 the wrapped script keeps both AWS variables" 'wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)' 'wrap=()'
+hm kwrap1  "AC2 only one of the two AWS variables is removed from the wrapped script" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
+hm ksignall "AC2 every step keeps the variables, not release-sign alone" 'if [ "$step" = release-sign ]; then' 'if [ "$step" != apk ]; then'
+hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
+hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
+hm kghenv  "AC2 the token file written to GITHUB_ENV" 'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"' $'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"\necho "AWS_WEB_IDENTITY_TOKEN_FILE=$td/token" >> "$GITHUB_ENV"'
+hm kclean  "AC2 the token directory not removed after Witness returns" $'rm -rf "$td"\n[ ! -e' '[ ! -e'
+hm fexec   "AC2 witness exec'd (the cleanup after it would never run)" 'witness run --step' 'exec witness run --step'
+hm fignore "AC2 a failure of the witnessed command is ignored" '|| rc=$?' '|| true'
 hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
@@ -678,7 +676,7 @@ lm lrelease "WIT1 a Release step in the list (Release keeps the keyless helper)"
 lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
-lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN\n' ''
+lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' ''
 lm ltimeout "WIT1 no time limit on the build" '-- timeout -k 20 540 bash' '-- bash'
 lm lsnapdir "WIT1 a snapshot record in its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 { cat "$work/witnessed-local.sh"; echo "witness run --step x -- true"; } > "$work/l_second.sh"
@@ -699,7 +697,7 @@ done
 [ -f "$key" ] || { echo "stub: no key file" >&2; exit 41; }
 { stat -c '%a' "$key" 2>/dev/null || stat -f '%Lp' "$key"; } > "$STUB_KEEP/keymode" 2>/dev/null
 { stat -c '%a' "$(dirname "$key")" 2>/dev/null || stat -f '%Lp' "$(dirname "$key")"; } > "$STUB_KEEP/dirmode" 2>/dev/null
-cp "$key" "$STUB_KEEP/keycopy"; echo "$key" > "$STUB_KEEP/keypath"; env | grep -E '^(ACTIONS_|SIGSTORE_)' > "$STUB_KEEP/envtokens" || true
+cp "$key" "$STUB_KEEP/keycopy"; echo "$key" > "$STUB_KEEP/keypath"; env | grep -E '^(ACTIONS_|AWS_WEB_IDENTITY|AWS_ROLE)' > "$STUB_KEEP/envtokens" || true
 case "${STUB_MODE:-ok}" in
   fail) exit 3 ;;
   sleep) echo $$ > "$STUB_KEEP/stubpid"; echo $PPID > "$STUB_KEEP/helperpid"; trap 'exit 143' TERM; : > "$STUB_KEEP/started"; sleep 30 & wait; exit 0 ;;
@@ -711,7 +709,7 @@ wclean() { find "${wl:?}/tmp" "${wl:?}/keep" -mindepth 1 -delete 2>/dev/null || 
 wrun() { # wrun STEP MODE  -> sets wl_rc; the helper runs in $wl with a clean runner temp folder
   wclean; wl_rc=0
   ( cd "$wl" && env -i PATH="$wl/stub:$PATH" HOME="$wl" RUNNER_TEMP="$wl/tmp" STUB_KEEP="$wl/keep" STUB_MODE="$2" \
-      ACTIONS_ID_TOKEN_REQUEST_TOKEN=leak-token ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/t SIGSTORE_ID_TOKEN=leak-sig \
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN=leak-token ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/t AWS_WEB_IDENTITY_TOKEN_FILE=leak-file AWS_ROLE_ARN=leak-role \
       bash bin/witnessed-local.sh "$1" true > "$wl/out.log" 2>&1 ) || wl_rc=$?; }
 wrun apk ok
 if [ "$wl_rc" = 0 ] && [ -f "$wl/witness-apk/apk-collection.local.json" ] && [ ! -e "$wl/witness-apk/apk-collection.json" ]; then ok "WIT2 a building step writes its record as <step>-collection.local.json and never the signed name"; else bad "WIT2 the record is not at witness-apk/apk-collection.local.json (rc=$wl_rc): $(ls "$wl" | tr '\n' ' ')"; fi
@@ -1459,171 +1457,11 @@ if [ -f "$CV" ] && [ "$rc" = 2 ]; then
 else
   bad "AC8 a missing record: exit $rc, wanted 2 (and the script must exist)"
 fi
-# ---- bin/witnessed.sh RUN against a fake witness, curl and timeout (REQ-CHAIN-004-AC2): the command is bounded and a failure leaves no record ------
-# The fake timeout enforces FAKE_TIMEOUT_SECONDS (a short test limit) and logs the limit it was given: the helper must give 540. The fake witness runs the
-# command after `--` and writes its -o record only when the command succeeded, as the real Witness does.
-# the name of the fake download program the helper trees put on PATH
-FAKE_FETCH_TOOL=curl
-helper_tree() { # helper_tree DIR HELPER
-  rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"; cp bin/loopback-get.sh "$1/bin/loopback-get.sh"
-  cat > "$1/bin/wrapped.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "wrapped $*" >> calls.log
-env > wrapped-env.txt
-ls "$RUNNER_TEMP"/tok* > tokfiles-while-running.txt 2> /dev/null || true
-[ -z "${SLEEP:-}" ] || sleep "$SLEEP"
-echo "{}" > digests.json
-exit "${WRAPPED_RC:-0}"
-EOF
-  cat > "$1/fake/witness" <<'EOF'
-#!/usr/bin/env bash
-echo "witness $*" >> calls.log
-args=("$@"); record=; i=0; tokpath=
-while [ $i -lt ${#args[@]} ]; do
-  [ "${args[$i]}" = -o ] && record=${args[$((i + 1))]}
-  [ "${args[$i]}" = --signer-fulcio-token-path ] && tokpath=${args[$((i + 1))]}
-  [ "${args[$i]}" = -- ] && break
-  i=$((i + 1))
-done
-# Witness loads its signer before the command runs, reading the token path ONCE; then nothing may hold the token as a file
-cat "$tokpath" > signer-token.txt
-ls "$RUNNER_TEMP"/tok* > tokfiles-at-start.txt 2> /dev/null || true
-"${args[@]:$((i + 1))}" || exit $?
-mkdir -p "$(dirname "$record")"; echo '{"record":true}' > "$record"
-EOF
-  cat > "$1/fake/$FAKE_FETCH_TOOL" <<'EOF'
-#!/usr/bin/env bash
-echo fetch >> calls.log
-n=$(grep -c '^fetch$' calls.log)
-[ "${CURL_FAIL_AT:-0}" != "$n" ] || exit 22
-[ "${CURL_EMPTY_AT:-0}" != "$n" ] || { printf '{"value":""}\n'; exit 0; }
-[ "${CURL_NULL_AT:-0}" != "$n" ] || { printf '{"value":null}\n'; exit 0; }
-printf '{"value":"FAKE-JWT-TOKEN-VALUE"}\n'
-EOF
-  cat > "$1/fake/timeout" <<'EOF'
-#!/usr/bin/env bash
-if [ "$1" = -k ]; then echo "timeout -k $2 $3" >> calls.log; shift 3; else echo "timeout $1" >> calls.log; shift; fi
-"$@" & pid=$!
-( sleep "${FAKE_TIMEOUT_SECONDS:-2}"; kill "$pid" 2> /dev/null ) & killer=$!
-wait "$pid"; status=$?; kill "$killer" 2> /dev/null; exit $status
-EOF
-  chmod +x "$1"/bin/* "$1"/fake/*
-}
-helper_run() { # helper_run DIR STEP [ENV=VAL...] -> prints the exit status of `bash bin/witnessed.sh STEP bin/wrapped.sh`
-  local dir=$1 step=$2; shift 2
-  ( cd "$dir" && if env "$@" PATH="$dir/fake:$PATH" RUNNER_TEMP="$dir/tmp" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SENTINEL-BEARER \
-      ACTIONS_RUNTIME_TOKEN=SENTINEL-RUNTIME ACTIONS_RUNTIME_URL="https://runtime.example/y" \
-      ACTIONS_ID_TOKEN_REQUEST_URL="https://pipelines.example/x?a=1" bash bin/witnessed.sh "$step" bin/wrapped.sh > helper.out 2> helper.err
-      then echo 0
-      else echo $?
-      fi )
-}
-for tag in fixture real; do
-  if [ "$tag" = fixture ]; then helper_script="$work/witnessed.sh"; else helper_script="$root/bin/witnessed.sh"; fi
-  if [ ! -f "$helper_script" ]; then
-    for l in "the command runs through witness with timeout 540 and the record is written" \
-             "no token file exists while the wrapped command runs and the signer was given the token once" \
-             "a command that outlives the (test) timeout fails the job and leaves no record and no digests.json" \
-             "a failing command fails the job and leaves no record" "an unknown step name exits 2 before witness is called" \
-             "the identity token appears only in the add-mask line" "the wrapped command's environment holds no identity-token variable" \
-             "a snapshot step writes its record into the release directory under the snapshot name" \
-             "an unknown snapshot step name (snapshot-evil) exits 2 before witness is called"; do
-      bad "AC2 $tag helper: $l (bin/witnessed.sh does not exist: RED until implemented)"
-    done
-    continue
-  fi
-  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-release-verify/release-verify-collection.json" ] && grep -Fq -- '--step release-verify' <<< "$calls" \
-     && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
-    ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
-  else
-    bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ] && [ ! -e "$d/digests.json" ]; then
-    ok "AC2 $tag helper: a command that outlives the (test) timeout fails the job and leaves no record and no digests.json"
-  else
-    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-release-verify" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify WRAPPED_RC=3)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ]; then
-    ok "AC2 $tag helper: a failing command fails the job and leaves no record"
-  else
-    bad "AC2 $tag helper: failing command -> rc=$rc"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
-    ok "AC12 $tag helper: snapshot-evil is not a step (the snapshot names are a closed list) and exits 2 before witness is called"
-  else
-    bad "AC12 $tag helper: snapshot-evil -> rc=$rc calls=$calls"
-  fi
-  # round 1 (Codex A F1, B B2; advisor ruling 3): release-sign alone receives one masked sigstore token as SIGSTORE_ID_TOKEN; nothing else does
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && grep -qx 'SIGSTORE_ID_TOKEN=FAKE-JWT-TOKEN-VALUE' "$d/wrapped-env.txt" \
-     && ! grep -q '^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt" \
-     && [ "$(grep -c '^::add-mask::FAKE-JWT-TOKEN-VALUE$' <<< "$printed" || true)" = 2 ] \
-     && [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 2 ]; then
-    ok "AC15 $tag helper: release-sign's command receives SIGSTORE_ID_TOKEN, no request variable, and every printed copy of a token is an add-mask line"
-  else
-    bad "AC15 $tag helper: release-sign -> rc=$rc env=$(grep -c 'SIGSTORE\|ACTIONS' "$d/wrapped-env.txt" 2> /dev/null) printed=$(grep -c FAKE <<< "$printed")"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-assets SIGSTORE_ID_TOKEN=INHERITED-SENTINEL)
-  if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|INHERITED-SENTINEL' "$d/wrapped-env.txt"; then
-    ok "AC15 $tag helper: a SIGSTORE_ID_TOKEN already in the environment is cleared for every step (only the helper's own minted token reaches release-sign)"
-  else
-    bad "AC15 $tag helper: an inherited SIGSTORE_ID_TOKEN reached a step that is not release-sign (rc=$rc)"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign SIGSTORE_ID_TOKEN=INHERITED-SENTINEL)
-  if [ "$rc" = 0 ] && grep -qx 'SIGSTORE_ID_TOKEN=FAKE-JWT-TOKEN-VALUE' "$d/wrapped-env.txt" && ! grep -q INHERITED-SENTINEL "$d/wrapped-env.txt"; then
-    ok "AC15 $tag helper: an inherited SIGSTORE_ID_TOKEN is replaced by the helper's own for release-sign"
-  else
-    bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
-  fi
-  for other in release-publish release-assets release-postverify; do
-    helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
-    if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
-      ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
-    else
-      bad "AC15 $tag helper: $other's environment holds an identity token variable (rc=$rc)"
-    fi
-  done
-  for what in "CURL_FAIL_AT=2" "CURL_EMPTY_AT=2" "CURL_NULL_AT=2"; do
-    helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign "$what"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-    if [ "$rc" != 0 ] && ! grep -q '^wrapped ' <<< "$calls" && ! grep -q '^witness ' <<< "$calls"; then
-      ok "AC15 $tag helper: release-sign stops (nothing runs, nothing exported) when its sigstore token fetch fails or is empty ($what)"
-    else
-      bad "AC15 $tag helper: $what -> rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-160)"
-    fi
-  done
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
-    ok "AC2 $tag helper: an unknown step name exits 2 before witness is called"
-  else
-    bad "AC2 $tag helper: unknown step -> rc=$rc calls=$calls"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
-  if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep -q '^::add-mask::' < <(grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed") \
-     && ! grep -q SENTINEL-BEARER <<< "$printed"; then
-    ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
-  else
-    bad "AC2 $tag helper: the token was printed more than in the add-mask line, or the bearer leaked"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify)
-  if [ "$rc" = 0 ] && [ "$(cat "$d/signer-token.txt" 2> /dev/null)" = FAKE-JWT-TOKEN-VALUE ] && [ -f "$d/tokfiles-while-running.txt" ] \
-     && [ ! -s "$d/tokfiles-at-start.txt" ] && [ ! -s "$d/tokfiles-while-running.txt" ] && [ -z "$(ls "$d/tmp" 2> /dev/null)" ] \
-     && ! grep -q FAKE-JWT-TOKEN-VALUE "$d/wrapped-env.txt"; then
-    ok "AC2 $tag helper: no token file exists while the wrapped command runs, the token is in no variable of its environment, and the signer got it"
-  else
-    bad \
-        "AC2 $tag helper: a token file or variable is left for the wrapped command, or the signer got no token" \
-        "(rc=$rc, files: $(ls "$d/tmp" 2> /dev/null | tr '\n' ' '))"
-  fi
-  if [ -f "$d/wrapped-env.txt" ] && ! grep -Eq \
-      'ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME|SENTINEL-BEARER|SENTINEL-RUNTIME|pipelines.example|runtime.example' "$d/wrapped-env.txt";
-  then
-    ok "AC2 $tag helper: the wrapped command's environment holds neither the identity-token nor the runtime-token variables or values"
-  else bad "AC2 $tag helper: the identity-token variables or their values reach the wrapped command"; fi
-done
+# ---- bin/witnessed.sh RUN: proven in bin/witness-kms-test.sh (handoff 0713, rows P2 and P9) ---------------------------------------------------------
+# The Release helper signs with the KMS key and holds the identity token in a private file. What it does when it runs (the token asked for once with audience
+# sts.amazonaws.com, the file and its directory, the AWS variables for Witness and for release-sign alone, a sensitive key for each, the directory removed on
+# every exit, a refusal before Witness for a missing role, region or token, the closed step list, the kept exit status) is run against doubles there, each
+# property also on a mutant. This suite keeps the TEXT of the helper (the shape judge and the mutations above) and the local wrapper's behaviour (WIT2).
 # ---- the stage scripts RUN against fake cache scripts (REQ-CHAIN-004-AC3, AC6, AC9; REQ-CHAIN-005-AC2) ---------------------------------------
 # bin/chain-test-harness.py builds a throw-away tree; the expected digests.json and items.json come from its ORACLE, never from anything the
 # implementation wrote. The fixtures run with the fake chain-verify.py (MODE oracle); the real scripts run with the REAL items-apk and items-merge
@@ -3091,7 +2929,7 @@ if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1061
+EXPECT=1026
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
