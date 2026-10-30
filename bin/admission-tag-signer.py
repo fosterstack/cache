@@ -178,19 +178,21 @@ def owner_baselines(tag, repo, allowed_signers, out):
     if not m:
         return []
 
-    def git(*a):
-        return subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers] + list(a),
-                              capture_output=True, text=True)
     got = []
-    for v in git("tag", "-l", "v%s.%s.*" % m.group(1, 2)).stdout.split():
+    tag_list = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "tag", "-l", "v%s.%s.*" % m.group(1, 2)], capture_output=True, text=True)
+    for v in tag_list.stdout.split():
         b = PATCH.match(v) or re.match(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0)$", v)
         if not b or b.group(1, 2) != m.group(1, 2) or int(b.group(3)) >= int(m.group(3)):
             continue
-        if git("cat-file", "-t", "refs/tags/" + v).stdout.strip() != "tag":
+        tag_kind = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file", "-t", "refs/tags/" + v], capture_output=True, text=True)
+        if tag_kind.stdout.strip() != "tag":
             continue
-        if kind(git("cat-file", "tag", "refs/tags/" + v).stdout) != "ssh" or git("verify-tag", v).returncode != 0:
+        tag_object = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file", "tag", "refs/tags/" + v], capture_output=True, text=True)
+        if kind(tag_object.stdout) != "ssh":
             continue
-        f = git("show", "%s:requirements/releases/%s.yaml" % (v, v))
+        if subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "verify-tag", v], capture_output=True, text=True).returncode != 0:
+            continue
+        f = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show", "%s:requirements/releases/%s.yaml" % (v, v)], capture_output=True, text=True)
         if f.returncode != 0:
             continue
         with open(os.path.join(out, v + ".yaml"), "w") as fh:
@@ -200,7 +202,7 @@ def owner_baselines(tag, repo, allowed_signers, out):
         # itself reads fine, this version must still appear as a candidate -- so baseline(), if it picks this
         # as the latest approved one, correctly refuses outright (no requirements to compare) rather than
         # silently falling back to an older, fully-readable baseline instead
-        req = git("show", "%s:requirements/requirements.yaml" % v)
+        req = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show", "%s:requirements/requirements.yaml" % v], capture_output=True, text=True)
         if req.returncode == 0:
             with open(os.path.join(out, v + ".requirements.yaml"), "w") as fh:
                 fh.write(req.stdout)

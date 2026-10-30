@@ -3610,7 +3610,7 @@ PY
 # admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
 # exactly those nine paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json; Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
 TREE=$(mktemp -d)/tree.sh
-{ echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
+{ echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'; sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
 tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
   mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > "$f/f"; done; echo '{}' > admission.json ); echo "$d"; }
 d=$(tree_repo)
@@ -3656,11 +3656,16 @@ BLOCK
 has_refusal_block() {
   python3 -I -c 'import sys; sys.exit(0 if sys.argv[1] in open(sys.argv[2]).read() else 1)' "$refusal_block" "$1"
 }
-if grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh \
-  && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh \
+# AC4 ruling (Oct 30): the two refusals moved into build-apk-helper.py check-buildinfo; fixed strings, whole lines
+CBI='"$PY3" -I -B bin/build-apk-helper.py check-buildinfo "$tmp/buildinfo.txt" "$version"'
+if grep -Fxq "$CBI" bin/build-apk.sh \
+  && grep -Fxq '    if "(devel)" in text:' bin/build-apk-helper.py \
+  && grep -Fxq '        raise Refused("the binary says (devel): the source was not stamped", 1)' bin/build-apk-helper.py \
+  && grep -Fxq '    if "vcs.modified=true" in text:' bin/build-apk-helper.py \
+  && grep -Fxq '        raise Refused("the binary was built from a modified (dirty) tree (vcs.modified=true)", 1)' bin/build-apk-helper.py \
   && has_refusal_block build/melange.yaml && has_refusal_block build/melange-fips.yaml; then
   msg="REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh"
-  ok "$msg ((devel) and vcs.modified) and in each of the two recipes"
+  ok "$msg (the check-buildinfo call line and the helper's (devel) and vcs.modified refusals) and in each of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi

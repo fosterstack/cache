@@ -65,7 +65,16 @@ for ((i = 0; i < ${#awords[@]}; i++)); do case ${awords[$i]} in --archive|--out|
 # the victim is a package the image uses: the first package of the BASE LOCK by (name, architecture), the same choice lock-proof makes
 bl=
 for ((i = 0; i < ${#awords[@]}; i++)); do [ "${awords[$i]}" = --base-lock ] && bl=${awords[$((i + 1))]:-}; done
-variant=; for ((i = 0; i < ${#awords[@]}; i++)); do [ "${awords[$i]}" = --variant ] && variant=${awords[$((i + 1))]:-}; done
+variant= version= melrepo= keydir=
+for ((i = 0; i < ${#awords[@]}; i += 2)); do   # the assembler's four options, each with its value; the assembler takes them in a fixed order
+  case ${awords[$i]} in
+    --variant) variant=${awords[$((i + 1))]:-};;
+    --version) version=${awords[$((i + 1))]:-};;
+    --melange-repo) melrepo=${awords[$((i + 1))]:-};;
+    --keyring-dir) keydir=${awords[$((i + 1))]:-};;
+    *) die "unknown argument in --assemble-args: ${awords[$i]}" 2;;
+  esac
+done
 if [ -z "$bl" ]; then case $variant in production) bl=$here/../build/locks/apko.base.lock.json;; fips) bl=$here/../build/locks/apko-fips.base.lock.json;; esac; fi
 [ -f "$bl" ] || die "the base lock for the negative case cannot be found (pass --base-lock in --assemble-args)"
 victim=$("$PY3" -I -B - "$bl" "sealed-proof.sh" <<'PY'
@@ -113,7 +122,8 @@ inside_tmp "$(dirname "$tmp/arch-nopkg/$victim")"
 # ---- rule 39: the real drivers ----
 apkdir=$out/apk; imgdir=$out/image
 "$BASHBIN" bin/build-apk.sh "${bwords[@]}" --source-dir "$src" --out "$apkdir" >"$tmp/build.log" 2>&1 || { cat "$tmp/build.log" >&2; die "the sealed build failed"; }
-"$BASHBIN" bin/assemble-image.sh "${awords[@]}" --archive "$archive" --out "$imgdir" >"$tmp/assemble.log" 2>&1 || { cat "$tmp/assemble.log" >&2; die "the sealed image assembly failed"; }
+"$BASHBIN" bin/assemble-image.sh --variant "$variant" --version "$version" --archive "$archive" --melange-repo "$melrepo" \
+  --keyring-dir "$keydir" --out "$imgdir" >"$tmp/assemble.log" 2>&1 || { cat "$tmp/assemble.log" >&2; die "the sealed image assembly failed"; }
 
 [ -n "$(find "$apkdir" -name '*.apk' -type f 2>/dev/null | head -n 1)" ] || die "no digests were produced: the build left no apk in $apkdir"
 compgen -G "$imgdir/*.digest" >/dev/null || die "no digests were produced: the image assembly left no *.digest file in $imgdir"
@@ -184,7 +194,8 @@ bwords_restored=("${bwords[@]}"); for ((i = 0; i + 1 < ${#bwords_restored[@]}; i
 "$BASHBIN" bin/build-apk.sh "${bwords_restored[@]}" --source-dir "$src" --out "$tmp/neg-build3" >"$tmp/neg4.log" 2>&1 || { tail -3 "$tmp/neg4.log" >&2; die "the build failed again with the package restored: the failure without $bvictim proves nothing about the package (inconclusive)"; }
 build_package_reason="the build succeeds with $bvictim in its repository and fails without it; last output: $(tail -n 1 "$tmp/neg3.log" | cut -c1-200)"
 rm -f "$tmp/arch-nopkg/$victim"
-if "$BASHBIN" bin/assemble-image.sh "${awords[@]}" --archive "$tmp/arch-nopkg" --out "$tmp/neg-image" >"$tmp/neg2.log" 2>&1; then
+if "$BASHBIN" bin/assemble-image.sh --variant "$variant" --version "$version" --archive "$tmp/arch-nopkg" \
+  --melange-repo "$melrepo" --keyring-dir "$keydir" --out "$tmp/neg-image" >"$tmp/neg2.log" 2>&1; then
   die "the image assembly still succeeded with an archived package deleted: not sealed to the archive (package)"
 fi
 package_reason=$(grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/neg2.log" | grep -F -- "$(basename "$victim")" | tail -n 1 || true)

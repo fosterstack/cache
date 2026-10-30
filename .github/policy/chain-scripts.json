@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "5df724aac2c74d37a5f513c53aad2b8520d2431f80235fdb90583becaa1470f1",
+      "sha256": "602d47d24c0747596b2d4cf56e9cccb14e0ec916040a4a19666054aa19cbfb0f",
       "tools": [
         "make",
         "at",
@@ -225,15 +225,24 @@
     },
     {
       "path": "bin/chain_common.py",
-      "sha256": "c6ae3f738900c141c24118b6acd8b8ee01bf51685ca62bc0ccf9019be7737e27",
+      "sha256": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
       "tools": [],
       "runs": [],
       "signs": false,
-      "reason": "imported by chain-verify.py and chain_hostile.py: the refusal, base64, the openssl call, strict JSON and the clock"
+      "reason": "imported by chain-verify.py and chain_hostile.py: the refusal, base64, the openssl call, strict JSON and the clock",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "OPENSSL = \"/usr/bin/openssl\"  # TEST-SUBST",
+          "line_sha256": "78e1882ee219f6d91683213fbf60f14e075cd7ed3f56fc8e9cec9a68dab0a930",
+          "count": 1,
+          "why": "the one fixed path of the openssl this module names, on a TEST-SUBST line so the test copy can name another; the cache#770 judge holds the line word for word"
+        }
+      ]
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "6579d4bdd52b9f26e0bafc2474ecd54847b48baf98bc738f0b8198dd6c3578aa",
+      "sha256": "f21621004de89da11ff46b20a0745d1d6536c012b736c5be2d04c9f8ede47775",
       "tools": [
         "at"
       ],
@@ -243,7 +252,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "8acf83c8af876e6b66c8dac9fdf7c3819e63390ea1b67dc7254655686eef72f2",
+      "sha256": "91dd43ca3527602b3c56d6eb97f4f7b2b3643957d91831d7a0fc23e61fd6b103",
       "tools": [
         "at",
         "git"
@@ -520,7 +529,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "54ed0504dbc63598c821e681c90d06290c7993b91076f57f45594db2c7e59a6b",
+      "sha256": "78460b5680c9479a17ff7cc80538a11dba9f4af3e1039a0eacd9f54332aad483",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -554,7 +563,7 @@
       ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
-      "sha256": "cf3f2af83591b4c891df63d94c6a67cd6f599ce06d8ecfabd825ef65da2a997f",
+      "sha256": "6a956daee6abfbc44d25c80ccad85cc54aaac9881a0f3cd9204a68f47e609f00",
       "env_mentions": [
         {
           "name": "PATH",
@@ -589,7 +598,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "bb0b6576ea8689acf052103f60343bdd9f5e4b2bad492448814b328ac4a9234c"
+      "sha256": "acebde9792fed0abc5a8dcbf39e4e1e890a8e2f46b28f329df2d9acd9a7f2410"
     },
     {
       "path": "bin/chain_items.py",
@@ -604,7 +613,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "5bd31680dc7cc66eafda3d5cae3fbaa0f28432adfc8a499ce7ee622699f23dae"
+      "sha256": "b8bd211eecb5b0993182f289b9e98609e2a2b798eae1f23dc14056975906223f"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -715,7 +724,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
-      "sha256": "2c4eb2557b672c98ed40957734c535cad6e6a363e9bcbd106f4568dc9d415994"
+      "sha256": "d5eab93a9196eabd95a462fc23fb61c46a0dc893f8df181d8280390b539b058a"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
@@ -2093,7 +2102,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "401743043037b7b02b6d1883027c48c006f073b371670c5cb1e24ef218cd6a17",
+      "sha256": "aeda5885f5bc95a6eb1e73dafb23604ea2a63be5f4c6be57e2d023658cf0097f",
       "exceptions": [
         {
           "rule": "deny",
@@ -2139,12 +2148,24 @@
     {
       "path": "bin/build-apk-helper.py",
       "tools": [
-        "env"
+        "env",
+        "script",
+        "source",
+        "go",
+        "sudo",
+        "at"
       ],
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "ebdc5d8d9844107e40767c9766c8abc3887161dba185bf568222bdb3e4f7db4b"
+      "sha256": "c9b2a9d5472bdb6164e37e70b5a5ea24d676091c8096f63b2289bd110c0d02d7",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "no Go toolchain on PATH in CI",
+          "why": "a refusal message naming where the Go toolchain is looked for; nothing is set"
+        }
+      ]
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2239,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "46a6124af1bd913ac7a2323c318f4837f2e48a66478bd07bcdc7c2e62914749c",
+      "sha256": "d76587be8155d715b5355a74d3a30c5ed8ad3675c3d5def4959115d20fdc6c95",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2253,150 +2274,38 @@
         },
         {
           "rule": "deny",
-          "line": "[ \"$(uname -s)\" = Linux ] || die \"refusing to run on $(uname -s): this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself\" 2",
-          "line_sha256": "0a280da80a7768b3bda26d8fabd161bd2d1574264badca47bf498b718341107f",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$(uname -s)\" = Linux ] || die \"build-apk.sh runs on Linux only (melange's bubblewrap runner and unshare -n)\"",
-          "line_sha256": "8841ce12df65f5ba7ce664ede2d542811ec9d9ca3a5bf34c2eaaceac6d2ad5ad",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)\"",
-          "line_sha256": "d099f153dfd42d4acd2d76778e4257f1d14edb8c9033f0307519ed2177a39dca",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ] || die \"the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)\"",
-          "line_sha256": "e8fa78059630046cb4d0e37829740b1c55654a3fdec02b584f7dcdeb6c1d864a",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "if [ -n \"${GOPROXY+x}\" ] && [ \"${GOPROXY}\" != off ]; then die \"GOPROXY must be off or unset (its value is not printed: it can carry a credential)\"; fi",
-          "line_sha256": "ccb0455d9a822fef3da545ca50e7238361b6194174a1174757be3cdcf14a5874",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ -z \"${!p:-}\" ] || die \"a proxy is defined in the environment ($p); the sealed build has no network\"",
-          "line_sha256": "3010551bff2afc13195cfa7787a0e03b4c07374fa2589c0e2899022c61f09aff",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${#sealed[@]}\" -ge 4 ] || die \"the sealed environment could not be made (build/sealed-env.json, SOURCE_DATE_EPOCH)\" 1",
-          "line_sha256": "1ffd6766a294c38635ce256e644bfc634e6b17a2bfcd4126c0b9a5acf741924d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$(printf '%s\\n' \"$gov\" | head -n 1 | sed 's/^[^:]*: //')\" = \"$(head -n 1 \"$tmp/buildinfo.txt\" | sed 's/^[^:]*: //')\" ] || die \"the Go toolchain in buildinfo.txt ($(head -n 1 \"$tmp/buildinfo.txt\" | sed 's/^[^:]*: //')) differs from the one go version -m reports for the packaged binary ($(printf '%s\\n' \"$gov\" | head -n 1 | sed 's/^[^:]*: //'))\" 1",
-          "line_sha256": "5db052994b9eaff2437969b89164e0caf25872d15e6363a6f31e2d69b43a8d67",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$(printf '%s\\n' \"$gov\" | tail -n +2)\" = \"$(tail -n +2 \"$tmp/buildinfo.txt\")\" ] || die \"buildinfo.txt in the apk differs from 'go version -m' of the packaged binary: the recorded build information is not the binary's own\" 1",
-          "line_sha256": "42d7e238643a1f0228fbfbd062c0125a37a16021f9ecc31f59f820df393219eb",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "elif [ $gorc -eq 127 ] && [ -n \"${GITHUB_ACTIONS:-}\" ]; then",
-          "line_sha256": "674a9668f6365f808668a33e5cdc789eaf30be7b96e0abbd6b76a0e491cdcb7e",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "mkdir -p \"$out\"; out=$(absd \"$out\"); [ -z \"$apkcache\" ] || apkcache=$(absd \"$apkcache\")",
-          "line_sha256": "ac97c64dcfe21df2bc8e37a9e996ffb4da175d9c4d1fd999c50f2c5a99ef2864",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "if [ -n \"$render\" ]; then mkdir -p \"$render\"; render=$(absd \"$render\"); fi",
-          "line_sha256": "1a68f76e08c2d9b3c00654494cb2322401f54af2eddc040a38830c45ea9425a5",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ -z \"$extra\" ] || die \"the melange lock $mlock has lines the recipe does not pin ($(printf '%s' \"$extra\" | head -n 3 | tr '\\n' ' ')): the recipe and the lock must agree both ways\"",
-          "line_sha256": "6ae77a0d74ad143ee38688cab7f9ae65336ac221cdda0763d01d0a8addc1798d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$mainver\" = \"v$version\" ] || die \"the binary's main module version is '${mainver:-none}', not v$version: the build is not stamped with the version being built (a tag at the source HEAD is needed)\" 1",
-          "line_sha256": "f00ea3209bec257b542bab6d6c50c4c9d3a11f21aac23a36204028cc1d998abb",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ -n \"$binrev\" ] && [ \"$binrev\" = \"$headrev\" ] || die \"the binary's vcs.revision is '${binrev:-none}', not the source HEAD $headrev: the binary is not tied to this source\" 1",
-          "line_sha256": "d3e8d333023a21ad73b34e40274f6a0aac26c497b278c6af369ee72bd8868dc1",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"$fipsvals\" = \"$fipswant\" ] || die \"the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})\" 1",
-          "line_sha256": "b683d12502b5ba1ff41a702cc87c40c38a0ed7bbe677193a20ecebed8abadec5",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "if [ -x \"$GO_TOOL\" ]; then gov=$(\"$ENVBIN\" GOTOOLCHAIN=local GOFLAGS= GOENV=off \"$GO_TOOL\" version -m \"$tmp/fscache.bin\" 2>\"$tmp/go.err\") || gorc=$?; else gorc=127; fi",
-          "line_sha256": "1799c368e5b9c477815386e822e4ae22b73ea7c84eada82e0bf8d2d7a8da5f7e",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  die \"'go version -m' failed on the packaged binary (exit $gorc: $(head -c 120 \"$tmp/go.err\")); the build information cannot be checked, refusing\" 1",
-          "line_sha256": "0d0aa5e2b4383c02065ae36c3e1ff8c0a456d914293fc5100d8d9758a2f5e3cc",
-          "count": 1,
-          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
-        },
-        {
-          "rule": "deny",
-          "line": "absf() { echo \"$(cd \"$(dirname \"$1\")\" && pwd)/$(basename \"$1\")\"; }",
-          "line_sha256": "f5144a4063a0c46633e122e764e55a531430a1e1ed79a6b8738cb5066d148e43",
-          "count": 1,
-          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
-        },
-        {
-          "rule": "deny",
           "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --signing-key \"$assembly_key\"",
           "line_sha256": "15c3ae00acf6befcf023f19ef023d50948fc792321de98309406cfb4e3df4039",
           "count": 1,
           "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
-        }
-      ],
-      "env_mentions": [
+        },
         {
-          "name": "PATH",
-          "text": "no Go toolchain on PATH in CI",
-          "why": "words in a refusal message: nothing is set"
+          "rule": "deny",
+          "line": "[ -z \"$extra\" ] || { echo \"build-apk.sh: the melange lock $mlock has lines the recipe does not pin\" \\",
+          "line_sha256": "5006cb7e3677459f4896fe6794ca8fc40666b8d927d4cfef914488c89067741d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${#sealed[@]}\" -ge 4 ] \\",
+          "line_sha256": "123fdb01407a8173fc9225f11028b8d3ec8fa5d5b133b29b1fe1017cf80d360b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$gorc\" != 0 ] || gov=$(\"$ENVBIN\" GOTOOLCHAIN=local GOFLAGS= GOENV=off \"$GO_TOOL\" version -m \"$tmp/fscache.bin\" \\",
+          "line_sha256": "c2a366c6a62fd505687ab3d0cdc3474c5660c53156ac72e656b635b10fd9e22c",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
+        },
+        {
+          "rule": "deny",
+          "line": "  2>\"$tmp/go.err\") || gorc=$?",
+          "line_sha256": "36085f07fe7ee001e5cfed3b7e5c8cfe6af20177bd8e0286b40a7580710d75b9",
+          "count": 1,
+          "why": "the closing physical line of a command substitution that starts on the previous line of this exact-text helper: the whole command is a fixed call, read at the source in the cache#770 rewrite"
         }
       ]
     },
@@ -2421,7 +2330,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "6f588ccd095cfc5aa10379e624017956fe6dce487dd19528c44fb4c087d88b17",
+      "sha256": "228888a827db08ae09ec1bf54e79ff20fcb10ca4d75fd00af79538a475476cef",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2430,115 +2339,46 @@
         },
         {
           "rule": "deny",
-          "line": "here_=${BASH_SOURCE[0]%/*}; [ \"$here_\" != \"${BASH_SOURCE[0]}\" ] || here_=.   # the script's own directory without running dirname",
-          "line_sha256": "3f446b1de94d1338ffd698dedd21f769dd6139c3c2531d8199df5a407f5ea3d8",
+          "line": "here_=${BASH_SOURCE[0]%/*}; [ \"$here_\" != \"${BASH_SOURCE[0]}\" ] || here_=.   # the script's own directory, no tool",
+          "line_sha256": "37a03d2c95a35538232bb29fe4d6da0c75ea01bc8f93528f7193557860a202b4",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
         },
         {
           "rule": "deny",
-          "line": "[ \"$(pwd -P)\" = \"$root\" ] || die \"assemble-image.sh runs from the repository root ($root), not from $(pwd -P): the helpers are named by repo-root-relative paths\" 2",
-          "line_sha256": "974533b073caea6c41d3005603b5a1be32e48b649415b8e939699acaa7bf8c39",
+          "line": "[ $# -eq 12 ] && [ \"$1\" = --variant ] && [ \"$3\" = --version ] && [ \"$5\" = --archive ] && [ \"$7\" = --melange-repo ] \\",
+          "line_sha256": "5648b2a236b889af7ce91343a62ebecf8cca8fda81f36b775ef41afb4ca45df4",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"$(printf '%s' \"${pair#*:}\" | LC_ALL=C tr -d '\\040-\\176'; printf x)\" = x ] || die \"${pair%%:*} holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); refusing, the path arguments are plain ASCII text\"",
-          "line_sha256": "c2a79ca86200af4823d8d2d6f16ef55931a8bdbd93bb693c8b75d1da639c6111",
+          "line": "[ -z \"$render\" ] || render=$(\"$PY3\" -I -B bin/oci-digest.py abs-file \"$render\")",
+          "line_sha256": "16e78c54f5b8b897cef093593e3d84ad6506646711640e91f25ec6efd1339432",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"${pair%%:*}\" = --render-dir ] && [ -z \"${pair#*:}\" ] && continue   # no render directory given: a private temporary one is used",
-          "line_sha256": "677de528b720d26129cc9657f11ccc6994062a7d67a69ab776ada32506b4201b",
+          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] \\",
+          "line_sha256": "23c6419bc54dbecc0f79b613d480c8f9414e7e04db84896fa7f9307e038add42",
           "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ -n \"${pair#*:}\" ] || die \"${pair%%:*} is empty; refusing (an empty value would silently mean the current directory)\"",
-          "line_sha256": "0e409447933b9a32c7a5907b2245fdcb48e07bfac5a4c7ef3249a56a3a8ff33f",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  p_=${pair#*:}; while [ \"${p_%/}\" != \"$p_\" ] && [ \"$p_\" != / ]; do p_=${p_%/}; done   # a trailing slash would hide the symlink from -L",
-          "line_sha256": "fbe2cbc8db0d5c8304474a8d0da040aefb15085ca320d67c60f78e40882d12ab",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)\"",
-          "line_sha256": "d099f153dfd42d4acd2d76778e4257f1d14edb8c9033f0307519ed2177a39dca",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    [ ${#madelinks[@]} -eq 0 ] || \"$SUDO\" rm -f \"${madelinks[@]}\" >/dev/null 2>&1",
-          "line_sha256": "16b8679e51b61dd3f86f34c4b22c515d78fa9a9e9041d8e9717f68d97ba7d5a4",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "if [ \"${#sbomfiles[@]}\" = 1 ]; then sbomsrc=${sbomfiles[0]}; elif [ -f \"$tmp/sbom/sbom-index.spdx.json\" ]; then sbomsrc=$tmp/sbom/sbom-index.spdx.json; else sbomsrc=; fi",
-          "line_sha256": "2bc6302f476445bec6b5635d439c8ac39e3b1722aefbb4bed038ef63cc904ba3",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ ! -L \"$p_\" ] || die \"${pair%%:*} ${pair#*:} is a symlink; refusing (a root of the inputs or the result must be a real directory)\"",
-          "line_sha256": "cc82363b395bfa2914aee30dc51de386c2062678da9defbe6ff2bf927c1ba7e2",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ -z \"$render\" ] || render=$(absf \"$render\")",
-          "line_sha256": "6c9350212ebfc4cfcad09fc659e3bf40a8a0ece73b0e7958963c648ff028220d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ -n \"$sbomsrc\" ] && [ -f \"$sbomsrc\" ] || die \"apko wrote ${#sbomfiles[@]} SBOM files and none is the image index SBOM (sbom-index.spdx.json); cannot choose the one image SBOM\" 1",
-          "line_sha256": "779670e5e44ae8b34f41f66ced484aae2da92aea2c8fe239d4294464008d4ea2",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    die \"$workdir/$l already exists ($( [ -L \"$workdir/$l\" ] && echo 'a symlink, left by another run or a crashed one' || echo 'not a symlink'))); refusing to replace it: remove it by hand if no other assembly is running\"",
-          "line_sha256": "87c531f76add6e2f45056b512f7fe7d14144b2eb92863b3011047cc16adc1f06",
-          "count": 1,
-          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
-        },
-        {
-          "rule": "deny",
-          "line": "absf() { (cd -P -- \"$(dirname -- \"$1\")\" 2>/dev/null && echo \"$PWD/$(basename -- \"$1\")\") || echo \"$1\"; }",
-          "line_sha256": "d36fd36b614222f9accbe1d516a44a5adebefacc40e6a587ac5636354f9343b2",
-          "count": 1,
-          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, read at the source in the cache#770 rewrite)"
         }
       ]
     },
     {
       "path": "bin/apko-lock.sh",
       "tools": [
-        "at"
+        "at",
+        "python"
       ],
       "runs": [
         "bin/oci-digest.py"
       ],
       "signs": false,
       "reason": "the apko lock proof helper assemble-image.sh runs",
-      "sha256": "4834a34a53fb26f7d53219c85dac617a406978701fabc8aaac619c1bd5e1e1b7"
+      "sha256": "a12544cfdc722c24ddd257844ffe890a92d2be96cd8ac6dc6749a909852cd038"
     },
     {
       "path": "bin/oci-digest.py",
@@ -2551,7 +2391,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "753af3c0964ffd252869cdf9b632a3c53bac4bc8fe6403d6deac48316aea0da8",
+      "sha256": "22daba1ff652f661419a45225e33836937973b34d981aa1d38a0b589ba0b0f89",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2562,6 +2402,13 @@
           "rule": "script-name",
           "text": "apko-lock.sh",
           "why": "a comment or message naming the script; prose, never run from here"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "True when PATH has a . or .. component",
+          "why": "a docstring naming a path operand; nothing is set"
         }
       ]
     },

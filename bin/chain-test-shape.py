@@ -19,6 +19,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
                                              and stage-image.yml / stage-admission.yml are gone
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
+  nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code outside melange (28 closure files, exact lines)
 
 === Rule 68 seam (advisor ruling, Oct 9; owner's amendment of rule 68: every command run under Witness is wrapped in `timeout 540`) ===========
 Fulcio's keyless certificate lives 10 minutes and Witness verifies it at the timestamp's time (harness spike (d)), so no witnessed command may
@@ -655,6 +656,662 @@ def listed(path, root):
     return bad
 
 
+# ---- nosource: no step of Build or Rebuild runs source code outside melange (sandboxed-build rule 1) ----------------------------------
+# In Build and Rebuild the compile of our source and of its dependencies happens only inside melange's sandbox (bin/build-apk.sh); apko only lays packages down.
+# The judge reads every script the stage scripts can start, 28 files, and has no reader for free-form shell or Python:
+#   shell: each script is EXACT TEXT. The stage scripts, bin/witnessed-local.sh, the three helpers (build-apk.sh, assemble-image.sh, apko-lock.sh) and the mode
+#   guard are compared command by command with the lines held here (script, localhelper, shell_exact); a case, a loop, a function, a subshell or a read in a helper
+#   is one more command, so it is a finding.
+#   Python: the 15 closure files are read as syntax trees. Every place that starts a program is ONE physical line that is held here word for word (PY_LINES), and its
+#   program is a string, a name bound once on a held line, or sys.executable with -I -B and a closure script. Everything else the judge refuses by SPELLING (no data
+#   flow): modules outside MODULES; os, sys, types and yaml used other than as NAME.ATTR with ATTR on its closed list; exec, eval, compile, getattr, __import__,
+#   subprocess and the other names of REFUSED; every dunder but four; every alias. A line that holds one of those and is not held in PY_LINES is a finding.
+# Which scripts are read: the `runs` rows of chain-scripts.json and every bin/ script the code names (also load_sibling and import). bin/install-scanner.sh and
+# bin/install-build-tools.sh are not read: the stage files pin which installs run, and install-build-tools.sh compiles nothing.
+# THE ONE KNOWN FINDING on the real tree: bin/build-admit.py:456 runs `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported (rule 1 forbids it);
+# the decision is its own job before Build in stage-build.yml, in its own pull request. Until that lands rule 1 is NOT done.
+NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh")
+NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+NS_NAME = re.compile(r"(?<![\w/.-])(?:\./)?(bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)")
+SIBLINGS = ("chain_common", "chain_items", "chain_hostile")
+MODULES = frozenset("argparse base64 binascii contextlib datetime errno fractions glob gzip hashlib io json math os posixpath re shutil "
+                    "socket stat sys tarfile tempfile types unicodedata yaml zlib".split()) | frozenset(SIBLINGS)
+FROM_OK = frozenset([("fractions", "Fraction"), ("chain_common", "OPENSSL"), ("chain_common", "b64d"), ("chain_common", "refuse"),
+                     ("chain_common", "ssl_done"), ("chain_common", "strict_json")])
+REFUSED = frozenset("subprocess pty asyncio importlib runpy multiprocessing ctypes exec eval compile __import__ getattr setattr globals vars "
+                    "__dict__ __builtins__ breakpoint help os sys types yaml".split())      # os, sys, types, yaml: only as NAME.ATTR below
+DUNDER_NAMES = frozenset(["__name__", "__file__", "__doc__", "__init__"])
+DUNDER_ATTRS = frozenset(["__name__", "__doc__", "__init__"])      # __file__ as an attribute (mod.__file__) is held on its line only
+START_ATTRS = frozenset("run Popen call check_call check_output getoutput getstatusoutput".split())
+OS_OK = frozenset("makedirs listdir path access X_OK chmod remove open O_RDONLY O_NOFOLLOW O_NONBLOCK O_CLOEXEC O_DIRECTORY O_EXCL O_WRONLY O_CREAT close "
+                  "read fstat extsep unlink mkdir rmdir walk symlink sep stat rename fdopen geteuid".split())
+OS_PATH_OK = frozenset("abspath basename dirname exists getsize isabs isdir isfile islink join lexists realpath relpath samefile split".split())
+MODULE_ATTRS = {"os": (OS_OK, frozenset(["environ"])), "sys": (frozenset("exit argv stderr stdout".split()), frozenset(["executable", "modules"])),
+                "yaml": (frozenset("safe_load YAMLError BaseLoader ScalarNode".split()), frozenset(["load"])), "types": (frozenset(), frozenset())}
+# (ok attributes, attributes held on their line only)
+NS_EXPECT = {"EXL": "is not an exact line", "REF": "is refused outside an exact line", "ATTR": "is not on the closed list",
+             "MODL": "is not on the closed module list", "LIT": "program is not a literal path"}
+
+
+def ns_named(path, text):
+    """The repository files a script's code names: shell words bin/NAME; for Python the strings that are exactly bin/NAME, load_sibling("NAME") and imports."""
+    names = set()
+    if path.endswith(".py"):
+        import ast
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.fullmatch(r"bin/[A-Za-z0-9_][A-Za-z0-9_.-]*", n.value): names.add(n.value)
+            elif isinstance(n, ast.Call) and getattr(n.func, "id", "") == "load_sibling" and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str):
+                names.add("bin/%s.py" % n.args[0].value)
+            elif isinstance(n, ast.Import):
+                names.update("bin/%s.py" % x.name.split(".")[0] for x in n.names)
+            elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+                names.add("bin/%s.py" % n.module.split(".")[0])
+    else:
+        for cmd in commands_of(text)[0]:
+            names.update(m.group(1).rstrip(".") for m in NS_NAME.finditer(cmd))
+    return sorted(names)
+
+
+def ns_closure(root):
+    """(files, faults): the scripts the stage scripts can start. A file with no row in chain-scripts.json is a fault."""
+    import glob
+    try:
+        rows = {r.get("path"): r for r in json.load(open(root + "/.github/policy/chain-scripts.json")).get("scripts", [])}
+    except (OSError, ValueError, AttributeError):
+        return None, ["chain-scripts.json cannot be read"]
+    todo = [os.path.relpath(f, root) for g in NS_ROOTS for f in sorted(glob.glob(root + "/" + g))]
+    seen, bad = [], []
+    while todo:
+        p = todo.pop()
+        if p in seen or p in NS_SKIP:
+            continue
+        seen.append(p)
+        if p not in rows:
+            bad.append("%s is started by a stage script but is not a row of chain-scripts.json" % p)
+            continue
+        todo += rows[p].get("runs", [])
+        try:
+            text = open(root + "/" + p, encoding="utf-8").read()
+        except (OSError, ValueError):
+            continue
+        todo += [n for n in ns_named(p, text) if n != p and os.path.isfile(root + "/" + n)]
+    return sorted(seen), bad
+
+
+def shell_exact(path, name, want):
+    """A shell helper is exactly the lines held here. The first difference is named and so are the counts, even when both are the same."""
+    try:
+        raw = read_exact(path)
+    except (OSError, ValueError):
+        return ["%s cannot be read" % name]
+    commands, faults = commands_of(raw)
+    bad = compare(commands, want, name)
+    if bad and not any("commands, the grammar has" in b for b in bad):
+        bad.append("%s has %d commands, the grammar has %d (the order differs)" % (name, len(commands), len(want)))
+    return ["control character %s in %s" % (c, name) for c in control_chars(raw)] + faults + bad
+
+
+def ns_shell(path, name):
+    """One closure shell file: a stage script, the Witness local helper, a helper or the mode guard (each exact text)."""
+    stage = {v: k for k, v in SCRIPTS.items() if k != "witnessed"}
+    if name in stage:
+        return ["%s: %s" % (name, b) for b in script(path, stage[name])]
+    if name == "bin/witnessed-local.sh":
+        return ["%s: %s" % (name, b) for b in localhelper(path)]
+    if name in SHELL_LINES:
+        return shell_exact(path, name, SHELL_LINES[name])
+    return ["%s is a shell script of the closure with no exact lines held (commands, the grammar has none)" % name]
+
+
+class NsPython:
+    """The syntax-tree judge of one Python file (spelling only, no data flow). events[line] is a list of (kind, word): kind "hard" is never rescued, "held" is
+    accepted when the line is held in PY_LINES for its function, "start" is a program start and is held the same way."""
+
+    def __init__(self, tree, text, closure):
+        import ast, builtins
+        self.ast, self.closure, self.lines = ast, closure, text.split("\n")
+        self.events, self.bindings, self.modules, self.parents, self.func_of, self.operands = {}, {}, set(), {}, {}, {}
+        self.unmarked = set()
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                self.parents[child] = parent
+        self.collect_bindings(tree)
+        self.known = set(self.bindings) | set(dir(builtins))
+        self.visit(tree, "")
+        self.judge_operands()
+
+    def collect_bindings(self, tree):
+        """Every binding of a name anywhere in the file, by spelling: assignments, loops, imports, definitions, parameters, global."""
+        ast = self.ast
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str) and "# TEST-SUBST" not in self.lines[n.end_lineno - 1]:
+                self.unmarked.update(t.id for t in n.targets if isinstance(t, ast.Name))      # a string constant that tests cannot substitute
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)): self.bind(n.id, n.lineno, "assign")
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): self.bind(n.name, n.lineno, "def")
+            elif isinstance(n, ast.arg): self.bind(n.arg, n.lineno, "arg")
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                for x in n.names: self.bind(x, n.lineno, "global")
+            elif isinstance(n, ast.ExceptHandler) and n.name: self.bind(n.name, n.lineno, "assign")
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    self.bind((a.asname or a.name).split(".")[0], n.lineno, "import")
+                    if isinstance(n, ast.Import): self.modules.add((a.asname or a.name).split(".")[0])
+
+    def bind(self, name, line, how):
+        self.bindings.setdefault(name, []).append((line, how))
+
+    def add(self, line, kind, word):
+        self.events.setdefault(line, []).append((kind, word))
+
+    def visit(self, node, func):
+        ast = self.ast
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self.spelled(node.name, node.lineno)
+            func = node.name
+        if hasattr(node, "lineno"): self.func_of[node.lineno] = func
+        getattr(self, "on_" + type(node).__name__, lambda n: None)(node)
+        for child in ast.iter_child_nodes(node):
+            self.visit(child, func)
+
+    def spelled(self, name, line):
+        """A refused name or a dunder, wherever it is spelled (name, attribute, keyword, parameter, import name)."""
+        if name in REFUSED and name not in MODULE_ATTRS: self.add(line, "held", "REF")
+        elif name.startswith("__") and name.endswith("__") and name not in DUNDER_NAMES: self.add(line, "held", "REF")
+
+    def on_arg(self, n): self.spelled(n.arg, n.lineno)
+
+    def on_keyword(self, n):
+        if n.arg and n.arg != "help": self.spelled(n.arg, n.value.lineno)      # help= is argparse's own keyword
+
+    def on_ExceptHandler(self, n):
+        if n.name: self.spelled(n.name, n.lineno)
+
+    def on_Import(self, n):
+        for a in n.names:
+            top = a.name.split(".")[0]
+            if top == "subprocess": self.add(n.lineno, "held", "REF")
+            elif top not in MODULES: self.add(n.lineno, "hard", "MODL")
+            if a.asname: self.add(n.lineno, "held", "REF")
+
+    def on_ImportFrom(self, n):
+        if n.level or (n.module or "").split(".")[0] not in MODULES: self.add(n.lineno, "hard", "MODL")
+        for a in n.names:
+            if a.name == "*": self.add(n.lineno, "hard", "REF")
+            elif (n.module, a.name) not in FROM_OK: self.add(n.lineno, "hard", "ATTR")
+            self.spelled(a.name, n.lineno)
+            if a.asname: self.add(n.lineno, "held", "REF")
+
+    def on_Name(self, n):
+        self.spelled(n.id, n.lineno)
+        parent = self.parents.get(n)
+        if n.id in MODULE_ATTRS and not (isinstance(parent, self.ast.Attribute) and parent.value is n): self.add(n.lineno, "held", "REF")
+
+    def on_Attribute(self, n):
+        ast, value = self.ast, n.value
+        if n.attr == "compile" and isinstance(value, ast.Name) and value.id == "re": pass
+        else: self.spelled(n.attr, n.lineno)
+        if n.attr in REFUSED and n.attr in MODULE_ATTRS: self.add(n.lineno, "held", "REF")      # shutil.os
+        if n.attr.startswith("__") and n.attr.endswith("__") and n.attr not in DUNDER_ATTRS: self.add(n.lineno, "held", "REF")
+        if isinstance(value, ast.Name) and value.id in self.modules and n.attr.startswith("_") and not n.attr.startswith("__"):
+            self.add(n.lineno, "held", "REF")      # tempfile._os
+        if isinstance(value, ast.Name) and value.id in MODULE_ATTRS:
+            ok, held = MODULE_ATTRS[value.id]
+            if n.attr in held or value.id == "types": self.add(n.lineno, "held", "ATTR" if value.id == "yaml" else "REF")      # types: no attribute is free
+            elif n.attr not in ok: self.add(n.lineno, "hard", "ATTR")
+        elif n.attr not in OS_PATH_OK and isinstance(value, ast.Attribute) and (value.attr, getattr(value.value, "id", "")) == ("path", "os"):
+            self.add(n.lineno, "hard", "ATTR")
+        parent = self.parents.get(n)
+        if n.attr in START_ATTRS and not (isinstance(parent, ast.Call) and parent.func is n): self.add(n.lineno, "held", "REF")
+
+    def on_Call(self, n):
+        ast, f = self.ast, n.func
+        if isinstance(f, ast.Attribute) and f.attr in START_ATTRS:
+            self.start(n, isinstance(f.value, ast.Name) and f.value.id == "subprocess")
+        elif isinstance(f, ast.Name) and f.id not in self.known:
+            self.add(n.lineno, "hard", "EXL")      # a call of a name nothing in the file defines: the judge cannot say what it starts
+
+    def start(self, n, by_module):
+        """A program start: one physical line, held; an inline list whose program is a string, a bound name or sys.executable -I -B SCRIPT."""
+        ast = self.ast
+        self.add(n.lineno, "start", "EXL")
+        if not by_module: self.add(n.lineno, "held", "REF")
+        if n.end_lineno != n.lineno: self.add(n.lineno, "hard", "EXL")
+        if not n.args or not isinstance(n.args[0], ast.List) or not n.args[0].elts:
+            self.add(n.lineno, "hard", "EXL")
+            return
+        if not self.program_ok(n.args[0].elts): self.add(n.lineno, "hard", "LIT")
+        for operand in n.args[0].elts[:2]:      # a name in the program or its first operand: every place it is bound is a held line
+            for x in ast.walk(operand):
+                if isinstance(x, ast.Name) and not isinstance(self.parents.get(x), ast.Attribute): self.operands[x.id] = n.lineno
+
+    def program_ok(self, elts):
+        ast, first = self.ast, elts[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str): return True
+        if isinstance(first, ast.Name):
+            found = self.bindings.get(first.id, [])
+            return len(found) == 1 and found[0][1] in ("assign", "import") and first.id not in self.unmarked
+        if isinstance(first, ast.Attribute) and isinstance(first.value, ast.Name) and (first.value.id, first.attr) == ("sys", "executable"):
+            rest = [e.value if isinstance(e, ast.Constant) else None for e in elts[1:4]]
+            return rest[:2] == ["-I", "-B"] and len(rest) == 3 and rest[2] in self.closure
+        return False
+
+    def judge_operands(self):
+        """The names of the start operands, and every name assigned on a TEST-SUBST line, are bound only on held lines (and the TEST-SUBST ones once)."""
+        ast = self.ast
+        names = set(self.operands)
+        for name, found in self.bindings.items():
+            marked = [line for line, how in found if how == "assign" and "# TEST-SUBST" in self.lines[line - 1]]
+            if marked and len(found) != 1:
+                for line, _ in found: self.add(line, "hard", "LIT")
+            if marked: names.add(name)
+        for name in names:
+            for line, how in self.bindings.get(name, []):
+                if how == "import": continue
+                self.add(line, "held" if how == "assign" else "hard", "EXL")
+
+    def report(self):
+        """[(line, function, line text, kinds, words)] for every line that holds an event, in file order."""
+        out = []
+        for line in sorted(self.events):
+            kinds = {k for k, _ in self.events[line]}
+            words = []
+            for _, w in self.events[line]:
+                if w not in words: words.append(w)
+            out.append((line, self.func_of.get(line, ""), self.lines[line - 1].strip(), kinds, words))
+        return out
+
+
+def ns_python(path, text, closure, held):
+    """The findings for one Python closure file. held: its list of (function, exact line), each usable once."""
+    import ast, collections
+    try:
+        judge = NsPython(ast.parse(text), text, closure)
+    except (SyntaxError, ValueError, RecursionError) as e:
+        return ["%s cannot be read: %s" % (path, type(e).__name__)]
+    left, bad = collections.Counter(held), []
+    for line, func, shown, kinds, words in judge.report():
+        if "hard" not in kinds and left[(func, shown)] > 0:
+            left[(func, shown)] -= 1
+            continue
+        bad.append("%s:%d `%s` %s" % (path, line, shown[:100], "; ".join(NS_EXPECT[w] for w in words)))
+    bad += ["%s: the held line %r of %s() %s of the file" % (path, shown[:100], func, NS_EXPECT["EXL"]) for (func, shown), n in left.items() if n > 0]
+    return bad
+
+
+def nosource(root):
+    seen, bad = ns_closure(root)
+    if seen is None:
+        return bad
+    for p in seen:
+        path = root + "/" + p
+        try:
+            text = open(path, encoding="utf-8").read()
+        except (OSError, ValueError):
+            bad.append("%s cannot be read" % p)
+            continue
+        bad += ns_python(p, text, seen, PY_LINES.get(p, [])) if p.endswith(".py") else ns_shell(path, p)
+    return bad
+
+
+
+PY_LINES = {      # per Python closure file: (function, the line as written, stripped), one entry per place a program starts or a held name is used
+    'bin/admission-tag-signer.py': [
+        ('', 'import argparse, datetime, hashlib, os, re, subprocess, sys'),
+        ('owner_baselines', 'tag_list = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "tag", "-l", "v%s.%s.*" % m.group(1, 2)], capture_output=True, text=True)'),
+        ('owner_baselines', 'tag_kind = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file", "-t", "refs/tags/" + v], capture_output=True, text=True)'),
+        ('owner_baselines', 'tag_object = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file", "tag", "refs/tags/" + v], capture_output=True, text=True)'),
+        ('owner_baselines', 'if subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "verify-tag", v], capture_output=True, text=True).returncode != 0:'),
+        ('owner_baselines', 'f = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show", "%s:requirements/releases/%s.yaml" % (v, v)], capture_output=True, text=True)'),
+        ('owner_baselines', 'req = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show", "%s:requirements/requirements.yaml" % v], capture_output=True, text=True)'),
+    ],
+    'bin/apk-tool.py': [
+        ('cmd_verify', 'import os, subprocess, tempfile'),
+        ('cmd_verify', 'openssl = _openssl()'),
+        ('cmd_verify', 'r = subprocess.run([openssl, "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "sig.bin"), os.path.join(d, "ctrl.bin")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})'),
+    ],
+    'bin/build-admit.py': [
+        ('', 'import subprocess'),
+        ('', 'SIGNER = "bin/admission-tag-signer.py"'),
+        ('', 'INSTALLER = "bin/install-scanner.sh"'),
+        ('git_show', 'rc, out, _ = outcome(lambda: subprocess.run(["git", "show", rev_path], capture_output=True, check=False))'),
+        ('__init__', 'env = os.environ'),
+        ('check_tag_points_at_sha', 'rc, out, _ = outcome(lambda: subprocess.run(["git", "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % ctx.tag], capture_output=True, check=False))'),
+        ('check_policy_from_main', 'rc, _, err = outcome(lambda: subprocess.run(["git", "fetch", "--no-tags", "origin", "main"], capture_output=True, check=False))'),
+        ('check_tag_annotated', 'rc, out, _ = outcome(lambda: subprocess.run(["git", "cat-file", "-t", "refs/tags/" + ctx.tag], capture_output=True, check=False))'),
+        ('route_tag', 'rc, obj, _ = outcome(lambda: subprocess.run(["git", "cat-file", "tag", "refs/tags/" + ctx.tag], capture_output=True, check=False))'),
+        ('route_tag', '_, tags, _ = outcome(lambda: subprocess.run(["git", "tag", "-l", "v*"], capture_output=True, check=False))'),
+        ('route_tag', 'rc, out, err = outcome(lambda: subprocess.run(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag, "--tag-object", obj_file, "--tags", tags_file], capture_output=True, check=False))'),
+        ('verify_tag_ssh', 'rc, out, err = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, "verify-tag", "refs/tags/" + ctx.tag], capture_output=True, env=dict(os.environ, **{"LC_ALL": "C"}), check=False))'),
+        ('x509_fingerprint', 'rc, certs, _ = outcome(lambda: subprocess.run(["openssl", "pkcs7", "-print_certs"], input=pem, capture_output=True, check=False))'),
+        ('x509_fingerprint', 'rc, out, _ = outcome(lambda: subprocess.run(["openssl", "x509", "-noout", "-fingerprint", "-sha256"], input=certs, capture_output=True, check=False))'),
+        ('verify_tag_keyless', 'rc, _, err = outcome(lambda: subprocess.run(["bash", os.path.join(ctx.policy, os.path.basename(INSTALLER)), "gitsign"], capture_output=True, check=False))'),
+        ('verify_tag_keyless', 'rc, _, err = outcome(lambda: subprocess.run(["gitsign", "verify-tag", ctx.tag, "--certificate-identity", identity, "--certificate-oidc-issuer", ISSUER, "--certificate-github-workflow-repository", ctx.repo, "--certificate-github-workflow-ref", "refs/heads/main", "--certificate-github-workflow-sha", ctx.sha], capture_output=True, check=False))'),
+        ('verify_commit_web_flow', 'rc, _, err = outcome(lambda: subprocess.run(["gpg", "--batch", "--quiet", "--import", os.path.join(ctx.policy, "github-web-flow.gpg")], capture_output=True, env=dict(os.environ, **env), check=False))'),
+        ('verify_commit_web_flow', 'rc, _, _ = outcome(lambda: subprocess.run(["git", "-c", "gpg.format=openpgp", "verify-commit", ctx.sha], capture_output=True, env=dict(os.environ, **env), check=False))'),
+        ('verify_commit_web_flow', '_, out, _ = outcome(lambda: subprocess.run(["git", "log", "-1", "--format=%GK", ctx.sha], capture_output=True, env=dict(os.environ, **env), check=False))'),
+        ('verify_commit_web_flow', '_, keys, _ = outcome(lambda: subprocess.run(["gpg", "--list-keys", "--with-colons"], capture_output=True, env=dict(os.environ, **env), check=False))'),
+        ('verify_commit_web_flow', 'outcome(lambda: subprocess.run(["gpgconf", "--homedir", home, "--kill", "gpg-agent"], capture_output=True, check=False))'),
+        ('check_commit_signature', 'rc, _, _ = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, "verify-commit", ctx.sha], capture_output=True, check=False))'),
+        ('check_ancestor_of_main', 'rc, _, _ = outcome(lambda: subprocess.run(["git", "merge-base", "--is-ancestor", ctx.sha, "origin/main"], capture_output=True, check=False))'),
+        ('gh_get', 'rc, out, err = outcome(lambda: subprocess.run(["gh", "api", path, "--paginate"], capture_output=True, check=False))'),
+        ('gh_get', 'rc, out, err = outcome(lambda: subprocess.run(["gh", "api", path], capture_output=True, check=False))'),
+        ('patch_baseline_version', 'script = os.path.join(ctx.policy, os.path.basename(SIGNER))'),
+        ('patch_baseline_version', 'rc, _, err = outcome(lambda: subprocess.run(["python3", script, "owner-baselines", "--tag", ctx.tag, "--allowed-signers", ctx.allowed, "--out", owner_dir], capture_output=True, check=False))'),
+        ('patch_baseline_version', 'rc, out, err = outcome(lambda: subprocess.run(["python3", script, "baseline", "--tag", ctx.tag, "--owner-baselines", owner_dir, "--requirements", req_file], capture_output=True, check=False))'),
+        ('check_rc_proof', 'script = git_show("origin/main:" + RC_BYTES)'),
+        ('check_rc_proof', 'script_path = os.path.join(ctx.policy, os.path.basename(RC_BYTES))'),
+        ('check_rc_proof', 'rc, _, err = outcome(lambda: subprocess.run(["python3", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha, "--repo", "."], capture_output=True, check=False))'),
+        ('read_environment', 'missing = [n for n in names if n not in os.environ]'),
+        ('read_environment', 'if not os.environ.get("GH_TOKEN"):      # the token the apk step hands this script (REQ-CHAIN-004-AC8); gh inherits it, it is never printed'),
+        ('read_environment', 'if not re.fullmatch(r"[0-9]+", os.environ[n]):'),
+    ],
+    'bin/build-apk-helper.py': [
+        ('sealed_env', 'if name not in os.environ:'),
+        ('sealed_env', 'out.append("%s=%s" % (name, os.environ[name]))'),
+        ('sealed_env_items', 'if name not in os.environ:'),
+        ('sealed_env_items', 'out.append("%s=%s" % (name, os.environ[name]))'),
+        ('check_environment', 'epoch = os.environ.get("SOURCE_DATE_EPOCH", "")'),
+        ('check_environment', 'if os.environ.get("APK_RELEASE_SIGNING_KEY"):'),
+        ('check_environment', 'if os.environ.get("GOPROXY", "off") != "off":'),
+        ('check_environment', 'if os.environ.get(name):'),
+        ('arg', 'return iso_time(os.environ.get("SOURCE_DATE_EPOCH", "")) or ""'),
+        ('go_verdict', 'if os.environ.get("GITHUB_ACTIONS"):'),
+    ],
+    'bin/build-archives.py': [
+        ('', 'import subprocess'),
+        ('read_binary', 'r = subprocess.run([sys.executable, "-I", "-B", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], stdout=subprocess.PIPE)'),
+        ('main', 'sde = os.environ.get("SOURCE_DATE_EPOCH", "0")'),
+    ],
+    'bin/build-version-check.py': [
+        ('', 'import subprocess'),
+        ('', 'GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST'),
+        ('extract_binary', 'r = subprocess.run([sys.executable, "-I", "-B", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)'),
+        ('build_info', 'r = subprocess.run([GO_TOOL, "version", "-m", binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=GO_ENV)'),
+    ],
+    'bin/chain-bytes-sha.py': [
+        ('', 'import subprocess'),
+        ('resolve_commit', 'rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", rev + "^{commit}"], capture_output=True, check=False))'),
+        ('blob', 'rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "cat-file", "blob", "%s:%s" % (commit, path)], capture_output=True, check=False))'),
+        ('chain_paths', 'rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", ".github/workflows", ".github/policy"], capture_output=True, check=False))'),
+        ('code_files', 'rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", *CODE_DIRS], capture_output=True, check=False))'),
+        ('check_marker', 'rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % m["rc_tag"]], capture_output=True, check=False))'),
+        ('check_marker', 'rc2, _ = finished(lambda: subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", rc_commit, commit], capture_output=True, check=False))'),
+    ],
+    'bin/chain-verify.py': [
+        ('', 'import datetime as dt'),
+        ('', 'import subprocess'),
+        ('load_sibling', 'if name in sys.modules:'),
+        ('load_sibling', 'return sys.modules[name]'),
+        ('load_sibling', 'mod = types.ModuleType(name)'),
+        ('load_sibling', 'mod.__file__ = os.path.join(here, name + os.extsep + "py")'),
+        ('load_sibling', 'sys.modules[name] = mod'),
+        ('load_sibling', 'exec(compile(src, mod.__file__, "exec"), mod.__dict__)'),
+        ('', 'OPENSSL = _common.OPENSSL'),
+        ('policy_make', 'rdir = ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", rekor_p, "-outform", "DER"], capture_output=True)).stdout'),
+        ('stamp_token', 'text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", resp, "-text"], capture_output=True)).stdout.decode(errors="replace")'),
+        ('stamp_token', 'ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", resp, "-token_out", "-out", token], capture_output=True))'),
+        ('stamp_time', 'text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", token_path, "-token_in", "-text"], capture_output=True)).stdout.decode(errors="replace")'),
+        ('check_chain', 'r = subprocess.run([OPENSSL, "verify", "-no_check_time", "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", rp, "-untrusted", untrusted, leaf_p], capture_output=True)'),
+        ('chain_valid_at', 'r = subprocess.run([OPENSSL, "verify", "-attime", str(t), "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", root_p, "-untrusted", untrusted, leaf_p], capture_output=True)'),
+        ('check_signature', 'f.write(ssl_done(subprocess.run([OPENSSL, "x509", "-in", leaf_p, "-pubkey", "-noout"], capture_output=True)).stdout)'),
+        ('check_signature', 'if subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", pub, "-signature", os.path.join(tmp, "sig.bin"), os.path.join(tmp, "pae.bin")], capture_output=True).returncode != 0:'),
+        ('check_timestamp', 'if all(subprocess.run([OPENSSL, "ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, "-token_in", "-CAfile", cp, "-untrusted", ip, "-attime", str(t)], capture_output=True).returncode == 0 for t in attimes(when)):'),
+        ('set_is_valid', 'r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "set.sig"), os.path.join(d, "set.bin")], capture_output=True)'),
+        ('rekor_log_id', 'return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"], capture_output=True)).stdout).hexdigest()'),
+        ('make_policy_from_template', 'ref = os.environ.get("GITHUB_REF", "")'),
+        ('make_policy_from_template', 'ev = os.environ.get("GITHUB_EVENT_NAME", "")'),
+        ('provenance_statement', 'run_url = "%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", "https://github.com"), repo, os.environ.get("GITHUB_RUN_ID", "0"))'),
+        ('provenance_statement', 'commit = os.environ.get("GITHUB_SHA", "")'),
+        ('cmd_sign', 'if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):'),
+        ('cmd_sign', 'if not re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")):'),
+        ('cmd_sign', 'r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)'),
+        ('cmd_sign_records', 'commit = os.environ.get("GITHUB_SHA", "")'),
+        ('import_yaml', 'return yaml'),
+        ('load_yaml', 'yaml = import_yaml()'),
+        ('load_yaml', 'return yaml.load(f.read(), Loader=NoDuplicateKeys)'),
+    ],
+    'bin/chain_common.py': [
+        ('', 'import datetime as dt'),
+        ('', 'OPENSSL = "/usr/bin/openssl"  # TEST-SUBST'),
+    ],
+    'bin/chain_hostile.py': [
+        ('', 'import subprocess'),
+        ('sign_key_hash', 'pub = ssl_done(subprocess.run([OPENSSL, "x509", "-in", cp, "-pubkey", "-noout"], capture_output=True)).stdout'),
+        ('sign_key_hash', 'return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"], capture_output=True)).stdout).hexdigest()'),
+        ('grade_token', 'repo = os.environ.get("GITHUB_REPOSITORY", "fosterstack/cache")'),
+    ],
+    'bin/chain_items.py': [
+        ('', 'import subprocess'),
+        ('cmd_items_apk', 'digest = subprocess.run(["python3", "bin/apk-tool.py", "digest", apk], capture_output=True)'),
+        ('cmd_items_apk', 'binary = subprocess.run(["python3", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], capture_output=True)'),
+    ],
+    'bin/go-module-sbom.py': [
+    ],
+    'bin/net-probe.py': [
+    ],
+    'bin/oci-digest.py': [
+    ],
+    'bin/vex-index.py': [
+    ],
+}
+SHELL_LINES = {      # per shell helper: its commands (comments and blank lines aside) exactly
+    'bin/apko-lock.sh': [
+        'set -euo pipefail',
+        'PY3=/usr/bin/python3                 # TEST-SUBST',
+        '"$PY3" -I -B bin/oci-digest.py lock "$@"',
+    ],
+    'bin/assemble-image.sh': [
+        'set -euo pipefail',
+        "HOST_OS=${BASH_VERSINFO[5]}          # TEST-SUBST (the running bash's own build host: no tool, no caller input)",
+        'PY3=/usr/bin/python3                 # TEST-SUBST',
+        'SUDO=/usr/bin/sudo                   # TEST-SUBST',
+        'UNSHARE=/usr/bin/unshare             # TEST-SUBST',
+        'BASHBIN=/bin/bash                    # TEST-SUBST',
+        'APKO=/usr/local/bin/apko             # TEST-SUBST (the chain installs it there)',
+        'ENVBIN=/usr/bin/env                  # TEST-SUBST',
+        'WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)',
+        'RENDER_DIR=                          # TEST-SUBST (empty: a private temporary directory)',
+        'here_=${BASH_SOURCE[0]%/*}; [ "$here_" != "${BASH_SOURCE[0]}" ] || here_=.   # the script\'s own directory, no tool',
+        'start_=$PWD',
+        'cd -P "$here_/.."',
+        'root=$PWD',
+        '[[ $HOST_OS == *linux* ]] || { echo "assemble-image.sh: refusing to run on $HOST_OS: this script uses sudo," "unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner)," "never on the Mac itself" >&2; exit 2; }',
+        '[ "$start_" -ef "$root" ] || { echo "assemble-image.sh: assemble-image.sh runs from the repository root ($root)," "not from $start_: the helpers are named by repo-root-relative paths" >&2; exit 2; }',
+        '[ $# -eq 12 ] && [ "$1" = --variant ] && [ "$3" = --version ] && [ "$5" = --archive ] && [ "$7" = --melange-repo ] && [ "$9" = --keyring-dir ] && [ "${11}" = --out ] || { echo "assemble-image.sh: unknown argument or missing value" >&2; exit 2; }',
+        'variant=$2; version=$4; archive=$6; melrepo=$8; keydir=${10}; out=${12}; render=$RENDER_DIR',
+        '[ "$variant" = production ] || [ "$variant" = fips ] || { echo "assemble-image.sh: --variant must be production or fips" >&2; exit 2; }',
+        '[[ $version =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = 0.0.0-rc.1 ]] || { echo "assemble-image.sh: --version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1" "(numbers without leading zeros; not \'$version\')" >&2; exit 2; }',
+        'pkg=$("$PY3" -I -B bin/oci-digest.py variant-field "$variant" pkg)',
+        'config=$("$PY3" -I -B bin/oci-digest.py variant-field "$variant" config)',
+        'baselock=$("$PY3" -I -B bin/oci-digest.py variant-field "$variant" baselock)',
+        '"$PY3" -I -B bin/oci-digest.py check-roots "$archive" "$melrepo" "$keydir" "$out" "$render"',
+        'archive=$("$PY3" -I -B bin/oci-digest.py abs-dir "$archive")',
+        'melrepo=$("$PY3" -I -B bin/oci-digest.py abs-dir "$melrepo")',
+        'keydir=$("$PY3" -I -B bin/oci-digest.py abs-dir "$keydir")',
+        'baselock=$("$PY3" -I -B bin/oci-digest.py abs-file "$baselock")',
+        'config=$("$PY3" -I -B bin/oci-digest.py abs-file "$config")',
+        '[ -z "$render" ] || render=$("$PY3" -I -B bin/oci-digest.py abs-file "$render")',
+        'apkver=$("$PY3" -I -B bin/oci-digest.py apk-version "$version")',
+        '[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || { echo "assemble-image.sh: SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)" >&2; exit 2; }',
+        'build_date=$("$PY3" -I -B bin/oci-digest.py render-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || { echo "assemble-image.sh: SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date" >&2; exit 2; }',
+        '"$PY3" -I -B bin/oci-digest.py check-inputs "$archive" "$melrepo" "$keydir" "$out" "$config" "$baselock"',
+        '"$PY3" -I -B bin/oci-digest.py check-config "$config" || exit 2',
+        '"$PY3" -I -B bin/oci-digest.py check-keydir "$keydir"',
+        'keyrec=build/locks/archive-keys.sha256',
+        '[ -f "$keyrec" ] || { echo "assemble-image.sh: the key record $keyrec is missing:" "cannot tell which keys the keyring directory must hold" >&2; exit 2; }',
+        '"$PY3" -I -B bin/oci-digest.py check-keys "$keyrec" "$keydir" || exit 2',
+        'idxrec=build/locks/archive-index.sha256',
+        '[ -f "$idxrec" ] || { echo "assemble-image.sh: the index record $idxrec is missing:" "cannot tell which package index the archive must hold" >&2; exit 2; }',
+        '"$PY3" -I -B bin/oci-digest.py check-index "$idxrec" "$archive" >/dev/null || exit 2',
+        '"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" --index-record "$idxrec" || { echo "assemble-image.sh: the archive does not satisfy the base lock $baselock (see above)" >&2; exit 2; }',
+        '"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" "$pkg" "$apkver"',
+        'workdir=$WORKDIR',
+        'lock=$workdir/.assemble.lock',
+        '[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" "wait for it or remove the lock if no run is active" >&2; exit 2; }',
+        '"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"',
+        'tmp=$(mktemp -d)',
+        'made=',
+        'trap \'set +e; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1\' EXIT',
+        'rdir=$("$PY3" -I -B bin/oci-digest.py prepare-render "$render" "$tmp")',
+        'rendered=$rdir/$(basename "$config")',
+        '"$PY3" -I -B bin/oci-digest.py render-config "$config" "$rendered" "$apkver" || { echo "assemble-image.sh: cannot render the config $config" >&2; exit 1; }',
+        '"$PY3" -I -B bin/oci-digest.py check-out "$out" "$variant"',
+        'mkdir -p "$out"',
+        'out=$("$PY3" -I -B bin/oci-digest.py abs-dir "$out")',
+        'view=$rdir/archive-view',
+        '"$PY3" -I -B bin/oci-digest.py make-view "$idxrec" "$archive" "$view" || exit 2',
+        '"$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }',
+        '"$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" "(could not take $lock)" >&2; exit 2; }',
+        'trap \'set +e; "$SUDO" rm -f $made; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"\' EXIT',
+        '"$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link $workdir/archive" "(it exists: another assembly?); stopping" >&2; exit 2; }',
+        'made="$made $workdir/archive"',
+        '"$SUDO" ln -sT "$melrepo" "$workdir/melange-repo" || { echo "assemble-image.sh: cannot make the link" "$workdir/melange-repo (it exists: another assembly?); stopping" >&2; exit 2; }',
+        'made="$made $workdir/melange-repo"',
+        '"$SUDO" ln -sT "$keydir" "$workdir/keyring" || { echo "assemble-image.sh: cannot make the link $workdir/keyring" "(it exists: another assembly?); stopping" >&2; exit 2; }',
+        'made="$made $workdir/keyring"',
+        'mkdir -p "$tmp/apko-cache"',
+        'full=$tmp/$variant.full.lock.json',
+        'cd "$rdir"',
+        '"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" lock "$(basename "$rendered")" --cache-dir "$tmp/apko-cache" --output "$full" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?',
+        'cd "$root"',
+        'cat "$tmp/apko.err" >&2',
+        '[ "$rc" != 0 ] && grep -Eqi -e \'ENETUNREACH|network is unreachable|dial tcp|no such host|no route to host\' -e \'connection refused|network request blocked|name resolution|Name or service not known|could not resolve host\' "$tmp/apko.err" 2>/dev/null && probe=0 || probe=',
+        '[ -z "$probe" ] || "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1 || probe=$?',
+        '"$PY3" -I -B bin/oci-digest.py apko-verdict lock "$rc" "$probe"',
+        '"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" || { echo "assemble-image.sh: the full lock\'s package entries differ from the base lock (see above);" "not building" >&2; exit 2; }',
+        '"$BASHBIN" bin/apko-lock.sh arch-check "$full" || { echo "assemble-image.sh: the full lock resolves different versions per architecture (see above);" "not building" >&2; exit 2; }',
+        '"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$full" --archive "$archive" --melange-repo "$melrepo" --index-record "$idxrec" || { echo "assemble-image.sh: the full lock does not verify against the archive and the melange repository" "(see above)" >&2; exit 2; }',
+        'cp "$full" "$out/$variant.full.lock.json"',
+        'mkdir -p "$tmp/sbom"   # apko renames its SBOMs into --sbom-path and does not create it (real-run finding)',
+        'cd "$rdir"',
+        '"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" build "$(basename "$rendered")" "$pkg:$version" "$tmp/$variant.tar" --offline --cache-dir "$tmp/apko-cache" --lockfile "$full" --vcs=false --sbom-path "$tmp/sbom" --build-date "$build_date" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?',
+        'cd "$root"',
+        'cat "$tmp/apko.err" >&2',
+        '[ "$rc" != 0 ] && grep -Eqi -e \'ENETUNREACH|network is unreachable|dial tcp|no such host|no route to host\' -e \'connection refused|network request blocked|name resolution|Name or service not known|could not resolve host\' "$tmp/apko.err" 2>/dev/null && probe=0 || probe=',
+        '[ -z "$probe" ] || "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1 || probe=$?',
+        '"$PY3" -I -B bin/oci-digest.py apko-verdict build "$rc" "$probe"',
+        '"$PY3" -I -B bin/oci-digest.py unpack "$tmp/$variant.tar" "$out/$variant" "$out/$variant.digest" "$out/$variant.manifests" || { echo "assemble-image.sh: the image layout is unusable (see above)" >&2; exit 1; }',
+        'sbomsrc=$("$PY3" -I -B bin/oci-digest.py pick-sbom "$tmp/sbom")',
+        'mkdir -p "$out/$variant-sbom"',
+        'cp "$sbomsrc" "$out/$variant-sbom/sbom.json"',
+        'echo "assembled $variant $version: $(cat "$out/$variant.digest")"',
+    ],
+    'bin/build-apk.sh': [
+        'set -euo pipefail',
+        'PY3=/usr/bin/python3            # TEST-SUBST',
+        'GIT=/usr/bin/git                # TEST-SUBST',
+        'SUDO=/usr/bin/sudo              # TEST-SUBST',
+        'UNSHARE=/usr/bin/unshare        # TEST-SUBST',
+        'MELANGE=/usr/local/bin/melange  # TEST-SUBST (the chain installs it there)',
+        'GO_TOOL=/usr/local/bin/fscache-go/bin/go  # TEST-SUBST (bin/install-scanner.sh go puts the pinned toolchain there)',
+        'SHA256SUM=/usr/bin/sha256sum    # TEST-SUBST',
+        'ENVBIN=/usr/bin/env             # TEST-SUBST',
+        'SEALED_ENV=build/sealed-env.json  # TEST-SUBST',
+        'RECIPE_STANDARD=$PWD/build/melange.yaml  # TEST-SUBST',
+        'RECIPE_FIPS=$PWD/build/melange-fips.yaml  # TEST-SUBST',
+        'FIPS_MODULE=$PWD/build/locks/fips-module.txt  # TEST-SUBST (the module the FIPS build uses; the daily refresh sets it)',
+        '[ -f bin/build-apk.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.json ] || { echo "build-apk.sh: run bin/build-apk.sh from the repository root" "(its helpers are named by repo-relative paths)" >&2; exit 2; }',
+        'root_=$PWD',
+        'mode=$("$PY3" -I -B bin/build-apk-helper.py check-args "$(uname -s)" "$(uname -m)" "$@")',
+        'src=$("$PY3" -I -B bin/build-apk-helper.py arg src "$@")',
+        '[ "$mode" != sde ] || "$GIT" -C "$src" log -1 --format=%ct 2>/dev/null | grep -E \'^[0-9]+$\' || { echo "build-apk.sh: $src has no git history" >&2; exit 2; }',
+        '[ "$mode" != sde ] || exit 0',
+        'variant=$("$PY3" -I -B bin/build-apk-helper.py arg variant "$@")',
+        'arch=$("$PY3" -I -B bin/build-apk-helper.py arg arch "$@")',
+        'goarch=$("$PY3" -I -B bin/build-apk-helper.py arg goarch "$@")',
+        'version=$("$PY3" -I -B bin/build-apk-helper.py arg version "$@")',
+        'apkver=$("$PY3" -I -B bin/build-apk-helper.py arg apkver "$@")',
+        'build_date=$("$PY3" -I -B bin/build-apk-helper.py arg build-date "$@")',
+        'repo=$("$PY3" -I -B bin/build-apk-helper.py arg repo "$@")',
+        'keyring=$("$PY3" -I -B bin/build-apk-helper.py arg keyring "$@")',
+        'goarch_dir=$("$PY3" -I -B bin/build-apk-helper.py arg go-archive "$@")',
+        'mlock=$("$PY3" -I -B bin/build-apk-helper.py arg melange-lock "$@")',
+        'out=$("$PY3" -I -B bin/build-apk-helper.py arg out "$@")',
+        'render=$("$PY3" -I -B bin/build-apk-helper.py arg render-dir "$@")',
+        'apkcache=$("$PY3" -I -B bin/build-apk-helper.py arg apk-cache-dir "$@")',
+        'assembly_key=$PWD/build/keys/assembly.rsa',
+        '[ -f "$assembly_key" ] || { echo "build-apk.sh: the committed assembly key $assembly_key is missing" >&2; exit 2; }',
+        'if [ "$variant" = fips ]; then recipe=$RECIPE_FIPS; else recipe=$RECIPE_STANDARD; fi',
+        '[ -f "$recipe" ] || { echo "build-apk.sh: recipe not found: $recipe" >&2; exit 2; }',
+        'recipe=$("$PY3" -I -B bin/build-apk-helper.py abs-file "$recipe")',
+        'mkdir -p "$out"',
+        '[ -z "$render" ] || mkdir -p "$render"',
+        'tmp=$(mktemp -d)',
+        'trap \'set +e; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1\' EXIT',
+        '"$PY3" -I -B bin/build-apk-helper.py recipe-facts "$recipe" "$goarch" "$tmp/recipe.facts" || { echo "build-apk.sh: cannot read the recipe $recipe" >&2; exit 2; }',
+        'pkg=$(sed -n \'s/^name=//p\' "$tmp/recipe.facts")',
+        'gofile=$(sed -n \'s/^file=//p\' "$tmp/recipe.facts")',
+        'gosha=$(sed -n \'s/^sha=//p\' "$tmp/recipe.facts")',
+        '[ -f "$goarch_dir/$gofile" ] || { echo "build-apk.sh: the Go archive $goarch_dir has no $gofile" "(rule 12: Go comes from the archive)" >&2; exit 2; }',
+        '[ -x "$SHA256SUM" ] || { echo "build-apk.sh: sha256sum is not installed at $SHA256SUM" >&2; exit 1; }',
+        'got=$("$SHA256SUM" "$goarch_dir/$gofile" | cut -d\' \' -f1)',
+        '[ "$got" = "$gosha" ] || { echo "build-apk.sh: sha256 checksum of $gofile ($got) differs from the recipe\'s pin ($gosha)" >&2; exit 2; }',
+        'sed -n \'s/^pin=//p\' "$tmp/recipe.facts" >"$tmp/pins"',
+        'missing=$(grep -Fxv -f "$mlock" "$tmp/pins" | head -n 1 || true)',
+        '[ -z "$missing" ] || { echo "build-apk.sh: the recipe pins $missing but the melange lock $mlock does not have it;" "the recipe and the lock must agree" >&2; exit 2; }',
+        'extra=$(grep -v \'^$\' "$mlock" | grep -Fxv -f "$tmp/pins" || true)',
+        '[ -z "$extra" ] || { echo "build-apk.sh: the melange lock $mlock has lines the recipe does not pin" "($(printf \'%s\' "$extra" | head -n 3 | tr \'\\n\' \' \')): the recipe and the lock must agree both ways" >&2; exit 2; }',
+        'rdir=${render:-$tmp/render}; mkdir -p "$rdir"',
+        'rendered=$rdir/$(basename "$recipe")',
+        'sed "s/@VERSION@/$apkver/g" "$recipe" >"$rendered"',
+        'mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"',
+        'excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || { echo "build-apk.sh: cannot locate the exclude file of $src (git rev-parse failed)" >&2; exit 1; }',
+        'exdir=${excl%/*}',
+        'mkdir -p "$exdir" 2>/dev/null || true   # a checkout made with an empty template has no info/ directory',
+        '"$PY3" -I -B bin/build-apk-helper.py exclude-file "$excl" "$exdir"',
+        'margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"',
+        '  --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"',
+        '  --cache-dir "$tmp/cache" --source-dir "$src" --out-dir "$out")',
+        '[ -z "$apkcache" ] || margs+=(--apk-cache-dir "$apkcache")',
+        'melange_bin=$MELANGE; [ -x "$melange_bin" ] || { echo "build-apk.sh: melange is not installed (the chain installs it before this step)" >&2; exit 1; }',
+        'mapfile -d \'\' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV")',
+        '[ "${#sealed[@]}" -ge 4 ] || { echo "build-apk.sh: the sealed environment could not be made" "(build/sealed-env.json, SOURCE_DATE_EPOCH)" >&2; exit 1; }',
+        'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")',
+        'why=$("$PY3" -I -B bin/build-apk-helper.py sealed-call --sealed-env "$SEALED_ENV" "${call[@]}" 2>&1) || { echo "build-apk.sh: refusing the melange call: $why" >&2; exit 2; }',
+        '"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 ||',
+        '  echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns" "(not needed off Ubuntu 24.04)" >&2',
+        'cd "$rdir"',
+        '"$SUDO" "${call[@]}" 2>"$tmp/melange.err" && rc=0 || rc=$?',
+        'cd "$root_"',
+        'cat "$tmp/melange.err" >&2',
+        'probe=',
+        '[ "$rc" != 0 ] && grep -Eqi -e \'ENETUNREACH|network is unreachable|dial tcp|no such host|name resolution\' -e \'Name or service not known|could not resolve host\' "$tmp/melange.err" 2>/dev/null && probe=0 || probe=',
+        '[ -z "$probe" ] || "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1 || probe=$?',
+        '"$PY3" -I -B bin/build-apk-helper.py melange-verdict "$rc" "$probe"',
+        'apk=$out/$arch/$pkg-$apkver-r0.apk',
+        'vsfx=; [ "$variant" = fips ] && vsfx=-fips   # standard and fips build into ONE --out: the fips files must not overwrite',
+        '[ -f "$apk" ] || { echo "build-apk.sh: melange did not produce $apk" >&2; exit 1; }',
+        'signer=$("$PY3" -I -B bin/apk-tool.py signer "$apk") || { echo "build-apk.sh: cannot read the signer of $apk" >&2; exit 1; }',
+        '[ "$signer" = assembly.rsa.pub ] || { echo "build-apk.sh: $apk is signed by \'$signer\', not assembly.rsa.pub:" "the assembly key is the only build signer" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py verify "$apk" build/keys/assembly.rsa.pub >/dev/null || { echo "build-apk.sh: the signature of $apk does not verify against the committed build/keys/assembly.rsa.pub:" "the apk is not signed with the assembly key" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" usr/share/fscache/buildinfo.txt >"$tmp/buildinfo.txt" || { echo "build-apk.sh: $apk has no usr/share/fscache/buildinfo.txt" >&2; exit 1; }',
+        '"$PY3" -I -B bin/build-apk-helper.py check-buildinfo "$tmp/buildinfo.txt" "$version"',
+        'headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null) || { echo "build-apk.sh: cannot read the source HEAD of $src" >&2; exit 1; }',
+        '"$PY3" -I -B bin/build-apk-helper.py check-revision "$tmp/buildinfo.txt" "$headrev" "$variant" "$FIPS_MODULE"',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" usr/bin/fscache >"$tmp/fscache.bin" || { echo "build-apk.sh: $apk has no usr/bin/fscache" >&2; exit 1; }',
+        'gorc=127; gov=',
+        '[ ! -x "$GO_TOOL" ] || gorc=0',
+        '[ "$gorc" != 0 ] || gov=$("$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off "$GO_TOOL" version -m "$tmp/fscache.bin" 2>"$tmp/go.err") || gorc=$?',
+        'printf \'%s\\n\' "$gov" >"$tmp/go.out"',
+        '"$PY3" -I -B bin/build-apk-helper.py go-verdict "$gorc" "$tmp/go.out" "$tmp/buildinfo.txt" "$tmp/go.err"',
+        '"$PY3" -I -B bin/go-module-sbom.py --modules "$src/vendor/modules.txt" --provenance "$src/dependency-provenance.json" --buildinfo "$tmp/buildinfo.txt" --out "$out/fscache-modules$vsfx.spdx.json" || { echo "build-apk.sh: the Go module list does not match the binary (see above)" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out "$out/inputs-manifest$vsfx.json" || { echo "build-apk.sh: the inputs manifest could not be made (see above)" >&2; exit 1; }',
+        'echo "built $apk"',
+    ],
+    'bin/build-stage-refuse-mode.sh': [
+        'set -euo pipefail',
+        'case "${1-}" in',
+        '  release|snapshot) ;;',
+        '  *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;;',
+        'esac',
+    ],
+}
+
+
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml",
          "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml", "sign-check": "stage-sign.yml", "release": "stage-promote.yml"}
@@ -971,7 +1628,7 @@ if __name__ == "__main__":
            "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2]),
            "listed": lambda: listed(sys.argv[2], sys.argv[3]), "archive-listed": lambda: archive_listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "localhelper": lambda: localhelper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
             "callers": lambda: callers(sys.argv[2]),
-            "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
+            "directwitness": lambda: directwitness(sys.argv[2:]), "nosource": lambda: nosource(sys.argv[2])}[cmd]()
     if bad and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py)
         print("FINDINGS-JSON " + json.dumps(bad), file=sys.stderr)
     print("; ".join(bad) or "ok")

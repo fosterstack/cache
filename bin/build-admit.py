@@ -71,20 +71,22 @@ def one_line(s, limit=300):
     return " ".join(s.split())[:limit]
 
 
-def run_cmd(argv, env_extra=None, input_bytes=None):
-    """Run an argument list (never a shell). Returns (returncode, stdout bytes, stderr bytes)."""
-    env = dict(os.environ)
-    env.update(env_extra or {})
+def outcome(start):
+    """Run start(), which runs one program as an argument list (never a shell).
+
+    Returns (returncode, stdout bytes, stderr bytes). A program that is not installed is an environment error.
+    The start line stays one exact line (the test judge holds it), so the argument list is written at each call."""
     try:
-        p = subprocess.run(argv, input=input_bytes, capture_output=True, env=env, check=False)
-    except FileNotFoundError:
-        raise EnvError("required tool not found: %s" % argv[0])
+        p = start()
+    except FileNotFoundError as e:
+        # e.filename is the program that was not found
+        raise EnvError("required tool not found: %s" % e.filename)
     return p.returncode, p.stdout, p.stderr
 
 
 def git_show(rev_path):
     """The bytes of `git show REV:PATH`, or None when it does not exist."""
-    rc, out, _ = run_cmd(["git", "show", rev_path])
+    rc, out, _ = outcome(lambda: subprocess.run(["git", "show", rev_path], capture_output=True, check=False))
     return out if rc == 0 else None
 
 
@@ -129,7 +131,7 @@ def check_tag_points_at_sha(ctx):
     """The re-tag race: the tag as it is now must still point at the event's commit (part of tag-ref)."""
     if not SHA_SYNTAX.fullmatch(ctx.sha):
         raise Refusal("tag-ref", "GITHUB_SHA %r is not a full lower-case commit sha" % ctx.sha)
-    rc, out, _ = run_cmd(["git", "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % ctx.tag])
+    rc, out, _ = outcome(lambda: subprocess.run(["git", "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % ctx.tag], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-ref", "tag %s does not exist in the checkout (or does not point at a commit)" % ctx.tag)
     if text(out).strip() != ctx.sha:
@@ -141,7 +143,7 @@ def check_tag_points_at_sha(ctx):
 def check_policy_from_main(ctx):
     """Fetch origin/main and copy the policy inputs out of IT, never out of the tagged commit."""
     os.makedirs(ctx.policy)
-    rc, _, err = run_cmd(["git", "fetch", "--no-tags", "origin", "main"])
+    rc, _, err = outcome(lambda: subprocess.run(["git", "fetch", "--no-tags", "origin", "main"], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("policy-from-main", "cannot fetch origin main: %s" % one_line(text(err)))
     for path in POLICY_FILES:
@@ -156,7 +158,7 @@ def check_policy_from_main(ctx):
 
 def check_tag_annotated(ctx):
     """A lightweight tag carries no signature: only an annotated tag object is admitted."""
-    rc, out, _ = run_cmd(["git", "cat-file", "-t", "refs/tags/" + ctx.tag])
+    rc, out, _ = outcome(lambda: subprocess.run(["git", "cat-file", "-t", "refs/tags/" + ctx.tag], capture_output=True, check=False))
     if rc != 0 or text(out).strip() != "tag":
         raise Refusal("tag-annotated", "%s is not an annotated tag" % ctx.tag)
 
@@ -165,18 +167,17 @@ def check_tag_annotated(ctx):
 
 def route_tag(ctx):
     """Ask main's bin/admission-tag-signer.py which verifier applies: 'ssh' or 'gitsign'. Anything else is refused."""
-    rc, obj, _ = run_cmd(["git", "cat-file", "tag", "refs/tags/" + ctx.tag])
+    rc, obj, _ = outcome(lambda: subprocess.run(["git", "cat-file", "tag", "refs/tags/" + ctx.tag], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-signature", "cannot read the tag object of %s" % ctx.tag)
     obj_file = os.path.join(ctx.tmp, "tag-object")
     tags_file = os.path.join(ctx.tmp, "released-tags")
     with open(obj_file, "wb") as fh:
         fh.write(obj)
-    _, tags, _ = run_cmd(["git", "tag", "-l", "v*"])
+    _, tags, _ = outcome(lambda: subprocess.run(["git", "tag", "-l", "v*"], capture_output=True, check=False))
     with open(tags_file, "wb") as fh:
         fh.write(tags)
-    rc, out, err = run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag,
-                            "--tag-object", obj_file, "--tags", tags_file])
+    rc, out, err = outcome(lambda: subprocess.run(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag, "--tag-object", obj_file, "--tags", tags_file], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-signature", "the signer router failed: %s" % one_line(text(err)))
     answer = text(out).strip()
@@ -188,8 +189,7 @@ def route_tag(ctx):
 
 def verify_tag_ssh(ctx):
     """The owner's SSH signature against main's allowed signers. Returns (principal, fingerprint)."""
-    rc, out, err = run_cmd(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, "verify-tag", "refs/tags/" + ctx.tag],
-                           {"LC_ALL": "C"})
+    rc, out, err = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, "verify-tag", "refs/tags/" + ctx.tag], capture_output=True, env=dict(os.environ, **{"LC_ALL": "C"}), check=False))
     if rc != 0:
         raise Refusal("tag-signature", "the signature of %s does not verify against main's allowed signers" % ctx.tag)
     m = SSH_GOOD.search(text(out + err))
@@ -204,23 +204,21 @@ def x509_fingerprint(tag_object):
     if not m:
         return ""
     pem = m.group(0).replace("SIGNED MESSAGE", "PKCS7").encode()
-    rc, certs, _ = run_cmd(["openssl", "pkcs7", "-print_certs"], input_bytes=pem)
+    rc, certs, _ = outcome(lambda: subprocess.run(["openssl", "pkcs7", "-print_certs"], input=pem, capture_output=True, check=False))
     if rc != 0 or not certs.strip():
         return ""
-    rc, out, _ = run_cmd(["openssl", "x509", "-noout", "-fingerprint", "-sha256"], input_bytes=certs)
+    rc, out, _ = outcome(lambda: subprocess.run(["openssl", "x509", "-noout", "-fingerprint", "-sha256"], input=certs, capture_output=True, check=False))
     f = re.search(r"^sha256 Fingerprint=(\S+)$", text(out), re.I | re.M)
     return "x509-sha256:" + f.group(1) if rc == 0 and f else ""
 
 
 def verify_tag_keyless(ctx, tag_object):
     """The release workflow's keyless identity on a patch tag, via gitsign. Returns (principal, fingerprint)."""
-    rc, _, err = run_cmd(["bash", os.path.join(ctx.policy, os.path.basename(INSTALLER)), "gitsign"])
+    rc, _, err = outcome(lambda: subprocess.run(["bash", os.path.join(ctx.policy, os.path.basename(INSTALLER)), "gitsign"], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-signature", "installing gitsign failed: %s" % one_line(text(err)))
     identity = "https://github.com/%s/.github/workflows/release.yml@refs/heads/main" % ctx.repo
-    rc, _, err = run_cmd(["gitsign", "verify-tag", ctx.tag, "--certificate-identity", identity, "--certificate-oidc-issuer", ISSUER,
-                          "--certificate-github-workflow-repository", ctx.repo, "--certificate-github-workflow-ref", "refs/heads/main",
-                          "--certificate-github-workflow-sha", ctx.sha])
+    rc, _, err = outcome(lambda: subprocess.run(["gitsign", "verify-tag", ctx.tag, "--certificate-identity", identity, "--certificate-oidc-issuer", ISSUER, "--certificate-github-workflow-repository", ctx.repo, "--certificate-github-workflow-ref", "refs/heads/main", "--certificate-github-workflow-sha", ctx.sha], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-signature", "gitsign verify-tag refused %s: %s" % (ctx.tag, one_line(text(err))))
     return identity, x509_fingerprint(tag_object)
@@ -246,25 +244,25 @@ def verify_commit_web_flow(ctx):
     os.chmod(home, 0o700)
     env = {"GNUPGHOME": home}
     try:
-        rc, _, err = run_cmd(["gpg", "--batch", "--quiet", "--import", os.path.join(ctx.policy, "github-web-flow.gpg")], env)
+        rc, _, err = outcome(lambda: subprocess.run(["gpg", "--batch", "--quiet", "--import", os.path.join(ctx.policy, "github-web-flow.gpg")], capture_output=True, env=dict(os.environ, **env), check=False))
         if rc != 0:
             raise Refusal("commit-signature", "the pinned web-flow key cannot be imported: %s" % one_line(text(err)))
-        rc, _, _ = run_cmd(["git", "-c", "gpg.format=openpgp", "verify-commit", ctx.sha], env)
+        rc, _, _ = outcome(lambda: subprocess.run(["git", "-c", "gpg.format=openpgp", "verify-commit", ctx.sha], capture_output=True, env=dict(os.environ, **env), check=False))
         if rc != 0:
             raise Refusal("commit-signature", "commit %s verifies against neither the allowed signers nor the pinned web-flow key" % ctx.sha)
-        _, out, _ = run_cmd(["git", "log", "-1", "--format=%GK", ctx.sha], env)
+        _, out, _ = outcome(lambda: subprocess.run(["git", "log", "-1", "--format=%GK", ctx.sha], capture_output=True, env=dict(os.environ, **env), check=False))
         keyid = text(out).strip()
-        _, keys, _ = run_cmd(["gpg", "--list-keys", "--with-colons"], env)
+        _, keys, _ = outcome(lambda: subprocess.run(["gpg", "--list-keys", "--with-colons"], capture_output=True, env=dict(os.environ, **env), check=False))
         if not keyid or not re.search(r"^(pub|sub):.*:%s:" % re.escape(keyid), text(keys), re.M):
             raise Refusal("commit-signature", "commit %s is signed by %s, which is not in the pinned web-flow keyring" % (ctx.sha, keyid))
         return keyid
     finally:
-        run_cmd(["gpgconf", "--homedir", home, "--kill", "gpg-agent"])
+        outcome(lambda: subprocess.run(["gpgconf", "--homedir", home, "--kill", "gpg-agent"], capture_output=True, check=False))
         shutil.rmtree(home, ignore_errors=True)
 
 
 def check_commit_signature(ctx):
-    rc, _, _ = run_cmd(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, "verify-commit", ctx.sha])
+    rc, _, _ = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, "verify-commit", ctx.sha], capture_output=True, check=False))
     if rc == 0:
         ctx.commit_signer = OWNER_SSH
         return
@@ -274,7 +272,7 @@ def check_commit_signature(ctx):
 # ---------------------------------------------------------------- 7. ancestor-of-main
 
 def check_ancestor_of_main(ctx):
-    rc, _, _ = run_cmd(["git", "merge-base", "--is-ancestor", ctx.sha, "origin/main"])
+    rc, _, _ = outcome(lambda: subprocess.run(["git", "merge-base", "--is-ancestor", ctx.sha, "origin/main"], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("ancestor-of-main", "the tagged commit %s is not an ancestor of origin/main" % ctx.sha)
 
@@ -295,8 +293,10 @@ def decode_json_stream(raw):
 
 def gh_get(path, paginate=False):
     """GET one GitHub API path with `gh api`; returns the list of decoded JSON pages. A failure refuses at required-checks."""
-    argv = ["gh", "api", path] + (["--paginate"] if paginate else [])
-    rc, out, err = run_cmd(argv)
+    if paginate:
+        rc, out, err = outcome(lambda: subprocess.run(["gh", "api", path, "--paginate"], capture_output=True, check=False))
+    else:
+        rc, out, err = outcome(lambda: subprocess.run(["gh", "api", path], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("required-checks", "gh api %s failed: %s" % (path.split("?")[0], one_line(text(err), 120)))
     try:
@@ -400,7 +400,7 @@ def patch_baseline_version(ctx):
     """A CI-signed patch tag uses the latest OWNER-signed baseline of its line, by main's signer script. Returns the version."""
     script = os.path.join(ctx.policy, os.path.basename(SIGNER))
     owner_dir = os.path.join(ctx.tmp, "owner-baselines")
-    rc, _, err = run_cmd(["python3", script, "owner-baselines", "--tag", ctx.tag, "--allowed-signers", ctx.allowed, "--out", owner_dir])
+    rc, _, err = outcome(lambda: subprocess.run(["python3", script, "owner-baselines", "--tag", ctx.tag, "--allowed-signers", ctx.allowed, "--out", owner_dir], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("baseline", "owner-baselines failed: %s" % one_line(text(err)))
     tagged_req = git_show("%s:requirements/requirements.yaml" % ctx.sha)
@@ -409,7 +409,7 @@ def patch_baseline_version(ctx):
     req_file = os.path.join(ctx.tmp, "tagged-requirements.yaml")
     with open(req_file, "wb") as fh:
         fh.write(tagged_req)
-    rc, out, err = run_cmd(["python3", script, "baseline", "--tag", ctx.tag, "--owner-baselines", owner_dir, "--requirements", req_file])
+    rc, out, err = outcome(lambda: subprocess.run(["python3", script, "baseline", "--tag", ctx.tag, "--owner-baselines", owner_dir, "--requirements", req_file], capture_output=True, check=False))
     answer = text(out).strip()
     parts = answer.split(" ", 2)
     if rc != 0 or len(parts) < 2 or parts[0] != "use" or not BASE_SYNTAX.fullmatch(parts[1]):
@@ -453,7 +453,7 @@ def check_baseline(ctx):
         if owner_copy != tagged:
             raise Refusal("baseline", "%s at the tagged commit differs from the copy in the owner-signed %s" % (path, base))
     # The requirements tool proves the exact requirements hash and the complete blocking set (R07); approval is checked below.
-    rc, _, err = run_cmd([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base], {"GOTOOLCHAIN": "local"})
+    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base], capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))
     if rc != 0:
         raise Refusal("baseline", "the freeze check (verify-freeze %s) failed: %s" % (base, one_line(text(err), 200)))
     try:
@@ -484,7 +484,7 @@ def check_rc_proof(ctx):
     for path, data in ((marker_path, marker), (script_path, script)):
         with open(path, "wb") as fh:
             fh.write(data)
-    rc, _, err = run_cmd(["python3", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha, "--repo", "."])
+    rc, _, err = outcome(lambda: subprocess.run(["python3", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha, "--repo", "."], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("rc-proof", "the rc-proof marker %s does not validate for %s: %s" % (RC_MARKER, ctx.sha, one_line(text(err), 300)))
 
