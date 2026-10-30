@@ -145,6 +145,8 @@ case "$1" in
     n=$(grep -c "^cosign verify-blob" "$LOG")
     [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
   sign-blob)
+    for last; do :; done
+    echo "signed-sha256: $(sha256sum "$last" | cut -d' ' -f1)" >> "$LOG"
     while [ $# -gt 0 ]; do [ "$1" = --bundle ] && bundle=$2; shift; done
     echo '{"verificationMaterial":{"tlogEntries":'"$TLOG"'}}' > "$bundle" ;;
 esac
@@ -198,6 +200,7 @@ case "$1 $2" in
     if [ "$kind" = "$FAIL_UPLOAD" ]; then
       echo "HTTP 422: Validation Failed (already_exists)" >&2; echo "second line" >&2; exit 1
     fi
+    echo "uploaded-sha256 $kind: $(sha256sum "$4" | cut -d' ' -f1)" >> "$LOG"
     echo "${4##*/}" >> "$FIX/uploaded" ;;
   "release delete-asset")
     [ -z "$FAIL_DELETE" ] || exit 1
@@ -467,6 +470,10 @@ check("F2: the verify names no identity, issuer or ignored log",
 idx = lambda needle: next((i for i, l in enumerate(log) if needle in l), -1)
 check("F2: the order is manifest key, sign, verify, upload",
       0 <= idx("policy make") < idx("sign-blob") < idx("verify-blob") < idx("release upload"), log)
+signed = [l.split()[-1] for l in log if l.startswith("signed-sha256:")]
+sent = [l.split()[-1] for l in log if l.startswith("uploaded-sha256 letter:")]
+check("F-bytes: the letter uploaded is the exact bytes that were signed, so nothing edits it after signing",
+      len(signed) == 1 and signed == sent, (signed, sent))
 check("AC9: the bundle is uploaded first, the letter second, no overwrite",
       [os.path.basename(u) for u in up] == names and not any("--clobber" in l for l in log), (up, log))
 pp, lp, upp, _l = publish(TLOG="[]")

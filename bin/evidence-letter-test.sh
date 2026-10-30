@@ -217,6 +217,9 @@ for label, note in (("a forbidden word", "Fix: now certified compliant."),
     check("AC7: a quoted reason with %s refuses" % label, pw.returncode == 1 and tw == "", pw.stderr)
 pws, tws = reason("Fix: a crash.", signatory="Ada Example, Compliant Officer")
 check("AC7: a forbidden word in the signatory refuses", pws.returncode == 1 and tws == "", pws.stderr)
+pwc, twc = reason("Fix: a crash.", signatory="Ada Example, {{customer_name}}")
+check("AC7: the email side's customer-name mark in the letter refuses (the bytes are sent as they are)",
+      pwc.returncode == 1 and twc == "" and "customer_name" in pwc.stderr, pwc.stderr)
 pwa, twa = reason("Fix: a crash.", signatory="Ada Example, ada@example.test")
 check("AC7: an address in the signatory refuses", pwa.returncode == 1 and twa == "", pwa.stderr)
 pwo, two_ = reason("Fix: a crash (rare), see 1/2: ok; it's fine - really.")
