@@ -393,6 +393,21 @@ def judge(c, verified):
     return None
 
 
+KEYFILE = "release-key.verified.pub"   # written only by a step that checked the key manifest against the root key
+
+
+def verified_key():
+    """The absolute path of the verified release public key file; a refusal when there is none. Never a key
+    reference, never a private key, never a file of the repository: nothing on this base writes KEYFILE yet."""
+    if os.path.islink(KEYFILE) or not os.path.isfile(KEYFILE):
+        refuse("<RELEASE_KEY> needs the verified release key file %s, and there is none" % KEYFILE)
+    text = open(KEYFILE, errors="replace").read()
+    pem = text.startswith("-----BEGIN PUBLIC KEY-----\n") and text.rstrip().endswith("-----END PUBLIC KEY-----")
+    if not (pem and len(text) < 2000 and "PRIVATE" not in text and "awskms" not in text):
+        refuse("%s is not one PEM public key" % KEYFILE)
+    return os.path.abspath(KEYFILE)
+
+
 def fill(c, values):
     """The command with every placeholder replaced; a placeholder with no value, or a value that is not one plain
     word, is refused."""
@@ -409,6 +424,8 @@ def fill(c, values):
 def make_plan(cmds, digests, tag):
     """[(registry, command, filled command, files a jq-only command reads)]: one pass per registry, in order."""
     base = {"TAG": tag}
+    if any("<RELEASE_KEY>" in c for c in cmds):
+        base["RELEASE_KEY"] = verified_key()
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if repo:
         base["IDENTITY"] = "https://github.com/%s/.github/workflows/stage-sign.yml@refs/tags/%s" % (repo, tag)

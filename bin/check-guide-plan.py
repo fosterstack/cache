@@ -252,7 +252,11 @@ for c in cmds:
     if kind == "syntax":
         fail("the command `%s` has %s: no command of the guide may, listed as not-run or not (Release runs the listed commands unattended)" % (c, why))
     for u in sorted(set(PH.findall(c))):
-        if u not in LOCAL and u not in IMAGE:
+        if u == "RELEASE_KEY":     # Release fills it with the verified key; Check never holds it: only a listed command
+            if c not in excused:
+                fail("the command `%s` uses <RELEASE_KEY> and is not on the cannot-run list: Check never holds the "
+                     "verified release key, so a runnable command may not name it" % c)
+        elif u not in LOCAL and u not in IMAGE:
             fail("the command `%s` uses <%s>, a defined placeholder that neither Check nor Release can substitute (unsupported placeholder; "
                  "unsubstituted placeholder): listed as not-run or not, it is refused" % (c, u))
     if c in excused:
