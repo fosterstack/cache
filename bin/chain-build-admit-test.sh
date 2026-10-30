@@ -707,8 +707,8 @@ expect_refuse "AC4 a line that is not freeze-ok BASE is refused" baseline freeze
 fresh; (cd "$W/c/repo/freeze" && { cat freeze.txt; echo "freeze-ok v9.9.9"; } > f2 && mv f2 freeze.txt); run_admit
 expect_refuse "AC4 a freeze file naming a baseline the tagged commit does not have is refused (every line names a \
 baseline file of the tagged commit)" baseline freeze
-fresh; rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"; ln -s /etc/hostname "$W/c/repo/freeze/freeze.txt"; \
-  run_admit
+fresh; mkfreeze; mv "$W/c/repo/freeze/freeze.txt" "$W/c/repo/freeze/real.txt"
+ln -s real.txt "$W/c/repo/freeze/freeze.txt"; run_admit
 expect_refuse "AC4 a freeze file that is a symlink is refused" baseline freeze
 fresh; head -c 70000 /dev/zero | tr '\0' 'a' > "$W/c/repo/freeze/freeze.txt"; run_admit
 expect_refuse "AC4 an oversized freeze file is refused" baseline freeze
