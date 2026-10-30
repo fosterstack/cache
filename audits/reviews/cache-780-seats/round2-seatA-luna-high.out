@@ -1,0 +1,2229 @@
+OpenAI Codex v0.162.1
+--------
+workdir: /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp]
+reasoning effort: high
+reasoning summaries: none
+session id: 01a18b45-cf8e-7d93-a34c-d518c5e21b4b
+--------
+user
+# Codex Independent Audit Protocol (owner-adopted Oct 9 2026; verbatim copy)
+
+Source: `advisor/codex/codex-audit-protocol.md` lines 8-61 (the owner's text, quoted exactly and not trimmed; owner, Oct 9: "this is the main part that you need").
+`bin/codex-review.sh` puts this whole file in front of every brief it hands to Codex (docs/codex-review-acs.md, CR-12). Do not edit the text below the
+line `<!-- verbatim text follows -->`: `bin/test_codex_review.py` compares it, byte for byte, with the advisor's file when that file is present.
+
+<!-- verbatim text follows -->
+Instructions for Claude Code
+Codex Independent Audit Protocol
+When delegating a code review to OpenAI Codex, use the following protocol for all repositories, features, bug fixes, refactors, and security-related changes.
+Role and authorization
+Codex is an independent software engineering auditor reviewing code produced or modified by Claude.
+The work is authorized by the repository owner and limited to the repository, its configuration, tests, and explicitly approved development infrastructure.
+Codex's purpose is to identify defects, regressions, vulnerabilities, incomplete implementations, and violations of project requirements.
+Audit objectives
+Independently assess:
+
+1. Correctness, completeness, and adherence to requirements.
+2. Security vulnerabilities and unsafe assumptions.
+3. Error handling, failure modes, and edge cases.
+4. Dependency management and supply-chain integrity.
+5. Authentication, authorization, and data-handling correctness where applicable.
+6. CI/CD configuration, build reproducibility, and test coverage.
+7. Regressions and compatibility problems.
+
+Audit methodology
+
+* Examine actual code and relevant project documentation.
+* Challenge Claude's assumptions rather than accepting its conclusions.
+* Identify concrete failure scenarios and their root causes.
+* Use existing tests and create minimal, local regression tests when appropriate.
+* Verify findings against the implementation.
+* Report actionable findings with severity, file paths, line numbers, and recommended fixes.
+* Clearly distinguish confirmed defects from suspected risks.
+
+Security review boundaries
+Security analysis must remain within authorized defensive code review and local testing.
+Codex may analyze vulnerabilities, unsafe input handling, authorization failures, dependency weaknesses, and security-control defects.
+Do not request attacks against external systems, credential theft, persistence, stealth, unauthorized access, or operational exploitation.
+When evaluating a security control, focus on its expected behavior, failure conditions, and regression tests rather than developing techniques for defeating deployed protections.
+Handling cybersecurity safety restrictions
+If Codex encounters an OpenAI cybersecurity restriction:
+
+* Do not repeatedly retry substantially equivalent blocked requests.
+* Do not disguise prohibited requests or split them into smaller requests to evade safety checks.
+* Record the exact refusal or error.
+* Identify which legitimate audit objective could not be completed.
+* Continue with unrelated, permitted review work.
+* Report the incomplete verification to Claude and the user.
+* Do not claim that an incomplete security review passed.
+
+Independence
+Codex must evaluate Claude's work independently, not simply confirm Claude's assessment.
+Claude must not suppress, reinterpret, or dismiss Codex findings without technical evidence.
+The goal is an independent, rigorous audit—not agreement between models.
+One additional instruction I'd give Claude
+This is important because Claude controls the prompts sent to Codex:
+Do not weaken Codex's audit instructions to avoid cybersecurity restrictions.
+Use accurate, specific, defensive engineering language. Provide the repository context, change scope, and expected security properties.
+Do not use generic instructions such as "find ways to bypass security" when the actual task is to verify that a security control correctly rejects invalid inputs.
+Preserve the full depth of security review. If a legitimate task is blocked, report the restriction rather than silently omitting the review.
+
+Review fosterstack/cache#780 at head a9afd5112d2e7abbe8165d13f44969b56c341580 against its base chain-v030, and nothing else. This is round two; round one's seat A did not review (brief wording), seat B ruled one fix: the line length at pin-age-check-test.sh:4417.
+First check your pr-stat.txt: it is git diff --stat output and does not print the range. It must show exactly one file, .github/agent/tests/pin-age-check-test.sh, 1 insertion(+), 1 deletion(-). Any other file list: report "wrong range" as your only finding.
+Also measure the line: awk 'NR==4417{print length($0)}' .github/agent/tests/pin-age-check-test.sh must be 120 or fewer.
+The raw diff (the lane pastes git diff 5cde60c7 a9afd5112d2e7abbe8165d13f44969b56c341580 here, unedited, with indentation):
+diff --git a/.github/agent/tests/pin-age-check-test.sh b/.github/agent/tests/pin-age-check-test.sh
+index 0271a0c4..96c48493 100755
+--- a/.github/agent/tests/pin-age-check-test.sh
++++ b/.github/agent/tests/pin-age-check-test.sh
+@@ -4414,7 +4414,7 @@ seen = []
+ def fake(u):
+     seen.append(u)
+     return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+-ac._http_json = fake
++ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+ mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+ assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+ rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+What the PR is: the Go-proxy case in pin-age-check-test.sh (about line 4407) stubbed `_http_json`, but the checker's
+`_go_module` calls `_http_dict`. So the stub was never used and the case reached the real network: red offline, green in CI.
+The PR changes the stub so that it replaces the function the checker really calls. Report each finding with file:line,
+severity and whether it is a security finding; say "green" if none.
+1. Right target: the stub now replaces the function `_go_module` calls, under the name the checker looks up at call time
+   (module attribute or import, say which). It returns the shape `_http_dict` returns, so the code under test runs its real path
+   and does not fail or pass on a shape mismatch.
+2. Offline: with the stub in place, nothing in the case reaches the network. A seat with a shell runs pin-age-check-test.sh with
+   no network in its sandbox at base and at head, and quotes both counts and the Go-proxy case's result.
+3. Still proves its claim ("item 6: the Go proxy gets the !x case escaping ..."). The case must fail when the escaping is wrong.
+   A seat with a shell breaks the escaping in a scratch copy of the checker and shows the case going red, then reverts. A case
+   that passes either way is a finding.
+4. Scope: one line, inside the Go-proxy case. No other case, no line of the vendored-folder guard or its lists, no checker file.
+5. Other stubs: does any other case in the file stub `_http_json` where the checker calls `_http_dict` (the same fault)? Name
+   each with file:line. They are outside this PR, so report them as notes, not findings against #780.
+6. Simplest form (rules 1, 2, 8, 10): the fix is the smallest that works, adds no helper or layer, and keeps every line at 120
+   characters or fewer.
+7. Readability bar (owner Rule 16): a junior to mid-level developer must read the NEW line and understand it quickly. A line
+   you cannot explain in one plain sentence is a finding.
+8. Comments (owner Rule 17): a comment added that restates the code, or more comment than a competent human would write, is a
+   finding. Comments say why, briefly.
+End with one line: Verdict: GREEN or RED, then your numbered findings.
+
+Your working directory is writable, and TMPDIR is a writable directory of your own for this run; nothing else is writable. The checkout under review is /home/shop/work/cache5/review-wt-780c/cache-review (read-only): read it there; copy what you need to run into TMPDIR. Files in your working directory, written by the runner with git: pr-stat.txt and pr.patch are the whole PR (merge base with origin/chain-v030 to the head a9afd5112d2e7abbe8165d13f44969b56c341580). delta-stat.txt and delta.patch are the change since the previous reviewed head f7454a539444d85c1cbc61eaf580cf7d15bd4fa3. They are the change the PR makes: never diff against the tip of the base branch (what landed there after the branch point is not a deletion by the PR).
+
+codex
+I’ll check the supplied PR stat first; if its file list is wrong, I’ll stop with only that finding. Otherwise I’ll measure the changed line and inspect the base/head test behavior, including the requested offline and escaping checks.
+exec
+/bin/bash -lc "pwd && cat pr-stat.txt && awk 'NR==4417{print length("'$0)}'"' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 8ms:
+/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ .github/agent/tests/pin-age-check-test.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+102
+
+exec
+/bin/bash -lc 'cat pr.patch && cat delta.patch' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc "nl -ba /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh | sed -n '4380,4445p'; rg -n '_http_json|_http_dict|_go_module|item 6' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent -g '*pin-age*'" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc "printf 'TMPDIR=%s\\n' \""'$TMPDIR"; rg --files /home/shop/work/cache5/review-wt-780c/cache-review | rg '"'("'^|/)(pin-age-check-test'"\\.sh|pin-age-check\\.py|.*pin-age.*)"'$'"' | head -30" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+TMPDIR=/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp
+/bin/bash: line 1: rg: command not found
+/bin/bash: line 1: rg: command not found
+
+exec
+/bin/bash -lc 'git -C /home/shop/work/cache5/review-wt-780c/cache-review status --short && git -C /home/shop/work/cache5/review-wt-780c/cache-review rev-parse HEAD && git -C /home/shop/work/cache5/review-wt-780c/cache-review rev-parse chain-v030' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 32ms:
+diff --git a/.github/agent/tests/pin-age-check-test.sh b/.github/agent/tests/pin-age-check-test.sh
+index 0271a0c4..96c48493 100755
+--- a/.github/agent/tests/pin-age-check-test.sh
++++ b/.github/agent/tests/pin-age-check-test.sh
+@@ -4414,7 +4414,7 @@ seen = []
+ def fake(u):
+     seen.append(u)
+     return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+-ac._http_json = fake
++ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+ mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+ assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+ rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+diff --git a/.github/agent/tests/pin-age-check-test.sh b/.github/agent/tests/pin-age-check-test.sh
+index b23b78d3..96c48493 100755
+--- a/.github/agent/tests/pin-age-check-test.sh
++++ b/.github/agent/tests/pin-age-check-test.sh
+@@ -4414,7 +4414,7 @@ seen = []
+ def fake(u):
+     seen.append(u)
+     return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+-ac._http_dict = lambda url, need, timeout=30, strict=False: fake(url)   # _go_module reads through _http_dict, so this keeps the case offline
++ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+ mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+ assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+ rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+
+ exited 127 in 39ms:
+  4380	    ok, why, pr = ac.judge_item(it, [("2026-10-04T00:00:00Z", src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+  4381	    assert not ok and pr["source"] == src, (kind, why)          # a replaced asset (young server proof) is not out-aged by the version's old PR clock
+  4382	    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", "pr-clock")], now)
+  4383	    assert ok and pr["source"] == "pr-clock", (kind, why)        # the PR clock stands in only when no server proof exists
+  4384	    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", src), ("2026-10-04T00:00:00Z", "pr-clock")], now)
+  4385	    assert ok and pr["source"] == src, (kind, why)               # an old server proof decides; a young PR clock does not undo it
+  4386	act = inv.Item("action", "o/act", "a" * 40, "v4")
+  4387	ok, why, pr = ac.judge_item(act, [("2020-01-01T00:00:00Z", "pr-clock"), ("2026-10-04T00:00:00Z", "observer")], now)
+  4388	assert ok, why   # actions keep the oldest-proof rule (their age is the observer or the PR clock)
+  4389	PY
+  4390	CASE="item 6: a # vX label that does not resolve to the pinned commit is 'age not provable' and names the label, even with an old PR clock"
+  4391	check python3 - "$chk" <<'PY'
+  4392	import datetime, importlib.util, sys
+  4393	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4394	inv = ac.inv
+  4395	now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+  4396	SHA = "a" * 40
+  4397	ac._tag_refs = lambda repo: {"v4": SHA}
+  4398	ac.observed = lambda: None
+  4399	ac._pr_clock = lambda *a, **k: "2020-01-01T00:00:00Z"
+  4400	bad = inv.Item("action", "o/act", SHA, "v9.9.9")
+  4401	ok, why, _ = ac.judge_item(bad, ac.live_proofs(bad, ".", "base"), now)
+  4402	assert not ok and "v9.9.9" in why and "label" in why and "does not" in why, why   # the label is wrong; it is not read as a missing clock
+  4403	good = inv.Item("action", "o/act", SHA, "v4")
+  4404	ok, why, _ = ac.judge_item(good, ac.live_proofs(good, ".", "base"), now)
+  4405	assert ok, why
+  4406	PY
+  4407	CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+  4408	check python3 - "$chk" <<'PY'
+  4409	import contextlib, importlib.util, io, sys, urllib.request
+  4410	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4411	assert ac._go_escape("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+  4412	assert ac._go_escape("golang.org/x/tools") == "golang.org/x/tools"
+  4413	seen = []
+  4414	def fake(u):
+  4415	    seen.append(u)
+  4416	    return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+  4417	ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+  4418	mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+  4419	assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+  4420	rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+  4421	class R(io.BytesIO):
+  4422	    def __enter__(self): return self
+  4423	    def __exit__(self, *a): return False
+  4424	urllib.request.urlopen = lambda *a, **k: R(rows.encode())
+  4425	assert ac._go_index_time("github.com/BurntSushi/toml", "v1.0.0", "2020-01-01T00:00:00Z") == "2026-02-02T00:00:00Z"   # an exact Path match: another module's case-twin lends no time
+  4426	PY
+  4427	
+  4428	# --- rc-5b item 6, round 1 rulings on #639 (ancestry, unusable server proof, no cap, literal-download sums, sums across files) -----------------------------------------------------------------
+  4429	CASE="PR clock: a later commit that does NOT contain the introducing commit (a sibling in a merge) lends no clock; the merge that contains it does"
+  4430	check python3 - "$chk" "$stubpy" "$work" <<'PY'
+  4431	import importlib.util, json, os, subprocess, sys
+  4432	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4433	work = sys.argv[3]; repo = work + "/anc"; os.makedirs(repo + "/.github/workflows")
+  4434	env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+  4435	def g(*a, date=None):
+  4436	    e = dict(env, **({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date} if date else {}))
+  4437	    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=e, check=True).stdout.strip()
+  4438	wf = repo + "/.github/workflows/a.yml"
+  4439	g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base", date="2026-09-01T00:00:00Z")
+  4440	base = g("rev-parse", "HEAD")
+  4441	g("checkout", "-q", "-b", "side"); open(repo + "/other.txt", "w").write("x"); g("add", "-A"); g("commit", "-q", "-m", "sibling", date="2026-09-05T00:00:00Z")
+  4442	sib = g("rev-parse", "HEAD")
+  4443	g("checkout", "-q", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro", date="2026-09-04T00:00:00Z")
+  4444	intro = g("rev-parse", "HEAD")
+  4445	subprocess.run(["git", "-C", repo, "merge", "-q", "--no-ff", "-m", "merge", "side"], env=dict(env, GIT_COMMITTER_DATE="2026-09-06T00:00:00Z"), check=True, capture_output=True)
+/bin/bash: line 1: rg: command not found
+
+ exited 128 in 50ms:
+a9afd5112d2e7abbe8165d13f44969b56c341580
+fatal: ambiguous argument 'chain-v030': unknown revision or path not in the working tree.
+Use '--' to separate paths from revisions, like this:
+'git <command> [<revision>...] -- [<file>...]'
+chain-v030
+
+codex
+The supplied stat matches the required single-file change, and line 4417 is 102 characters. The checkout is at the requested head, but it has no local `chain-v030` ref, so I’m checking the available Git objects and test harness paths before setting up isolated base/head copies.
+exec
+/bin/bash -lc "head -100 /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh; find /home/shop/work/cache5/review-wt-780c/cache-review/.github -type f | grep -E 'pin-age|check' | head -40" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34
+# The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
+# package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
+# repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
+#   python3 bin/pin-age-check.py --root REPO --base REV --head REV --fixtures FILE [--json FILE] [--now ISO] [--min-days N]
+#   exit 0: nothing moved, or every moved version is old enough; exit 1: a moved version is too young or its age cannot be proven.
+#   An item is "<kind>:<name>@<version>"; kinds: action (version = the pinned commit), tool (the installer actions' version inputs and install-scanner.sh's
+#   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest).
+#   Fixtures: {"now": ISO, "times": {ITEM: {"time": ISO, "source": S}}, "first_seen": {ITEM: ISO}}. Sources that count: github-release, pypi, go-index,
+#   registry-push. A source of commit-date, tag-date or image-config is NEVER a proof (the publisher or the builder controls it).
+set -euo pipefail
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../../.." && pwd)
+chk="$here/../supply-chain/pin-age-check.py"
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+pass=0 failn=0
+ok()  { pass=$((pass+1)); echo "ok   $1"; }
+bad() { failn=$((failn+1)); echo "FAIL $1"; }
+CASE=""
+check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
+NOW="2026-10-05T12:00:00Z"
+d() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
+SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA3=$(printf '3%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40)); SHA5=$(printf '5%.0s' $(seq 40))
+SHA6=$(printf '6%.0s' $(seq 40)); DIG4=sha256:$(printf '4%.0s' $(seq 64)); DIG5=sha256:$(printf '5%.0s' $(seq 64)); DIG1=sha256:$(printf '1%.0s' $(seq 64)); DIG2=sha256:$(printf '2%.0s' $(seq 64)); DIG3=sha256:$(printf '3%.0s' $(seq 64))
+
+# --- the base repository: one of every kind of pin --------------------------------------------------------------------
+base="$work/base"; mkdir -p "$base/.github/workflows" "$base/.github/actions/local" "$base/.github/pins" "$base/bin" "$base/build/docker"
+cat >"$base/.github/workflows/ci.yml" <<EOF
+on: pull_request
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/own/ci@$DIG1
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+      - uses: golangci/golangci-lint-action@$SHA2 # v9.3.0
+        with:
+          version: v2.13.2
+      - uses: actions/setup-go@$SHA3 # v6.0.0
+        with:
+          go-version: '1.27'
+      - uses: actions/setup-python@$SHA4 # v6.1.0
+        with:
+          python-version: '3.12'
+      - run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          python3 -m pip install --require-hashes -r .github/pins/adjudicator-requirements.txt
+      - uses: goreleaser/goreleaser-action@$SHA6 # v7.2.3
+        with:
+          version: '2.17.1'
+      - uses: helm/kind-action@$SHA6 # v1.15.0
+        with:
+          node_image: kindest/node:v1.31.0@$DIG4
+      - run: |
+          curl -fsSL https://github.com/cli/cli/releases/download/v2.40.0/gh_2.40.0_linux_amd64.tar.gz -o gh.tgz
+          python3 -m pip install --quiet black==24.1.0
+          docker run --rm alpine:3.20@$DIG5 true
+EOF
+cat >"$base/.github/actions/local/action.yml" <<EOF
+name: local
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@$SHA5 # v4.2.0
+EOF
+cat >"$base/bin/install-scanner.sh" <<'EOF'
+#!/usr/bin/env bash
+TRIVY_VER=0.74.0
+GRYPE_VER=0.118.0
+GITSIGN_VER=0.17.1
+case "${TOOL}:${arch}" in
+  trivy:x86_64|trivy:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+esac
+EOF
+cat >"$base/.github/pins/adjudicator-requirements.txt" <<'EOF'
+# hash-pinned
+anthropic==1.9.0 \
+    --hash=sha256:aaaa
+requests==2.32.0 \
+    --hash=sha256:bbbb
+EOF
+printf 'FROM gcr.io/distroless/static@%s\n' "$DIG2" >"$base/build/docker/Dockerfile.production"
+printf 'module x\n\ngo 1.27\n\ntoolchain go1.27.1\n\nrequire github.com/foo/bar v1.0.0\n' >"$base/go.mod"
+git -C "$base" init -q; git -C "$base" add -A; git -C "$base" -c user.name=t -c user.email=t@x commit -q -m base
+
+# newcase NAME 'python edit run in the repo root' -> $work/NAME (a copy of base with a head commit)
+newcase() {
+  local n=$1; rm -rf "$work/$n"; cp -R "$base" "$work/$n"
+  ( cd "$work/$n" && python3 - "$2" <<'PY'
+import sys
+exec(sys.argv[1])
+PY
+    git add -A; git -c user.name=t -c user.email=t@x commit -q -m head )
+}
+# runck NAME FIXTURES-JSON [extra args] -> sets rc, $work/NAME.out
+runck() {
+  local n=$1 fx=$2; shift 2; echo "$fx" >"$work/$n.fx.json"; rc=0
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/policy/required-checks.json
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/fixtures/govulncheck/gv-01.json
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/fixtures/govulncheck/gv-02.json
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/fixtures/govulncheck/src/imported/go.mod.fixture
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/fixtures/govulncheck/src/imported/main.go.fixture
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/fixtures/govulncheck/src/reach/go.mod.fixture
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/fixtures/govulncheck/src/reach/main.go.fixture
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/bin/auditor-vex-scope-check.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/bin/auditor-recheck.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/bin/auditor-layout-check.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/bin/check-action-pins.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/bin/tests/test_check_action_pins.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/bin/auditor-rule0-check.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/govulncheck-fixtures-test.sh
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/check-action-pins-test.sh
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/coverage-check.py
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py
+
+exec
+/bin/bash -lc "grep -RInE '_http_json|_http_dict' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh | tail -80; grep -RInE 'def _http_dict|def _go_module|_http_json' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent | head -80" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc 'git -C /home/shop/work/cache5/review-wt-780c/cache-review branch -a --contains a9afd5112d2e7abbe8165d13f44969b56c341580; git -C /home/shop/work/cache5/review-wt-780c/cache-review show-ref | head -40' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc 'git -C /home/shop/work/cache5/review-wt-780c/cache-review cat-file -t 5cde60c7 2>&1; git -C /home/shop/work/cache5/review-wt-780c/cache-review cat-file -t f7454a539444d85c1cbc61eaf580cf7d15bd4fa3 2>&1; git -C /home/shop/work/cache5/review-wt-780c/cache-review log --oneline --decorate -6' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 2ms:
+* (no branch)
+  remotes/origin/cache5-go-proxy-stub-offline
+0f42dab055da3fb926443060b9fb652ab9978ef4 refs/heads/cache5-0710-no-ca-bundle
+6053a790e665d2bfbd308084e75b44dff1d5eba5 refs/remotes/origin/HEAD
+60cc28706e61b1be46cc9df55412f6b24e880110 refs/remotes/origin/cache5-0710-items-4-6
+6053a790e665d2bfbd308084e75b44dff1d5eba5 refs/remotes/origin/cache5-0710-no-ca-bundle
+95f5abcfd0090f8381e1931bc9b7f385c5c4877d refs/remotes/origin/cache5-776-stepa-vendor-list
+9507ece8594bf5cc2487ed71af1ce472acbd3a2a refs/remotes/origin/cache5-780-first-look
+a9afd5112d2e7abbe8165d13f44969b56c341580 refs/remotes/origin/cache5-go-proxy-stub-offline
+5cde60c79d862b695b197b816149c1e4b8cdd17a refs/remotes/origin/chain-v030
+b72523256ed9491f06b22a5fac8126e86e29719b refs/remotes/origin/main
+d8592eba3ad9445e1b09d9ff0972b56aa898c799 refs/tags/v0.1.0
+e15128ba9e626adb894834d33bd430a679c717be refs/tags/v0.2.0
+f7bdf4df24c39000540dfc136cee2758528c2c43 refs/tags/v0.2.1
+b53cc10b2c1b7e05cfb3444597a1436580e2d896 refs/tags/v0.2.2
+
+ succeeded in 3ms:
+4417:ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1614:for fn, name in ((age._http_dict, "need"), (age._http_json_strict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1626:READERS = {"_http_dict", "_http_json_strict", "_gh_json_raw", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1643:        if name == "_http_json_strict": assert len(n.args) + len(n.keywords) >= 2, ("_http_json_strict without need", n.lineno)
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1703:        http(body); refuse(("http_json_strict", body), lambda: age._http_json_strict("https://h.example/x", OBJ))
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1708:        urllib.request.urlopen = err(code); assert accepts(("strict", code), lambda: age._http_json_strict("https://h.example/x", OBJ)) is None
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1710:        urllib.request.urlopen = err(code); refuse(("strict http", code), lambda: age._http_json_strict("https://h.example/x", OBJ))
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-audit-test.sh:1893:    ("pin-age-check.py", "_http_json_strict", "_http_dict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_json_strict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_dict"): c_go_lenient,
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py:233:def _http_dict(url, need, timeout=30, strict=False):
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py:242:def _http_json_strict(url, need, timeout=30):
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py:323:def _go_module(path, version, strict=False):
+/home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py:328:        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+
+ succeeded in 0ms:
+commit
+commit
+a9afd511 (HEAD, origin/cache5-go-proxy-stub-offline) pin-age-check-test: shorten the Go proxy stub line to 120 characters
+f7454a53 pin-age-check-test: stub _http_dict in the Go proxy case so it runs offline
+5cde60c7 (origin/chain-v030) Merge pull request #769 from fosterstack/cache3-stale-public-text
+95550f3d Merge pull request #759 from fosterstack/vendor-records
+8c96af36 docs: say where SBOMs and provenance live; narrow the scan-gate claim to what it checks
+e6aca058 Public text: fourteen wording fixes from the first review (signers, token, index entries, scan reproduction, scope from v0.3.0, package surface, competitor names, links, apk key lines, distroless wording)
+
+exec
+/bin/bash -lc "sed -n '215,355p' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py; sed -n '100,140p' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/tests/pin-age-check-test.sh; command -v unshare || true; command -v timeout || true" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
+    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
+    or a body that is not JSON means we could not look (CouldNotLook)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if not strict:
+            return _FAILED
+        if e.code in (404, 410):
+            return _GONE
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        if not strict:
+            return _FAILED
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
+
+
+def _http_dict(url, need, timeout=30, strict=False):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked
+    (strict: when it said 404/410); valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+    d = _fetch_json(url, timeout, strict)
+    if d is _FAILED or d is _GONE:
+        return None
+    return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
+
+
+def _http_json_strict(url, need, timeout=30):
+    """_http_dict where only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
+    return _http_dict(url, need, timeout, strict=True)
+
+
+TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
+    "trivy": "aquasecurity/trivy", "grype": "anchore/grype", "syft": "anchore/syft", "snyk": "snyk/cli", "osv": "google/osv-scanner",
+    "scout": "docker/scout-cli", "gitsign": "sigstore/gitsign", "golangci-lint": "golangci/golangci-lint", "python": "actions/python-versions",
+    "buildx": "docker/buildx", "goreleaser": "goreleaser/goreleaser", "cosign": "sigstore/cosign", "kind": "kubernetes-sigs/kind", "helm": "helm/helm", "node": "nodejs/node",
+}
+
+
+_RELEASE = (("published_at", (str, _NULL)), ("draft", bool))      # a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
+
+
+def _release_time(repo, tags):
+    for tag in tags:
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE)
+        if rel and rel["published_at"] and not rel["draft"]:
+            return rel["published_at"]
+    return None
+
+
+_TAGS = {}
+
+
+def _tag_refs(repo):
+    """{tag: commit} for EVERY tag of a public repository, annotated tags peeled, from ONE `git ls-remote` (no REST call per tag: a repository with hundreds
+    of annotated tags would otherwise exhaust the shared API budget)."""
+    if repo not in _TAGS:
+        try:
+            r = subprocess.run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"], capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise CouldNotLook(f"git ls-remote of {repo} failed: {type(e).__name__}")
+        if r.returncode:
+            raise CouldNotLook(f"git ls-remote of {repo} failed")
+        refs = {}
+        for line in r.stdout.splitlines():
+            sha, _, ref = line.partition("\t")
+            if not ref.startswith("refs/tags/"):
+                continue
+            name = ref[len("refs/tags/"):]
+            if name.endswith("^{}"):
+                refs[name[:-3]] = sha          # peeled: the commit an annotated tag points at
+            else:
+                refs.setdefault(name, sha)
+        _TAGS[repo] = refs
+    return _TAGS[repo]
+
+
+def _tags_for_commit(repo, sha):
+    """EVERY tag that points at the commit: v4 and v4.1.0 may both."""
+    return sorted(t for t, c in _tag_refs(repo).items() if c == sha)
+
+
+def _tag_for_commit(repo, sha):
+    tags = _tags_for_commit(repo, sha)
+    return tags[0] if tags else None
+
+
+def _commit_date(repo, sha):
+    c = _gh_api(f"repos/{repo}/commits/{sha}", (("commit", dict),))
+    if c is None:
+        return None
+    committer = c["commit"].get("committer")      # optional: a commit without a committer has no date
+    if committer is None:
+        return None
+    date = _shaped(committer, (), "the commit's committer").get("date")
+    if date is not None and not isinstance(date, str):
+        raise CouldNotLook("GitHub API commit answered with a committer date that is not text")
+    return date
+
+
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+
+
+def _go_module(path, version, strict=False):
+    parts = path.split("/")
+    for n in range(len(parts), 0, -1):
+        mod = "/".join(parts[:n])
+        url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
+        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+        if info is None:
+            continue      # not there (strict) or the proxy could not be asked (lenient): try the shorter module path
+        if not info["Version"]:
+            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
+        return mod, info
+    return None, None
+
+
+def _go_index_time(mod, version, vcs_time):
+    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it).
+    Every row of a page is validated before any is used: an unreadable row is CouldNotLook, never 'not this module'."""
+    since = vcs_time
+    for _ in range(40):
+        try:
+            with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
+                lines = [ln for ln in r.read().decode().splitlines() if ln.strip()]
+        except (OSError, ValueError, http.client.HTTPException):
+            return None
+        rows = []
+        for ln in lines:
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                raise CouldNotLook("index.golang.org answered with a line that is not JSON")
+            if not (isinstance(row, dict) and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
+                raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")
+            rows.append(row)
+  local n=$1 fx=$2; shift 2; echo "$fx" >"$work/$n.fx.json"; rc=0
+  python3 "$chk" --root "$work/$n" --base HEAD~1 --head HEAD --fixtures "$work/$n.fx.json" --now "$NOW" --json "$work/$n.json" "$@" >"$work/$n.out" 2>&1 || rc=$?
+}
+sub() { python3 -c "import sys;print('import pathlib; p=pathlib.Path(%r); p.write_text(p.read_text().replace(%r,%r))' % tuple(sys.argv[1:]))" "$@"; }
+OLD=$(d 10); YOUNG=$(d 3)
+
+# --- nothing moves ------------------------------------------------------------------------------------------------------
+newcase none "pathlib=__import__('pathlib'); pathlib.Path('README.md').write_text('hi')"
+runck none '{"times": {}}'
+CASE="no pin moved: exit 0, says so, and needs no data at all"
+check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/none.out"
+
+# --- an action pin moves: AC2 names it, AC3 measures its age ---------------------------------------------------------------
+NEW1=$(printf 'a%.0s' $(seq 40))
+newcase act "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")"
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$OLD\", \"source\": \"observer\"}}}"
+CASE="a moved action pin whose release is 10 days old passes, and the check NAMES it"
+check test "$rc" -eq 0; check grep -q "action:actions/checkout@$NEW1" "$work/act.out"
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}}"
+CASE="the same pin released 3 days ago FAILS (exit 1) and says how young it is"
+check test "$rc" -eq 1; check grep -qi 'FAIL' "$work/act.out"; check grep -q "action:actions/checkout@$NEW1" "$work/act.out"
+runck act '{"times": {}}'
+CASE="a moved pin with no age data FAILS: age not provable is a failure, never a pass"
+check test "$rc" -eq 1; check grep -qi 'not provable\|cannot prove\|unprovable' "$work/act.out"
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$OLD\", \"source\": \"github-release\"}}}"
+CASE="a RELEASE date alone never proves an action (a tag can be moved under an old release): fails, though a tool's release date still counts"
+check test "$rc" -eq 1
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$OLD\", \"source\": \"commit-date\"}}}"
+CASE="a COMMIT date is never a proof of age (the publisher controls it): fails"
+check test "$rc" -eq 1
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$OLD\", \"source\": \"tag-date\"}}}"
+CASE="a TAG date is never a proof either: fails"
+check test "$rc" -eq 1
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}, \"first_seen\": {\"action:actions/checkout@$NEW1\": \"$OLD\"}}"
+CASE="when the release is young but the exact version first appeared in one of OUR pull requests 10 days ago, it passes (the third server-side source)"
+check test "$rc" -eq 0
+runck act "{\"times\": {}, \"first_seen\": {\"action:actions/checkout@$NEW1\": \"$YOUNG\"}}"
+CASE="first seen in our own PR only 3 days ago: still too young, fails"
+check test "$rc" -eq 1
+runck act "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$(d 7)\", \"source\": \"observer\"}}}"
+CASE="exactly 7 days old passes (the boundary is 7 days, not 7 days and a minute)"
+/usr/bin/unshare
+/usr/bin/timeout
+
+exec
+/bin/bash -lc 'set -eu
+repo=/home/shop/work/cache5/review-wt-780c/cache-review
+mkdir -p "$TMPDIR/base" "$TMPDIR/head"
+git -C "$repo" archive 5cde60c79d862b695b197b816149c1e4b8cdd17a | tar -x -C "$TMPDIR/base"
+git -C "$repo" archive a9afd5112d2e7abbe8165d13f44969b56c341580 | tar -x -C "$TMPDIR/head"
+unshare -n true' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 1 in 715ms:
+unshare: unshare failed: Operation not permitted
+
+codex
+`unshare -n` is unavailable here (the sandbox rejects network namespace creation). I can still prevent outbound access for the test runs by setting all proxy variables to a local, closed port, then I’ll compare the base and head outputs and verify the escaping mutation in a disposable head copy.
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+for rev in base head; do
+  echo \"=== "'$rev ==="
+  timeout 300 bash "$TMPDIR/$rev/.github/agent/tests/pin-age-check-test.sh" > "$TMPDIR/$rev.out" 2>&1
+  rc=$?
+  echo "exit=$rc"
+  grep -E '"'"'^(ok|FAIL) .*Go proxy gets the !x case escaping|''^PASS:|''^FAILURES:|''^passed:|''^failed:'"' \""'$TMPDIR/$rev.out" | tail -8
+  tail -3 "$TMPDIR/$rev.out"
+done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+codex
+The base suite is still running without producing output because the harness buffers each case’s output. The offline proxy guard may be delaying a network-dependent case, so I’m checking which child process is active before deciding whether to let the run finish or stop it.
+exec
+/bin/bash -lc "ps -eo pid,ppid,etime,args | grep -E 'pin-age-check-test|pin-age-check.py|python3|git ls-remote|timeout 300' | grep -v grep | head -30; tail -2 \""'$TMPDIR/base.out" 2>/dev/null' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 3ms:
+ok   AC16: a malformed unmeasured_text (countstr) stops the check fail-closed: exit 2, names the list, and is never a pass
+ok   AC16: a malformed unmeasured_text (countstr) stops the check fail-closed: exit 2, names the list, and is never a pass
+
+exec
+/bin/bash -lc "ps -eo pid,ppid,etime,args | grep -E 'pin-age-check-test|pin-age-check.py|python3|git ls-remote|timeout 300' | grep -v grep | head -30; tail -2 \""'$TMPDIR/base.out"; ls -l "$TMPDIR"/head.out 2>/dev/null' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 2 in 29ms:
+ok   R1: the same line with U+000c where the space was flattens identically but is never ruled: exit 1
+ok   R1: the same line with U+000c where the space was flattens identically but is never ruled: exit 1
+
+exec
+/bin/bash -lc 'ps -ef | head -40; wc -l "$TMPDIR/base.out"; tail -5 "$TMPDIR/base.out"; stat "$TMPDIR/base.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+UID          PID    PPID  C STIME TTY          TIME CMD
+shop           1       0 33 05:29 ?        00:00:00 codex-linux-sandbox --sandbox-policy-cwd /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd --command-cwd /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd --permission-profile {"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd"},"access":"write"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp"},"access":"write"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp"},"access":"write"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd/.git"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/.git"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd/.agents"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/.agents"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd/.codex"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/.codex"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd/.aws"},"access":"read","missing_path_behavior":"skip"},{"path":{"type":"path","path":"/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/.aws"},"access":"read","missing_path_behavior":"skip"}]},"network":"restricted"} --apply-seccomp-then-exec -- /bin/bash -c __CODEX_SNAPSHOT_OVERRIDE_SET_0="${CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS+x}" __CODEX_SNAPSHOT_OVERRIDE_0="${CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS-}" __CODEX_SNAPSHOT_OVERRIDE_SET_1="${CODEX_PERMISSION_PROFILE+x}" __CODEX_SNAPSHOT_OVERRIDE_1="${CODEX_PERMISSION_PROFILE-}" __CODEX_SNAPSHOT_OVERRIDE_SET_2="${CODEX_PLUGIN_METRICS_OUTPUT+x}" __CODEX_SNAPSHOT_OVERRIDE_2="${CODEX_PLUGIN_METRICS_OUTPUT-}" __CODEX_SNAPSHOT_OVERRIDE_SET_3="${CODEX_SESSION_ID+x}" __CODEX_SNAPSHOT_OVERRIDE_3="${CODEX_SESSION_ID-}" __CODEX_SNAPSHOT_OVERRIDE_SET_4="${CODEX_THREAD_ID+x}" __CODEX_SNAPSHOT_OVERRIDE_4="${CODEX_THREAD_ID-}" __CODEX_SNAPSHOT_OVERRIDE_SET_5="${CODEX_VERSION+x}" __CODEX_SNAPSHOT_OVERRIDE_5="${CODEX_VERSION-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_0="${ALL_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_0="${ALL_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_1="${BUNDLE_HTTPS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_1="${BUNDLE_HTTPS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_2="${BUNDLE_HTTP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_2="${BUNDLE_HTTP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_3="${BUNDLE_NO_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_3="${BUNDLE_NO_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_4="${BUNDLE_SSL_CA_CERT+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_4="${BUNDLE_SSL_CA_CERT-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_5="${CARGO_HTTP_CAINFO+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_5="${CARGO_HTTP_CAINFO-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_6="${CODEX_CA_CERTIFICATE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_6="${CODEX_CA_CERTIFICATE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_7="${CODEX_NETWORK_ALLOW_LOCAL_BINDING+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_7="${CODEX_NETWORK_ALLOW_LOCAL_BINDING-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_8="${CODEX_NETWORK_PROXY_ACTIVE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_8="${CODEX_NETWORK_PROXY_ACTIVE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_9="${CODEX_NETWORK_PROXY_ATTRIBUTION+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_9="${CODEX_NETWORK_PROXY_ATTRIBUTION-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_10="${CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_10="${CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_11="${CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_11="${CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_12="${CURL_CA_BUNDLE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_12="${CURL_CA_BUNDLE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_13="${DOCKER_HTTPS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_13="${DOCKER_HTTPS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_14="${DOCKER_HTTP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_14="${DOCKER_HTTP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_15="${ELECTRON_GET_USE_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_15="${ELECTRON_GET_USE_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_16="${FTP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_16="${FTP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_17="${GIT_SSL_CAINFO+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_17="${GIT_SSL_CAINFO-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_18="${HTTPS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_18="${HTTPS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_19="${HTTP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_19="${HTTP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_20="${NODE_EXTRA_CA_CERTS+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_20="${NODE_EXTRA_CA_CERTS-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_21="${NODE_USE_ENV_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_21="${NODE_USE_ENV_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_22="${NO_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_22="${NO_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_23="${NPM_CONFIG_CAFILE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_23="${NPM_CONFIG_CAFILE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_24="${NPM_CONFIG_HTTPS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_24="${NPM_CONFIG_HTTPS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_25="${NPM_CONFIG_HTTP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_25="${NPM_CONFIG_HTTP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_26="${NPM_CONFIG_NOPROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_26="${NPM_CONFIG_NOPROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_27="${NPM_CONFIG_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_27="${NPM_CONFIG_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_28="${PIP_CERT+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_28="${PIP_CERT-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_29="${PIP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_29="${PIP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_30="${REQUESTS_CA_BUNDLE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_30="${REQUESTS_CA_BUNDLE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_31="${SSL_CERT_FILE+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_31="${SSL_CERT_FILE-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_32="${WSS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_32="${WSS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_33="${WS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_33="${WS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_34="${YARN_HTTPS_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_34="${YARN_HTTPS_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_35="${YARN_HTTP_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_35="${YARN_HTTP_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_36="${YARN_NO_PROXY+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_36="${YARN_NO_PROXY-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_37="${all_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_37="${all_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_38="${ftp_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_38="${ftp_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_39="${http_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_39="${http_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_40="${https_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_40="${https_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_41="${no_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_41="${no_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_42="${npm_config_cafile+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_42="${npm_config_cafile-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_43="${npm_config_http_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_43="${npm_config_http_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_44="${npm_config_https_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_44="${npm_config_https_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_45="${npm_config_noproxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_45="${npm_config_noproxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_46="${npm_config_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_46="${npm_config_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_47="${ws_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_47="${ws_proxy-}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_48="${wss_proxy+x}" __CODEX_SNAPSHOT_PROXY_OVERRIDE_48="${wss_proxy-}" __CODEX_SNAPSHOT_PROXY_ENV_SET="${CODEX_NETWORK_PROXY_ACTIVE+x}"  if . '/home/shop/.codex/shell_snapshots/01a18b45-cf8e-7d93-a34c-d518c5e21b4b.1793337970585649625.sh' >/dev/null 2>&1; then :; fi  if [ -n "${__CODEX_SNAPSHOT_OVERRIDE_SET_0}" ]; then   if [ -z "${CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS+x}" ] || [ "${CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS-}" != "${__CODEX_SNAPSHOT_OVERRIDE_0}" ]; then export CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS="${__CODEX_SNAPSHOT_OVERRIDE_0}"; else export CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS; fi else builtin unset CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS 2>/dev/null || command unset CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS; fi builtin unset __CODEX_SNAPSHOT_OVERRIDE_SET_0 __CODEX_SNAPSHOT_OVERRIDE_0 2>/dev/null || command unset __CODEX_SNAPSHOT_OVERRIDE_SET_0 __CODEX_SNAPSHOT_OVERRIDE_0 if [ -n "${__CODEX_SNAPSHOT_OVERRIDE_SET_1}" ]; then   if [ -z "${CODEX_PERMISSION_PROFILE+x}" ] || [ "${CODEX_PERMISSION_PROFILE-}" != "${__CODEX_SNAPSHOT_OVERRIDE_1}" ]; then export CODEX_PERMISSION_PROFILE="${__CODEX_SNAPSHOT_OVERRIDE_1}"; else export CODEX_PERMISSION_PROFILE; fi else builtin unset CODEX_PERMISSION_PROFILE 2>/dev/null || command unset CODEX_PERMISSION_PROFILE; fi builtin unset __CODEX_SNAPSHOT_OVERRIDE_SET_1 __CODEX_SNAPSHOT_OVERRIDE_1 2>/dev/null || command unset __CODEX_SNAPSHOT_OVERRIDE_SET_1 __CODEX_SNAPSHOT_OVERRIDE_1 if [ -n "${__CODEX_SNAPSHOT_OVERRIDE_SET_2}" ]; then   if [ -z "${CODEX_PLUGIN_METRICS_OUTPUT+x}" ] || [ "${CODEX_PLUGIN_METRICS_OUTPUT-}" != "${__CODEX_SNAPSHOT_OVERRIDE_2}" ]; then export CODEX_PLUGIN_METRICS_OUTPUT="${__CODEX_SNAPSHOT_OVERRIDE_2}"; else export CODEX_PLUGIN_METRICS_OUTPUT; fi else builtin unset CODEX_PLUGIN_METRICS_OUTPUT 2>/dev/null || command unset CODEX_PLUGIN_METRICS_OUTPUT; fi builtin unset __CODEX_SNAPSHOT_OVERRIDE_SET_2 __CODEX_SNAPSHOT_OVERRIDE_2 2>/dev/null || command unset __CODEX_SNAPSHOT_OVERRIDE_SET_2 __CODEX_SNAPSHOT_OVERRIDE_2 if [ -n "${__CODEX_SNAPSHOT_OVERRIDE_SET_3}" ]; then   if [ -z "${CODEX_SESSION_ID+x}" ] || [ "${CODEX_SESSION_ID-}" != "${__CODEX_SNAPSHOT_OVERRIDE_3}" ]; then export CODEX_SESSION_ID="${__CODEX_SNAPSHOT_OVERRIDE_3}"; else export CODEX_SESSION_ID; fi else builtin unset CODEX_SESSION_ID 2>/dev/null || command unset CODEX_SESSION_ID; fi builtin unset __CODEX_SNAPSHOT_OVERRIDE_SET_3 __CODEX_SNAPSHOT_OVERRIDE_3 2>/dev/null || command unset __CODEX_SNAPSHOT_OVERRIDE_SET_3 __CODEX_SNAPSHOT_OVERRIDE_3 if [ -n "${__CODEX_SNAPSHOT_OVERRIDE_SET_4}" ]; then   if [ -z "${CODEX_THREAD_ID+x}" ] || [ "${CODEX_THREAD_ID-}" != "${__CODEX_SNAPSHOT_OVERRIDE_4}" ]; then export CODEX_THREAD_ID="${__CODEX_SNAPSHOT_OVERRIDE_4}"; else export CODEX_THREAD_ID; fi else builtin unset CODEX_THREAD_ID 2>/dev/null || command unset CODEX_THREAD_ID; fi builtin unset __CODEX_SNAPSHOT_OVERRIDE_SET_4 __CODEX_SNAPSHOT_OVERRIDE_4 2>/dev/null || command unset __CODEX_SNAPSHOT_OVERRIDE_SET_4 __CODEX_SNAPSHOT_OVERRIDE_4 if [ -n "${__CODEX_SNAPSHOT_OVERRIDE_SET_5}" ]; then   if [ -z "${CODEX_VERSION+x}" ] || [ "${CODEX_VERSION-}" != "${__CODEX_SNAPSHOT_OVERRIDE_5}" ]; then export CODEX_VERSION="${__CODEX_SNAPSHOT_OVERRIDE_5}"; else export CODEX_VERSION; fi else builtin unset CODEX_VERSION 2>/dev/null || command unset CODEX_VERSION; fi builtin unset __CODEX_SNAPSHOT_OVERRIDE_SET_5 __CODEX_SNAPSHOT_OVERRIDE_5 2>/dev/null || command unset __CODEX_SNAPSHOT_OVERRIDE_SET_5 __CODEX_SNAPSHOT_OVERRIDE_5 if [ -n "$__CODEX_SNAPSHOT_PROXY_ENV_SET" ] || [ -n "${CODEX_NETWORK_PROXY_ACTIVE+x}" ]; then if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_0}" ]; then   if [ -z "${ALL_PROXY+x}" ] || [ "${ALL_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_0}" ]; then export ALL_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_0}"; else export ALL_PROXY; fi else builtin unset ALL_PROXY 2>/dev/null || command unset ALL_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_0 __CODEX_SNAPSHOT_PROXY_OVERRIDE_0 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_0 __CODEX_SNAPSHOT_PROXY_OVERRIDE_0 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_1}" ]; then   if [ -z "${BUNDLE_HTTPS_PROXY+x}" ] || [ "${BUNDLE_HTTPS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_1}" ]; then export BUNDLE_HTTPS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_1}"; else export BUNDLE_HTTPS_PROXY; fi else builtin unset BUNDLE_HTTPS_PROXY 2>/dev/null || command unset BUNDLE_HTTPS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_1 __CODEX_SNAPSHOT_PROXY_OVERRIDE_1 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_1 __CODEX_SNAPSHOT_PROXY_OVERRIDE_1 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_2}" ]; then   if [ -z "${BUNDLE_HTTP_PROXY+x}" ] || [ "${BUNDLE_HTTP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_2}" ]; then export BUNDLE_HTTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_2}"; else export BUNDLE_HTTP_PROXY; fi else builtin unset BUNDLE_HTTP_PROXY 2>/dev/null || command unset BUNDLE_HTTP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_2 __CODEX_SNAPSHOT_PROXY_OVERRIDE_2 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_2 __CODEX_SNAPSHOT_PROXY_OVERRIDE_2 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_3}" ]; then   if [ -z "${BUNDLE_NO_PROXY+x}" ] || [ "${BUNDLE_NO_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_3}" ]; then export BUNDLE_NO_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_3}"; else export BUNDLE_NO_PROXY; fi else builtin unset BUNDLE_NO_PROXY 2>/dev/null || command unset BUNDLE_NO_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_3 __CODEX_SNAPSHOT_PROXY_OVERRIDE_3 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_3 __CODEX_SNAPSHOT_PROXY_OVERRIDE_3 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_4}" ]; then   if [ -z "${BUNDLE_SSL_CA_CERT+x}" ] || [ "${BUNDLE_SSL_CA_CERT-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_4}" ]; then export BUNDLE_SSL_CA_CERT="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_4}"; else export BUNDLE_SSL_CA_CERT; fi else builtin unset BUNDLE_SSL_CA_CERT 2>/dev/null || command unset BUNDLE_SSL_CA_CERT; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_4 __CODEX_SNAPSHOT_PROXY_OVERRIDE_4 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_4 __CODEX_SNAPSHOT_PROXY_OVERRIDE_4 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_5}" ]; then   if [ -z "${CARGO_HTTP_CAINFO+x}" ] || [ "${CARGO_HTTP_CAINFO-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_5}" ]; then export CARGO_HTTP_CAINFO="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_5}"; else export CARGO_HTTP_CAINFO; fi else builtin unset CARGO_HTTP_CAINFO 2>/dev/null || command unset CARGO_HTTP_CAINFO; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_5 __CODEX_SNAPSHOT_PROXY_OVERRIDE_5 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_5 __CODEX_SNAPSHOT_PROXY_OVERRIDE_5 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_6}" ]; then   if [ -z "${CODEX_CA_CERTIFICATE+x}" ] || [ "${CODEX_CA_CERTIFICATE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_6}" ]; then export CODEX_CA_CERTIFICATE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_6}"; else export CODEX_CA_CERTIFICATE; fi else builtin unset CODEX_CA_CERTIFICATE 2>/dev/null || command unset CODEX_CA_CERTIFICATE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_6 __CODEX_SNAPSHOT_PROXY_OVERRIDE_6 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_6 __CODEX_SNAPSHOT_PROXY_OVERRIDE_6 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_7}" ]; then   if [ -z "${CODEX_NETWORK_ALLOW_LOCAL_BINDING+x}" ] || [ "${CODEX_NETWORK_ALLOW_LOCAL_BINDING-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_7}" ]; then export CODEX_NETWORK_ALLOW_LOCAL_BINDING="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_7}"; else export CODEX_NETWORK_ALLOW_LOCAL_BINDING; fi else builtin unset CODEX_NETWORK_ALLOW_LOCAL_BINDING 2>/dev/null || command unset CODEX_NETWORK_ALLOW_LOCAL_BINDING; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_7 __CODEX_SNAPSHOT_PROXY_OVERRIDE_7 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_7 __CODEX_SNAPSHOT_PROXY_OVERRIDE_7 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_8}" ]; then   if [ -z "${CODEX_NETWORK_PROXY_ACTIVE+x}" ] || [ "${CODEX_NETWORK_PROXY_ACTIVE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_8}" ]; then export CODEX_NETWORK_PROXY_ACTIVE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_8}"; else export CODEX_NETWORK_PROXY_ACTIVE; fi else builtin unset CODEX_NETWORK_PROXY_ACTIVE 2>/dev/null || command unset CODEX_NETWORK_PROXY_ACTIVE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_8 __CODEX_SNAPSHOT_PROXY_OVERRIDE_8 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_8 __CODEX_SNAPSHOT_PROXY_OVERRIDE_8 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_9}" ]; then   if [ -z "${CODEX_NETWORK_PROXY_ATTRIBUTION+x}" ] || [ "${CODEX_NETWORK_PROXY_ATTRIBUTION-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_9}" ]; then export CODEX_NETWORK_PROXY_ATTRIBUTION="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_9}"; else export CODEX_NETWORK_PROXY_ATTRIBUTION; fi else builtin unset CODEX_NETWORK_PROXY_ATTRIBUTION 2>/dev/null || command unset CODEX_NETWORK_PROXY_ATTRIBUTION; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_9 __CODEX_SNAPSHOT_PROXY_OVERRIDE_9 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_9 __CODEX_SNAPSHOT_PROXY_OVERRIDE_9 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_10}" ]; then   if [ -z "${CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS+x}" ] || [ "${CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_10}" ]; then export CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_10}"; else export CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS; fi else builtin unset CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS 2>/dev/null || command unset CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_10 __CODEX_SNAPSHOT_PROXY_OVERRIDE_10 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_10 __CODEX_SNAPSHOT_PROXY_OVERRIDE_10 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_11}" ]; then   if [ -z "${CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE+x}" ] || [ "${CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_11}" ]; then export CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_11}"; else export CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE; fi else builtin unset CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE 2>/dev/null || command unset CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_11 __CODEX_SNAPSHOT_PROXY_OVERRIDE_11 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_11 __CODEX_SNAPSHOT_PROXY_OVERRIDE_11 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_12}" ]; then   if [ -z "${CURL_CA_BUNDLE+x}" ] || [ "${CURL_CA_BUNDLE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_12}" ]; then export CURL_CA_BUNDLE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_12}"; else export CURL_CA_BUNDLE; fi else builtin unset CURL_CA_BUNDLE 2>/dev/null || command unset CURL_CA_BUNDLE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_12 __CODEX_SNAPSHOT_PROXY_OVERRIDE_12 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_12 __CODEX_SNAPSHOT_PROXY_OVERRIDE_12 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_13}" ]; then   if [ -z "${DOCKER_HTTPS_PROXY+x}" ] || [ "${DOCKER_HTTPS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_13}" ]; then export DOCKER_HTTPS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_13}"; else export DOCKER_HTTPS_PROXY; fi else builtin unset DOCKER_HTTPS_PROXY 2>/dev/null || command unset DOCKER_HTTPS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_13 __CODEX_SNAPSHOT_PROXY_OVERRIDE_13 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_13 __CODEX_SNAPSHOT_PROXY_OVERRIDE_13 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_14}" ]; then   if [ -z "${DOCKER_HTTP_PROXY+x}" ] || [ "${DOCKER_HTTP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_14}" ]; then export DOCKER_HTTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_14}"; else export DOCKER_HTTP_PROXY; fi else builtin unset DOCKER_HTTP_PROXY 2>/dev/null || command unset DOCKER_HTTP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_14 __CODEX_SNAPSHOT_PROXY_OVERRIDE_14 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_14 __CODEX_SNAPSHOT_PROXY_OVERRIDE_14 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_15}" ]; then   if [ -z "${ELECTRON_GET_USE_PROXY+x}" ] || [ "${ELECTRON_GET_USE_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_15}" ]; then export ELECTRON_GET_USE_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_15}"; else export ELECTRON_GET_USE_PROXY; fi else builtin unset ELECTRON_GET_USE_PROXY 2>/dev/null || command unset ELECTRON_GET_USE_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_15 __CODEX_SNAPSHOT_PROXY_OVERRIDE_15 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_15 __CODEX_SNAPSHOT_PROXY_OVERRIDE_15 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_16}" ]; then   if [ -z "${FTP_PROXY+x}" ] || [ "${FTP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_16}" ]; then export FTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_16}"; else export FTP_PROXY; fi else builtin unset FTP_PROXY 2>/dev/null || command unset FTP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_16 __CODEX_SNAPSHOT_PROXY_OVERRIDE_16 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_16 __CODEX_SNAPSHOT_PROXY_OVERRIDE_16 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_17}" ]; then   if [ -z "${GIT_SSL_CAINFO+x}" ] || [ "${GIT_SSL_CAINFO-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_17}" ]; then export GIT_SSL_CAINFO="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_17}"; else export GIT_SSL_CAINFO; fi else builtin unset GIT_SSL_CAINFO 2>/dev/null || command unset GIT_SSL_CAINFO; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_17 __CODEX_SNAPSHOT_PROXY_OVERRIDE_17 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_17 __CODEX_SNAPSHOT_PROXY_OVERRIDE_17 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_18}" ]; then   if [ -z "${HTTPS_PROXY+x}" ] || [ "${HTTPS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_18}" ]; then export HTTPS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_18}"; else export HTTPS_PROXY; fi else builtin unset HTTPS_PROXY 2>/dev/null || command unset HTTPS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_18 __CODEX_SNAPSHOT_PROXY_OVERRIDE_18 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_18 __CODEX_SNAPSHOT_PROXY_OVERRIDE_18 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_19}" ]; then   if [ -z "${HTTP_PROXY+x}" ] || [ "${HTTP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_19}" ]; then export HTTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_19}"; else export HTTP_PROXY; fi else builtin unset HTTP_PROXY 2>/dev/null || command unset HTTP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_19 __CODEX_SNAPSHOT_PROXY_OVERRIDE_19 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_19 __CODEX_SNAPSHOT_PROXY_OVERRIDE_19 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_20}" ]; then   if [ -z "${NODE_EXTRA_CA_CERTS+x}" ] || [ "${NODE_EXTRA_CA_CERTS-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_20}" ]; then export NODE_EXTRA_CA_CERTS="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_20}"; else export NODE_EXTRA_CA_CERTS; fi else builtin unset NODE_EXTRA_CA_CERTS 2>/dev/null || command unset NODE_EXTRA_CA_CERTS; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_20 __CODEX_SNAPSHOT_PROXY_OVERRIDE_20 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_20 __CODEX_SNAPSHOT_PROXY_OVERRIDE_20 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_21}" ]; then   if [ -z "${NODE_USE_ENV_PROXY+x}" ] || [ "${NODE_USE_ENV_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_21}" ]; then export NODE_USE_ENV_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_21}"; else export NODE_USE_ENV_PROXY; fi else builtin unset NODE_USE_ENV_PROXY 2>/dev/null || command unset NODE_USE_ENV_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_21 __CODEX_SNAPSHOT_PROXY_OVERRIDE_21 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_21 __CODEX_SNAPSHOT_PROXY_OVERRIDE_21 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_22}" ]; then   if [ -z "${NO_PROXY+x}" ] || [ "${NO_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_22}" ]; then export NO_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_22}"; else export NO_PROXY; fi else builtin unset NO_PROXY 2>/dev/null || command unset NO_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_22 __CODEX_SNAPSHOT_PROXY_OVERRIDE_22 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_22 __CODEX_SNAPSHOT_PROXY_OVERRIDE_22 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_23}" ]; then   if [ -z "${NPM_CONFIG_CAFILE+x}" ] || [ "${NPM_CONFIG_CAFILE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_23}" ]; then export NPM_CONFIG_CAFILE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_23}"; else export NPM_CONFIG_CAFILE; fi else builtin unset NPM_CONFIG_CAFILE 2>/dev/null || command unset NPM_CONFIG_CAFILE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_23 __CODEX_SNAPSHOT_PROXY_OVERRIDE_23 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_23 __CODEX_SNAPSHOT_PROXY_OVERRIDE_23 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_24}" ]; then   if [ -z "${NPM_CONFIG_HTTPS_PROXY+x}" ] || [ "${NPM_CONFIG_HTTPS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_24}" ]; then export NPM_CONFIG_HTTPS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_24}"; else export NPM_CONFIG_HTTPS_PROXY; fi else builtin unset NPM_CONFIG_HTTPS_PROXY 2>/dev/null || command unset NPM_CONFIG_HTTPS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_24 __CODEX_SNAPSHOT_PROXY_OVERRIDE_24 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_24 __CODEX_SNAPSHOT_PROXY_OVERRIDE_24 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_25}" ]; then   if [ -z "${NPM_CONFIG_HTTP_PROXY+x}" ] || [ "${NPM_CONFIG_HTTP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_25}" ]; then export NPM_CONFIG_HTTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_25}"; else export NPM_CONFIG_HTTP_PROXY; fi else builtin unset NPM_CONFIG_HTTP_PROXY 2>/dev/null || command unset NPM_CONFIG_HTTP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_25 __CODEX_SNAPSHOT_PROXY_OVERRIDE_25 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_25 __CODEX_SNAPSHOT_PROXY_OVERRIDE_25 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_26}" ]; then   if [ -z "${NPM_CONFIG_NOPROXY+x}" ] || [ "${NPM_CONFIG_NOPROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_26}" ]; then export NPM_CONFIG_NOPROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_26}"; else export NPM_CONFIG_NOPROXY; fi else builtin unset NPM_CONFIG_NOPROXY 2>/dev/null || command unset NPM_CONFIG_NOPROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_26 __CODEX_SNAPSHOT_PROXY_OVERRIDE_26 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_26 __CODEX_SNAPSHOT_PROXY_OVERRIDE_26 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_27}" ]; then   if [ -z "${NPM_CONFIG_PROXY+x}" ] || [ "${NPM_CONFIG_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_27}" ]; then export NPM_CONFIG_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_27}"; else export NPM_CONFIG_PROXY; fi else builtin unset NPM_CONFIG_PROXY 2>/dev/null || command unset NPM_CONFIG_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_27 __CODEX_SNAPSHOT_PROXY_OVERRIDE_27 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_27 __CODEX_SNAPSHOT_PROXY_OVERRIDE_27 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_28}" ]; then   if [ -z "${PIP_CERT+x}" ] || [ "${PIP_CERT-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_28}" ]; then export PIP_CERT="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_28}"; else export PIP_CERT; fi else builtin unset PIP_CERT 2>/dev/null || command unset PIP_CERT; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_28 __CODEX_SNAPSHOT_PROXY_OVERRIDE_28 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_28 __CODEX_SNAPSHOT_PROXY_OVERRIDE_28 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_29}" ]; then   if [ -z "${PIP_PROXY+x}" ] || [ "${PIP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_29}" ]; then export PIP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_29}"; else export PIP_PROXY; fi else builtin unset PIP_PROXY 2>/dev/null || command unset PIP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_29 __CODEX_SNAPSHOT_PROXY_OVERRIDE_29 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_29 __CODEX_SNAPSHOT_PROXY_OVERRIDE_29 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_30}" ]; then   if [ -z "${REQUESTS_CA_BUNDLE+x}" ] || [ "${REQUESTS_CA_BUNDLE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_30}" ]; then export REQUESTS_CA_BUNDLE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_30}"; else export REQUESTS_CA_BUNDLE; fi else builtin unset REQUESTS_CA_BUNDLE 2>/dev/null || command unset REQUESTS_CA_BUNDLE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_30 __CODEX_SNAPSHOT_PROXY_OVERRIDE_30 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_30 __CODEX_SNAPSHOT_PROXY_OVERRIDE_30 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_31}" ]; then   if [ -z "${SSL_CERT_FILE+x}" ] || [ "${SSL_CERT_FILE-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_31}" ]; then export SSL_CERT_FILE="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_31}"; else export SSL_CERT_FILE; fi else builtin unset SSL_CERT_FILE 2>/dev/null || command unset SSL_CERT_FILE; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_31 __CODEX_SNAPSHOT_PROXY_OVERRIDE_31 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_31 __CODEX_SNAPSHOT_PROXY_OVERRIDE_31 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_32}" ]; then   if [ -z "${WSS_PROXY+x}" ] || [ "${WSS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_32}" ]; then export WSS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_32}"; else export WSS_PROXY; fi else builtin unset WSS_PROXY 2>/dev/null || command unset WSS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_32 __CODEX_SNAPSHOT_PROXY_OVERRIDE_32 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_32 __CODEX_SNAPSHOT_PROXY_OVERRIDE_32 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_33}" ]; then   if [ -z "${WS_PROXY+x}" ] || [ "${WS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_33}" ]; then export WS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_33}"; else export WS_PROXY; fi else builtin unset WS_PROXY 2>/dev/null || command unset WS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_33 __CODEX_SNAPSHOT_PROXY_OVERRIDE_33 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_33 __CODEX_SNAPSHOT_PROXY_OVERRIDE_33 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_34}" ]; then   if [ -z "${YARN_HTTPS_PROXY+x}" ] || [ "${YARN_HTTPS_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_34}" ]; then export YARN_HTTPS_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_34}"; else export YARN_HTTPS_PROXY; fi else builtin unset YARN_HTTPS_PROXY 2>/dev/null || command unset YARN_HTTPS_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_34 __CODEX_SNAPSHOT_PROXY_OVERRIDE_34 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_34 __CODEX_SNAPSHOT_PROXY_OVERRIDE_34 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_35}" ]; then   if [ -z "${YARN_HTTP_PROXY+x}" ] || [ "${YARN_HTTP_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_35}" ]; then export YARN_HTTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_35}"; else export YARN_HTTP_PROXY; fi else builtin unset YARN_HTTP_PROXY 2>/dev/null || command unset YARN_HTTP_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_35 __CODEX_SNAPSHOT_PROXY_OVERRIDE_35 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_35 __CODEX_SNAPSHOT_PROXY_OVERRIDE_35 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_36}" ]; then   if [ -z "${YARN_NO_PROXY+x}" ] || [ "${YARN_NO_PROXY-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_36}" ]; then export YARN_NO_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_36}"; else export YARN_NO_PROXY; fi else builtin unset YARN_NO_PROXY 2>/dev/null || command unset YARN_NO_PROXY; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_36 __CODEX_SNAPSHOT_PROXY_OVERRIDE_36 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_36 __CODEX_SNAPSHOT_PROXY_OVERRIDE_36 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_37}" ]; then   if [ -z "${all_proxy+x}" ] || [ "${all_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_37}" ]; then export all_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_37}"; else export all_proxy; fi else builtin unset all_proxy 2>/dev/null || command unset all_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_37 __CODEX_SNAPSHOT_PROXY_OVERRIDE_37 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_37 __CODEX_SNAPSHOT_PROXY_OVERRIDE_37 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_38}" ]; then   if [ -z "${ftp_proxy+x}" ] || [ "${ftp_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_38}" ]; then export ftp_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_38}"; else export ftp_proxy; fi else builtin unset ftp_proxy 2>/dev/null || command unset ftp_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_38 __CODEX_SNAPSHOT_PROXY_OVERRIDE_38 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_38 __CODEX_SNAPSHOT_PROXY_OVERRIDE_38 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_39}" ]; then   if [ -z "${http_proxy+x}" ] || [ "${http_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_39}" ]; then export http_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_39}"; else export http_proxy; fi else builtin unset http_proxy 2>/dev/null || command unset http_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_39 __CODEX_SNAPSHOT_PROXY_OVERRIDE_39 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_39 __CODEX_SNAPSHOT_PROXY_OVERRIDE_39 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_40}" ]; then   if [ -z "${https_proxy+x}" ] || [ "${https_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_40}" ]; then export https_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_40}"; else export https_proxy; fi else builtin unset https_proxy 2>/dev/null || command unset https_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_40 __CODEX_SNAPSHOT_PROXY_OVERRIDE_40 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_40 __CODEX_SNAPSHOT_PROXY_OVERRIDE_40 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_41}" ]; then   if [ -z "${no_proxy+x}" ] || [ "${no_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_41}" ]; then export no_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_41}"; else export no_proxy; fi else builtin unset no_proxy 2>/dev/null || command unset no_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_41 __CODEX_SNAPSHOT_PROXY_OVERRIDE_41 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_41 __CODEX_SNAPSHOT_PROXY_OVERRIDE_41 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_42}" ]; then   if [ -z "${npm_config_cafile+x}" ] || [ "${npm_config_cafile-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_42}" ]; then export npm_config_cafile="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_42}"; else export npm_config_cafile; fi else builtin unset npm_config_cafile 2>/dev/null || command unset npm_config_cafile; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_42 __CODEX_SNAPSHOT_PROXY_OVERRIDE_42 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_42 __CODEX_SNAPSHOT_PROXY_OVERRIDE_42 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_43}" ]; then   if [ -z "${npm_config_http_proxy+x}" ] || [ "${npm_config_http_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_43}" ]; then export npm_config_http_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_43}"; else export npm_config_http_proxy; fi else builtin unset npm_config_http_proxy 2>/dev/null || command unset npm_config_http_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_43 __CODEX_SNAPSHOT_PROXY_OVERRIDE_43 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_43 __CODEX_SNAPSHOT_PROXY_OVERRIDE_43 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_44}" ]; then   if [ -z "${npm_config_https_proxy+x}" ] || [ "${npm_config_https_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_44}" ]; then export npm_config_https_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_44}"; else export npm_config_https_proxy; fi else builtin unset npm_config_https_proxy 2>/dev/null || command unset npm_config_https_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_44 __CODEX_SNAPSHOT_PROXY_OVERRIDE_44 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_44 __CODEX_SNAPSHOT_PROXY_OVERRIDE_44 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_45}" ]; then   if [ -z "${npm_config_noproxy+x}" ] || [ "${npm_config_noproxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_45}" ]; then export npm_config_noproxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_45}"; else export npm_config_noproxy; fi else builtin unset npm_config_noproxy 2>/dev/null || command unset npm_config_noproxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_45 __CODEX_SNAPSHOT_PROXY_OVERRIDE_45 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_45 __CODEX_SNAPSHOT_PROXY_OVERRIDE_45 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_46}" ]; then   if [ -z "${npm_config_proxy+x}" ] || [ "${npm_config_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_46}" ]; then export npm_config_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_46}"; else export npm_config_proxy; fi else builtin unset npm_config_proxy 2>/dev/null || command unset npm_config_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_46 __CODEX_SNAPSHOT_PROXY_OVERRIDE_46 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_46 __CODEX_SNAPSHOT_PROXY_OVERRIDE_46 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_47}" ]; then   if [ -z "${ws_proxy+x}" ] || [ "${ws_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_47}" ]; then export ws_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_47}"; else export ws_proxy; fi else builtin unset ws_proxy 2>/dev/null || command unset ws_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_47 __CODEX_SNAPSHOT_PROXY_OVERRIDE_47 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_47 __CODEX_SNAPSHOT_PROXY_OVERRIDE_47 if [ -n "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_48}" ]; then   if [ -z "${wss_proxy+x}" ] || [ "${wss_proxy-}" != "${__CODEX_SNAPSHOT_PROXY_OVERRIDE_48}" ]; then export wss_proxy="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_48}"; else export wss_proxy; fi else builtin unset wss_proxy 2>/dev/null || command unset wss_proxy; fi builtin unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_48 __CODEX_SNAPSHOT_PROXY_OVERRIDE_48 2>/dev/null || command unset __CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_48 __CODEX_SNAPSHOT_PROXY_OVERRIDE_48 fi  exec '/bin/bash' -c 'ps -ef | head -40; wc -l "$TMPDIR/base.out"; tail -5 "$TMPDIR/base.out"; stat "$TMPDIR/base.out"'
+shop           2       1  0 05:29 ?        00:00:00 /bin/bash -c ps -ef | head -40; wc -l "$TMPDIR/base.out"; tail -5 "$TMPDIR/base.out"; stat "$TMPDIR/base.out"
+shop           3       2  0 05:29 ?        00:00:00 ps -ef
+shop           4       2  0 05:29 ?        00:00:00 head -40
+678 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+ok   AC16 harness form: accepted (synthetic, the first-field shape: a required first field and no redirect flag in any letter group): exit 0
+ok   AC16 harness form: accepted (synthetic, the first-field shape: a required first field and no redirect flag in any letter group): exit 0
+ok   AC16 harness form: accepted (a file test on a positional ($1 or $2)): exit 0
+ok   AC16 harness form: accepted (a file test on a positional ($1 or $2)): exit 0
+ok   AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)
+  File: /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+  Size: 69332     	Blocks: 144        IO Block: 4096   regular file
+Device: 253,1	Inode: 7405864     Links: 1
+Access: (0600/-rw-------)  Uid: (  995/    shop)   Gid: (  984/    shop)
+Access: 2026-10-30 05:29:25.424001604 +0000
+Modify: 2026-10-30 05:29:12.743780253 +0000
+Change: 2026-10-30 05:29:12.743780253 +0000
+ Birth: 2026-10-30 05:26:44.368192030 +0000
+
+exec
+/bin/bash -lc "grep -E 'Go proxy gets the "'!x case|''^FAIL '"' \""'$TMPDIR/base.out" | tail -10; printf '"'base cases='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/base.out"; test -e "$TMPDIR/head.out" && { printf '"'head cases='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/head.out"; tail -2 "$TMPDIR/head.out"; } || true; ps -eo pid,ppid,etime,args | grep -E '"'base.out|head.out|pin-age-check-test' | grep -v grep" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 1 in 0ms:
+base cases=678
+
+exec
+/bin/bash -lc "grep -n 'Go proxy gets' \""'$TMPDIR/base/.github/agent/tests/pin-age-check-test.sh" "$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh"; grep -nE '"'"'^(ok|FAIL) .*Go|''^FAIL '"' \""'$TMPDIR/base.out" | tail; tail -10 "$TMPDIR/base.out"; ls -l "$TMPDIR"/{base.out,head.out} 2>/dev/null' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 2 in 0ms:
+/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base/.github/agent/tests/pin-age-check-test.sh:4407:CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/head/.github/agent/tests/pin-age-check-test.sh:4407:CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+78:ok   the product base image, a Go module bump, go.mod's toolchain and setup-go's version are NOT covered: they move with no data and no failure
+79:ok   the product base image, a Go module bump, go.mod's toolchain and setup-go's version are NOT covered: they move with no data and no failure
+ok   AC16 harness form: accepted (synthetic, the HTTPS-check shape: no unknown field, one flag with its value, no second flag, a count): exit 0
+ok   AC16 harness form: accepted (synthetic, the cap-check shape: selected calls, a positive whole-number value, a count): exit 0
+ok   AC16 harness form: accepted (synthetic, the cap-check shape: selected calls, a positive whole-number value, a count): exit 0
+ok   AC16 harness form: accepted (synthetic, the status-file shape: an exit status, an existing log, no selected call): exit 0
+ok   AC16 harness form: accepted (synthetic, the status-file shape: an exit status, an existing log, no selected call): exit 0
+ok   AC16 harness form: accepted (synthetic, the first-field shape: a required first field and no redirect flag in any letter group): exit 0
+ok   AC16 harness form: accepted (synthetic, the first-field shape: a required first field and no redirect flag in any letter group): exit 0
+ok   AC16 harness form: accepted (a file test on a positional ($1 or $2)): exit 0
+ok   AC16 harness form: accepted (a file test on a positional ($1 or $2)): exit 0
+ok   AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)
+-rw------- 1 shop shop 69332 Oct 30 05:29 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+
+exec
+/bin/bash -lc 'wc -l "$TMPDIR/base.out"; tail -1 "$TMPDIR/base.out"; ls -l "$TMPDIR"/{base.out,head.out} 2>/dev/null' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 2 in 0ms:
+821 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+harness mutation pattern may start with -: 112 unexpectedly accepted, 0 refused for another reason
+-rw------- 1 shop shop 86418 Oct 30 05:30 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+
+exec
+/bin/bash -lc 'wc -l "$TMPDIR/base.out"; tail -1 "$TMPDIR/base.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+888 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+ok   AC16 context heredoc: a quoted-delimiter heredoc fed to cat: ruled (exit 0)
+
+codex
+The base suite is progressing through the harness tests; it has reached 888 case checks so far. I’ll let both full runs complete because the requested counts depend on the entire script, then report any base-only offline failure separately from the head result.
+exec
+/bin/bash -lc 'wc -l "$TMPDIR/base.out"; tail -1 "$TMPDIR/base.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+946 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+ok   AC16 context heredoc: a heredoc whose command line names 'cat | sh': rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "ps -eo pid,ppid,etime,args | grep -v 'codex-linux-sandbox' | grep -E 'timeout 300|pin-age-check|python3' | grep -v grep | head -8" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+codex
+The five-minute limit expired during the base run, after 946 case checks, so that run did not produce valid full-suite counts. The head run is encountering the same runtime profile. I’ll rerun each snapshot with a longer limit and keep the network guard in place so the requested comparisons are complete.
+exec
+/bin/bash -lc 'wc -l "$TMPDIR/base.out"; ls -l "$TMPDIR"/head.out 2>/dev/null || true; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+982 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base.out
+-rw------- 1 shop shop 101800 Oct 30 05:35 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/head.out
+05:35:13
+
+exec
+/bin/bash -lc "grep -E '"'^ok   item 6: the Go proxy|''^FAIL item 6: the Go proxy|''^FAIL '"' \""'$TMPDIR/head.out" | tail -10; printf '"'head cases='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/head.out"; tail -2 "$TMPDIR/head.out"; grep -E '"'"'^ok   item 6: the Go proxy|''^FAIL item 6: the Go proxy|''^FAIL '"' \""'$TMPDIR/base.out" | tail -10; printf '"'base cases='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/base.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+head cases=906
+ok   AC16 context heredoc: a heredoc whose command line names 'cat | sh': rules NOTHING (exit 1, the line fails as unmeasured)
+ok   AC16 context heredoc: a heredoc whose command line names 'cat | sh': rules NOTHING (exit 1, the line fails as unmeasured)
+base cases=942
+
+ exited 130 in 523081ms:
+=== base ===
+exit=124
+ok   AC16 context pystring: a pure program: the word eval only inside a string: ruled (exit 0)
+ok   AC16 context pystring: a pure program: a multi-line triple-quoted string: ruled (exit 0)
+ok   AC16 context pystring: a pure program: a multi-line triple-quoted string: ruled (exit 0)
+=== head ===
+
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+for rev in base head; do
+ echo \"=== isolated Go case "'$rev ==="
+ sed -n '"'4410,4425p' \""'$TMPDIR/$rev/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/$rev/.github/agent/supply-chain/pin-age-check.py" 2>&1
+ echo "exit=$?"
+done
+python3 - "$TMPDIR/head/.github/agent/supply-chain/pin-age-check.py" "$TMPDIR/mutated-pin-age-check.py" <<'"'PY'
+import pathlib,sys
+source=pathlib.Path(sys.argv[1]).read_text()
+source=source.replace('return re.sub(r\"[A-Z]\", lambda m: \""'!" + m.group(0).lower(), path)'"', 'return path')
+pathlib.Path(sys.argv[2]).write_text(source)
+PY
+echo '=== isolated Go case mutated escaping ==='
+sed -n '4410,4425p' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/mutated-pin-age-check.py" 2>&1
+echo "exit=$?"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 1034ms:
+=== isolated Go case base ===
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+NameError: name 'importlib' is not defined. Did you forget to import 'importlib'?
+exit=1
+=== isolated Go case head ===
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+NameError: name 'importlib' is not defined. Did you forget to import 'importlib'?
+exit=1
+=== isolated Go case mutated escaping ===
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+NameError: name 'importlib' is not defined. Did you forget to import 'importlib'?
+exit=1
+
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+for rev in base head; do
+ echo \"=== isolated Go case "'$rev ==="
+ sed -n '"'4409,4425p' \""'$TMPDIR/$rev/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/$rev/.github/agent/supply-chain/pin-age-check.py" 2>&1
+ echo "exit=$?"
+done
+echo '"'=== isolated Go case mutated escaping ==='
+sed -n '4409,4425p' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/mutated-pin-age-check.py" 2>&1
+echo "exit=$?"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 960ms:
+=== isolated Go case base ===
+Traceback (most recent call last):
+  File "<stdin>", line 11, in <module>
+AssertionError: (None, [])
+exit=1
+=== isolated Go case head ===
+exit=0
+=== isolated Go case mutated escaping ===
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/mutated-pin-age-check.py", line 41, in <module>
+    inv = _load("pin-inventory")
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/mutated-pin-age-check.py", line 37, in _load
+    spec.loader.exec_module(mod)
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1128, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1186, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: '/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/pin-inventory.py'
+exit=1
+
+exec
+/bin/bash -lc 'set -eu
+mkdir -p "$TMPDIR/mutated-supply-chain"
+cp -R /home/shop/shop-does-not-exist "$TMPDIR/noop" 2>/dev/null || true
+cp -R "$TMPDIR/head/.github/agent/supply-chain/." "$TMPDIR/mutated-supply-chain/"
+python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" <<'"'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(); old='return re.sub(r\"[A-Z]\", lambda m: \""'!" + m.group(0).lower(), path)'"'; assert old in s; p.write_text(s.replace(old, 'return path'))
+PY
+set +e
+sed -n '4409,4425p' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" 2>&1
+rc=$?
+echo "mutated escaping case exit=$rc"
+test "$rc" -ne 0' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 386ms:
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+AssertionError
+mutated escaping case exit=1
+
+exec
+/bin/bash -lc "sed -n '315,327p' \""'$TMPDIR/mutated-supply-chain/pin-age-check.py"; grep -n '"'_go_escape' \""'$TMPDIR/mutated-supply-chain/pin-age-check.py"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return path
+
+
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+
+
+def _go_module(path, version, strict=False):
+    parts = path.split("/")
+    for n in range(len(parts), 0, -1):
+        mod = "/".join(parts[:n])
+        url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
+315:def _go_escape(path):
+327:        url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
+
+exec
+/bin/bash -lc "sed -n '315,320p' \""'$TMPDIR/head/.github/agent/supply-chain/pin-age-check.py"; sha256sum "$TMPDIR/head/.github/agent/supply-chain/pin-age-check.py" "$TMPDIR/mutated-supply-chain/pin-age-check.py"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+6f4f222726beaa0473e5e831bcf17a8ea098fbb5c3dc1deb0df13158ef83785b  /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/head/.github/agent/supply-chain/pin-age-check.py
+c4860a6ee28e038363222baf054326292c1b82b90b9da693ecb5424596c10389  /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/mutated-supply-chain/pin-age-check.py
+
+2026-10-30T05:35:55.992753Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"`/bin/bash -lc 'set -eu\\nrm -rf \\\"$TMPDIR/mutated-supply-chain\\\"\\nmkdir -p \\\"$TMPDIR/mutated-supply-chain\\\"\\ncp -R \\\"$TMPDIR/head/.github/agent/supply-chain/.\\\" \\\"$TMPDIR/mutated-supply-chain/\\\"\\npython3 - \\\"$TMPDIR/mutated-supply-chain/pin-age-check.py\\\" <<'\\\"'PY'\\nimport pathlib,sys\\np=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines(); seen=False\\nf…132 chars truncated…\n        lines[i]='    return path'; seen=True\\nassert seen\\np.write_text('\\\\\\\\n'.join(lines)+'\\\\\\\\n')\\nPY\\nset +e\\nsed -n '4409,4425p' \\\\\\\"\\\"'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh\\\" | python3 - \\\"$TMPDIR/mutated-supply-chain/pin-age-check.py\\\" 2>&1\\nrc=$?\\necho \\\"mutated escaping case exit=$rc\\\"\\ntest \\\"$rc\\\" -ne 0'` rejected: rm -f style commands are not permitted. Use a safer approach\")" }
+exec
+/bin/bash -lc 'set -eu
+python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" <<'"'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines(); seen=False
+for i,line in enumerate(lines):
+    if line == '    return path' and i>0 and lines[i-1].startswith('def _go_escape('):
+        lines[i]='    return re.sub(r\"[A-Z]\", lambda m: \""'!" + m.group(0).lower(), path)'"'; seen=True
+assert seen
+p.write_text('\\n'.join(lines)+'\\n')
+PY
+set +e
+sed -n '4409,4425p' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" 2>&1
+rc=$?
+echo "mutated escaping case exit=$rc"
+test "$rc" -ne 0' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 1 in 203ms:
+Traceback (most recent call last):
+  File "<stdin>", line 6, in <module>
+AssertionError
+
+exec
+/bin/bash -lc "sed -n '315,320p' \""'$TMPDIR/mutated-supply-chain/pin-age-check.py"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return path
+
+
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+
+exec
+/bin/bash -lc 'set -eu
+python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" <<'"'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines(); active=False; seen=False
+for i,line in enumerate(lines):
+    if line.startswith('def _go_escape('): active=True
+    elif active and line.startswith('def '): active=False
+    if active and line == '    return path':
+        lines[i]='    return re.sub(r\"[A-Z]\", lambda m: \""'!" + m.group(0).lower(), path)'"'; seen=True
+assert seen
+p.write_text('\\n'.join(lines)+'\\n')
+PY
+set +e
+sed -n '4409,4425p' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" 2>&1
+rc=$?
+echo "mutated escaping case exit=$rc"
+test "$rc" -ne 0' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ exited 1 in 383ms:
+mutated escaping case exit=0
+
+exec
+/bin/bash -lc 'python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" <<'"'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines(); active=False
+for i,line in enumerate(lines):
+    if line.startswith('def _go_escape('): active=True
+    elif active and line.startswith('def '): active=False
+    if active and line.startswith('    return '): lines[i]='    return path'; break
+p.write_text('\\n'.join(lines)+'\\n')
+PY
+set +e
+sed -n '4409,4425p' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" | python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" 2>&1
+rc=$?
+echo "mutated escaping case exit=$rc"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 491ms:
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+AssertionError
+mutated escaping case exit=1
+
+codex
+The isolated Go-proxy case passes at head and fails at base with offline access blocked, as expected; a scratch checker with `_go_escape` broken also makes that case fail. The full script exceeds five minutes, so I’m extending the limit on both complete snapshot runs to obtain the requested final counts.
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+timeout 900 bash \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh" > "$TMPDIR/head-full.out" 2>&1
+rc=$?
+echo "head exit=$rc"
+printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/head-full.out"
+printf '"'failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/head-full.out"
+grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/head-full.out" || true
+tail -2 "$TMPDIR/head-full.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+timeout 900 bash \""'$TMPDIR/base/.github/agent/tests/pin-age-check-test.sh" > "$TMPDIR/base-full.out" 2>&1
+rc=$?
+echo "base exit=$rc"
+printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/base-full.out"
+printf '"'failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/base-full.out"
+grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/base-full.out" || true
+tail -2 "$TMPDIR/base-full.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc "grep -n '"'^def _shaped'"' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py; sed -n '187,220p' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py; grep -nE '_http_json|_http_dict' \""'$TMPDIR/head/.github/agent/tests/pin-age-check-test.sh"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 32ms:
+148:def _shaped(value, need, what):
+    if r.returncode:
+        _gh_failed(r)
+        return None
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _shaped(got, need, f"GitHub API {path.split('?')[0]}")
+
+
+def _gh_list(path, rows):
+    """One page of a GitHub list answer, every row holding the keys of `rows`; None only for a plain miss (404)."""
+    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
+    if r.returncode:
+        _gh_failed(r)
+        return None
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
+
+
+_FAILED = object()      # the server could not be asked (lenient mode)
+_GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
+
+
+def _fetch_json(url, timeout=30, strict=False):
+    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
+    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
+    or a body that is not JSON means we could not look (CouldNotLook)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+4417:ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+
+exec
+/bin/bash -lc "sed -n '140,170p' /home/shop/work/cache5/review-wt-780c/cache-review/.github/agent/supply-chain/pin-age-check.py" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+    if not re.search(r"\b(404|410|422)\b", r.stderr + r.stdout):  # only "not there" is an answer; a 401/403, a rate limit or an outage means we could not look
+        raise CouldNotLook(f"GitHub API: {(r.stderr or r.stdout).strip()[:120]}")
+    return True
+
+
+_NULL = type(None)
+
+
+def _shaped(value, need, what):
+    """The one way to read a JSON object answer: `need` is ((key, type or tuple of types), ...), given by every caller (no default). An answer that is not an object,
+    or lacks a needed key, or holds it as another type, is an answer we cannot read (CouldNotLook): never 'nothing there'. Keys a caller reads with .get are the
+    optional ones; each of those is type-checked where it is used."""
+    if not isinstance(value, dict):
+        raise CouldNotLook(f"{what} is not a JSON object")
+    for key, typ in need:
+        types = typ if isinstance(typ, tuple) else (typ,)
+        got = value.get(key, _FAILED)
+        if got is _FAILED or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
+            raise CouldNotLook(f"{what} lacks {key!r} of the expected type")
+    return value
+
+
+def _dicts(value, what, need):
+    """A list of JSON objects each holding every key of `need` (CouldNotLook otherwise): an element of another shape is an answer we cannot read."""
+    if not isinstance(value, list):
+        raise CouldNotLook(f"{what} is not a list of JSON objects")
+    for x in value:
+        _shaped(x, need, what)
+    return value
+
+
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 84
+ok   three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one
+head 86
+ok   a brand-new action pin counts as moved: with no age data it fails
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 8ms:
+base 191
+ok   AC16: a malformed unmeasured_text (nokey) stops the check fail-closed: exit 2, names the list, and is never a pass
+head 194
+ok   AC16: a malformed unmeasured_text (intkey) stops the check fail-closed: exit 2, names the list, and is never a pass
+
+codex
+The direct checks confirm the patch corrects the failing offline case: base gets `mod=None` with no intercepted URLs, while head passes, and the broken-escaping scratch copy fails at the case’s escaping assertion. The only HTTP stub in this test file is the corrected module-level `_http_dict` stub. The extended full runs are still working through the suite.
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 295
+ok   edited line: a whitespace-only edit (spaces and tabs) stays not added, as the scan flattens it: exit 0
+head 299
+ok   R1: the same line with U+001f where the space was flattens identically but is never ruled: exit 1
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 789
+harness mutation rule_title_chars + $: 50 unexpectedly accepted, 0 refused for another reason
+head 795
+harness mutation dquote_chars + $: 52 unexpectedly accepted, 0 refused for another reason
+05:39:20
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 888
+ok   AC16 context heredoc: a quoted-delimiter heredoc fed to cat: ruled (exit 0)
+head 892
+ok   AC16 context heredoc: a backslash delimiter: ruled (exit 0)
+
+codex
+Both extended runs have moved past the targeted Go case into the repository’s later static-analysis harness cases. No failures have appeared in the head output so far; I’m waiting for the scripts’ final summaries to distinguish complete counts from partial progress.
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 956
+ok   AC16 context heredoc: a heredoc opened by a shell function the file defines: rules NOTHING (exit 1, the line fails as unmeasured)
+head 960
+ok   AC16 context heredoc: the heredoc is written to a file that is later used as: sh "$d/x.sh": rules NOTHING (exit 1, the line fails as unmeasured)
+05:40:29
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1032
+ok   AC16 context pystring: the same impure program (import subprocess) with the review-attested label: ruled (exit 0)
+head 1036
+ok   AC16 context pystring: the same impure program (from subprocess import run) with the review-attested label: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1116
+ok   AC16 context heredoc: a heredoc opened by a 'function name { }' consumer (no parentheses): rules NOTHING (exit 1, the line fails as unmeasured)
+head 1120
+ok   AC16 context heredoc: a heredoc opened by a function whose body is on the next line: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1189
+ok   AC16 context heredoc: a function that runs its argument, used on the written file: rules NOTHING (exit 1, the line fails as unmeasured)
+head 1193
+ok   AC16 context heredoc: a case pattern inside a command substitution (the walk cannot follow it): rules NOTHING (exit 1, the line fails as unmeasured)
+05:42:12
+
+codex
+The extended runs remain active and are still passing the static-analysis harness cases. The slower part is the exhaustive generated mutation matrix; the Go-proxy case itself has already passed at head and red at base under the offline guard.
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1277
+ok   AC16 context pystring: the same import (from builtins import exec as e) with the review-attested label: ruled (exit 0)
+head 1281
+ok   AC16 context heredoc: a closing brace inside a comment on the function's first line: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1359
+ok   AC16 context heredoc: a file under /dev/shm is an ordinary file that is later run: rules NOTHING (exit 1, the line fails as unmeasured)
+head 1363
+ok   AC16 context heredoc: the written file is spelled ./payload and run as payload: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 35ms:
+base 1443
+ok   AC16 context heredoc: a cat definition with a line break inside the parentheses: rules NOTHING (exit 1, the line fails as unmeasured)
+head 1445
+ok   AC16 context heredoc: a heredoc inside a process substitution run by bash: rules NOTHING (exit 1, the line fails as unmeasured)
+
+codex
+The head and base runs are still making progress through different generated mutation inputs, and the current outputs contain no `FAIL` entries in the portion completed. I’m preserving the complete counts as the criterion; if either run reaches the extended timeout, I’ll report the exact partial count and timeout instead of presenting it as a full pass.
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1527
+ok   AC2 persona tools: a tools file of another shape ({"shell": ["ghcr.io/own/ptool-a@sha256:1111111111111111111111111111111111111111111111111111111111111111"]}) stops the check (exit 2), never skipped
+head 1529
+ok   AC2 persona tools: a tools file of another shape ({"shell": {"image": "ghcr.io/own/ptool-a@sha256:1111111111111111111111111111111111111111111111111111111111111111"}}) stops the check (exit 2), never skipped
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1616
+ok   AC19: any with: value, whatever it holds, keeps the call an item (exit 1)
+head 1617
+ok   AC19: a non-ASCII with: value keeps the call an item (exit 1)
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1711
+ok   an upstream script added under the top-level vendor/ is not inventoried (exit 0)
+head 1713
+ok   the same script under vendor-x/ is still refused (exit 1)
+
+exec
+/bin/bash -lc "for rev in base head; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-full.out"; tail -1 "$TMPDIR/${rev}-full.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base 1761
+ok   text after a # is still read (a quoted # is not a comment): a trailing mention is refused, the conservative side (exit 1)
+head 1770
+RuntimeError: git -c core.quotePath=false ls-files -z: fatal: not a git repository (or any of the parent directories): .git
+05:46:11
+
+ succeeded in 594503ms:
+head exit=1
+checks=1722
+failures=0
+    raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
+RuntimeError: git -c core.quotePath=false ls-files -z: fatal: not a git repository (or any of the parent directories): .git
+
+ succeeded in 596014ms:
+base exit=1
+checks=1722
+failures=0
+    raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
+RuntimeError: git -c core.quotePath=false ls-files -z: fatal: not a git repository (or any of the parent directories): .git
+
+codex
+I found a setup issue in the long runs: `git archive` snapshots omit `.git`, and later parts of this test script use `git ls-files`. That makes those runs invalid past the Go-proxy case. I’m replacing the archive-only snapshots with temporary local clones pinned to base and head, then I’ll rerun the suite there.
+exec
+/bin/bash -lc 'git clone --quiet --shared --no-checkout /home/shop/work/cache5/review-wt-780c/cache-review "$TMPDIR/base-check" && git -C "$TMPDIR/base-check" checkout --quiet 5cde60c79d862b695b197b816149c1e4b8cdd17a && git -C "$TMPDIR/base-check" rev-parse HEAD' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc 'git clone --quiet --shared --no-checkout /home/shop/work/cache5/review-wt-780c/cache-review "$TMPDIR/head-check" && git -C "$TMPDIR/head-check" checkout --quiet a9afd5112d2e7abbe8165d13f44969b56c341580 && git -C "$TMPDIR/head-check" rev-parse HEAD' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 201ms:
+5cde60c79d862b695b197b816149c1e4b8cdd17a
+
+ succeeded in 213ms:
+a9afd5112d2e7abbe8165d13f44969b56c341580
+
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+timeout 1200 bash \""'$TMPDIR/base-check/.github/agent/tests/pin-age-check-test.sh" > "$TMPDIR/base-check-valid.out" 2>&1
+rc=$?
+echo "base-check exit=$rc"
+printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/base-check-valid.out"
+printf '"'failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/base-check-valid.out"
+grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/base-check-valid.out" || true
+tail -2 "$TMPDIR/base-check-valid.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+timeout 1200 bash \""'$TMPDIR/head-check/.github/agent/tests/pin-age-check-test.sh" > "$TMPDIR/head-check-valid.out" 2>&1
+rc=$?
+echo "head-check exit=$rc"
+printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/head-check-valid.out"
+printf '"'failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/head-check-valid.out"
+grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/head-check-valid.out" || true
+tail -2 "$TMPDIR/head-check-valid.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; if test -f "$TMPDIR/${rev}-valid.out"; then wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; fi; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 11
+ok   a COMMIT date is never a proof of age (the publisher controls it): fails
+head-check 11
+ok   a COMMIT date is never a proof of age (the publisher controls it): fails
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 118
+ok   a PR that adds npm install to a workflow is refused (exit 1, unmeasured named), though nothing in the inventory moved
+head-check 118
+ok   a PR that adds npm install to a workflow is refused (exit 1, unmeasured named), though nothing in the inventory moved
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 29ms:
+base-check 245
+ok   AC16: a malformed unmeasured_text (duprowkey) stops the check fail-closed: exit 2, names the list, and is never a pass
+head-check 248
+ok   AC16: a malformed unmeasured_text (count101) stops the check fail-closed: exit 2, names the list, and is never a pass
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 6ms:
+base-check 511
+ok   AC16 harness form: refused (declare -i): exit 1, says refused
+head-check 539
+ok   AC16 harness form: refused (a glob in command position): exit 1, says refused
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 678
+ok   AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)
+head-check 678
+ok   AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 821
+harness mutation pattern may start with -: 112 unexpectedly accepted, 0 refused for another reason
+head-check 830
+ok   every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts
+
+codex
+The local clones fixed the harness issue; the full base and head runs are now progressing through the later tests with Git metadata available. The run is intentionally offline via the restricted sandbox and a closed local proxy endpoint.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 888
+ok   AC16 context heredoc: a quoted-delimiter heredoc fed to cat: ruled (exit 0)
+head-check 890
+ok   AC16 context heredoc: a double-quoted delimiter: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 940
+ok   AC16 context heredoc: a heredoc whose command line names 'perl': rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 942
+ok   AC16 context heredoc: a heredoc whose command line names 'ruby': rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 85ms:
+base-check 988
+ok   AC16 context pystring: the wrapper defined differently is not a reviewed line: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 992
+ok   AC16 context pystring: a command substitution in an opener argument: rules NOTHING (exit 1, the line fails as unmeasured)
+05:51:03
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1026
+ok   AC16 context pystring: the program's output file is later used as: python3 "$d/g.sh": rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1028
+ok   AC16 context pystring: the program's output file is only read later: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1056
+ok   AC16 context pystring: the same impure program (eval("1")) with the review-attested label: ruled (exit 0)
+head-check 1058
+ok   AC16 context pystring: an impure program (compile("1", "x", "exec")) with no honest proof label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 46ms:
+base-check 1088
+ok   AC16 context assignment: an assignment inside an UNQUOTED heredoc: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1090
+ok   AC16 context assignment: an assignment inside a QUOTED heredoc is text: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 76ms:
+base-check 1116
+ok   AC16 context heredoc: a heredoc opened by a 'function name { }' consumer (no parentheses): rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1118
+ok   AC16 context heredoc: a heredoc opened by a function that calls a function that runs a shell: rules NOTHING (exit 1, the line fails as unmeasured)
+
+codex
+The full runs are past the Go-proxy case and continue through the large adversarial test matrix. The checked-out clones retain the correct commits and `.git` metadata; I’ll use the script’s own summary once each run finishes.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 37ms:
+base-check 1150
+ok   AC16 context pystring: a program (import os; os.makedirs("o")) that writes or changes files with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1150
+ok   AC16 context pystring: a program (import os; os.makedirs("o")) that writes or changes files with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 49ms:
+base-check 1185
+ok   AC16 context heredoc: an alias of the written file set BEFORE the heredoc: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1183
+ok   AC16 context: a different line (the comment became code) is an added line with no row: refused (exit 1)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 53ms:
+base-check 1227
+ok   AC16 context assignment: an assignment inside a quoted heredoc fed to a shell: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1227
+ok   AC16 context assignment: an assignment inside a quoted heredoc fed to a shell: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 42ms:
+base-check 1265
+ok   AC16 context pystring: the same import (import shutil) with the review-attested label: ruled (exit 0)
+head-check 1267
+ok   AC16 context pystring: an impure import (import tempfile) with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1303
+ok   AC16 context heredoc: sort -o writes a file the opener grammar does not know: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1303
+ok   AC16 context heredoc: sort -o writes a file the opener grammar does not know: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 21ms:
+base-check 1343
+ok   AC16 context pystring: a call with unpacked keyword arguments (hides the mode of open): rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1345
+ok   AC16 context pystring: the same call with the review label: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 62ms:
+base-check 1377
+ok   AC16 context heredoc: the content passed to a reviewed function defined differently: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1377
+ok   AC16 context heredoc: the content passed to a reviewed function defined differently: rules NOTHING (exit 1, the line fails as unmeasured)
+05:57:15
+
+codex
+The corrected full runs have passed 1,377 checks so far in both snapshots, with no reported `FAIL` checks to this point. The case-level results remain: base fails offline at Go-proxy lookup, head passes, and breaking `_go_escape` makes the head case red.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 24ms:
+base-check 1419
+ok   AC16 context pystring: argparse can create a file (FileType): rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1417
+ok   AC16 context comment: a one-line parameter expansion is understood: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 52ms:
+base-check 1457
+ok   AC16 context heredoc: a heredoc inside an if whose fi pipes to sh: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1455
+ok   AC16 context heredoc: a redirection to a path that only starts with /dev/null: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 18ms:
+base-check 1497
+ok   AC16 context pystring: typing.get_type_hints evaluates a string annotation: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1493
+ok   AC16 context pystring: a versioned python name is redefined: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1543
+ok   AC2 persona tools: moving the digest in a tools file the base holds is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one
+head-check 1538
+ok   AC2 persona tools: a tools file with a duplicate key or a reference that is not exactly name@sha256:<64 hex> ({"shell": "ghcr.io/own/ptool-a@sha256:11111111111111111111111111111111111111111111111111111111111111110"}) stops the check (exit 2)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 95ms:
+base-check 1589
+ok   AC19: the form './.github/workflows/missing.yml' is not the exact local workflow call: it is not exempted (exit 1)
+head-check 1585
+ok   AC19: the form './other/callee.yml' is not the exact local workflow call: it is not exempted (exit 1)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 42ms:
+base-check 1629
+ok   AC3: a publish time 0.5 s short of seven days before now is too young (the fraction rounds up)
+head-check 1622
+ok   AC19: changing a version input of a local call (quoted with a leading space) moves the call's identity: exit 1, not 0
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 14ms:
+base-check 1662
+ok   AC19 closed form: editing the with: block voids the row (the identity carries the block's hash): exit 1
+head-check 1658
+ok   AC19 closed form: a base-branch row naming the call's file and whole identity rules it: exit 0, reported as ruled text with the ruling
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 48ms:
+base-check 1721
+ok   a new workflow step that names the vendored folder is refused, whatever the command: cd-group (exit 1)
+head-check 1717
+ok   a new workflow step that names the vendored folder is refused, whatever the command: make-C (exit 1)
+
+codex
+The complete clones have reached the final vendored-folder guard cases; the PR diff itself remains exactly the one-line stub change, with no checker or guard edits. I’m waiting for the runners’ exit statuses and summary counts now.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -2 "$TMPDIR/${rev}-valid.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 38ms:
+base-check 1752
+ok   a spelling of the vendored folder that the shell or YAML reads as vendor/ is refused: yaml-hex-escape (exit 1)
+ok   a spelling of the vendored folder that the shell or YAML reads as vendor/ is refused: yaml-unicode-escape (exit 1)
+head-check 1747
+ok   a spelling of the vendored folder that the shell or YAML reads as vendor/ is refused: star-letter (exit 1)
+ok   a spelling of the vendored folder that the shell or YAML reads as vendor/ is refused: question-letter (exit 1)
+06:02:25
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-valid.out"; tail -1 "$TMPDIR/${rev}-valid.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1762
+ok   a file on the exact list may name the vendored folder (exit 0)
+head-check 1762
+ok   a file on the exact list may name the vendored folder (exit 0)
+
+ succeeded in 996916ms:
+base-check exit=1
+checks=1723
+failures=0
+  File "<frozen importlib._bootstrap_external>", line 1186, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: '/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd/.github/agent/supply-chain/pin-inventory.py'
+
+ succeeded in 1002046ms:
+head-check exit=1
+checks=1723
+failures=0
+  File "<frozen importlib._bootstrap_external>", line 1186, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: '/home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd/.github/agent/supply-chain/pin-inventory.py'
+
+exec
+/bin/bash -lc 'ls -l "$TMPDIR/head-check/.github/agent/supply-chain" | head; grep -n '"'pin-inventory.py' \""'$TMPDIR/head-check/.github/agent/supply-chain/pin-age-check.py" | head; grep -n '"'pin-inventory.py' \""'$TMPDIR/head-check/.github/agent/tests/pin-age-check-test.sh"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+total 272
+drwx------ 2 shop shop   4096 Oct 30 06:01 __pycache__
+-rw------- 1 shop shop 105414 Oct 30 05:46 pin-age-check.py
+-rw------- 1 shop shop  89376 Oct 30 05:46 pin-audit.py
+-rw------- 1 shop shop  72255 Oct 30 05:46 pin-inventory.py
+-rw------- 1 shop shop   2482 Oct 30 05:46 tag_observer.py
+381:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+396:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+405:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+414:check python3 - "$here/../supply-chain/pin-inventory.py" "$chk" <<'PY'
+427:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+493:check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
+508:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+528:check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
+562:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+581:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+598:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+612:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+632:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+642:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+664:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+685:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+731:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+743:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+759:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+770:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+789:check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
+804:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+820:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+832:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+850:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+863:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+2925:  python3 - "$work/$1" "$2" "$here/../supply-chain/pin-inventory.py" <<'PY'
+3181:  python3 - "$1" "$2" "$work/$3" "$here/../supply-chain/pin-inventory.py" <<'PY'
+3231:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3271:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3377:check python3 - "$chk" "$here/../supply-chain/pin-inventory.py" <<'PY'
+3408:check python3 - "$chk" "$here/../supply-chain/pin-inventory.py" <<'PY'
+3422:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3444:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3463:check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+3475:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3496:check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+3517:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3532:check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+3554:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3569:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3586:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3611:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3634:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+3654:check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+3676:check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+3780:spec = importlib.util.spec_from_file_location("pi", root + "/.github/agent/supply-chain/pin-inventory.py"); m = importlib.util.module_from_spec(spec); sys.modules["pi"] = m; spec.loader.exec_module(m)
+3806:spec = importlib.util.spec_from_file_location("pi", ".github/agent/supply-chain/pin-inventory.py"); m = importlib.util.module_from_spec(spec); sys.modules["pi"] = m; spec.loader.exec_module(m)
+4239:check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY2'
+
+codex
+The `.git` clones revealed one more harness requirement: a final script section uses paths relative to the repository root, so invoking the script from the runner directory caused a post-check failure unrelated to the change. I’m rerunning from each clone’s root; the prior runs completed 1,723 checks but did not reach a valid final summary.
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+timeout 1200 bash .github/agent/tests/pin-age-check-test.sh > \""'$TMPDIR/base-check-root.out" 2>&1
+rc=$?
+echo "base-check exit=$rc"
+printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/base-check-root.out"
+printf '"'failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/base-check-root.out"
+grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/base-check-root.out" || true
+tail -2 "$TMPDIR/base-check-root.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base-check
+exec
+/bin/bash -lc "set +e
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy=''
+timeout 1200 bash .github/agent/tests/pin-age-check-test.sh > \""'$TMPDIR/head-check-root.out" 2>&1
+rc=$?
+echo "head-check exit=$rc"
+printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/head-check-root.out"
+printf '"'failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/head-check-root.out"
+grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/head-check-root.out" || true
+tail -2 "$TMPDIR/head-check-root.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/head-check
+exec
+/bin/bash -lc 'python3 - "$TMPDIR/mutated-supply-chain/pin-age-check.py" <<'"'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines(); active=False; done=False
+for i,line in enumerate(lines):
+    if line.startswith('def _go_escape('): active=True
+    elif active and line.startswith('def '): active=False
+    if active and line == '    return path':
+        lines[i]='    return re.sub(r\"[A-Z]\", lambda m: \""'!" + m.group(0).lower(), path)'"'; done=True
+p.write_text('\\n'.join(lines)+'\\n')
+assert done
+PY
+sed -n '315,319p' \""'$TMPDIR/mutated-supply-chain/pin-age-check.py"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 37ms:
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 21ms:
+base-check 72
+ok   local-composite-action: with no age data fails
+head-check 71
+ok   local-composite-action: the same item 3 days old fails
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 30ms:
+base-check 150
+ok   an option chain of a thousand tokens before pip/docker is read in milliseconds (no regex backtracking), and docker global options with values (--context x) do not hide the subcommand
+head-check 150
+ok   an option chain of a thousand tokens before pip/docker is read in milliseconds (no regex backtracking), and docker global options with values (--context x) do not hide the subcommand
+
+exec
+/bin/bash -lc 'head -8 "$TMPDIR/base-check-root.out"; grep -n '"'CASE=\"item 6: the Go proxy' \""'$TMPDIR/base-check/.github/agent/tests/pin-age-check-test.sh"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+ok   no pin moved: exit 0, says so, and needs no data at all
+ok   no pin moved: exit 0, says so, and needs no data at all
+ok   a moved action pin whose release is 10 days old passes, and the check NAMES it
+ok   a moved action pin whose release is 10 days old passes, and the check NAMES it
+ok   the same pin released 3 days ago FAILS (exit 1) and says how young it is
+ok   the same pin released 3 days ago FAILS (exit 1) and says how young it is
+ok   the same pin released 3 days ago FAILS (exit 1) and says how young it is
+ok   a moved pin with no age data FAILS: age not provable is a failure, never a pass
+4407:CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 11ms:
+base-check 260
+ok   AC16: a malformed unmeasured_text (neginfrow) stops the check fail-closed: exit 2, names the list, and is never a pass
+head-check 261
+ok   AC16: an exceptions file that is not JSON stops the check (exit 2), never 'nothing ruled'
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 3ms:
+base-check 417
+ok   AC16 harness form: refused (an argument written ${work}): exit 1, says refused
+head-check 423
+ok   AC16 harness form: refused (a single-quoted argument): exit 1, says refused
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 678
+ok   AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)
+head-check 678
+ok   AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 3ms:
+base-check 764
+ok   AC16 harness mutation: widening HARNESS_WHITELIST by one token (test_unary + -n) is caught (an unexpected acceptance, or a refusal for another reason)
+head-check 769
+harness mutation test_count + -nt: 1 unexpectedly accepted, 0 refused for another reason
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 23ms:
+base-check 850
+ok   AC16 context comment: a comment line joined to the line before by a continuation: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 854
+ok   AC16 context assignment: typeset -i likewise: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 101ms:
+base-check 898
+ok   AC16 context heredoc: a here-string earlier in the script does not hide a later heredoc: ruled (exit 0)
+head-check 902
+ok   AC16 context heredoc: a shift in arithmetic is not a heredoc (the line after it is plain code): rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 938
+ok   AC16 context heredoc: a heredoc whose command line names 'node': rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 944
+ok   AC16 context heredoc: a heredoc whose command line names 'awk -f -': rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 39ms:
+base-check 994
+ok   AC16 context pystring: an opener that runs on after the operator (|| list): rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1000
+ok   AC16 context pystring: the command text in code position (a name wget): rules NOTHING (exit 1, the line fails as unmeasured)
+
+codex
+The reruns from the clone roots are progressing normally; each has passed roughly 1,000 checks so far. The only prior failure was from my initial invocation directory, and it is resolved by running from the repository root.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1038
+ok   AC16 context pystring: an impure program (import os; os.system("true")) with no honest proof label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1046
+ok   AC16 context pystring: an impure program (import os; os.execv("/bin/true", [])) with no honest proof label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 25ms:
+base-check 1080
+ok   AC16 context pystring: an impure program: the command text in code position even with the label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1086
+ok   AC16 context comment: a comment inside an UNQUOTED heredoc (the shell expands the body): rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 35ms:
+base-check 1122
+ok   AC16 context heredoc: an attached redirection (cat>file) whose file is later run: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1128
+ok   AC16 context heredoc: the written file is run through a variable that holds its name: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 49ms:
+base-check 1162
+ok   AC16 context pystring: a program (import sys; sys.stdout.write("x")) that writes or changes files with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1170
+ok   AC16 context pystring: a program (import os; os.symlink("a", "b")) that writes or changes files with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 60ms:
+base-check 1207
+ok   AC16 context heredoc: an environment assignment before cat is outside the closed opener grammar: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1215
+ok   AC16 context heredoc: a later line names the written file as an argument of a program that is not a data consumer: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 31ms:
+base-check 1247
+ok   AC16 context pystring: an impure import (import sqlite3) with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1255
+ok   AC16 context pystring: an impure import (import http.client) with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+codex
+The corrected full runs have passed about 1,250 checks apiece and are still in the generated AC16 security-harness cases. The Go-proxy test result is already established independently; the remaining wait is solely for the full-suite totals.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 50ms:
+base-check 1287
+ok   AC16 context heredoc: a pipeline of three whose last command is a shell: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1293
+ok   AC16 context heredoc: a pipeline is outside the closed opener grammar (cat | sort | head): rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 66ms:
+base-check 1315
+ok   AC16 context pystring: an impure program (from io import open as f; f("o", "w")) with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1319
+ok   AC16 context pystring: an impure program (import os; os.replace("a", "b")) with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 178ms:
+base-check 1339
+ok   AC16 context pystring: an impure program (import os) with no review label: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1345
+ok   AC16 context pystring: the same call with the review label: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 72ms:
+base-check 1365
+ok   AC16 context heredoc: the written file is spelled payload and run as ./payload: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1369
+ok   AC16 context heredoc: a case pattern on its own line inside a command substitution: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 62ms:
+base-check 1393
+ok   AC16 context pystring: an out helper defined differently is not the reviewed one: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1397
+ok   AC16 context pystring: another command substitution in an opener argument: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 63ms:
+base-check 1425
+ok   AC16 context pystring: from sys import modules: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1429
+ok   AC16 context pystring: from sys import argv is is pure: ruled (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 67ms:
+base-check 1455
+ok   AC16 context heredoc: a redirection to a path that only starts with /dev/null: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1459
+ok   AC16 context heredoc: a heredoc inside a for loop whose done pipes to sh: rules NOTHING (exit 1, the line fails as unmeasured)
+
+codex
+The root-based runs are now beyond 1,450 checks each and still have no test-reported failures. The script is spending most of its time on generated shell and Python mutation cases, but both snapshots continue to advance.
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 28ms:
+base-check 1489
+ok   AC16 context heredoc: a function is defined after a command separator: rules NOTHING (exit 1, the line fails as unmeasured)
+head-check 1493
+ok   AC16 context pystring: a versioned python name is redefined: rules NOTHING (exit 1, the line fails as unmeasured)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 36ms:
+base-check 1543
+ok   AC2 persona tools: moving the digest in a tools file the base holds is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one
+head-check 1545
+ok   AC16 context: a malformed context/proof ("context": "") stops the check: exit 2, never a pass
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 95ms:
+base-check 1586
+ok   AC19: the form './.github/workflows/sub/callee.yml' is not the exact local workflow call: it is not exempted (exit 1)
+head-check 1589
+ok   AC19: the form './.github/workflows/missing.yml' is not the exact local workflow call: it is not exempted (exit 1)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 115ms:
+base-check 1622
+ok   AC19: changing a version input of a local call (quoted with a leading space) moves the call's identity: exit 1, not 0
+head-check 1624
+ok   AC20: the same ruled line in bin/install-scanner.sh passes like in any script (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 87ms:
+base-check 1659
+ok   AC19 closed form: a row with the wrongfile does not rule the call (exit 1)
+head-check 1661
+ok   AC19 closed form: a row with the wronghash does not rule the call (exit 1)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 89ms:
+base-check 1717
+ok   a new workflow step that names the vendored folder is refused, whatever the command: make-C (exit 1)
+head-check 1719
+ok   a new workflow step that names the vendored folder is refused, whatever the command: python-module (exit 1)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -3 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 72ms:
+base-check 1741
+ok   a new workflow step that names the vendored folder is refused, whatever the command: cp-bare (exit 1)
+ok   a new script that names the vendored folder is refused: cp-bare (exit 1)
+ok   a new workflow step that names the vendored folder is refused, whatever the command: quoted-assign (exit 1)
+head-check 1742
+ok   a new script that names the vendored folder is refused: cp-bare (exit 1)
+ok   a new workflow step that names the vendored folder is refused, whatever the command: quoted-assign (exit 1)
+ok   a new script that names the vendored folder is refused: quoted-assign (exit 1)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 65ms:
+base-check 1762
+ok   a file on the exact list may name the vendored folder (exit 0)
+head-check 1762
+ok   a file on the exact list may name the vendored folder (exit 0)
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -2 "$TMPDIR/${rev}-root.out"; done; date -u +%T' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 28ms:
+base-check 1762
+ok   text after a # is still read (a quoted # is not a comment): a trailing mention is refused, the conservative side (exit 1)
+ok   a file on the exact list may name the vendored folder (exit 0)
+head-check 1762
+ok   text after a # is still read (a quoted # is not a comment): a trailing mention is refused, the conservative side (exit 1)
+ok   a file on the exact list may name the vendored folder (exit 0)
+06:21:50
+
+exec
+/bin/bash -lc "ps -eo pid,ppid,etime,args | grep -E 'pin-age-check-test|pin-inventory|pin-age-check.py|python3 -' | grep -v grep | head -15; wc -l \""'$TMPDIR/base-check-root.out" "$TMPDIR/head-check-root.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 78ms:
+  1775 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/base-check-root.out
+  1777 /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/tmp/head-check-root.out
+  3552 total
+
+exec
+/bin/bash -lc 'tail -10 "$TMPDIR/base-check-root.out"; tail -10 "$TMPDIR/head-check-root.out"; stat -c '"'%y %s' \""'$TMPDIR/base-check-root.out" "$TMPDIR/head-check-root.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 97ms:
+ok   live-fetch row, http: exit 1
+ok   live-fetch row, host-lookalike: exit 1
+ok   live-fetch row, userinfo: exit 1
+ok   live-fetch row, port: exit 1
+ok   live-fetch row, second-url-other-host: exit 1
+ok   live-fetch row, no-literal-url: exit 1
+ok   live-fetch row, ftp-scheme: exit 1
+ok   live-fetch row, trailing-dot-host: exit 1
+ok   live-fetch row, uppercase-host: exit 1
+ok   live-fetch row, quote-concat-authority: exit 1
+ok   live-fetch row, userinfo: exit 1
+ok   live-fetch row, port: exit 1
+ok   live-fetch row, second-url-other-host: exit 1
+ok   live-fetch row, no-literal-url: exit 1
+ok   live-fetch row, ftp-scheme: exit 1
+ok   live-fetch row, trailing-dot-host: exit 1
+ok   live-fetch row, uppercase-host: exit 1
+ok   live-fetch row, quote-concat-authority: exit 1
+ok   live-fetch row, quote-concat-suffix: exit 1
+ok   live-fetch row, extra-variable-operand: exit 1
+2026-10-30 06:22:28.179556867 +0000 209652
+2026-10-30 06:22:27.303541585 +0000 209754
+
+exec
+/bin/bash -lc "for rev in base-check head-check; do printf '%s ' \""'$rev"; wc -l < "$TMPDIR/${rev}-root.out"; tail -1 "$TMPDIR/${rev}-root.out"; done' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+base-check 1803
+ok   live-fetch row, other-host-with-variable: exit 1
+head-check 1804
+ok   live-fetch row, no-disable-first: exit 1
+
+ succeeded in 1201849ms:
+base-check exit=124
+checks=1779
+failures=0
+ok   Go-toolchain fetch row, go-without-globoff: exit 1
+Terminated
+
+ succeeded in 1202237ms:
+head-check exit=124
+checks=1781
+failures=0
+ok   Go-toolchain fetch row, go-other-path: exit 1
+Terminated
+
+exec
+/bin/bash -lc 'for rev in base-check head-check; do echo "=== $rev ==="; grep -E '"'"'^(ok|FAIL) item 6: the Go proxy'"' \""'$TMPDIR/${rev}-root.out"; printf '"'checks='; grep -Ec '"'^(ok|FAIL) '"' \""'$TMPDIR/${rev}-root.out"; printf '"'test-failures='; grep -c '"'^FAIL '"' \""'$TMPDIR/${rev}-root.out"; tail -4 "$TMPDIR/${rev}-root.out"; done
+awk '"'NR==4417{print \"line4417=\" length("'$0)}'"' \""'$TMPDIR/head-check/.github/agent/tests/pin-age-check-test.sh"
+git -C /home/shop/work/cache5/review-wt-780c/cache-review diff --stat 5cde60c79d862b695b197b816149c1e4b8cdd17a a9afd5112d2e7abbe8165d13f44969b56c341580' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 40ms:
+=== base-check ===
+checks=1779
+test-failures=0
+ok   Go-toolchain fetch row, go-ok-braced: exit 0
+ok   Go-toolchain fetch row, go-ok-concatenated: exit 0
+ok   Go-toolchain fetch row, go-without-globoff: exit 1
+Terminated
+=== head-check ===
+checks=1781
+test-failures=0
+ok   Go-toolchain fetch row, go-without-globoff: exit 1
+ok   Go-toolchain fetch row, go-literal-file-is-no-variable-shape: exit 1
+ok   Go-toolchain fetch row, go-other-path: exit 1
+Terminated
+line4417=102
+ .github/agent/tests/pin-age-check-test.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+exec
+/bin/bash -lc 'for rev in base-check head-check; do echo "=== $rev go-proxy ==="; grep -niE '"'proxy gets|index Path|Go proxy|item 6: the Go' \""'$TMPDIR/${rev}-root.out" | head -10; done; grep -n -A12 -B2 '"'CASE=\"item 6: the Go proxy' \""'$TMPDIR/head-check/.github/agent/tests/pin-age-check-test.sh"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 0ms:
+=== base-check go-proxy ===
+=== head-check go-proxy ===
+4405-assert ok, why
+4406-PY
+4407:CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+4408-check python3 - "$chk" <<'PY'
+4409-import contextlib, importlib.util, io, sys, urllib.request
+4410-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+4411-assert ac._go_escape("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+4412-assert ac._go_escape("golang.org/x/tools") == "golang.org/x/tools"
+4413-seen = []
+4414-def fake(u):
+4415-    seen.append(u)
+4416-    return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+4417-ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+4418-mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+4419-assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+
+exec
+/bin/bash -lc 'for rev in base-check head-check; do echo $rev; grep -ni '"'item 6' \""'$TMPDIR/${rev}-root.out" | head -20; done; grep -n '"'Go proxy gets' \""'$TMPDIR/head-check/.github/agent/tests/pin-age-check-test.sh"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 53ms:
+base-check
+94:ok   observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)
+98:ok   PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)
+head-check
+94:ok   observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)
+98:ok   PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)
+4407:CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+
+exec
+/bin/bash -lc "grep -niE 'go-|proxy|Burnt|escaped' \""'$TMPDIR/head-check-root.out" | head -30; sed -n '"'70,110p' \""'$TMPDIR/head-check-root.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 26ms:
+37:ok   gotool: moved, named and (10 days old via go-index) accepted
+38:ok   gotool: moved, named and (10 days old via go-index) accepted
+270:ok   AC16 (whole line): the Sonnet reproduction (the ruled segment embedded in another line that pipes to sh, next to a .curlrc and a proxy) FAILS (exit 1): not ruled
+271:ok   AC16 (whole line): the Sonnet reproduction (the ruled segment embedded in another line that pipes to sh, next to a .curlrc and a proxy) FAILS (exit 1): not ruled
+272:ok   AC16 (whole line): the Sonnet reproduction (the ruled segment embedded in another line that pipes to sh, next to a .curlrc and a proxy) FAILS (exit 1): not ruled
+444:ok   AC16 harness form: refused (an escaped quote in a double-quoted word): exit 1, says refused
+445:ok   AC16 harness form: refused (an escaped quote in a double-quoted word): exit 1, says refused
+446:ok   AC16 harness form: refused (an escaped dollar in a double-quoted word): exit 1, says refused
+447:ok   AC16 harness form: refused (an escaped dollar in a double-quoted word): exit 1, says refused
+662:ok   AC16 harness form: accepted (escaped dot and brackets in a pattern): exit 0
+663:ok   AC16 harness form: accepted (escaped dot and brackets in a pattern): exit 0
+832:ok   the committed Go-toolchain row is exactly the one go.dev fetch line of bin/refresh-inputs.sh: its text, its hashes (the key is the curl segment), the checker's Go rule accepts it, the same line with another program, under the Wolfi rule, or with another host is refused
+1758:ok   a line that does not name the vendored folder (the tool's own words, a comment) is not refused: go-mod-vendor (exit 0)
+1784:ok   live-fetch row, proxy-option: exit 1
+1815:ok   a live-fetch row voids when the line is edited (a proxy added): exit 1
+1816:ok   Go-toolchain fetch row, go-ok: exit 0
+1817:ok   Go-toolchain fetch row, go-ok-braced: exit 0
+1818:ok   Go-toolchain fetch row, go-ok-concatenated: exit 0
+1819:ok   Go-toolchain fetch row, go-without-globoff: exit 1
+1820:ok   Go-toolchain fetch row, go-literal-file-is-no-variable-shape: exit 1
+1821:ok   Go-toolchain fetch row, go-other-path: exit 1
+ok   local-composite-action: moved, named and (10 days old via observer) accepted
+ok   local-composite-action: the same item 3 days old fails
+ok   local-composite-action: with no age data fails
+ok   a go install tool's age from the version-control .info time is refused (the index timestamp is the server-side one): fails
+ok   an image's own 'created' field is refused (the builder sets it): fails
+ok   an image written name:tag@sha256:digest is the SAME item as name@sha256:digest (the tag is ignored): moved, named by its digest, and accepted at 10 days
+ok   an image written name:tag@sha256:digest is the SAME item as name@sha256:digest (the tag is ignored): moved, named by its digest, and accepted at 10 days
+ok   an image with only a tag (no digest) is not a pin the age check can measure: it fails rather than passing silently
+ok   the product base image, a Go module bump, go.mod's toolchain and setup-go's version are NOT covered: they move with no data and no failure
+ok   the product base image, a Go module bump, go.mod's toolchain and setup-go's version are NOT covered: they move with no data and no failure
+ok   three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one
+ok   three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one
+ok   three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one
+ok   three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one
+ok   three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one
+ok   a brand-new action pin counts as moved: with no age data it fails
+ok   a brand-new action pin counts as moved: with no age data it fails
+ok   removing a pin is not an age problem: exit 0
+ok   an unchanged workflow with 5 pins needs no data (only what MOVED is measured)
+ok   a new pin in .github/workflows/\u00e9.yml (a non-ASCII file name) is named and measured like any other
+ok   a new pin in .github/workflows/\u00e9.yml (a non-ASCII file name) is named and measured like any other
+ok   observer: our scheduled run first saw v4.1.0 at the pinned commit on 2026-09-01: an observer proof with that time
+ok   observer: a run that is not event=schedule is never read (a PR cannot forge the state): no proof
+ok   observer: the tag was seen on 2026-01-01 at a DIFFERENT commit; its move to the pinned commit was never observed: no proof (the tj-actions pattern)
+ok   observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)
+ok   observer: no scheduled run has produced state yet: nothing observed, no proof, and no error (ages only get younger)
+ok   observer: a state that exists but cannot be read is loud (could not look), never 'nothing observed'
+ok   PR clock: the earliest workflow run on the first commit whose INVENTORY holds the item (not on an earlier commit that merely mentions 21 in a comment, nor the later head)
+ok   PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)
+ok   PR clock: outside a PR (no base) there is no clock
+ok   a tool's release proof is the newest asset time: an asset replaced yesterday in an old release is young again
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   an action's subdirectory is part of its identity: github/codeql-action/analyze@sha is named as such
+ok   an action's subdirectory is part of its identity: github/codeql-action/analyze@sha is named as such
+ok   an indented requirements line and a requirement with extras are read
+ok   an indented requirements line and a requirement with extras are read
+
+exec
+/bin/bash -lc "sed -n '98,140p' \""'$TMPDIR/head-check-root.out"' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 52ms:
+ok   PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)
+ok   PR clock: outside a PR (no base) there is no clock
+ok   a tool's release proof is the newest asset time: an asset replaced yesterday in an old release is young again
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints
+ok   an action's subdirectory is part of its identity: github/codeql-action/analyze@sha is named as such
+ok   an action's subdirectory is part of its identity: github/codeql-action/analyze@sha is named as such
+ok   an indented requirements line and a requirement with extras are read
+ok   an indented requirements line and a requirement with extras are read
+ok   inventory: a run line of 200 repeated expressions (a pattern-backtracking probe) is read in well under a second
+ok   inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools
+ok   inventory: install forms it does not measure (npm, apt, gh release download, a pip URL, a non-release download) are LISTED
+ok   inventory: docker run with a quoted image, with --cpus 2, and bare pip install names are items; a range, (unpinned) or an expression is NEVER a pin that can pass the age check
+ok   inventory: a subdirectory taken from untrusted action metadata is redacted like every other part of a key
+ok   a PR that adds npm install to a workflow is refused (exit 1, unmeasured named), though nothing in the inventory moved
+ok   a PR that adds npm install to a workflow is refused (exit 1, unmeasured named), though nothing in the inventory moved
+ok   a PR that adds npm install to a workflow is refused (exit 1, unmeasured named), though nothing in the inventory moved
+ok   the same in a shell script outside .github (tools/fetch.sh) is refused too
+ok   the same in a shell script outside .github (tools/fetch.sh) is refused too
+ok   an unmeasured form already in the base (count unchanged by the head) is not refused: only an ADDED one is
+ok   tags come from ONE git ls-remote (annotated tags peeled), never one REST call per annotated tag
+ok   an in-place SWAP of one unmeasured command for another (localhost curl -> evil download) is an addition: refused, though the count did not change
+ok   an in-place SWAP of one unmeasured command for another (localhost curl -> evil download) is an addition: refused, though the count did not change
+ok   continuation lines, apt-get -y install and npm -g install are all recognised as unmeasured forms and refused
+ok   continuation lines, apt-get -y install and npm -g install are all recognised as unmeasured forms and refused
+ok   continuation lines, apt-get -y install and npm -g install are all recognised as unmeasured forms and refused
+ok   continuation lines, apt-get -y install and npm -g install are all recognised as unmeasured forms and refused
+ok   a download appended to bin/install-scanner.sh is refused too (the file is read for unmeasured forms as well as its *_VER pins)
+ok   a download appended to bin/install-scanner.sh is refused too (the file is read for unmeasured forms as well as its *_VER pins)
+ok   a swap after column 160 of a long download line is still an addition (the whole normalised line decides identity), and a non-UTF-8 file never crashes the readers
+ok   forms outside workflow run steps are measured too: a script's go install / pip / docker run / release download, install-scanner.sh's *_VERSION and download source, a composite action anywhere, a local action reference, an oddly named requirements file
+ok   a CHANGED download source or a new local action is refused (a placeholder is never a pin)
+ok   a CHANGED download source or a new local action is refused (a placeholder is never a pin)
+ok   an unclosed run of expression openers in a huge script is read in linear time, a file over 1 MB is refused (not read), and a very long line cannot make the form scan quadratic
+ok   a version or image given by a SHELL VARIABLE is a placeholder item that cannot be proven (adding one is refused), and an unreadable file stops the unmeasured check with exit 2, never 'nothing found'
+ok   a hostile download added next to a 1.1 MB script under .github/agent/ is still refused (the oversize file is skipped there, never turning the scan off)
+ok   a hostile download added next to a 1.1 MB script under .github/agent/ is still refused (the oversize file is skipped there, never turning the scan off)
+ok   every fetching spelling is either MEASURED or REFUSED when added, never silent: docker container/image subcommands, podman/nerdctl, git clone, dnf/yum/apk/snap/conda installs, dotnet tool, helm repo add, kubectl apply from a URL, gh extension, cargo binstall, npm exec, bunx, pip download from a URL, a scheme-less wget, go install with a variable module
+ok   an unmeasured form on a line that ALSO holds a measured item is still found; a placeholder is identified by its step, so a second variable image is a NEW key and a changed step is a changed key
+
+exec
+/bin/bash -lc 'nl -ba "$TMPDIR/head-check/.github/agent/tests/pin-age-check-test.sh" | sed -n '"'4320,4435p' | head -115" in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 55ms:
+  4320	check test "$rc" -eq 1
+  4321	fpck future "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2099-01-01T00:00:00Z")]"
+  4322	CASE="AC34: a row published in the future lends no age (exit 1)"
+  4323	check test "$rc" -eq 1
+  4324	fpck garbage "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "last tuesday")]"
+  4325	CASE="AC34: a row whose published time is not a time lends no age (exit 1)"
+  4326	check test "$rc" -eq 1
+  4327	fpck dup "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)"), $(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 2)")]"
+  4328	CASE="AC34: two rows for the same file and content: the check stops, it never picks the older (exit 2)"
+  4329	check test "$rc" -eq 2
+  4330	fpck naive "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10 | sed 's/Z$//')")]"
+  4331	CASE="AC34: a published time without a zone is read as UTC, as the checker reads every time: an old row passes (exit 0)"
+  4332	check test "$rc" -eq 0
+  4333	fpck offset "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2026-10-02T12:00:00+99:99")]"
+  4334	CASE="AC34: a published time with an impossible zone offset (+99:99, which would count as over 7 days) lends no age (exit 1)"
+  4335	check test "$rc" -eq 1
+  4336	for vf in .python-version .nvmrc; do
+  4337	  newcase fpv "
+  4338	import pathlib
+  4339	pathlib.Path('$vf').write_text('3.12\\n')"
+  4340	  VSUM=$(python3 -c "import hashlib;print(hashlib.sha256(('$vf' + chr(0) + '3.12\n').encode()).hexdigest())")
+  4341	  printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [%s]}' "$(fprow "$vf" "$VSUM" "$GRADLE" 3.12 "$(d 30)")" >"$work/fp-vf.json"; rc=0
+  4342	  python3 "$chk" --root "$work/fpv" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/fp-vf.json" >"$work/fp.out" 2>&1 || rc=$?
+  4343	  CASE="AC34: a version file ($vf) with an old, otherwise valid row is still not a pin: the rows date checksum files only (exit 1)"
+  4344	  check test "$rc" -eq 1
+  4345	done
+  4346	fpck notlist '"x"'
+  4347	CASE="AC34: a file_pins that is not a list stops the check (exit 2)"
+  4348	check test "$rc" -eq 2
+  4349	rm -rf "$work/fp-tree"; cp -R "$work/fp" "$work/fp-tree"; printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [%s]}' "$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")" >"$work/fp-tree/.github/supply-chain-exceptions.json"
+  4350	( cd "$work/fp-tree" && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )   # the row is in the head commit of the tree under test
+  4351	rc=0; python3 "$chk_nolist" --root "$work/fp-tree" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/fp.out" 2>&1 || rc=$?
+  4352	CASE="AC34: a row that only the pull request's own tree carries rules nothing: the default list is the one beside the checker, never the tree under test (exit 1)"
+  4353	check test "$rc" -eq 1
+  4354	
+  4355	# --- rc-5b item 6 (A4, R7, R8, R12): the checksum is part of an item's identity; a server proof beats the PR clock for tools and packages; a label that does not resolve is "age not provable"; the Go proxy's case escaping ---
+  4356	A64=$(printf 'a%.0s' $(seq 64)); B64=$(printf 'b%.0s' $(seq 64))
+  4357	newcase sum-scanner "$(sub bin/install-scanner.sh "SUM=$A64" "SUM=$B64")"
+  4358	runck sum-scanner '{"times": {}}'
+  4359	CASE="sum: a checksum change under the SAME tool version is a moved item (no age data: fails and names it)"
+  4360	check test "$rc" -eq 1; check grep -qF 'tool:trivy@0.74.0' "$work/sum-scanner.out"
+  4361	runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$YOUNG\", \"source\": \"github-release\"}}}"
+  4362	CASE="sum: the same sum-only change with a release asset 3 days old fails"; check test "$rc" -eq 1
+  4363	runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$OLD\", \"source\": \"github-release\"}}}"
+  4364	CASE="sum: the same sum-only change with a release asset 10 days old passes"; check test "$rc" -eq 0
+  4365	newcase sum-req "$(sub .github/pins/adjudicator-requirements.txt '--hash=sha256:aaaa' '--hash=sha256:cccc')"
+  4366	runck sum-req '{"times": {}}'
+  4367	CASE="sum: a --hash change under the SAME package version is a moved item"
+  4368	check test "$rc" -eq 1; check grep -qF 'package:pypi/anthropic@1.9.0' "$work/sum-req.out"
+  4369	newcase sum-comment "pathlib=__import__('pathlib'); p=pathlib.Path('bin/install-scanner.sh'); p.write_text(p.read_text()+'# a note\n')"
+  4370	runck sum-comment '{"times": {}}'
+  4371	CASE="sum: a comment added to the installer script moves nothing"; check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/sum-comment.out"
+  4372	CASE="item 6: a server proof beats the PR clock for tools and packages; the clock stands in only when there is none"
+  4373	check python3 - "$chk" <<'PY'
+  4374	import datetime, importlib.util, sys
+  4375	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4376	inv = ac.inv
+  4377	now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+  4378	for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+  4379	    it = inv.Item(kind, name, ver)
+  4380	    ok, why, pr = ac.judge_item(it, [("2026-10-04T00:00:00Z", src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+  4381	    assert not ok and pr["source"] == src, (kind, why)          # a replaced asset (young server proof) is not out-aged by the version's old PR clock
+  4382	    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", "pr-clock")], now)
+  4383	    assert ok and pr["source"] == "pr-clock", (kind, why)        # the PR clock stands in only when no server proof exists
+  4384	    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", src), ("2026-10-04T00:00:00Z", "pr-clock")], now)
+  4385	    assert ok and pr["source"] == src, (kind, why)               # an old server proof decides; a young PR clock does not undo it
+  4386	act = inv.Item("action", "o/act", "a" * 40, "v4")
+  4387	ok, why, pr = ac.judge_item(act, [("2020-01-01T00:00:00Z", "pr-clock"), ("2026-10-04T00:00:00Z", "observer")], now)
+  4388	assert ok, why   # actions keep the oldest-proof rule (their age is the observer or the PR clock)
+  4389	PY
+  4390	CASE="item 6: a # vX label that does not resolve to the pinned commit is 'age not provable' and names the label, even with an old PR clock"
+  4391	check python3 - "$chk" <<'PY'
+  4392	import datetime, importlib.util, sys
+  4393	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4394	inv = ac.inv
+  4395	now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+  4396	SHA = "a" * 40
+  4397	ac._tag_refs = lambda repo: {"v4": SHA}
+  4398	ac.observed = lambda: None
+  4399	ac._pr_clock = lambda *a, **k: "2020-01-01T00:00:00Z"
+  4400	bad = inv.Item("action", "o/act", SHA, "v9.9.9")
+  4401	ok, why, _ = ac.judge_item(bad, ac.live_proofs(bad, ".", "base"), now)
+  4402	assert not ok and "v9.9.9" in why and "label" in why and "does not" in why, why   # the label is wrong; it is not read as a missing clock
+  4403	good = inv.Item("action", "o/act", SHA, "v4")
+  4404	ok, why, _ = ac.judge_item(good, ac.live_proofs(good, ".", "base"), now)
+  4405	assert ok, why
+  4406	PY
+  4407	CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+  4408	check python3 - "$chk" <<'PY'
+  4409	import contextlib, importlib.util, io, sys, urllib.request
+  4410	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4411	assert ac._go_escape("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+  4412	assert ac._go_escape("golang.org/x/tools") == "golang.org/x/tools"
+  4413	seen = []
+  4414	def fake(u):
+  4415	    seen.append(u)
+  4416	    return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+  4417	ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+  4418	mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+  4419	assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+  4420	rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+  4421	class R(io.BytesIO):
+  4422	    def __enter__(self): return self
+  4423	    def __exit__(self, *a): return False
+  4424	urllib.request.urlopen = lambda *a, **k: R(rows.encode())
+  4425	assert ac._go_index_time("github.com/BurntSushi/toml", "v1.0.0", "2020-01-01T00:00:00Z") == "2026-02-02T00:00:00Z"   # an exact Path match: another module's case-twin lends no time
+  4426	PY
+  4427	
+  4428	# --- rc-5b item 6, round 1 rulings on #639 (ancestry, unusable server proof, no cap, literal-download sums, sums across files) -----------------------------------------------------------------
+  4429	CASE="PR clock: a later commit that does NOT contain the introducing commit (a sibling in a merge) lends no clock; the merge that contains it does"
+  4430	check python3 - "$chk" "$stubpy" "$work" <<'PY'
+  4431	import importlib.util, json, os, subprocess, sys
+  4432	spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+  4433	work = sys.argv[3]; repo = work + "/anc"; os.makedirs(repo + "/.github/workflows")
+  4434	env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+
+exec
+/bin/bash -lc "grep -nE 'sum:|server proof beats|bad-label|Go proxy|label that does not' \""'$TMPDIR/head-check-root.out" | head -20' in /home/shop/.cache/codex-review/codex-review-run.q7NcQ2/cwd
+ succeeded in 73ms:
+94:ok   observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)
+
+codex
+The PR stat matches the required one-line change in `.github/agent/tests/pin-age-check-test.sh`. Line 4417 is 102 characters. The stub replaces the module-level `_http_dict` that `_go_module` resolves at call time, accepts its arguments, and returns a shape the checker accepts. I found no other mismatched HTTP stubs in this test file.
+
+The isolated Go-proxy case failed at base with `AssertionError: (None, [])` and passed at head. Breaking `_go_escape` in a scratch checker made the case fail; I restored the scratch copy.
+
+The full offline script runs did **not** finish: base reached 1,779 checks and head 1,781, with zero reported `FAIL` checks before each hit the 20-minute timeout. These are partial counts, not full-suite passes.
+
+No findings.
+
+Verdict: GREEN
+tokens used
+246,818
+The PR stat matches the required one-line change in `.github/agent/tests/pin-age-check-test.sh`. Line 4417 is 102 characters. The stub replaces the module-level `_http_dict` that `_go_module` resolves at call time, accepts its arguments, and returns a shape the checker accepts. I found no other mismatched HTTP stubs in this test file.
+
+The isolated Go-proxy case failed at base with `AssertionError: (None, [])` and passed at head. Breaking `_go_escape` in a scratch checker made the case fail; I restored the scratch copy.
+
+The full offline script runs did **not** finish: base reached 1,779 checks and head 1,781, with zero reported `FAIL` checks before each hit the 20-minute timeout. These are partial counts, not full-suite passes.
+
+No findings.
+
+Verdict: GREEN

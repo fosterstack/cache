@@ -1,0 +1,39 @@
+Review fosterstack/cache#780 at head a9afd5112d2e7abbe8165d13f44969b56c341580 against its base chain-v030, and nothing else. This is round two; round one's seat A did not review (brief wording), seat B ruled one fix: the line length at pin-age-check-test.sh:4417.
+First check your pr-stat.txt: it is git diff --stat output and does not print the range. It must show exactly one file, .github/agent/tests/pin-age-check-test.sh, 1 insertion(+), 1 deletion(-). Any other file list: report "wrong range" as your only finding.
+Also measure the line: awk 'NR==4417{print length($0)}' .github/agent/tests/pin-age-check-test.sh must be 120 or fewer.
+The raw diff (the lane pastes git diff 5cde60c7 a9afd5112d2e7abbe8165d13f44969b56c341580 here, unedited, with indentation):
+diff --git a/.github/agent/tests/pin-age-check-test.sh b/.github/agent/tests/pin-age-check-test.sh
+index 0271a0c4..96c48493 100755
+--- a/.github/agent/tests/pin-age-check-test.sh
++++ b/.github/agent/tests/pin-age-check-test.sh
+@@ -4414,7 +4414,7 @@ seen = []
+ def fake(u):
+     seen.append(u)
+     return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+-ac._http_json = fake
++ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+ mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+ assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+ rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+What the PR is: the Go-proxy case in pin-age-check-test.sh (about line 4407) stubbed `_http_json`, but the checker's
+`_go_module` calls `_http_dict`. So the stub was never used and the case reached the real network: red offline, green in CI.
+The PR changes the stub so that it replaces the function the checker really calls. Report each finding with file:line,
+severity and whether it is a security finding; say "green" if none.
+1. Right target: the stub now replaces the function `_go_module` calls, under the name the checker looks up at call time
+   (module attribute or import, say which). It returns the shape `_http_dict` returns, so the code under test runs its real path
+   and does not fail or pass on a shape mismatch.
+2. Offline: with the stub in place, nothing in the case reaches the network. A seat with a shell runs pin-age-check-test.sh with
+   no network in its sandbox at base and at head, and quotes both counts and the Go-proxy case's result.
+3. Still proves its claim ("item 6: the Go proxy gets the !x case escaping ..."). The case must fail when the escaping is wrong.
+   A seat with a shell breaks the escaping in a scratch copy of the checker and shows the case going red, then reverts. A case
+   that passes either way is a finding.
+4. Scope: one line, inside the Go-proxy case. No other case, no line of the vendored-folder guard or its lists, no checker file.
+5. Other stubs: does any other case in the file stub `_http_json` where the checker calls `_http_dict` (the same fault)? Name
+   each with file:line. They are outside this PR, so report them as notes, not findings against #780.
+6. Simplest form (rules 1, 2, 8, 10): the fix is the smallest that works, adds no helper or layer, and keeps every line at 120
+   characters or fewer.
+7. Readability bar (owner Rule 16): a junior to mid-level developer must read the NEW line and understand it quickly. A line
+   you cannot explain in one plain sentence is a finding.
+8. Comments (owner Rule 17): a comment added that restates the code, or more comment than a competent human would write, is a
+   finding. Comments say why, briefly.
+End with one line: Verdict: GREEN or RED, then your numbered findings.
