@@ -548,15 +548,13 @@ expect_refuse \
 fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused" tag-annotated
 fresh; retag none; run_admit;    expect_refuse "AC4 an unsigned annotated tag is refused" tag-signature
 fresh; retag attacker; run_admit; expect_refuse "AC4 a tag signed by a key that is not in main's allowed signers is refused" tag-signature
-# a keyless patch tag, a keyless minor tag and an owner-signed patch tag are all refused at tag-signature, and gitsign is never run (handoff 0713 P8)
+# a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run (handoff 0713 P8); an owner-signed patch tag passes this check and meets the later ones (the rc-proof cases below)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a keyless patch tag is refused at tag-signature: no keyless route is left" tag-signature keyless
 grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a keyless patch tag" || ok "AC4 gitsign is never run, not even to look at a keyless patch tag"
 [ ! -e "$W/c/repo/admission.json" ] && ok "AC4 a refused keyless patch tag leaves no admission.json" || bad "AC4 admission.json exists after a keyless patch tag was refused"
 fresh; patch_tag v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0
 expect_refuse "AC4 a keyless minor tag is refused (the owner signs minors)" tag-signature
-fresh; G -c user.signingkey="$W/keys/owner" tag -s -f -m v0.3.1 v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_refuse "AC4 an OWNER-signed patch tag is refused too: patch tags are not admitted until the owner answers O4" tag-signature "patch tag"
 # ---- commit-signature ----------------------------------------------------------------------------------------------------------------
 fresh; commit_move none "unsigned"; retag owner; run_admit;     expect_refuse "AC4 an unsigned tagged commit is refused" commit-signature
 fresh;
@@ -808,13 +806,19 @@ sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
 expect_refuse "AC6 control: the same tree with the final tag v0.3.0 is refused at rc-proof (only the tag's kind differs)" rc-proof marker
-# a PATCH tag (v0.3.1) never reaches the marker check: admission refuses it at tag-signature first (handoff 0713 P8), with the marker missing or wrong alike
+# Codex 4b-1 r5 (B): the same refusals for a PATCH tag (v0.3.1), not only the final tag: no marker on main, and a marker for other bytes
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at tag-signature, before the marker is read" tag-signature "patch tag"
+expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at rc-proof, naming the marker" rc-proof marker
+fresh; G checkout -q main; printf '# edited\n' >> "$W/c/repo/.github/workflows/release.yml"
+sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, chain file edited after the proof"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
 # the committed web-flow keyring (rc-2 signing review R9): exactly the current GitHub web-flow key, no expired key
 wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')

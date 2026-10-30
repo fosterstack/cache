@@ -726,7 +726,7 @@ def names_secrets(obj):
         return any(names_secrets(v) for v in obj)
     return False
 NON_CHAIN = {
-    "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
+    "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": True, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
     # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing

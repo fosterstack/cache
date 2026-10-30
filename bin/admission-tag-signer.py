@@ -2,10 +2,10 @@
 """Which verifier source admission runs for a release tag (REQ-REL-009-AC6; handoff 0713 P8).
 
 Read by stage-admission.yml from protected main (never from the tagged commit). It only ROUTES: the chosen verifier
-must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on a tag that is not a
-patch tag. Everything else is refused: an unsigned tag, a PGP signature, two signature blocks, a keyless (x509)
-signature (the chain signs with the release key; no keyless signer is left), and every patch tag (vX.Y.Z, Z >= 1),
-whoever signed it, because automatic patch releases are off until the owner answers O4 (orchestrator ruling R6).
+must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag (a patch tag
+included: the owner's own key still signs minor, major and patch tags). Everything else is refused: an unsigned tag, a
+PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain signs with the release
+key and no keyless signer is left (KMS rule 2).
 """
 import argparse, datetime, hashlib, os, re, subprocess, sys
 
@@ -32,17 +32,15 @@ def kind(tag_object):
 
 
 def route(tag, tag_object, released):
-    """(route, why) with route in ssh / refuse. `released` (the tags already released) is no longer read: with no patch tag admitted,
-    no rule about the previous patch is left; the argument stays so the command line and the callers do not change."""
+    """(route, why) with route in ssh / refuse. `tag` and `released` (the tags already released) are no longer read: with only the owner's key
+    routed, no rule about the tag's kind or the previous patch is left here; the arguments stay so the CLI arguments and the callers do not change."""
     k = kind(tag_object)
+    if k == "ssh":
+        return "ssh", "an SSH signature: the owner's allowed-signers list decides"
     if k == "x509":
         return "refuse", "a keyless signature is not accepted: the release chain signs with the release key"
-    if k != "ssh":
-        return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
-                          "ambiguous": "the tag object carries an ambiguous signature"}[k]
-    if PATCH.match(tag):
-        return "refuse", "%s is a patch tag: patch tags are not admitted until the owner answers O4 (automatic patch releases are off)" % tag
-    return "ssh", "an SSH signature: the owner's allowed-signers list decides"
+    return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
+                      "ambiguous": "the tag object carries an ambiguous signature"}[k]
 
 
 # REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + the owner's 0126 amendment (Oct 3) + advisor 0150's

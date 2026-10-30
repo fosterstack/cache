@@ -257,7 +257,6 @@ jobs:
     permissions:
       contents: read
       checks: read
-      id-token: write
       issues: write
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
@@ -1249,7 +1248,7 @@ gr g16 "005-AC5 an allowed non-chain job (decide) given a job-level uses" '  dec
        '  decide:\n    uses: ./.github/workflows/ci.yml\n    if:' "job-level uses"
 gr g17 "005-AC5 decide with a write it does not need (packages)" 'issues: write' 'issues: write\n      packages: write' "exactly the permissions"
 gr g18 "005-AC5 decide with no permissions block of its own would inherit contents: read only (less than it needs: refused)" \
-       '    permissions:\n      contents: read\n      checks: read\n      id-token: write\n      issues: write\n' '' "exactly the permissions"
+       '    permissions:\n      contents: read\n      checks: read\n      issues: write\n' '' "exactly the permissions"
 gr g19 "005-AC5 a hostile-* job that can write" '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read' \
        '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write' "exactly the permissions"
 gr g21 "005-AC5 build without the gate G (it would run on every push and the daily cron)" "$BUILD_HEAD" "    uses: ./.github/workflows/stage-build.yml" \

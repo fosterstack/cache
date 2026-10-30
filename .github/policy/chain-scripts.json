@@ -83,7 +83,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "45f99586b72c3cc2ae654981e04af9518a7fb03c4c63e5203ec5186e657a23c5",
+      "sha256": "e10e924aed6b42022735787efb946ce7a975cc96df025bdf4ed5e3866e8dca6f",
       "tools": [
         "at",
         "curl",
@@ -95,7 +95,7 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it names gitsign as a tool it can install and signs nothing; the other listed words appear in its comments",
+      "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it signs nothing; the listed words appear in its comments",
       "exceptions": [
         {
           "rule": "deny",
@@ -519,7 +519,7 @@
         "bin/install-scanner.sh"
       ],
       "signs": "other",
-      "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
+      "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
       "sha256": "db9f6ef404f895a0daee927cbb5f7bef8ce376f83e7348786310f68aa1923c9b",
       "reads_env": [
         "GH_TOKEN"
@@ -714,8 +714,8 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
-      "sha256": "ab75b1f7f09424c68dfe9544f95cfe25bc405c85d2c77c4db7a4b9eb8040eb03"
+      "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
+      "sha256": "d584b81366219bc47445160db233e5afee9dc733581f8e0e31699cc6c0afb26b"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",

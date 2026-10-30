@@ -428,7 +428,7 @@ def graph(path):
                        % (n, "exactly the if %s" % IFS_OF[n] if n in IFS_OF else "no if", j.get("if")))
         if "continue-on-error" in j or "secrets" in j:
             bad.append("job %s has continue-on-error or secrets" % n)
-    # the `decide` job is the CI patch tag (REQ-REL-009: a gitsign-signed tag, listed with its reason in id-token-jobs.json and chain-signers.json) and is not Release
+    # the `decide` job is the CI patch tag (REQ-REL-009: a job that holds no id-token and cuts no tag since handoff 0713 P8) and is not Release
     rest = json.dumps({n: j for n, j in jobs.items() if n != "decide"})
     if re.search(r"git tag|git push|create-release|gh release create", rest):
         bad.append("release.yml creates a tag or a release outside the decide job (the CI patch tag): Release creates no tag")
