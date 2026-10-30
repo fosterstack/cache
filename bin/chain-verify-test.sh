@@ -602,9 +602,9 @@ add("rc_rebuild", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="
 add("rc_rebuild_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild", coll_ref=TRC)
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn, ref=TRC)
 _chk("rc_c_scanners_otherkey", "scanners", key="other", ref=TRC)           # a Check record signed by a key the manifest does not name
-_HF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
+_HF = {"mint_sign_cert": ("sign", "signature is not the manifest key's (manifest key)"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
-       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
+       "forge_provenance": ("release", "provenance signature is not the manifest key's (manifest key)")}
 def _hrow(a, **k):
     r = {"attempt": a, "outcome": "refused", "stage": _HF[a][0], "reason": _HF[a][1], "judged_by": "verifier", "exit_code": 1}
     r.update(k); return r

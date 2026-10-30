@@ -10,7 +10,7 @@
  "chain-build-wiring-test.sh": 1050,
  "chain-check-scripts-test.sh": 310,
  "chain-check-wiring-test.sh": 302,
- "chain-hostile-test.sh": 279,
+ "chain-hostile-test.sh": 280,
  "chain-install-crane-test.sh": 7,
  "chain-install-witness-test.sh": 44,
  "chain-manifest-test.sh": 47,

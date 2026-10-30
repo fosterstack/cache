@@ -1809,7 +1809,7 @@ def build_parser():
     hm = sub.add_parser("hostile-material")
     hm.add_argument("--kind", required=True)
     hm.add_argument("--file", required=True)
-    hm.add_argument("--sign-record")
+    hm.add_argument("--policy")
     hv = sub.add_parser("hostile-verdict")
     hv.add_argument("results")
     rp = sub.add_parser("rc-proof")
