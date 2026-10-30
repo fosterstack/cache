@@ -2260,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "d76587be8155d715b5355a74d3a30c5ed8ad3675c3d5def4959115d20fdc6c95",
+      "sha256": "f9cdbef56a7256ae86928635b09bee2eb3e710cd2f2672f69a20be1613c0eabc",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2330,7 +2330,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "228888a827db08ae09ec1bf54e79ff20fcb10ca4d75fd00af79538a475476cef",
+      "sha256": "4e00a9fae15ce5723a351ad627cd610d62fd78af07d9dc901298a510eda15a3a",
       "exceptions": [
         {
           "rule": "script-name",

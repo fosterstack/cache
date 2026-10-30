@@ -88,7 +88,7 @@ mkdir -p "$out"
 [ -z "$render" ] || mkdir -p "$render"
 
 tmp=$(mktemp -d)
-trap 'set +e; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1' EXIT
+trap 'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true' EXIT
 
 # recipe facts: the package name, this arch's Go tarball and pin, and the pinned build environment
 "$PY3" -I -B bin/build-apk-helper.py recipe-facts "$recipe" "$goarch" "$tmp/recipe.facts" \

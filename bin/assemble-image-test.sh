@@ -741,12 +741,19 @@ trapok=0
 for f in lock-proof sealed-proof release-sign-apks install-build-tools; do
   grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh" \
     || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
-for f in assemble-image build-apk; do   # that form, or one trap string: errexit off first, no exit in it
-  { grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh"; } \
-    || { grep -Eq "^trap 'set [+]e; [^']*' EXIT$" "$root/bin/$f.sh" \
-         && ! grep -E "^trap " "$root/bin/$f.sh" | grep -Eq '[^a-z]exit[^a-z]'; } \
+for f in assemble-image build-apk; do   # one trap string: a list that ends in || true (errexit does not act on it), no exit in it (Oct 30 CI ruling)
+  { tl=$(grep -E "^trap " "$root/bin/$f.sh") && [ -n "$tl" ] \
+    && ! printf '%s\n' "$tl" | grep -Evq "^trap '(\{ [^']*; \}|[^';{}]*) \|\| true' EXIT$" \
+    && ! printf '%s\n' "$tl" | grep -Eq '(^|[^A-Za-z_])exit([^A-Za-z_]|$)'; } \
     || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
-t "rule 40" "every script's EXIT trap preserves the exit status (it captures it, cannot fail, and exits with it)" test "$trapok" = 0
+t "rule 40" "every script's EXIT trap preserves the exit status (it cannot fail and does not exit)" test "$trapok" = 0
+# the same, by behaviour: a refusal whose cleanup commands all fail still ends with the script's own status (Oct 30 CI ruling)
+mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 1\n' >"$work/failrm/rm"; chmod +x "$work/failrm/rm"
+printf '#!/bin/sh\nexit 1\n' >"$work/failsudo"; chmod +x "$work/failsudo"
+run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/failsudo" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: a refusal (exit 2) whose cleanup fails (rm and sudo both fail) still exits 2, the script's own status" test "$(rc)" = 2
+run_s env PATH="$work/failrm:$stubs:$PATH" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: the network-attempt exit 4 after the lock is taken, with a cleanup (rm) that fails, still exits 4" test "$(rc)" = 4
 # sealed-proof deletes a package of the BASE LOCK (not the first apk in sorted order) and each negative needs its own reason
 mkarch "$work/sp-unrel"; cp "$work/sp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/sp-unrel/x86_64/aaa-unrelated-1-r0.apk"
 sp_unrel=("${sp_common[@]}"); for i in "${!sp_unrel[@]}"; do [ "${sp_unrel[$i]}" = "$fx/archive" ] && sp_unrel[$i]="$work/sp-unrel"; done

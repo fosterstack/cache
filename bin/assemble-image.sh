@@ -73,6 +73,7 @@ variant=$2; version=$4; archive=$6; melrepo=$8; keydir=${10}; out=${12}; render=
   || { echo "assemble-image.sh: --variant must be production or fips" >&2; exit 2; }
 # the version grammar first, with the shell alone: a bad --version is refused before any tool, python included
 # accepts: X.Y.Z or X.Y.Z-rcN (numbers without leading zeros), or the one snapshot version 0.0.0-rc.1
+# refuses: 0.3 (two numbers), 01.2.3 (a leading zero), 0.3.0-rc.1 (a dot in the suffix), v0.3.0 (a leading v)
 [[ $version =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = 0.0.0-rc.1 ]] \
   || { echo "assemble-image.sh: --version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1" \
     "(numbers without leading zeros; not '$version')" >&2; exit 2; }
@@ -90,6 +91,7 @@ config=$("$PY3" -I -B bin/oci-digest.py abs-file "$config")
 [ -z "$render" ] || render=$("$PY3" -I -B bin/oci-digest.py abs-file "$render")
 apkver=$("$PY3" -I -B bin/oci-digest.py apk-version "$version")
 # accepts: 1 to 12 digits, the commit time
+# refuses: an empty value, 1.5 (not only digits), 1234567890123 (13 digits)
 [[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] \
   || { echo "assemble-image.sh: SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)" >&2; exit 2; }
 build_date=$("$PY3" -I -B bin/oci-digest.py render-date "$SOURCE_DATE_EPOCH" 2>/dev/null) \
@@ -120,7 +122,7 @@ lock=$workdir/.assemble.lock
 # ---- 2. render ----
 tmp=$(mktemp -d)
 made=
-trap 'set +e; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1' EXIT
+trap 'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true' EXIT
 rdir=$("$PY3" -I -B bin/oci-digest.py prepare-render "$render" "$tmp")
 rendered=$rdir/$(basename "$config")
 "$PY3" -I -B bin/oci-digest.py render-config "$config" "$rendered" "$apkver" \
@@ -137,7 +139,7 @@ view=$rdir/archive-view
 "$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" \
   "(could not take $lock)" >&2; exit 2; }
 # the cleanup now also removes the lock and the links this run made (and only those: $made grows as each link is made)
-trap 'set +e; "$SUDO" rm -f $made; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"' EXIT
+trap '{ "$SUDO" rm -f $made; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true' EXIT
 # no -f: a link that is already there (another run won the race after the pre-checks) is an error
 "$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link $workdir/archive" \
   "(it exists: another assembly?); stopping" >&2; exit 2; }
@@ -161,6 +163,7 @@ cd "$rdir"
 cd "$root"
 cat "$tmp/apko.err" >&2
 # accepts: any of the phrases a failed network attempt prints (unreachable, no route, dial tcp, name resolution)
+# refuses: a failure that prints none of them (for example "permission denied"): that is not a network attempt
 [ "$rc" != 0 ] && grep -Eqi -e 'ENETUNREACH|network is unreachable|dial tcp|no such host|no route to host' \
   -e 'connection refused|network request blocked|name resolution|Name or service not known|could not resolve host' \
   "$tmp/apko.err" 2>/dev/null && probe=0 || probe=
@@ -189,6 +192,7 @@ cd "$rdir"
 cd "$root"
 cat "$tmp/apko.err" >&2
 # accepts: any of the phrases a failed network attempt prints (unreachable, no route, dial tcp, name resolution)
+# refuses: a failure that prints none of them (for example "permission denied"): that is not a network attempt
 [ "$rc" != 0 ] && grep -Eqi -e 'ENETUNREACH|network is unreachable|dial tcp|no such host|no route to host' \
   -e 'connection refused|network request blocked|name resolution|Name or service not known|could not resolve host' \
   "$tmp/apko.err" 2>/dev/null && probe=0 || probe=
