@@ -2894,8 +2894,7 @@ PY
 CNT="commands, the grammar has"; EXP=": expected"
 # the admission go run of the tagged tree, put back into build-admit.py, is a finding (the file is held whole by sha256)
 nsa PLANT "nosource the old admission go run put back into build-admit.py is a finding" "NS_SHA" bin/build-admit.py \
-  '    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", '\
-'base],'
+  'rc, _, err = outcome(lambda: subprocess.run(\n    [ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base],\n    check=False))'
 # option 1: 21 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
 # the stage lines run python3 -I
 while read -r f; do
