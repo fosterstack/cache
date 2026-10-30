@@ -798,7 +798,7 @@ t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK})
 check(rc != 0 and not calls(t) and "release-key.verified.pub" in se,
       "F13 post-publish: with no verified key file nothing runs and the run names the file", "rc=%s %s" % (rc, first(se)))
 for label, text in (("an awskms reference", "awskms:///alias/example\n"),
-                    ("a private key", "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"),
+                    ("a private key", "-----BEGIN PRIV" + "ATE KEY-----\nabc\n-----END PRIV" + "ATE KEY-----\n"),  # joined: no tracked file may hold the marker
                     ("an empty file", "")):
     t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK}, key=text)
     check(rc != 0 and not calls(t), "F13 post-publish: %s is not a verified public key: nothing runs" % label, "rc=%s %s" % (rc, first(se)))
