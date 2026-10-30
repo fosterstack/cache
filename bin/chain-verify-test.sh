@@ -121,6 +121,30 @@ for _k in ("root", "otherroot", "rel", "other"): genkey(_k, *EC)      # root / o
 genkey("rekor", *EC)                                                   # the Rekor log's key for this run (ratify B); rekor.pub sits next to template.json with its sigstore-trust.json pin
 def der_sha_early(name): return hashlib.sha256(sh("openssl", "pkey", "-pubin", "-in", p(name + ".pub"), "-outform", "DER")).hexdigest()
 json.dump({"_note": "throwaway trust file for this test run", "rekor_sha256": der_sha_early("rekor")}, open(p("sigstore-trust.json"), "w"))
+# a log tree of five leaves (the entry is the third) with its checkpoint, signed by the log key: the inclusion proof Rekor sends with every entry
+def _mh(l, r): return hashlib.sha256(b"\x01" + l + r).digest()
+def _mroot(ls):
+    if len(ls) == 1: return ls[0]
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mh(_mroot(ls[:k]), _mroot(ls[k:]))
+def _mpath(m, ls):
+    if len(ls) == 1: return []
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mpath(m, ls[:k]) + [_mroot(ls[k:])] if m < k else _mpath(m - k, ls[k:]) + [_mroot(ls[:k])]
+def add_proof(e, sign, log_der, pos=2, n=5):
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(e["canonicalizedBody"])).digest()
+    ls = [hashlib.sha256(b"\x00" + bytes([i]) * 8).digest() for i in range(n)]
+    ls[pos] = leaf
+    root = _mroot(ls)
+    note = "rekor.sigstore.dev - 1193050959916656506\n%d\n%s\n" % (n, base64.b64encode(root).decode())
+    sg = hashlib.sha256(log_der).digest()[:4] + sign(note.encode())
+    e["inclusionProof"] = {"logIndex": str(pos), "rootHash": base64.b64encode(root).decode(), "treeSize": str(n),
+                           "hashes": [base64.b64encode(h).decode() for h in _mpath(pos, ls)],
+                           "checkpoint": {"envelope": note + "\n\u2014 rekor.sigstore.dev " + base64.b64encode(sg).decode() + "\n"}}
+    return e
+
 def rekor_entry(payload, sig, keyname="rel", index="7"):
     """A Rekor v1 dsse entry for this payload and signature, whose verifier is the public key of `keyname`, signed by this run's Rekor key."""
     body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
@@ -130,8 +154,10 @@ def rekor_entry(payload, sig, keyname="rel", index="7"):
     log_id = der_sha_early("rekor")
     canon = json.dumps({"body": cb, "integratedTime": 1761800000, "logID": log_id, "logIndex": int(index)}, sort_keys=True, separators=(",", ":")).encode()
     set_sig = sh("openssl", "dgst", "-sha256", "-sign", p("rekor.key"), p("rekor.set.in")) if open(p("rekor.set.in"), "wb").write(canon) else b""
-    return {"logIndex": index, "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
+    e = {"logIndex": index, "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
             "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(set_sig)}}
+    def _sg(note): open(p("rekor.note.in"), "wb").write(note); return sh("openssl", "dgst", "-sha256", "-sign", p("rekor.key"), p("rekor.note.in"))
+    return add_proof(e, _sg, sh("openssl", "pkey", "-pubin", "-in", p("rekor.pub"), "-outform", "DER"))
 genkey("throwaway", "-algorithm", "ED25519")                           # the building job's own key (Witness 0.12.0 with a file key): its records are refused
 def der_sha(name): return hashlib.sha256(sh("openssl", "pkey", "-pubin", "-in", p(name + ".pub"), "-outform", "DER")).hexdigest()
 def sign_file(key, path):
@@ -681,11 +707,35 @@ printf '%s\n' "\$*" >> "$work/cosign-argv.log"
 [ "\$#" = 10 ] && [ "\${1}" = attest-blob ] && [ "\${2}" = --yes ] && [ "\${3}" = --key ] && [ "\${4}" = awskms:///alias/fosterstack-release-signing ] \
   && [ "\${5}" = --signing-config ] && [ "\${7}" = --statement ] && [ "\${9}" = --bundle ] || { echo "fake cosign: unexpected argv: \$*" >&2; exit 2; }
 exec python3 - "\${6}" "\${8}" "\${10}" "$work" <<'PYF'
-import base64, json, os, subprocess, sys
+import base64, hashlib, json, os, subprocess, sys
 cfg, st, out, w = sys.argv[1:5]
 SSL = os.environ.get("OPENSSL", "openssl")
 def sh(*a): return subprocess.run((SSL,) + a, capture_output=True, check=True).stdout
 b64 = lambda b: base64.b64encode(b).decode()
+# a log tree of five leaves (the entry is the third) with its checkpoint, signed by the log key: the inclusion proof Rekor sends with every entry
+def _mh(l, r): return hashlib.sha256(b"\x01" + l + r).digest()
+def _mroot(ls):
+    if len(ls) == 1: return ls[0]
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mh(_mroot(ls[:k]), _mroot(ls[k:]))
+def _mpath(m, ls):
+    if len(ls) == 1: return []
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mpath(m, ls[:k]) + [_mroot(ls[k:])] if m < k else _mpath(m - k, ls[k:]) + [_mroot(ls[:k])]
+def add_proof(e, sign, log_der, pos=2, n=5):
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(e["canonicalizedBody"])).digest()
+    ls = [hashlib.sha256(b"\x00" + bytes([i]) * 8).digest() for i in range(n)]
+    ls[pos] = leaf
+    root = _mroot(ls)
+    note = "rekor.sigstore.dev - 1193050959916656506\n%d\n%s\n" % (n, base64.b64encode(root).decode())
+    sg = hashlib.sha256(log_der).digest()[:4] + sign(note.encode())
+    e["inclusionProof"] = {"logIndex": str(pos), "rootHash": base64.b64encode(root).decode(), "treeSize": str(n),
+                           "hashes": [base64.b64encode(h).decode() for h in _mpath(pos, ls)],
+                           "checkpoint": {"envelope": note + "\n\u2014 rekor.sigstore.dev " + base64.b64encode(sg).decode() + "\n"}}
+    return e
+
 conf = json.load(open(cfg))
 for service in ("caUrls", "oidcUrls", "tsaUrls"):
     assert conf.get(service) == [], "the signing config must name no " + service
@@ -720,8 +770,10 @@ if mode != "notlog":
     log_id = __import__("hashlib").sha256(sh("pkey", "-pubin", "-in", w + "/rekor.pub", "-outform", "DER")).hexdigest()
     canon = json.dumps({"body": cb, "integratedTime": 1761800000, "logID": log_id, "logIndex": 7}, sort_keys=True, separators=(",", ":")).encode()
     open(w + "/fake.set.in", "wb").write(canon)
-    vm["tlogEntries"] = [{"logIndex": "7", "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
-                          "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.set.in"))}}]
+    _e = {"logIndex": "7", "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
+                          "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.set.in"))}}
+    def _sg(note): open(w + "/fake.note.in", "wb").write(note); return sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.note.in")
+    vm["tlogEntries"] = [add_proof(_e, _sg, sh("pkey", "-pubin", "-in", w + "/rekor.pub", "-outform", "DER"))]
 bundle = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm}
 if mode != "nodsse": bundle["dsseEnvelope"] = env
 json.dump(bundle, open(out, "w"))

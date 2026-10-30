@@ -483,6 +483,7 @@ def verify_record(pol, stage, rec_path, now, tmp, rekor_path=None):
 # Its body is a Rekor `dsse` 0.0.1 entry: {"apiVersion","kind":"dsse","spec":{"payloadHash","signatures":[{"signature","verifier"}]}}.
 # For a key signature the verifier is the base64 PEM of the PUBLIC KEY, so the entry is bound to the manifest's KMS key, not to a
 # certificate. The signed entry timestamp is the log's ECDSA signature over the canonical JSON {body, integratedTime, logID, logIndex}.
+# The entry must also be IN the log: its inclusionProof (RFC 9162 audit path to the root) and the checkpoint signed by the same key are checked.
 # No time in the entry is trusted: the log's signature over it is checked, and the integrated time is not compared with anything.
 CANONICAL_DECIMAL = re.compile(r"0|[1-9][0-9]*")
 REKOR_WAITS = (1, 2, 4, 8, 16, 32)      # seconds between one try and six retries (about 63 s in all); then Release fails closed
@@ -526,6 +527,76 @@ def set_is_valid(e, key_pem):
     return r.returncode == 0
 
 
+def merkle_inclusion_ok(index, size, leaf, hashes, root):
+    """RFC 9162 section 2.1.3.2: does `hashes` (32-byte audit path) take the leaf at `index` to `root` in a tree of `size` leaves."""
+    if not 0 <= index < size:
+        return False
+    fn, sn, r = index, size - 1, leaf
+    for p in hashes:
+        if sn == 0:
+            return False
+        if fn & 1 or fn == sn:
+            r = hashlib.sha256(b"\x01" + p + r).digest()
+            while not fn & 1 and fn != 0:
+                fn >>= 1
+                sn >>= 1
+        else:
+            r = hashlib.sha256(b"\x01" + r + p).digest()
+        fn >>= 1
+        sn >>= 1
+    return sn == 0 and r == root
+
+
+def check_inclusion(e, rekor_pem):
+    """None when the entry is IN the log's tree, else the reason it is not: the leaf hash of the canonical body takes the audit path to the
+    root hash at the tree size, and the checkpoint (a signed note) is signed by the policy's Rekor key and names that same size and root."""
+    try:
+        proof = e["inclusionProof"]
+        index, size = canonical_int(proof, "logIndex"), canonical_int(proof, "treeSize")
+        root = b64d(proof["rootHash"])
+        hashes = [b64d(h) for h in proof["hashes"]]
+        envelope = proof["checkpoint"]["envelope"]
+        leaf = hashlib.sha256(b"\x00" + b64d(e["canonicalizedBody"])).digest()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return "rekor entry has no usable inclusion proof (a signed entry timestamp alone is not enough)"
+    if len(root) != 32 or not all(len(h) == 32 for h in hashes):
+        return "rekor entry inclusion proof: a hash is not 32 bytes"
+    if not merkle_inclusion_ok(index, size, leaf, hashes, root):
+        return "rekor entry is not in the tree: its audit path does not lead to the root hash"
+    if not isinstance(envelope, str) or "\n\n" not in envelope:
+        return "rekor entry checkpoint is not a signed note"
+    text, _, sigs = envelope.partition("\n\n")
+    text += "\n"
+    lines = text.split("\n")
+    if len(lines) < 4 or not lines[0].startswith("rekor.sigstore.dev - ") or lines[1] != str(size):
+        return "rekor entry checkpoint names another log or another tree size"
+    try:
+        if b64d(lines[2]) != root:
+            return "rekor entry checkpoint names another root hash than the inclusion proof"
+    except ValueError:
+        return "rekor entry checkpoint root hash is malformed"
+    rekor_der = public_key_der(rekor_pem)
+    if rekor_der is None:
+        return "rekor entry: the policy's rekor key is not a public key"
+    for line in sigs.split("\n"):
+        if not line.startswith("\u2014 "):
+            continue
+        try:
+            blob = b64d(line.split(" ")[2])
+        except (IndexError, ValueError):
+            continue
+        if blob[:4] != hashlib.sha256(rekor_der).digest()[:4]:
+            continue
+        with tempfile.TemporaryDirectory() as d:
+            for name, data in (("key.pem", rekor_pem.encode()), ("note.bin", text.encode()), ("note.sig", blob[4:])):
+                with open(os.path.join(d, name), "wb") as f:
+                    f.write(data)
+            r = ssl("dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "note.sig"), os.path.join(d, "note.bin"), check=False)
+        if r.returncode == 0:
+            return None
+    return "rekor entry checkpoint is not signed by the policy's rekor key"
+
+
 def rekor_body(e):
     """The decoded canonical body of a dsse entry, or None when the entry is of another kind."""
     kv = e.get("kindVersion") or {}
@@ -548,6 +619,9 @@ def check_rekor_entry(pol, e, body, sig, key_der):
     rekor_der = public_key_der(rekor_pem)
     if rekor_der is None or fields["logID"] != hashlib.sha256(rekor_der).hexdigest():
         return "rekor entry names another log (log id is not the policy's rekor key)"
+    why = check_inclusion(e, rekor_pem)
+    if why:
+        return why
     signatures = body["spec"].get("signatures") or []
     if len(signatures) != 1 or signatures[0].get("signature") != b64e(sig):
         return "rekor entry body is for another signature than this record's"

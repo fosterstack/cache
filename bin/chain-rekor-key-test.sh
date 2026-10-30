@@ -51,8 +51,32 @@ _, other_kms_pem, other_kms_der = keypair("other-kms")
 payload = b'{"_type":"https://in-toto.io/Statement/v1","subject":[]}'
 sig = b"signature-bytes-of-the-record"
 
+# a log tree of five leaves (the entry is the third) with its checkpoint, signed by the log key: the inclusion proof Rekor sends with every entry
+def _mh(l, r): return hashlib.sha256(b"\x01" + l + r).digest()
+def _mroot(ls):
+    if len(ls) == 1: return ls[0]
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mh(_mroot(ls[:k]), _mroot(ls[k:]))
+def _mpath(m, ls):
+    if len(ls) == 1: return []
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mpath(m, ls[:k]) + [_mroot(ls[k:])] if m < k else _mpath(m - k, ls[k:]) + [_mroot(ls[:k])]
+def add_proof(e, sign, log_der, pos=2, n=5):
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(e["canonicalizedBody"])).digest()
+    ls = [hashlib.sha256(b"\x00" + bytes([i]) * 8).digest() for i in range(n)]
+    ls[pos] = leaf
+    root = _mroot(ls)
+    note = "rekor.sigstore.dev - 1193050959916656506\n%d\n%s\n" % (n, base64.b64encode(root).decode())
+    sg = hashlib.sha256(log_der).digest()[:4] + sign(note.encode())
+    e["inclusionProof"] = {"logIndex": str(pos), "rootHash": base64.b64encode(root).decode(), "treeSize": str(n),
+                           "hashes": [base64.b64encode(h).decode() for h in _mpath(pos, ls)],
+                           "checkpoint": {"envelope": note + "\n\u2014 rekor.sigstore.dev " + base64.b64encode(sg).decode() + "\n"}}
+    return e
 
-def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pem=kms_pem, index="7", itime="1761800000"):
+
+def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pem=kms_pem, index="7", itime="1761800000", proof=True):
     """A Rekor v1 `dsse` entry as it sits in a bundle's tlogEntries, signed (the signed entry timestamp) by the log key `rk`."""
     body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {
         "envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
@@ -62,8 +86,9 @@ def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pe
     log_id = hashlib.sha256(rk_der).hexdigest()
     canon = json.dumps({"body": cb, "integratedTime": int(itime), "logID": log_id, "logIndex": int(index)}, sort_keys=True, separators=(",", ":")).encode()
     set_sig = sh("openssl", "dgst", "-sha256", "-sign", rk, inp=canon)
-    return {"logIndex": index, "integratedTime": itime, "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
-            "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(set_sig)}}, body
+    e = {"logIndex": index, "integratedTime": itime, "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
+         "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(set_sig)}}
+    return (add_proof(e, lambda note: sh("openssl", "dgst", "-sha256", "-sign", rk, inp=note), rk_der) if proof else e), body
 
 
 spec = importlib.util.spec_from_file_location("chain_verify", os.path.join(root, "bin", "chain-verify.py"))
@@ -258,6 +283,55 @@ pin("a trust file with no rekor_sha256 is refused", {"_note": "x"}, os.path.join
 pin("a missing rekor.pub is refused", trust_good, os.path.join(pinned, "absent.pub"), "cannot read")
 open(os.path.join(pinned, "junk.pub"), "w").write("not a key")
 pin("a rekor.pub that is not a public key is refused", trust_good, os.path.join(pinned, "junk.pub"), "rekor")
+
+# ---- the entry must be IN the log: an inclusion proof (RFC 9162 audit path) and a checkpoint signed by the same key ------------------------------
+# REAL_ENTRY is a real Rekor v1 `dsse` entry of the public log, read-only (GET /api/v1/log/entries?logIndex=3596758986 on Oct 30), put into the
+# bundle's TransparencyLogEntry form. The committed rekor.pub verifies its signed entry timestamp, its audit path and its checkpoint.
+REAL_ENTRY = json.loads(r'''{"logIndex":"3596758986","logId":{"keyId":"wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="},"kindVersion":{"kind":"dsse","version":"0.0.1"},"integratedTime":"1793375135","inclusionPromise":{"signedEntryTimestamp":"MEUCIAPZzJOQc4/RYpr1mqDcbPjMOeyh4Y3YtqbQ9E1lqSIiAiEAxiAv3OYLyIfBYXLE71NIVwN/s/+93PGkwAeiVef51OI="},"inclusionProof":{"logIndex":"3474854724","rootHash":"iLMSzTZM6W4tTIcEqPrjAtYr0R4R+PnRoR+hqAu4dco=","treeSize":"3474858492","hashes":["5FgF15wrcQXMpdyk9hZwq/j/9+zoMrsJfaHw24U253I=","gy8th3X2NaWfeKngoiW3ExHAXfgfHVR6kx+IaSPfZ9M=","mgD1rjMvLEd/jBAACsFzGc/Qe7sENuDLl9DUvVZ/kQE=","ngvKn1LvKpm4i0dxPgNDysYhhg4huNIvCMiJj8kxJZo=","gr6S+W4YdjpKSQNFKi90HZTYtoc2eft1PqtRlxtQa4g=","t8jm9QfjoSamWiAECdZXqcsS10z6GxrHPDY6UN/389A=","B0wQ28tM8cOymFwod78SfmBAqHC68AJ/6XozW29SLLI=","XxDCkZQUuL1gBC0y2dodj9UVHzXW2uBT7IwtDzxNHzI=","lkzgo9700vS02OF8GpULgp/YaGN6+Elz0Rare+ZDZ7o=","lOn2CIBtm11VM6YdPvjgzWQOTmj8upWNBWk3T/bUV+E=","QUlpEWnxQeS97alX7kPFB8ZwswPgXahcR1oD9asQohw=","i2/eKn54aDqf3ojEDyKQpkLBshK8t+6ubCNKQrLdwPM=","Nre0/7J2r2kMdZGmlvOMh7vUp65Jm6bMtIb0LrZ54AU=","sAqjevn5dJSYv+M8/xHPEvA90vkgtR7WYykumSZmfnU=","m4q/2xqKhDKw3zaiWyQGw2uAblXSCvWOLU5u+Rqh6TQ=","Vj1dqwl91IKLknCTGMZxfRmGLwaaOKyzWYkqpfhlx8o=","p1I5ZggjULSs5zA57RP0QvK+8kSLtJbmWwR3QOsQo7g=","dWJeI0tsGHeawe97b89LCkAlxWCLfrUshw9/HC6cfWA=","e3OaWwzL1tEWYXiUzGpH+1v9CiFPwweyfRzIh3Z+uO4=","b+938HIdfjdD/+LgIs3AVRE3Wc65/1NSSAL4OJ5FUXE=","kQz/4ND7LdhfAQn+idNsO+ZFC32sfkYRlhjWF5W+sPc=","zGfeoWKmrZlXMOvyi3R2GDbGpmI1skJW/wLTXCCgF0o=","1DaDKzrCNNBhmSdY5vFjz+NpAmxmYfYEgBCdPLrMP1A=","xH/DCseLHr9eKoYT8qsORZK7zVdEGYWHuVtsVrD95wY="],"checkpoint":{"envelope":"rekor.sigstore.dev - 1193050959916656506\n3474858492\niLMSzTZM6W4tTIcEqPrjAtYr0R4R+PnRoR+hqAu4dco=\n\n\u2014 rekor.sigstore.dev wNI9ajBGAiEA/QPzICrjz8Gm2Kr3sH+mYPPtuElqhzjcPmcK4BJpFbQCIQCspTXJiVpjMPoB5EJH3DG/EdBwaNnrhGvnePTfXtF5Wg==\n"}},"canonicalizedBody":"eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiZHNzZSIsInNwZWMiOnsiZW52ZWxvcGVIYXNoIjp7ImFsZ29yaXRobSI6InNoYTI1NiIsInZhbHVlIjoiMjU0NWVlOTg1YWUzMzExNTQzZDA1ZmEwOTU1MjZkMmE2NDlhMGI4MjNmNGM1YTQyYTIwZTEyYmRhMWNmZjQzOSJ9LCJwYXlsb2FkSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6IjliYmUzOWQ1MmFlNjM0YWI1MDQ1YTVmMWFiNWFlNDBkODM3ZWVkNjY0MGM5NWFjYTM4MTBiZDU5OThmMDFiNWYifSwic2lnbmF0dXJlcyI6W3sic2lnbmF0dXJlIjoiTUVRQ0lFZG5BZGliaVdvekxhYVdhbVRHY0RPUjBHYnhBdzNPa2MrdWRtaENHdEpjQWlBTDBEbEtjRkdySlhwRGN5SnVxbTJwZlphTGw1N0t6SFFSSGlrZ29ma2JoQT09IiwidmVyaWZpZXIiOiJMUzB0TFMxQ1JVZEpUaUJEUlZKVVNVWkpRMEZVUlMwdExTMHRDazFKU1VST1ZFTkRRWEo1WjBGM1NVSkJaMGxWVFVkUVNHaHBWM0pDVUdwd1ZuY3pPRUZtYmpGUVNUZHZiME5WZDBObldVbExiMXBKZW1vd1JVRjNUWGNLVG5wRlZrMUNUVWRCTVZWRlEyaE5UV015Ykc1ak0xSjJZMjFWZFZwSFZqSk5ValIzU0VGWlJGWlJVVVJGZUZaNllWZGtlbVJIT1hsYVV6RndZbTVTYkFwamJURnNXa2RzYUdSSFZYZElhR05PVFdwWmVFMUVUWGROVkZVd1RVUlJNMWRvWTA1TmFsbDRUVVJOZDAxVVZURk5SRkV6VjJwQlFVMUdhM2RGZDFsSUNrdHZXa2w2YWpCRFFWRlpTVXR2V2tsNmFqQkVRVkZqUkZGblFVVjBVaXQ0VVZBMUx6RTNNSGhFYVZSTFdXRnFlVmhRU2xCaGVXUjFja2h1VGpCNVJYWUtSR0ZSYkhOdVJFdFpVVEF6TTFSUldqZzVWakJsVXpKcmRuaFliMEppZDI0MWVrSkRhRVp5WmpsbGVHWkxRbWd4Tmt0UFEwRmtjM2RuWjBoWVRVRTBSd3BCTVZWa1JIZEZRaTkzVVVWQmQwbElaMFJCVkVKblRsWklVMVZGUkVSQlMwSm5aM0pDWjBWR1FsRmpSRUY2UVdaQ1owNVdTRk5OUlVkRVFWZG5RbFJtQ2pBcmJsQldhVkZTYkhadGJ6SlBhMjlXWVV4SFRHaG9hMUI2UW1sQ1owNVdTRkpGUWtGbU9FVlhSRUpYYUd4U2IyUklVbmRqZW05MlRESnNlbU16Vm13S1kyazFiR0p0V25aamJVNXNURzFTYkdScE9EQk9hbXN3VFVST2FFOVVhekphUjFVMFdsUmFhVTlFVFhwTlZFVjVXVEpPYVUxRVRUSk5WRUpxVFZSQ2FBcE9SRWw0VGtSa2JVeDZUWGxhYlZVd1RXMUZNMWxYVFhwTlJHdDZXbTFOZDB0QldVdExkMWxDUWtGSFJIWjZRVUpCVVZGaFlVaFNNR05JVFRaTWVUbHdDbU16VGpGYVdFbDFXbGMxYldJelNtcGFVelZyV2xoWmQwdG5XVXRMZDFsQ1FrRkhSSFo2UVVKRFFWRmpSRUp3YjJSSVVuZGplbTkyVERKc2VtTXpWbXdLWTJrMWJHSnRXblpqYlU1c1RHMVNiR1JxUWtwQ1oyOXlRbWRGUlVGWlR5OU5RVVZaUWtSelRVOVVVVEpQVkZGM1RUSkZOVTlVV210YVZHaHNUbTFKTkFwTmVrMTRUVlJLYWxreVNYZE5lbGw0VFVkTmVFMUhSVEJOYWtVd1RqSlpkazE2U20xYVZGRjVXVlJrYUZsNlRYZFBWRTV0V1hwRFFtbFJXVXRMZDFsQ0NrSkJTRmRsVVVsRlFXZFNOMEpJYTBGa2QwSXhRVTR3T1UxSGNrZDRlRVY1V1hoclpVaEtiRzVPZDB0cFUydzJORE5xZVhRdk5HVkxZMjlCZGt0bE5rOEtRVUZCUW05Wk1UUm5VR3RCUVVGUlJFRkZXWGRTUVVsbldsTnJWVlpCTjFWWkswdHlXV1pyUVZCWGRHeFRZMGxJUkROalRIbzJLMEpGTVhsclZYVTRjUXBaTUdORFNVRnNObXcyTUhocWVEQXhMMjFqZWxSSFRVOXZSRFI0YzBsb2MwMXZaVTV6WTJNMFEwVXlUM2hWU1c5TlFXOUhRME54UjFOTk5EbENRVTFFQ2tFeVkwRk5SMUZEVFVaa2JVRnpNM2d6YlhoNlRVUndSR1pWV21vcmQwVk9WbWR3TVhkSlNteHZUV0p5U2tsWVdIaENlRXBpY2pkbGVUTkhZM1UxYjBjS2FFMVZURnB1ZVZrdlowbDNZVWRNU0ZSWldrNHpiVVpQVGtWdlJFbzVlbU51ZDI5RWRsQjNlbXQ2TjBzeWN6TlZkM2hhTkhVMk9VeDJOMjFXWTNwU01BcFRWRVJqTnk5aFZVaHlLMklLTFMwdExTMUZUa1FnUTBWU1ZFbEdTVU5CVkVVdExTMHRMUW89In1dfX0="}''')
+real_pem = open(os.path.join(root, ".github", "policy", "rekor.pub")).read()
+(ok if cv.set_is_valid(REAL_ENTRY, real_pem) else bad)("a real public Rekor entry: its signed entry timestamp verifies against the committed rekor.pub")
+(ok if cv.check_inclusion(REAL_ENTRY, real_pem) is None else bad)("a real public Rekor entry: its audit path and checkpoint verify against the committed rekor.pub")
+import copy
+def inc(label, e, want=None, pem=rekor_pem):
+    why = cv.check_inclusion(e, pem)
+    if want is None:
+        ok(label) if why is None else bad("%s -> refused: %s" % (label, why))
+    else:
+        ok("%s (refused: %s)" % (label, why)) if (why and want in why) else bad("%s -> wanted a refusal naming %r, got %r" % (label, want, why))
+def sign_note(note, key=rekor_priv): return sh("openssl", "dgst", "-sha256", "-sign", key, inp=note)
+base_e, _ = entry()
+for pos, n in ((0, 1), (0, 5), (4, 5), (3, 7), (6, 7), (2, 8)):
+    e2 = add_proof(copy.deepcopy(base_e), sign_note, rekor_der, pos=pos, n=n)
+    inc("inclusion: leaf %d of a tree of %d is accepted" % (pos, n), e2)
+inc("inclusion: an entry with no inclusionProof is refused (a signed timestamp alone is not enough)", {k: v for k, v in base_e.items() if k != "inclusionProof"}, "inclusion proof")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["hashes"][0] = b64(b"\x00" * 32)
+inc("inclusion: a changed audit-path hash is refused", e2, "not in the tree")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["hashes"] = e2["inclusionProof"]["hashes"][:-1]
+inc("inclusion: a shortened audit path is refused", e2, "not in the tree")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["logIndex"] = "3"
+inc("inclusion: a leaf index that is not this entry's place in the tree is refused", e2, "not in the tree")
+e2 = copy.deepcopy(base_e); e2["canonicalizedBody"] = b64(b"another body")
+inc("inclusion: an entry whose body is not the leaf the path starts from is refused", e2, "not in the tree")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["rootHash"] = b64(b"\x01" * 32)
+inc("inclusion: a root hash that the path does not reach is refused", e2, "not in the tree")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["treeSize"] = "6"
+inc("inclusion: a tree size other than the signed checkpoint's is refused", e2, "another log or another tree size")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["treeSize"] = "07"
+inc("inclusion: a tree size spelled 07 is refused", e2, "no usable inclusion proof")
+e2 = add_proof(copy.deepcopy(base_e), lambda note: sign_note(note, other_rekor_priv), rekor_der)
+inc("inclusion: a checkpoint signed by another key is refused", e2, "not signed by the policy")
+e2 = copy.deepcopy(base_e); env = e2["inclusionProof"]["checkpoint"]["envelope"]
+e2["inclusionProof"]["checkpoint"]["envelope"] = env.replace("\n5\n", "\n6\n", 1)
+inc("inclusion: a checkpoint that names another tree size is refused", e2, "another log or another tree size")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["checkpoint"]["envelope"] = env.replace("rekor.sigstore.dev - ", "evil.example - ", 1)
+inc("inclusion: a checkpoint of another origin is refused", e2, "another log or another tree size")
+e2 = copy.deepcopy(base_e); e2["inclusionProof"]["checkpoint"]["envelope"] = env.split("\n\n")[0] + "\n\n"
+inc("inclusion: a checkpoint with no signature line is refused", e2, "not signed by the policy")
+e2 = copy.deepcopy(base_e); note_lines = env.split("\n")
+note_lines[2] = b64(b"\x02" * 32); resigned = "\n".join(note_lines[:3]) + "\n"
+e2["inclusionProof"]["checkpoint"]["envelope"] = resigned + "\n\u2014 rekor.sigstore.dev " + b64(hashlib.sha256(rekor_der).digest()[:4] + sign_note(resigned.encode())) + "\n"
+inc("inclusion: a validly signed checkpoint for another root than the proof's is refused", e2, "another root hash")
+good("an entry with a good signed timestamp and no inclusion proof is refused by check_rekor_entry", entry(proof=False), "inclusion proof")
 
 # Every pinned `chain-verify.py` line in the workflows and the release scripts must parse (it once failed in production with exit 2 when a flag was
 # renamed and five pinned lines were not): each line is run through build_parser(); a $-word or an expression stands for a value.
