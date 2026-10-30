@@ -1749,6 +1749,9 @@ mappings:
   - ac: REQ-IMAGE-001-AC12
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/check-no-outbound-test.sh" }
   - ac: REQ-GUIDE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
