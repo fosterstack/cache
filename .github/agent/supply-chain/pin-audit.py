@@ -1201,6 +1201,7 @@ def rerun_held(gh, net, now):
     n = 0
     base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
     for pr in net.prs():
+        phase(f"pull request #{pr.get('number')}")
         try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
             items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
             for it in items:     # a key-built item (fixtures): its repository path is the part after file:
@@ -1235,7 +1236,7 @@ PHASE = ["start"]   # the last phase marker printed: the deadline names it
 def phase(name):
     """Print a phase marker (the logs of a run that never ends say where it was) and remember it."""
     PHASE[0] = name
-    print(f"audit: phase: {name}", flush=True)
+    print(f"audit: phase: {name}")
 
 
 def deadline_for(a):
@@ -1247,12 +1248,12 @@ def deadline_for(a):
 
 
 def _deadline_passed(seconds):
-    """The run did not finish: say where it was, flushed, and end it. os._exit, because a timer thread's
-    sys.exit would only end that thread. Exit 2 is never a clean day."""
-    sys.stdout.flush()
-    sys.stderr.write(f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n")
-    sys.stderr.flush()
-    os._exit(2)
+    """The run did not finish: say where it was, and end it. os._exit, because a timer thread's sys.exit would only
+    end that thread; one os.write to fd 2 and no stdout flush, so a full pipe or a held stream lock cannot stop it."""
+    try:
+        os.write(2, f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n".encode())
+    finally:
+        os._exit(2)
 
 
 def main(argv=None):
@@ -1267,17 +1268,16 @@ def main(argv=None):
     ap.add_argument("--rerun-held", action="store_true")
     ap.add_argument("--observations-out", help="write the cumulative tag observations (state.json) FIRST, before judging anything")
     ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
-    ap.add_argument("--deadline",
+    ap.add_argument("--deadline", type=int,
                     help="seconds the whole run may take before it ends itself with exit 2 "
-                         "(default 900; 600 for --rerun-held and --base)")
+                         "(1 to 86400; default 900, or 600 for --rerun-held and --base)")
     a = ap.parse_args(argv)
-    if a.deadline is not None:
-        if not re.fullmatch(r"[1-9][0-9]*", a.deadline):
-            print("audit: cannot do its job: --deadline must be a whole number of seconds, 1 or more", file=sys.stderr)
-            return 2
-        a.deadline = int(a.deadline)
+    if a.deadline is not None and not 1 <= a.deadline <= 86400:
+        print("audit: cannot do its job: --deadline must be from 1 to 86400 seconds", file=sys.stderr)
+        return 2
+    # under Actions stdout is a pipe: without this a killed run loses what it printed since its last full buffer.
+    # The guard is for callers that swap stdout for a StringIO (pin-audit-test.sh:691, pin-audit-go-major-test.sh:397)
     if hasattr(sys.stdout, "reconfigure"):
-        # under Actions stdout is a pipe: without this a killed run loses every line it printed
         sys.stdout.reconfigure(line_buffering=True)
     seconds = deadline_for(a)
     timer = threading.Timer(seconds, _deadline_passed, args=(seconds,))
@@ -1326,8 +1326,11 @@ def main(argv=None):
             phase("tag observations")
             state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
             os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
-            with open(a.observations_out, "w") as f:
+            tmp = a.observations_out + ".tmp"
+            # a deadline in the middle of the write must not leave half a file at the published path
+            with open(tmp, "w") as f:
                 json.dump(state, f, sort_keys=True)
+            os.replace(tmp, a.observations_out)
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
             seen_um = {}
@@ -1366,6 +1369,7 @@ def main(argv=None):
             phase("open pull requests")
             try:
                 open_prs = net.open_pr_items()
+                phase("open pull request pins")
             except (Fail, age.CouldNotLook) as e:
                 print(f"information: the open pull requests were not audited: {clean(e)}")
                 open_prs, incomplete = [], True
@@ -1519,6 +1523,7 @@ def main(argv=None):
         return 2
     finally:
         timer.cancel()
+        timer.join()   # a callback that already started ends the process with 2; this return must not win the race
 
 
 if __name__ == "__main__":
