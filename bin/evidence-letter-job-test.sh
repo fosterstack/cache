@@ -164,7 +164,20 @@ case "$*" in
     fi
     while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
     echo '{"release_key":{"public_key":"MANIFEST-KEY"}}' > "$out"; exit 0 ;;
+  *chain-verify.py*policy*make*--tag*)
+    echo "python3 $*" >> "$LOG"
+    "$REAL_PYTHON" "$@" || exit $?
+    while [ $# -gt 0 ]; do
+      [ "$1" = --out ] && out=$2
+      [ "$1" = --tag ] && tag=$2
+      shift
+    done
+    [ -e "$FIX/no-release-key" ] && exit 0
+    "$REAL_PYTHON" -c 'import json, sys; d = json.load(open(sys.argv[1])); \
+d["release_key"] = {"public_key": "KEY-" + sys.argv[2]}; json.dump(d, open(sys.argv[1], "w"))' "$out" "$tag"
+    exit 0 ;;
   *chain-verify.py*check-list*)
+    [ -z "$REAL_CHECKLIST" ] || exec "$REAL_PYTHON" "$@"
     echo "python3 $*" >> "$LOG"
     if [ -e "$FIX/bad-records" ]; then echo "refused at check: the scanners record is not signed" >&2; exit 1; fi
     exit 0 ;;
@@ -212,7 +225,8 @@ def sandbox(tmp):
     open(os.path.join(fix, "advisories.json"), "w").write(
         json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
-               REAL_PYTHON=sys.executable, TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
+               REAL_PYTHON=sys.executable, REAL_CHECKLIST="",
+               TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
                FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
     return fix, env
 
@@ -230,7 +244,7 @@ def put_releases(fix, releases):
         files = {"release-manifest.json": manifest, "fosterstack-cache.openvex.json": vex,
                  "release-files.sha256": ("%s  release-manifest.json\n%s  fosterstack-cache.openvex.json\n"
                                           % (sha(manifest), sha(vex))).encode(),
-                 "release-files.sha256.bundle": b"{}",
+                 "release-files.sha256.bundle": b'{"verificationMaterial":{"tlogEntries":[{}]}}',
                  "digests.json": json.dumps({"image-production": "sha256:" + "a" * 64}).encode()}
         for step in ("scanners", "acceptance", "runtime", "arm64"):
             files["%s-collection.json" % step] = ("record %s of %s" % (step, tag)).encode()
@@ -258,7 +272,7 @@ def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=Fal
     if edit:
         edit(fix)
     if real_verifier:
-        os.remove(os.path.join(tmp, "bin", "python3"))
+        env["REAL_CHECKLIST"] = "1"
     out = os.path.join(tmp, "work")
     p = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-fetch.sh"), month, out], cwd=ROOT, env=env,
                        capture_output=True, text=True)
@@ -303,12 +317,67 @@ check("F15: advisories the token cannot read (a 403 or 404) refuse the letter, i
 
 
 # ---- the checks on what was fetched
-ID = "--certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/"
-check("AC10: each release's list is verified against its bundle under stage-promote.yml at its own tag",
-      all(any(l.startswith("cosign verify-blob --bundle ") and ID + t in l and ISSUER in l for l in log)
-          for t in ("v0.3.1", "v0.4.0")), log)
+def list_verifies(log, tag):
+    bundle = "/rel/%s/release-files.sha256.bundle" % tag
+    return [l for l in log if l.startswith("cosign verify-blob --key ") and bundle in l]
+
+
+ROOT_FLAG = "--trusted-root .github/policy/rekor-trusted-root.json"
+check("F1 1: each release's list is verified through the helper with the key and the pinned log, no identity",
+      all(len(list_verifies(log, t)) == 1 and ROOT_FLAG in list_verifies(log, t)[0]
+          and "--certificate" not in list_verifies(log, t)[0] for t in ("v0.3.1", "v0.4.0")), log)
+check("F1 5: each fetched release gets its own policy made for its tag, never for a branch",
+      sum("policy make" in l and "--tag v0.3.1" in l for l in log) == 1
+      and sum("policy make" in l and "--tag v0.4.0" in l for l in log) == 1
+      and not any("policy make" in l and "--ref" in l for l in log), log)
+check("F1 9: the list is verified with the key of the policy that check-list then gets",
+      "key-file: KEY-v0.3.1" in log and "key-file: KEY-v0.4.0" in log
+      and all(any("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log)
+              for t in ("v0.3.1", "v0.4.0")), log)
 check("AC10: the Check records are verified with the same command Release runs, under a policy made for the tag",
       sum("check-list --policy" in l for l in log) == 2 and os.path.isfile(out + "/rel/v0.3.1/policy.json"), log)
+
+
+def first(log, needle, after=0):
+    return next((i for i, l in enumerate(log) if i >= after and needle in l), 10 ** 6)
+
+
+order_ok = True
+for t in ("v0.3.1", "v0.4.0"):
+    pm_ = first(log, "--tag " + t)
+    vb_ = first(log, "/rel/%s/release-files.sha256.bundle" % t)
+    cl_ = first(log, "check-list --policy ") if t == "v0.3.1" else first(log, "/rel/v0.4.0/policy.json", vb_)
+    order_ok = order_ok and pm_ < vb_ < cl_
+check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
+
+
+def no_release_key(fix):
+    open(os.path.join(fix, "no-release-key"), "w").close()
+
+
+pk = fetch("2026-11", no_release_key)
+check("F1 5b: a policy with no release key ends the fetch in one line before any verify",
+      one_line(pk[0]) and "release key" in pk[0].stderr and not any("verify-blob" in l for l in pk[2]),
+      (pk[0].stderr, pk[2]))
+
+
+def list_without_rekor(fix):
+    for name in os.listdir(os.path.join(fix, "assets")):
+        path = os.path.join(fix, "assets", name)
+        if open(path).read() == '{"verificationMaterial":{"tlogEntries":[{}]}}':
+            open(path, "w").write('{"verificationMaterial":{"tlogEntries":[]}}')
+
+
+pr_ = fetch("2026-11", list_without_rekor)
+check("F1 8: a release-files bundle with no Rekor entry ends the fetch, in one line",
+      one_line(pr_[0]) and "Rekor" in pr_[0].stderr, pr_[0].stderr)
+KEYLESS = ("--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog", "oidc", "fulcio", "keyless",
+           "stage-promote.yml@", "stage-sign.yml@")
+LETTER_FILES = ("bin/evidence-letter-fetch.sh", "bin/evidence-letter-publish.sh", "bin/evidence-letter-verify.sh",
+                "bin/evidence-letter-present.sh", "bin/evidence-letter.py", ".github/workflows/evidence-letter.yml")
+for word in KEYLESS:
+    hit = [f for f in LETTER_FILES if word in read(f).lower()]
+    check("F1 6: no letter file holds %s" % word, not hit, hit)
 
 
 def unsigned(fix):
