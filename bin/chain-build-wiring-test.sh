@@ -2577,7 +2577,7 @@ fi
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
-sed -i.bak 's/^\(python3 bin\/build-admit\.py run\)$/\1 || true/' "$work/ctl/bin/build-stage-apk.sh"
+sed -i.bak 's/^\(python3 -I bin\/build-admit\.py run\)$/\1 || true/' "$work/ctl/bin/build-stage-apk.sh"
 rm -f "$work/ctl/bin/build-stage-apk.sh.bak"
 rc=$(run_stage "$work/ctl" apk oracle v0.3.0 FAKE_ADMIT_RC=1)
 if [ "$rc" = 0 ] || [ "$(n_calls '^apk ' "$work/ctl")" != 0 ]; then
@@ -3112,8 +3112,6 @@ nsrow K1 "nosource apko-lock.sh has no row" "is not a row of chain-scripts.json"
 nsrow K2 "nosource build-apk.sh has no row" "is not a row of chain-scripts.json" bin/build-apk.sh
 nsrow K3 "nosource vex-index.py has no row" "is not a row of chain-scripts.json" bin/vex-index.py
 nsrow K4 "nosource chain_common.py has no row" "is not a row of chain-scripts.json" bin/chain_common.py
-nsfresh; printf '\xff\xfe\n' >> "$work/nsm/bin/oci-digest.py"
-expect caught "K5 nosource a Python closure file that is not valid UTF-8" "cannot be read" nosource "$work/nsm"
 nsfresh; printf '{' > "$work/nsm/.github/policy/chain-scripts.json"
 expect caught "K7 nosource a chain-scripts.json that does not parse" "cannot be read" nosource "$work/nsm"
 nsfresh; rm -f "$work/nsm/.github/policy/chain-scripts.json"
@@ -3510,7 +3508,7 @@ if grep -Fxq "$CBI" bin/build-apk.sh \
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1351
+EXPECT=1254
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

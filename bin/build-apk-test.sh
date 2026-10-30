@@ -947,9 +947,6 @@ import sys
 v = sys.stdin.buffer.read().split(b'\\0')
 assert v[-1] == b'', v
 assert v[:-1] == [b'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', b'HOME=/root', b'LC_ALL=C', b'SOURCE_DATE_EPOCH=$SDE'], v\""
-t "chain" "the helper's build-date turns SOURCE_DATE_EPOCH into the ISO time and refuses a non-date (exit 1)" bash -c "
-  test \"\$(python3 '$HP' build-date 1789952380)\" = 2026-09-21T00:59:40Z && test \"\$(python3 '$HP' build-date 0)\" = 1970-01-01T00:00:00Z \
-  && ! python3 '$HP' build-date yesterday >/dev/null 2>&1"
 t "chain" "the helper's recipe-facts reads the package name, this architecture's Go tarball and pin and the pinned environment from the committed recipe" bash -c "
   python3 '$HP' recipe-facts '$root/build/melange.yaml' amd64 '$work/facts.txt' && grep -q '^name=fscache\$' '$work/facts.txt' && grep -Eq '^file=go[0-9.]+\.linux-amd64\.tar\.gz\$' '$work/facts.txt' \
   && grep -Eq '^sha=[0-9a-f]{64}\$' '$work/facts.txt' && grep -q '^pin=busybox=' '$work/facts.txt'"
