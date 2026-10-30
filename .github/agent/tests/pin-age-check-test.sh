@@ -3804,8 +3804,8 @@ naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "ve
 extra = m.vendor_list_extras(root, files)
 import tempfile
 # listed ahead of the chain landing: the govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain
-# branch and not yet on main; the helper and the shape file name vendor/ only once cache#770 lands (then these two go)
-ahead = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py")
+# branch and not yet on main
+ahead = ("bin/install-scanner.sh",)
 _t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
 # not built from ahead: a change of ahead must fail the assert below
 _names = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py",
@@ -3813,8 +3813,9 @@ _names = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-s
 for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
 _quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
 assert _quiet == sorted(_names), _quiet      # the rule itself still reports every quiet listed file
-# ahead drops exactly three paths and no other
-assert [p for p in _quiet if p not in ahead] == ["bin/check-govulncheck.py", "bin/release-metadata.py"]
+# ahead drops exactly one path and no other
+assert [p for p in _quiet if p not in ahead] == [
+    "bin/build-apk-helper.py", "bin/chain-test-shape.py", "bin/check-govulncheck.py", "bin/release-metadata.py"]
 extra = [p for p in extra if p not in ahead]
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
