@@ -75,6 +75,13 @@ def judge(doc, text):
     if not (any("bash bin/install-scanner.sh cosign" in t for t in stext)
             and any("bash bin/evidence-letter-publish.sh" in t for t in stext)):
         bad.append("sign must install cosign and sign only through the publish script")
+    sign_env = [st.get("env") or {} for st in sign["steps"] if "evidence-letter-publish.sh" in str(st.get("run", ""))]
+    if len(sign_env) != 1 or set(sign_env[0]) != {"GH_TOKEN", "MONTH", "RELEASE_KMS_KEY_REF"}:
+        bad.append("the sign step's env must be exactly GH_TOKEN, MONTH and RELEASE_KMS_KEY_REF")
+    elif sign_env[0]["RELEASE_KMS_KEY_REF"] != "awskms:///alias/fosterstack-release-signing":
+        bad.append("RELEASE_KMS_KEY_REF must be the plain literal key reference (no vars, secret or expression)")
+    if text.count("RELEASE_KMS_KEY_REF") != 1:
+        bad.append("RELEASE_KMS_KEY_REF must be set once, on the sign step only")
     if "cosign sign" in text or "--clobber" in text:
         bad.append("no signing call and no --clobber in the workflow")
     uses = re.findall(r"uses:\s*(\S+)", text)
@@ -98,6 +105,9 @@ def mutated(label, change, text_change=None):
 
 
 mutated("sign does not need draft", lambda d: d["jobs"]["sign"].pop("needs"))
+mutated("the key reference comes from a variable",
+        lambda d: [st["env"].update({"RELEASE_KMS_KEY_REF": "${{ vars.RELEASE_KEY }}"})
+                   for st in d["jobs"]["sign"]["steps"] if "env" in st])
 mutated("sign no longer waits for a letter", lambda d: d["jobs"]["sign"].update({"if": MAIN}))
 mutated("draft runs from any ref", lambda d: d["jobs"]["draft"].pop("if"))
 mutated("sign runs from any ref", lambda d: d["jobs"]["sign"].update({"if": "needs.draft.outputs.made == 'true'"}))
@@ -113,12 +123,12 @@ check("AC9: the identity customers verify is named in the workflow header and in
       all(IDENTITY in read(f) for f in (WF, "docs/verify-release.md")))
 rs, pub = read("bin/release-sign.sh"), read("bin/evidence-letter-publish.sh")
 ver = read("bin/evidence-letter-verify.sh")
-check("AC9: the signing config is release-sign.sh's, and the key is the one KMS alias Sign uses",
+check("AC9: the signing config is release-sign.sh's, and the key comes from RELEASE_KMS_KEY_REF as in release-sign.sh",
       "--signing-config .github/policy/cosign-signing-config.json" in rs
-      and "--key awskms:///alias/fosterstack-release-signing" in pub
+      and '--key "$RELEASE_KMS_KEY_REF"' in pub and '--key "$RELEASE_KMS_KEY_REF"' in rs
       and "--signing-config .github/policy/cosign-signing-config.json" in pub)
-for banned in ("--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog", "@refs/heads/main", "keyless",
-               "--identity-token", "--fulcio-url", "--oidc-"):
+for banned in ("alias", "--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog",
+               "@refs/heads/main", "keyless", "--identity-token", "--fulcio-url", "--oidc-"):
     check("F2: neither the publish nor the verify script holds " + banned,
           banned not in pub and banned not in ver, banned)
 check("AC9: no upload may overwrite", "--clobber" not in pub)
@@ -192,7 +202,7 @@ def sandbox(tmp):
     open(os.path.join(fix, "advisories.json"), "w").write(json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
                REAL_PYTHON=sys.executable, TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
-               FAIL_VERIFY="", FAIL_VERIFY_AFTER="")
+               FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
     return fix, env
 
 
@@ -350,7 +360,7 @@ def publish(**extra):
 
 p, log, up, letter = publish()
 names = ["evidence-letter-2026-11.md.bundle", "evidence-letter-2026-11.md"]
-SIGN = ("cosign sign-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config "
+SIGN = ("cosign sign-blob --yes --key awskms:///stand-in-key --signing-config "
         ".github/policy/cosign-signing-config.json --bundle " + letter + ".bundle " + letter)
 VERIFY = ("cosign verify-blob --key ", " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
 verifies = [l for l in log if l.startswith("cosign verify-blob")]
@@ -402,6 +412,11 @@ def refused_manifest():
 pm, upm, lm = refused_manifest()
 check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed or uploaded, in one line",
       one_line(pm) and upm == [] and not any("sign-blob" in l or "release upload" in l for l in lm), (pm.stderr, lm))
+for label, value, code in (("unset", "", 2), ("not an awskms reference", "arn:aws:kms:us-east-1:1:key/x", 1)):
+    pr_, lg_, up_, _l = publish(RELEASE_KMS_KEY_REF=value)
+    check("F7-key: a key reference that is %s fails closed before the manifest, the sign call and any upload" % label,
+          pr_.returncode == code and one_line(pr_) and up_ == []
+          and not any("policy make" in x or "sign-blob" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
 check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",
       one_line(pb) and "HTTP 422" in pb.stderr and "second line" not in pb.stderr and upb == [], (pb.stderr, upb))
