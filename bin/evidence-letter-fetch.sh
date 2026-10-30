@@ -1,27 +1,66 @@
 #!/usr/bin/env bash
-# The monthly evidence letter (REQ-REL-013): downloads what bin/evidence-letter.py reads. For the month it takes every final release
-# published in it and the latest final release before it (the current images when the month had none), and the published advisories.
-#   arguments: the month YYYY-MM, then the output folder (GH_TOKEN set; REPO defaults to fosterstack/cache)
-# Reads only; it writes into OUTDIR/rel/<tag>/ and OUTDIR/advisories.json.
+# The monthly evidence letter (REQ-REL-013): downloads what bin/evidence-letter.py reads, and checks it against the
+# release's own signatures first, so the letter never states a file nobody signed.
+#   arguments: the month YYYY-MM (it must be over), then the output folder (GH_TOKEN set; REPO defaults to fosterstack/cache)
+# It takes every final release published in the month, or the newest one before it when the month had none. Per release:
+#   release-files.sha256 must verify against its bundle under stage-promote.yml at the release tag, and list the
+#   manifest and OpenVEX files by their hashes; the four Check records must verify under the release policy
+#   (the same chain-verify.py command Release runs). Any failure ends here with one line and no letter.
+# Reads only: it writes into OUT/rel/<tag>/ and OUT/advisories.json.
 set -euo pipefail
+die() { echo "evidence-letter-fetch: $*" >&2; exit 1; }
 month=${1:?the month YYYY-MM is the first argument}
 out=${2:?the output folder is the second argument}
 [[ "$month" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "evidence-letter-fetch: the month is YYYY-MM" >&2; exit 2; }
+[[ "$month" < "$(date -u +%Y-%m)" ]] || die "$month is not over yet: no letter"
 repo=${REPO:-fosterstack/cache}
+issuer=https://token.actions.githubusercontent.com
 mkdir -p "$out/rel"
-# final releases only (vX.Y.Z): the ones published in the month, plus the newest one before it
-tags=$(gh release list --repo "$repo" --exclude-drafts --exclude-pre-releases --limit 200 --json tagName,publishedAt |
-  jq -r --arg m "$month" '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] as $r
-    | ([$r[] | select(.publishedAt | startswith($m))] + ([$r[] | select(.publishedAt < ($m + "-01"))] | sort_by(.publishedAt) | .[-1:]))
-    | .[].tagName')
+
+# every release, all pages; the letter's releases are the final ones published in the month, else the newest one before it
+gh api --paginate --slurp "repos/$repo/releases?per_page=100" | jq 'add // []' > "$out/releases.json"
+tags=$(jq -r --arg m "$month" '
+  [.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] as $final
+  | [$final[] | select(.published_at | startswith($m))] as $in
+  | if ($in | length) > 0 then $in
+    else [$final[] | select(.published_at < ($m + "-01"))] | sort_by(.published_at) | .[-1:] end
+  | .[].tag_name' "$out/releases.json")
+
+asset() { # asset RELEASE.JSON NAME FOLDER: downloads the release's asset of that name by its id
+  local id
+  id=$(jq -r --arg n "$2" '[.assets[] | select(.name == $n) | .id][0] // empty' "$1")
+  [ -n "$id" ] || die "$(jq -r .tag_name "$1") has no asset $2"
+  gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$3/$2"
+}
+
+verify() { # verify TAG FOLDER: the checks above, one line on any failure
+  local tag=$1 dir=$2 name
+  cosign verify-blob --bundle "$dir/release-files.sha256.bundle" --certificate-oidc-issuer "$issuer" \
+    --certificate-identity "https://github.com/$repo/.github/workflows/stage-promote.yml@refs/tags/$tag" \
+    "$dir/release-files.sha256" > /dev/null 2>&1 || die "$tag: release-files.sha256 does not verify under stage-promote.yml"
+  for name in release-manifest.json fosterstack-cache.openvex.json; do
+    grep -qxF "$(sha256sum "$dir/$name" | cut -d' ' -f1)  $name" "$dir/release-files.sha256" ||
+      die "$tag: $name is not the file the signed release-files.sha256 lists"
+  done
+  python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$tag" \
+    --out "$dir/policy.json" > /dev/null 2> "$dir/refusal" || die "$tag: no release policy: $(head -n 1 "$dir/refusal")"
+  python3 -I bin/chain-verify.py check-list --policy "$dir/policy.json" --digests "$dir/digests.json" \
+    --dir "$dir/witness-check" > /dev/null 2> "$dir/refusal" || die "$tag: the Check records: $(head -n 1 "$dir/refusal")"
+}
+
 for tag in $tags; do
   dir="$out/rel/$tag"
   mkdir -p "$dir"
-  gh api "repos/$repo/releases/tags/$tag" > "$dir/release.json"
-  # the three files the letter reads, by asset id through the API
-  jq -r '.assets[] | select(.name == "release-manifest.json" or .name == "fosterstack-cache.openvex.json" or (.name | test("-collection\\.json$"))) | "\(.id) \(.name)"' "$dir/release.json" |
-    while read -r id name; do
-      gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$dir/$name"
-    done
+  jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$dir/release.json"
+  for name in release-manifest.json fosterstack-cache.openvex.json release-files.sha256 release-files.sha256.bundle digests.json; do
+    asset "$dir/release.json" "$name" "$dir"
+  done
+  for step in scanners acceptance runtime arm64; do
+    asset "$dir/release.json" "$step-collection.json" "$dir"
+    mkdir -p "$dir/witness-check/witness-$step"
+    cp "$dir/$step-collection.json" "$dir/witness-check/witness-$step/"
+  done
+  verify "$tag" "$dir"
 done
-gh api "repos/$repo/security-advisories?state=published&per_page=100" --paginate --slurp | jq 'add // []' > "$out/advisories.json"
+# published advisories of a public repository are readable by any token; all pages
+gh api --paginate --slurp "repos/$repo/security-advisories?state=published&per_page=100" | jq 'add // []' > "$out/advisories.json"

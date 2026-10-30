@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """evidence-letter.py: the monthly evidence letter (REQ-REL-013).
 
-Makes one letter from a template out of the assets of the releases published in a month, then reads every line back
-from those assets. Any mismatch, missing or malformed asset makes no letter (exit 1, one line on stderr). No model, no
-network, no signing: the signing job takes the letter this script wrote.
+Makes one letter from a template out of the assets of the releases published in a month. Every fact in it is read
+from those assets; the fetch step has already checked the assets' signatures. Any missing or malformed asset makes
+no letter (exit 1, one line on stderr). No model, no network, no signing: the signing job takes the letter this
+script wrote.
 
   evidence-letter.py --month YYYY-MM --releases DIR --advisories FILE --controls FILE --signatory FILE --out DIR
                      [--draft]
@@ -20,11 +21,13 @@ import os
 import re
 import sys
 
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
-MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
-SAFE_NAME = re.compile(r"[A-Za-z0-9._:-]+")
+TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")  # v0.3.1 matches; v0.3.1-rc1 and 0.3.1 do not
+MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")  # 2026-11 matches; 2026-13 and 2026-1 do not
+SAFE_NAME = re.compile(r"[A-Za-z0-9._:-]+")  # CVE-2026-1111 matches; "CVE 1" and "a;b" do not
+# the only characters a quoted note or summary may hold: no markup, entity or link can be written with them
+QUOTED = re.compile(r"[A-Za-z0-9 .,:;()'/-]+")  # "Fix: a crash (rare)." matches; "a&#105;b" and "[x](y)" do not
 RECORDS = ("scanners-collection.json", "acceptance-collection.json", "runtime-collection.json", "arm64-collection.json")
-FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc 2")
+FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc2")  # tested on the letter with its spaces removed
 PAGE = "https://github.com/fosterstack/cache/releases/tag/"
 PLACEHOLDER = "PLACEHOLDER"
 SIGNED = "\nSigned, "
@@ -32,9 +35,10 @@ NONE = "- none this month"
 NONE_RELEASED = "- none published this month"
 UNCHANGED = ("The build and images in this letter were produced by the process in the controls document, version %d, "
              "signed on %s, unchanged this month.")
-CHANGED = ("The controls document changed this month. The build and images in this letter were produced by the process "
-           "in the version that was in force on each release's date:")
-NO_RELEASE_CHANGED = "The controls document changed this month, to version %d, signed on %s. No release was published."
+CHANGED_NOW = "The controls document changed this month."
+BOUND = ("The build and images in this letter were produced by the process in the controls document version that was "
+         "in force on each release's date:")
+OTHER = "Other versions of the controls document, signed from the first of those dates to the end of the month:"
 INTRO = ("This letter rolls up public facts about evidence that is already published. It adds no new information and "
          "makes no promise beyond those facts.")
 EVIDENCE = ("The signatures, provenance, SBOMs and VEX of each release are public assets of the release page "
@@ -66,10 +70,11 @@ def load_json(path):
         raise Refuse("%s is not valid JSON" % os.path.basename(path))
 
 
-def one_line(text, what, limit=200):
-    """Plain printable ascii on one line: the letter quotes assets, so what it quotes must be safe to print."""
-    if not (isinstance(text, str) and text and len(text) <= limit and all(" " <= c <= "~" for c in text)):
-        raise Refuse("%s is not one plain line of at most %d characters" % (what, limit))
+def quoted(text, what, limit=200):
+    """A line the letter quotes from an asset: short, and only the characters of QUOTED."""
+    if not (isinstance(text, str) and 0 < len(text) <= limit and QUOTED.fullmatch(text)):
+        raise Refuse("%s is not one plain line of letters, digits and . , : ; ( ) ' / - (at most %d characters)"
+                     % (what, limit))
     return text
 
 
@@ -92,34 +97,48 @@ def controls_versions(controls_text):
     return sorted((int(v), d) for v, d in rows)
 
 
-def release_of(rel_dir, name):
-    path = os.path.join(rel_dir, name)
-    info = load_json(os.path.join(path, "release.json"))
-    manifest = load_json(os.path.join(path, "release-manifest.json"))
-    tag = info.get("tag_name")
-    if tag != name or not TAG.fullmatch(tag):
-        raise Refuse("the release folder %s does not match its release.json" % name)
-    if info.get("html_url") != PAGE + tag:
-        raise Refuse("%s: the release page link is not the release's own" % tag)
-    if manifest.get("version") != tag[1:] or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("commit"))):
-        raise Refuse("%s: the release manifest names another version or no commit" % tag)
-    return {"tag": tag, "dir": path, "date": day(info.get("published_at"), tag), "info": info, "manifest": manifest}
-
-
-def releases_in(rel_dir):
-    """Every release folder, oldest first."""
+def release_dates(rel_dir):
+    """{tag: published day} of every release folder, from release.json only."""
     try:
         names = sorted(os.listdir(rel_dir))
     except OSError:
         raise Refuse("the releases folder cannot be read")
-    return sorted((release_of(rel_dir, n) for n in names if TAG.fullmatch(n)), key=lambda r: (r["date"], r["tag"]))
+    dates = {}
+    for name in names:
+        if TAG.fullmatch(name):
+            dates[name] = day(load_json(os.path.join(rel_dir, name, "release.json")).get("published_at"), name)
+    return dates
+
+
+def release_of(rel_dir, name, date):
+    path = os.path.join(rel_dir, name)
+    info = load_json(os.path.join(path, "release.json"))
+    manifest = load_json(os.path.join(path, "release-manifest.json"))
+    if info.get("tag_name") != name:
+        raise Refuse("the release folder %s does not match its release.json" % name)
+    if info.get("html_url") != PAGE + name:
+        raise Refuse("%s: the release page link is not the release's own" % name)
+    if manifest.get("version") != name[1:] or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("commit"))):
+        raise Refuse("%s: the release manifest names another version or no commit" % name)
+    return {"tag": name, "dir": path, "date": date, "info": info, "manifest": manifest}
+
+
+def releases_used(rel_dir, month):
+    """(the releases published in the month, the newest release before it). Only those are read in full: a release
+    that is neither needs no v0.3 manifest, so an older one in the folder does not stop the letter."""
+    dates = release_dates(rel_dir)
+    in_month = sorted((d, t) for t, d in dates.items() if d.startswith(month))
+    before = sorted((d, t) for t, d in dates.items() if d < month + "-01")
+    releases = [release_of(rel_dir, t, d) for d, t in in_month]
+    prior = release_of(rel_dir, before[-1][1], before[-1][0]) if before and not releases else None
+    return releases, prior
 
 
 def patch_reason(rel):
     lines = [x.strip() for x in str(rel["info"].get("body") or "").splitlines() if x.strip()]
     if not lines:
         raise Refuse("%s is a patch release with no line in its notes" % rel["tag"])
-    return one_line(lines[0].lstrip("# "), "the first notes line of " + rel["tag"])
+    return quoted(lines[0].lstrip("# "), "the first notes line of " + rel["tag"])
 
 
 def vex_statements(rel, month):
@@ -147,42 +166,49 @@ def advisories_of(advisories, month):
             ident = str(adv["ghsa_id"])
             if not SAFE_NAME.fullmatch(ident):
                 raise Refuse("an advisory id is not a plain identifier")
-            out.append((date, ident, one_line(adv.get("summary"), "the summary of " + ident, 150)))
+            out.append((date, ident, quoted(adv.get("summary"), "the summary of " + ident, 150)))
     return sorted(out)
 
 
-def controls_lines(releases, month, controls_text):
+def controls_lines(rels, month, controls_text):
+    """Each release is bound to the controls version in force on its date. If the version changed in the month, or
+    after the release, every such version is named too."""
     versions = controls_versions(controls_text)
-    if not releases:  # no release this month: the version in force at the end of the month
-        last_day = "%s-%02d" % (month, calendar.monthrange(int(month[:4]), int(month[5:]))[1])
-        in_force = [v for v in versions if v[1] <= last_day]
-        if not in_force:
-            raise Refuse("no controls version was signed by the end of the month")
-        if any(d.startswith(month) for _v, d in versions):
-            return [NO_RELEASE_CHANGED % in_force[-1]]
-        return [UNCHANGED % in_force[-1]]
-    under = {}
-    for rel in releases:
+    end = "%s-%02d" % (month, calendar.monthrange(int(month[:4]), int(month[5:]))[1])
+    bound = {}
+    for rel in rels:
         in_force = [v for v in versions if v[1] <= rel["date"]]
         if not in_force:
             raise Refuse("%s was published before the first controls version was signed" % rel["tag"])
-        under.setdefault(in_force[-1], []).append(rel["tag"])
+        bound.setdefault(in_force[-1], []).append(rel["tag"])
+    first = min(r["date"] for r in rels)
+    other = [v for v in versions if v not in bound and v[1] <= end and (v[1].startswith(month) or v[1] > first)]
     changed = any(d.startswith(month) for _v, d in versions)
-    if len(under) == 1 and not changed:
-        (version, signed), = under
+    if len(bound) == 1 and not other and not changed:
+        (version, signed), = bound
         return [UNCHANGED % (version, signed)]
-    lines = [CHANGED]
-    lines += ["- version %d, signed on %s: %s" % (v, d, ", ".join(tags)) for (v, d), tags in sorted(under.items())]
+    lines = [CHANGED_NOW] if changed else []
+    lines.append(BOUND)
+    lines += ["- version %d, signed on %s: %s" % (v, d, ", ".join(tags)) for (v, d), tags in sorted(bound.items())]
+    if other:
+        lines.append(OTHER)
+        lines += ["- version %d, signed on %s" % v for v in other]
     return lines
 
 
+def check_words(text):
+    """Refuses a letter that holds a forbidden word (spaces removed, so SOC 2 and SOC  2 and SOC2 are all caught)."""
+    squeezed = "".join(text.lower().split())
+    words = [w for w in FORBIDDEN if w in squeezed]
+    if words or "@" in text:
+        raise Refuse("the letter would hold a word it must not (%s) or an address" % ", ".join(words or ["@"]))
+
+
 def body_of(rel_dir, month, advisories, controls_text):
-    """The letter without its signature, read afresh from the assets. Used to write the letter and to check it."""
-    every = releases_in(rel_dir)
-    releases = [r for r in every if r["date"].startswith(month)]
-    before = [r for r in every if r["date"] < month + "-01"]
-    if not releases and not before:
-        return None  # no release has ever been published: nothing to roll up
+    """The letter without its signature, or None when no release has ever been published."""
+    releases, prior = releases_used(rel_dir, month)
+    if not releases and prior is None:
+        return None
     lines = ["# FosterStack evidence letter, " + month_title(month), "", INTRO, "", "## Releases"]
     if not releases:
         lines.append(NONE_RELEASED)
@@ -197,28 +223,16 @@ def body_of(rel_dir, month, advisories, controls_text):
     lines += ["- %s: %s, dated %s" % (t, n, d) for t, d, n in vex] or [NONE]
     lines += ["", "## Check records"]
     if not releases:  # the current images are those of the latest release
-        lines.append("Records of %s, the latest release:" % before[-1]["tag"])
-    for r in releases or before[-1:]:
+        lines.append("Records of %s, the latest release:" % prior["tag"])
+    for r in releases or [prior]:
         for name in RECORDS:
             lines.append("- %s: %s sha256 %s" % (r["tag"], name, sha256_of(os.path.join(r["dir"], name))))
     advs = advisories_of(advisories, month)
     lines += ["", "## Advisories"]
     lines += ["- %s, published %s, %s" % (i, d, s) for d, i, s in advs] or ["- No advisory was published this month."]
-    lines += ["", "## Controls"] + controls_lines(releases, month, controls_text)
+    lines += ["", "## Controls"] + controls_lines(releases or [prior], month, controls_text)
     lines += ["", "## Evidence", EVIDENCE]
-    body = "\n".join(lines) + "\n"
-    words = [w for w in FORBIDDEN if w in body.lower()]
-    if words or "@" in body:
-        raise Refuse("the letter would hold a word it must not (%s) or an address" % ", ".join(words or ["@"]))
-    return body
-
-
-def read_back(text, rel_dir, month, advisories, controls_text):
-    """Raises Refuse unless the letter is exactly the body a fresh read of the assets gives, then one signature line."""
-    body = body_of(rel_dir, month, advisories, controls_text)
-    head, sep, signature = text.rpartition(SIGNED)
-    if body is None or not sep or head != body or "\n" in signature.strip():
-        raise Refuse("the letter does not read back from the release assets")
+    return "\n".join(lines) + "\n"
 
 
 def write(path, text):
@@ -241,12 +255,13 @@ def run(a):
     if body is None:
         print("evidence-letter: no release was published in %s: no letter" % a.month)
         return 0
-    text = body + SIGNED + one_line(signatory, "the signatory") + "\n"
-    read_back(text, a.releases, a.month, advisories, controls_text)
+    if not (0 < len(signatory) <= 200 and all(" " <= c <= "~" for c in signatory)):
+        raise Refuse("the signatory is not one plain line")
+    text = body + SIGNED + signatory + "\n"
+    check_words(text)
     os.makedirs(a.out, exist_ok=True)
     if PLACEHOLDER in signatory:
-        draft = os.path.join(a.out, "evidence-letter-%s.DRAFT.md" % a.month)
-        write(draft, "DRAFT: not signed, not to be sent.\n\n" + text)
+        write(os.path.join(a.out, "evidence-letter-%s.DRAFT.md" % a.month), "DRAFT: not signed, not to be sent.\n\n" + text)
     else:
         write(os.path.join(a.out, "evidence-letter-%s.md" % a.month), text)
     return 0

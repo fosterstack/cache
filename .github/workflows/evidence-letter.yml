@@ -1,9 +1,9 @@
 name: Evidence letter
 
-# The monthly signed evidence letter (REQ-REL-013; owner Oct 27, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md). Once a month a job without
-# an identity token fetches the month's release assets and makes the letter (bin/evidence-letter.py reads every line back from them); a second job,
-# the only one with an identity token, signs it keyless by the call of bin/release-sign.sh and attaches it to the latest published release.
-# Customers verify the signature against this workflow's identity:
+# The monthly signed evidence letter (REQ-REL-013; owner Oct 27, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md).
+# Once a month the first job, which has no identity token, fetches the month's release assets, checks their signatures and
+# makes the letter. The second job, the only one with an identity token, signs it keyless and attaches it to the latest
+# published release. Only a run from main does either: customers verify the signature against this workflow's identity
 #   https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main      (docs/verify-release.md)
 # If any check fails, or the signatory is still the placeholder, the first job fails and nothing is signed or published.
 
@@ -28,6 +28,7 @@ concurrency:
 jobs:
   draft:
     name: draft
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -47,13 +48,16 @@ jobs:
           month="${INPUT_MONTH:-$(date -u -d "$(date -u +%Y-%m-01) -1 month" +%Y-%m)}"
           echo "month=$month" >> "$GITHUB_OUTPUT"
 
-      - name: fetch the release assets and the advisories
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
+
+      - name: fetch the release assets, check their signatures, and fetch the advisories
         env:
           GH_TOKEN: ${{ github.token }}
           MONTH: ${{ steps.month.outputs.month }}
         run: bash bin/evidence-letter-fetch.sh "$MONTH" work
 
-      - name: make the letter and read it back
+      - name: make the letter
         id: letter
         env:
           MONTH: ${{ steps.month.outputs.month }}
@@ -72,7 +76,7 @@ jobs:
   sign:
     name: sign
     needs: draft
-    if: ${{ needs.draft.outputs.made == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' && needs.draft.outputs.made == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
