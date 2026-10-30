@@ -1,14 +1,14 @@
 [
   {
-    "command": "cosign verify <IMAGE_REF> --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>",
     "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is not run before release (rule 79, open for the owner)"
   },
   {
-    "command": "cosign verify <IMAGE_REF_FIPS> --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "command": "cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>",
     "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is not run before release (rule 79, open for the owner)"
   },
   {
-    "command": "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "command": "cosign verify-blob-attestation --key <RELEASE_KEY> --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {
@@ -20,19 +20,19 @@
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {
-    "command": "cosign verify-blob --bundle production.sbom.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com production.sbom.json",
+    "command": "cosign verify-blob --key <RELEASE_KEY> --bundle production.sbom.json.bundle production.sbom.json",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {
-    "command": "cosign verify-blob --bundle fips.sbom.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.sbom.json",
+    "command": "cosign verify-blob --key <RELEASE_KEY> --bundle fips.sbom.json.bundle fips.sbom.json",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {
-    "command": "cosign verify-blob --bundle production.full.lock.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com production.full.lock.json",
+    "command": "cosign verify-blob --key <RELEASE_KEY> --bundle production.full.lock.json.bundle production.full.lock.json",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {
-    "command": "cosign verify-blob --bundle fips.full.lock.json.bundle --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json",
+    "command": "cosign verify-blob --key <RELEASE_KEY> --bundle fips.full.lock.json.bundle fips.full.lock.json",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   }
 ]

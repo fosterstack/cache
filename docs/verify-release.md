@@ -9,35 +9,31 @@ Set these once:
 - `<IMAGE_REF>`: the production image by digest, as repository@sha256:digest. TO-VERIFY: where the release names it.
 - `<IMAGE_REF_FIPS>`: the -fips image by digest, as repository@sha256:digest.
 - `<TAG>`: the release tag, for example v0.3.0.
-- `<IDENTITY>`: https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/<TAG>, the workflow that signs the provenance.
+- `<RELEASE_KEY>`: the release public key file, from our key manifest after the manifest is checked against our root public key. TO-VERIFY: where the manifest and the root key are published, and the manifest check.
+
+Without network access, add `--insecure-ignore-tlog` to a command below: it checks our key alone and skips the public log entry.
 
 ## 1. Image signatures
 
-Did our release workflow sign these exact images? TO-VERIFY: the signing workflow.
+Did our release key sign these exact images?
 
 ```sh
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF> \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify <IMAGE_REF> --key <RELEASE_KEY>
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF_FIPS> \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>
 ```
 
 ## 2. Provenance
 
 Download the release files named below from the release page for `<TAG>`.
 
-The provenance is a SLSA provenance statement (predicate type https://slsa.dev/provenance/v1) signed by `<IDENTITY>`, issuer https://token.actions.githubusercontent.com. TO-VERIFY: the flags against a real bundle.
+The provenance is a SLSA provenance statement (predicate type https://slsa.dev/provenance/v1) signed with the release key. TO-VERIFY: the flags against a real bundle.
 
 ```sh
 # Not run before release.
-cosign verify-blob-attestation --bundle provenance.bundle.json \
-  --type https://slsa.dev/provenance/v1 --check-claims=false \
-  --certificate-identity <IDENTITY> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-blob-attestation --key <RELEASE_KEY> --bundle provenance.bundle.json \
+  --type https://slsa.dev/provenance/v1 --check-claims=false
 ```
 
 ## 3. Digests
@@ -57,21 +53,13 @@ Each SBOM lists what is in an image; each lock lists the packages the image was 
 
 ```sh
 # Not run before release.
-cosign verify-blob --bundle production.sbom.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com production.sbom.json
+cosign verify-blob --key <RELEASE_KEY> --bundle production.sbom.json.bundle production.sbom.json
 # Not run before release.
-cosign verify-blob --bundle fips.sbom.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.sbom.json
+cosign verify-blob --key <RELEASE_KEY> --bundle fips.sbom.json.bundle fips.sbom.json
 # Not run before release.
-cosign verify-blob --bundle production.full.lock.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com production.full.lock.json
+cosign verify-blob --key <RELEASE_KEY> --bundle production.full.lock.json.bundle production.full.lock.json
 # Not run before release.
-cosign verify-blob --bundle fips.full.lock.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json
+cosign verify-blob --key <RELEASE_KEY> --bundle fips.full.lock.json.bundle fips.full.lock.json
 ```
 
 ## What this shows, and what it does not
