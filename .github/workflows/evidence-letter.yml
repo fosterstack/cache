@@ -2,10 +2,9 @@ name: Evidence letter
 
 # The monthly signed evidence letter (REQ-REL-013; owner Oct 27, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md).
 # Once a month the first job, which has no identity token, fetches the month's release assets, checks their
-# signatures and makes the letter. The second job, the only one with an identity token, signs it keyless and attaches
-# it to the latest published release. Only a run from main does either: customers verify the signature against this
-# workflow's identity
-#   https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main (docs/verify-release.md)
+# signatures and makes the letter. The second job, the only one with an identity token, signs it with the release key
+# and attaches it to the latest published release. Only a run from main does either: customers check the letter
+# against the release key from our key manifest (docs/verify-release.md).
 # If any check fails, or the signatory is still the placeholder, the first job fails and nothing is signed or published.
 
 on:

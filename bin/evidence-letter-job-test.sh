@@ -30,7 +30,6 @@ def read(rel):
 
 # ---- the workflow file, judged; each mutation below must make the judge say something
 WF = ".github/workflows/evidence-letter.yml"
-IDENTITY = "https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main"
 ISSUER = "https://token.actions.githubusercontent.com"
 MAIN = "github.ref == 'refs/heads/main'"
 
@@ -120,8 +119,6 @@ mutated("draft gets an identity token", lambda d: d["jobs"]["draft"]["permission
 mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release upload --clobber\n")
 mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
 
-check("AC9: the identity customers verify is named in the workflow header and in the verify guide",
-      all(IDENTITY in read(f) for f in (WF, "docs/verify-release.md")))
 rs, pub = read("bin/release-sign.sh"), read("bin/evidence-letter-publish.sh")
 ver = read("bin/evidence-letter-verify.sh")
 check("AC9: the signing config is release-sign.sh's, and the key comes from RELEASE_KMS_KEY_REF (#785's form)",
@@ -338,16 +335,16 @@ check("AC10: the Check records are verified with the same command Release runs, 
       sum("check-list --policy" in l for l in log) == 2 and os.path.isfile(out + "/rel/v0.3.1/policy.json"), log)
 
 
-def first(log, needle, after=0):
-    return next((i for i, l in enumerate(log) if i >= after and needle in l), 10 ** 6)
+def find(log, *needles):
+    return next((i for i, l in enumerate(log) if all(n in l for n in needles)), 10 ** 6)
 
 
 order_ok = True
 for t in ("v0.3.1", "v0.4.0"):
-    pm_ = first(log, "--tag " + t)
-    vb_ = first(log, "/rel/%s/release-files.sha256.bundle" % t)
-    cl_ = first(log, "check-list --policy ") if t == "v0.3.1" else first(log, "/rel/v0.4.0/policy.json", vb_)
-    order_ok = order_ok and pm_ < vb_ < cl_
+    made = find(log, "policy make", "--tag " + t)
+    listed = find(log, "cosign verify-blob", "/rel/%s/release-files.sha256.bundle" % t)
+    checked = find(log, "check-list --policy", "/rel/%s/policy.json" % t)
+    order_ok = order_ok and made < listed < checked
 check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
 
 

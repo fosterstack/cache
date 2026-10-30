@@ -4,9 +4,9 @@
 #   arguments: the month YYYY-MM (it must be over), then the output folder
 #   (GH_TOKEN set; REPO defaults to fosterstack/cache)
 # It takes every final release published in the month, or the newest one before it when the month had none. Per release:
-#   release-files.sha256 must verify against its bundle under stage-promote.yml at the release tag, and list the
-#   manifest and OpenVEX files by their hashes; the four Check records must verify under the release policy
-#   (the same chain-verify.py command Release runs). Any failure ends here with one line and no letter.
+#   release-files.sha256 must verify by the release key of that release's policy and the pinned log (the shared
+#   bin/evidence-letter-verify.sh), and list the manifest and OpenVEX files by their hashes; the four Check records must
+#   verify under the same policy (the chain-verify.py command Release runs). Any failure ends here with one line.
 # Reads only: it writes into OUT/rel/<tag>/ and OUT/advisories.json.
 set -euo pipefail
 die() { echo "evidence-letter-fetch: $*" >&2; exit 1; }
@@ -15,7 +15,6 @@ out=${2:?the output folder is the second argument}
 [[ "$month" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "evidence-letter-fetch: the month is YYYY-MM" >&2; exit 2; }
 [[ "$month" < "$(date -u +%Y-%m)" ]] || die "$month is not over yet: no letter"
 repo=${REPO:-fosterstack/cache}
-issuer=https://token.actions.githubusercontent.com
 mkdir -p "$out/rel"
 
 # every release, all pages; the letter's releases are the final ones published in the month, else the newest
@@ -37,17 +36,16 @@ asset() { # asset RELEASE.JSON NAME FOLDER: downloads the release's asset of tha
 }
 
 verify() { # verify TAG FOLDER: the checks above, one line on any failure
-  local tag=$1 dir=$2 name
-  cosign verify-blob --bundle "$dir/release-files.sha256.bundle" --certificate-oidc-issuer "$issuer" \
-    --certificate-identity "https://github.com/$repo/.github/workflows/stage-promote.yml@refs/tags/$tag" \
-    "$dir/release-files.sha256" > /dev/null 2>&1 ||
-    die "$tag: release-files.sha256 does not verify under stage-promote.yml"
+  local tag=$1 dir=$2 name refusal
+  refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
+    --tag "$tag" --out "$dir/policy.json" 2>&1 > /dev/null) ||
+    die "$tag: no release policy: $(head -n 1 <<< "$refusal")"
+  refusal=$(bash bin/evidence-letter-verify.sh "$dir/policy.json" "$dir/release-files.sha256" 2>&1) ||
+    die "$tag: ${refusal#evidence-letter-verify: }"
   for name in release-manifest.json fosterstack-cache.openvex.json; do
     grep -qxF "$(sha256sum "$dir/$name" | cut -d' ' -f1)  $name" "$dir/release-files.sha256" ||
       die "$tag: $name is not the file the signed release-files.sha256 lists"
   done
-  python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$tag" \
-    --out "$dir/policy.json" > /dev/null 2> "$dir/refusal" || die "$tag: no release policy: $(head -n 1 "$dir/refusal")"
   python3 -I bin/chain-verify.py check-list --policy "$dir/policy.json" --digests "$dir/digests.json" \
     --dir "$dir/witness-check" > /dev/null 2> "$dir/refusal" ||
     die "$tag: the Check records: $(head -n 1 "$dir/refusal")"
