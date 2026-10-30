@@ -40,7 +40,11 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # token (contents + pull-requests) to open the changelog PR after that tag — both deliberate, reviewed
            # consumers of that credential (Sonnet #158 r3, REL-DECIDE-01: the earlier comment wrongly said decide
            # never touches the App's secrets)
-           ("release.yml", "decide"), ("release.yml", "patch-notes")}
+           ("release.yml", "decide"), ("release.yml", "patch-notes"),
+           # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
+           # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
+           # on main
+           ("dependabot-reviewer.yml", "vendor-records")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)

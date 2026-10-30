@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 54 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 58 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -91,6 +91,7 @@ DECLARED = set("""
 dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendor-provenance-records.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
+bin/check-no-outbound.py bin/check-no-outbound-test.sh
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
@@ -108,7 +109,7 @@ docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-gu
 bin/build-apk-helper.py build/sealed-env.json
 bin/layout-archive.sh bin/layout-archive-test.sh
 """.split())
-if len(DECLARED) != 56: errs.append("declared list is not 56 paths: %d" % len(DECLARED))
+if len(DECLARED) != 58: errs.append("declared list is not 58 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -118,8 +119,9 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 202 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K), plus the witness-kms-test pattern; the Fulcio and TSA chain pattern is replaced by the release-key pattern (handoff 0713 P5), rekor.pub stays (ratify B)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 202, 6
+# 203 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
+# plus the two outbound-check patterns (0710)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 204, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -167,7 +169,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "55905c5afb7034f55fa570b1f3425f8cfc541731ac2ec72fd8a568a1e4b9c59d"
+PINNED_SHA256 = "66bd8a3ba960b46ced607953c38f09f08b94ac0d8a1829f766edd4a3bc90aa27"
 if rstart and rend:
     import hashlib
     _b = _rawlines

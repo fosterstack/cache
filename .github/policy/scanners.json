@@ -35,7 +35,7 @@
     "stream is a product of the scanners record that Release binds and hands to the",
     "dependency evidence step. It is not a per-image scanner, so it is not in `scanners`.",
     "`scanners` above is unchanged: it still drives the release chain",
-    "(stage-verify/stage-authorize), the rescans and the daily auditor's",
+    "(the Check stage, stage-verify.yml), the rescans and the daily auditor's",
     "candidate, until the candidate-panel handoff moves them."
   ],
   "scanners": [ "grype", "osv-scanner" ],

@@ -3773,6 +3773,12 @@ check test "$rc" -eq 1
 vfile listed-file bin/vendor-check.sh 'ls vendor/'
 CASE="a file on the exact list may name the vendored folder (exit 0)"
 check test "$rc" -eq 0
+vfile outbound-check bin/check-no-outbound.py 'dirs[:] = sorted(x for x in dirs if x != "vendor")'
+CASE="the outbound check may name the vendored folder: it skips vendor/ by name (exit 0)"
+check test "$rc" -eq 0
+vfile outbound-test bin/check-no-outbound-test.sh 'mkdir -p "$root/internal/vendor/z"'
+CASE="the outbound check's test may name the vendored folder: it builds a vendor/ fixture (exit 0)"
+check test "$rc" -eq 0
 python3 - "$root" <<'PY'
 import importlib.util, sys
 sys.path.insert(0, ".")
@@ -4414,7 +4420,7 @@ seen = []
 def fake(u):
     seen.append(u)
     return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
-ac._http_json = fake
+ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
 mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
 assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
 rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'

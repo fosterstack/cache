@@ -149,8 +149,8 @@ ALLOW_PATTERNS=(
   '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/rekor\.pub$'
   '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
+  '^\.github/policy/rekor\.pub$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
@@ -269,6 +269,9 @@ ALLOW_PATTERNS=(
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
+  # The outbound check (0710 item 4): the module's source and its linked binary have no HTTP client and dial nothing.
+  '^bin/check-no-outbound\.py$'
+  '^bin/check-no-outbound-test\.sh$'
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
