@@ -447,7 +447,7 @@ GNUPGHOME="$W/gh-check" G -c gpg.format=openpgp verify-commit HEAD > /dev/null 2
     "fixture: a commit signed by another GPG key does not verify against the pinned key"
 fresh; patch_tag v0.3.1; G cat-file tag v0.3.1 > "$W/c/tagobj"; git -C "$W/c/repo" tag -l 'v*' > "$W/c/released"
 r=$(python3 "$root/bin/admission-tag-signer.py" route --tag v0.3.1 --tag-object "$W/c/tagobj" --tags "$W/c/released" 2>&1 || true);
-[ "${r%% *}" = gitsign ] && ok "fixture: the patch tag routes to gitsign (next patch of the released v0.3.0)" || bad "fixture: patch route is '$r'"
+[ "${r%% *}" = refuse ] && ok "fixture: the router refuses the keyless patch tag (handoff 0713 P8: no keyless route is left)" || bad "fixture: patch route is '$r'"
 r=$(GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api "repos/fosterstack/cache/commits/$SHAC/check-runs?filter=latest&per_page=100" | jq -r '.check_runs[0].name');
 [ "$r" = ci ] && ok "fixture: the fake gh serves the check runs of the tagged commit" || bad "fixture: fake gh"
 GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api repos/fosterstack/cache/nope > /dev/null 2>&1 && bad \
@@ -548,20 +548,15 @@ expect_refuse \
 fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused" tag-annotated
 fresh; retag none; run_admit;    expect_refuse "AC4 an unsigned annotated tag is refused" tag-signature
 fresh; retag attacker; run_admit; expect_refuse "AC4 a tag signed by a key that is not in main's allowed signers is refused" tag-signature
-# a CI patch tag: the gitsign route (a gitsign-shaped signature block on the next patch of a released line)
-fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
-if grep -q 'gitsign verify-tag v0.3.1' "$W/c/calls.log" 2> /dev/null; then
-  for want in "--certificate-identity https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/main" \
-      "--certificate-oidc-issuer https://token.actions.githubusercontent.com" "--certificate-github-workflow-repository fosterstack/cache" \
-      "--certificate-github-workflow-ref refs/heads/main" "--certificate-github-workflow-sha $SHAC";
-  do
-    grep -Fq -- "$want" "$W/c/calls.log" && ok "AC4 the patch route verifies with $want" || bad "AC4 the patch route's gitsign call lacks $want"; done
-else for i in 1 2 3 4 5; do bad "AC4 the patch route never called gitsign verify-tag (RED: not implemented or the route was not taken)"; done; fi
-expect_refuse "AC4 a patch tag whose signer metadata cannot be extracted is refused: no empty evidence is admitted" tag-signature evidence
-fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=1
-expect_refuse "AC4 a patch tag whose keyless verification fails is refused" tag-signature
-fresh; patch_tag v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0 FAKE_GITSIGN_RC=0
-expect_refuse "AC4 the keyless identity on a MINOR tag is refused (the owner signs minors)" tag-signature
+# a keyless patch tag, a keyless minor tag and an owner-signed patch tag are all refused at tag-signature, and gitsign is never run (handoff 0713 P8)
+fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_refuse "AC4 a keyless patch tag is refused at tag-signature: no keyless route is left" tag-signature keyless
+grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a keyless patch tag" || ok "AC4 gitsign is never run, not even to look at a keyless patch tag"
+[ ! -e "$W/c/repo/admission.json" ] && ok "AC4 a refused keyless patch tag leaves no admission.json" || bad "AC4 admission.json exists after a keyless patch tag was refused"
+fresh; patch_tag v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0
+expect_refuse "AC4 a keyless minor tag is refused (the owner signs minors)" tag-signature
+fresh; G -c user.signingkey="$W/keys/owner" tag -s -f -m v0.3.1 v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_refuse "AC4 an OWNER-signed patch tag is refused too: patch tags are not admitted until the owner answers O4" tag-signature "patch tag"
 # ---- commit-signature ----------------------------------------------------------------------------------------------------------------
 fresh; commit_move none "unsigned"; retag owner; run_admit;     expect_refuse "AC4 an unsigned tagged commit is refused" commit-signature
 fresh;
@@ -706,7 +701,7 @@ if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' <
 else bad "AC4 pinned go failing: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
 # the ACs baseline of a CI patch (REQ-REL-009-AC13) goes through bin/admission-tag-signer.py baseline: its own tests and cache's auto-baseline PR
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
-fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
+fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a patch tag cannot reach the baseline check with fabricated signer evidence (it stops earlier)" tag-signature
 # ---- required-checks: duplicates, another sha, pagination (Opus S7, Sonnet S6) -----------------------------------------------------------
 ckf() { echo "$W/c/gh/repos_fosterstack_cache_commits_$1_check-runs.json"; }
@@ -758,61 +753,28 @@ if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ];
 then ok "AC4 policy from main: the tagged commit's own bin/admission-tag-signer.py and bin/install-scanner.sh are never executed (owner route)";
 else bad "AC4 policy from main: a script of the tagged commit ran (or build-admit.py is missing: RED)";
 fi
-obj=$(pkcs7_tag v0.3.1 "$SIDE"); G update-ref refs/tags/v0.3.1 "$obj"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
+obj=$(pkcs7_tag v0.3.1 "$SIDE"); G update-ref refs/tags/v0.3.1 "$obj"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ];
 then ok "AC4 policy from main: nor on the patch route (the installer and the router come from origin/main)";
 else bad "AC4 policy from main: a script of the tagged commit ran on the patch route (or build-admit.py is missing: RED)";
 fi
 fresh; commit_move owner "newer"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit GITHUB_SHA="$SHAC"
 expect_refuse "AC4 the re-tag race: a tag that was moved after the event (it no longer points at GITHUB_SHA) is refused" tag-ref sha
-# ---- the CI patch / keyless baseline path with a REAL PKCS7 signature (REQ-REL-009-AC13 through bin/admission-tag-signer.py baseline) ---
-patch_setup() { # patch_setup [SHELL-SNIPPET-run-in-the-repo-before-the-tagged-commit]  -> a signed commit on main and the patch tag v0.3.1 on it
-  fresh; [ "${PATCH_BASE_TAG:-}" != attacker ] || retag attacker
-  if [ -n "${1:-}" ]; then (cd "$W/c/repo" && G checkout -q main && eval "$1"; G add -A); fi
-  G checkout -q main 2> /dev/null;
-  G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch";
-  G push -q origin HEAD:main 2> /dev/null;
+# ---- a patch tag with a REAL PKCS7 signature, unchanged requirements and an owner-approved baseline is still refused (handoff 0713 P8) -------
+# The CI patch path (the baseline of its line, bin/admission-tag-signer.py baseline) is not reachable from admission any more: the router refuses every patch tag
+# first. The baseline subcommands keep their own tests in bin/admission-tag-signer-test.sh.
+patch_setup() { # patch_setup : a signed commit on main and the patch tag v0.3.1 on it, signed as gitsign signs (a real PKCS7 block)
+  fresh
+  G checkout -q main 2> /dev/null
+  G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch"
+  G push -q origin HEAD:main 2> /dev/null
   G fetch -q origin 2> /dev/null
   local sha obj; sha=$(G rev-parse HEAD); obj=$(pkcs7_tag v0.3.1 "$sha"); G update-ref refs/tags/v0.3.1 "$obj"; gh_fixtures "$W/c/gh" "$sha"; }
-run_patch() { run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0 "$@"; }
-pfix() { # pfix LABEL WANT-PREFIX : the REAL bin/admission-tag-signer.py says WANT about this fixture, so the refusal below is about the claimed cause
-  local out="$W/c/ob" b; rm -rf "$out"
-  (cd "$W/c/repo" && python3 "$root/bin/admission-tag-signer.py" owner-baselines --tag v0.3.1 --allowed-signers \
-      "$W/c/repo/.github/policy/allowed_signers" --out "$out" > /dev/null 2>&1) || true
-  git -C "$W/c/repo" show HEAD:requirements/requirements.yaml > "$W/c/tagged-req.yaml"
-  b=$(python3 "$root/bin/admission-tag-signer.py" baseline --tag v0.3.1 --owner-baselines "$out" --requirements "$W/c/tagged-req.yaml" 2>&1 || true)
-  case "$b" in "$2"*) ok "fixture: $1";; *) bad "fixture: $1 -> '$b'";; esac
-}
+run_patch() { run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 "$@"; }
 patch_setup; run_patch
-pfix "an unchanged patch candidate gets the owner baseline: the rule says 'use v0.3.0'" "use v0.3.0"
-expect_ok "AC4 a CI patch tag (real PKCS7 signature, gitsign verified) with unchanged requirements and the owner-approved baseline of its line is admitted"
-if [ -f "$W/c/repo/admission.json" ]; then
-  jq -e '.tag=="v0.3.1" and .tag_signature.method=="release-workflow-keyless"
-         and (.tag_signature.key_fingerprint|startswith("x509-sha256:"))
-         and (.tag_signature.principal|endswith("release.yml@refs/heads/main")) and .baseline_version=="v0.3.0"' "$W/c/repo/admission.json" > /dev/null \
-    && ok \
-        "AC4 the patch admission records the keyless method, an x509 fingerprint, the release workflow as principal and the OWNER baseline v0.3.0 it used" \
-        || bad "AC4 patch admission.json content: $(head -c 300 "$W/c/repo/admission.json")"
-else bad "AC4 the patch admission recorded nothing (RED)"; fi
-patch_setup 'printf "# tampered\n" >> requirements/releases/v0.3.0.yaml'; run_patch
-cmp -s <(git -C "$W/c/repo" show v0.3.0:requirements/releases/v0.3.0.yaml) <(git -C "$W/c/repo" show HEAD:requirements/releases/v0.3.0.yaml) && bad \
-    "fixture: the tagged commit's baseline must differ from the owner tag's copy" || ok \
-    "fixture: the tagged commit's baseline file differs from the owner-signed tag's copy"
-expect_refuse "AC4 baseline (patch): the tagged commit's baseline differs from the copy in the owner-signed v0.3.0 tag (byte compare)" baseline differs
-patch_setup 'printf "      - {id: REQ-REL-004-AC2, given: g, when: w, then: t, status: approved, verification: {method: unit, release_blocking: true}}\n" \
-  >> requirements/requirements.yaml'
-run_patch
-pfix "the blocking set differs, the real rule says no (release-blocking AC set changed)" "no the release-blocking AC set changed"
-expect_refuse "AC4 baseline (patch): the release-blocking AC set changed since the owner baseline: no automatic patch" baseline blocking
-AC_FROM='then: \"t\", status: approved, verification: {method: unit, release_blocking: false}'
-AC_TO='then: \"changed\", status: approved, verification: {method: unit, release_blocking: false}'
-patch_setup "sed -i.bak \"s/$AC_FROM/$AC_TO/\" requirements/requirements.yaml; rm -f requirements/requirements.yaml.bak"
-run_patch
-pfix "a product AC changed, the real rule says no (pipeline-only)" "no REQ-PROTO-001-AC1 (requirement REQ-PROTO-001) changed"
-expect_refuse "AC4 baseline (patch): a product AC changed since the owner baseline (not on the pipeline-only list): no automatic patch" baseline pipeline-only
-PATCH_BASE_TAG=attacker patch_setup; run_patch
-pfix "no owner-signed baseline, the real rule says no" "no no owner-approved"
-expect_refuse "AC4 baseline (patch): the line's only v0.3.0 tag is signed by a key outside main's allowed signers: there is no owner baseline" baseline owner
+expect_refuse "AC4 a patch tag with a real PKCS7 signature and an owner-approved baseline is refused at tag-signature: gitsign is out" tag-signature keyless
+grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a real-PKCS7 patch tag" || ok "AC4 gitsign is not run for a real-PKCS7 patch tag either"
+[ ! -e "$W/c/repo/admission.json" ] && ok "AC4 no admission.json for a refused patch tag" || bad "AC4 admission.json exists after a patch tag was refused"
 # ---- rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12): a final or patch tag needs the committed marker of origin/main; an rc tag is exempt -------------
 mainfix() { # mainfix DESCRIPTION CMD : on main, run CMD in the clone (the file edit), commit it owner-signed, push, retag v0.3.0 at it, serve green checks for it
   fresh; G checkout -q main; (cd "$W/c/repo" && eval "$2"); G add -A
@@ -846,19 +808,13 @@ sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
 expect_refuse "AC6 control: the same tree with the final tag v0.3.0 is refused at rc-proof (only the tag's kind differs)" rc-proof marker
-# Codex 4b-1 r5 (B): the same refusals for a PATCH tag (v0.3.1), not only the final tag: no marker on main, and a marker for other bytes
+# a PATCH tag (v0.3.1) never reaches the marker check: admission refuses it at tag-signature first (handoff 0713 P8), with the marker missing or wrong alike
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at rc-proof, naming the marker" rc-proof marker
-fresh; G checkout -q main; printf '# edited\n' >> "$W/c/repo/.github/workflows/release.yml"
-sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
-G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, chain file edited after the proof"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
-run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
+expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at tag-signature, before the marker is read" tag-signature "patch tag"
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
 # the committed web-flow keyring (rc-2 signing review R9): exactly the current GitHub web-flow key, no expired key
 wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
@@ -869,6 +825,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=150
+EXPECT_TOTAL=138
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

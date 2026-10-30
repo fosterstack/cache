@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Which verifier source admission runs for a release tag (automatic patch releases rule 3; REQ-REL-009-AC6).
+"""Which verifier source admission runs for a release tag (REQ-REL-009-AC6; handoff 0713 P8).
 
 Read by stage-admission.yml from protected main (never from the tagged commit). It only ROUTES: the chosen verifier
-must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag. "gitsign":
-the release workflow's keyless identity, accepted only on a patch tag (vX.Y.Z, Z >= 1, whose previous patch vX.Y.(Z-1)
-is already released, so a line always starts from an owner-signed tag). Everything else is refused: an unsigned tag (an
-App-pushed tag carries no signature of its own), a PGP signature, two signature blocks, or the CI identity on a minor,
-major or rc tag or on a tag that already exists.
+must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on a tag that is not a
+patch tag. Everything else is refused: an unsigned tag, a PGP signature, two signature blocks, a keyless (x509)
+signature (the chain signs with the release key; no keyless signer is left), and every patch tag (vX.Y.Z, Z >= 1),
+whoever signed it, because automatic patch releases are off until the owner answers O4 (orchestrator ruling R6).
 """
 import argparse, datetime, hashlib, os, re, subprocess, sys
 
@@ -15,7 +14,7 @@ PATCH = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.([1-9][0-9]*)$")
 
 
 def kind(tag_object):
-    """The signature format of an annotated tag object: ssh, x509 (gitsign), pgp, none, or ambiguous. A signature is a
+    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous. A signature is a
     PEM-style block with a signature label (BLOCKS) that git appends at the END of the object; any other PEM-style block
     (a key or certificate quoted in the notes) is message text (Codex #163 r1, B03). Two signature-labelled blocks, or one
     that is not at the end, are ambiguous."""
@@ -33,22 +32,17 @@ def kind(tag_object):
 
 
 def route(tag, tag_object, released):
-    """(route, why) with route in ssh / gitsign / refuse."""
+    """(route, why) with route in ssh / refuse. `released` (the tags already released) is no longer read: with no patch tag admitted,
+    no rule about the previous patch is left; the argument stays so the command line and the callers do not change."""
     k = kind(tag_object)
-    if k == "ssh":
-        return "ssh", "an SSH signature: the owner's allowed-signers list decides"
-    if k != "x509":
+    if k == "x509":
+        return "refuse", "a keyless signature is not accepted: the release chain signs with the release key"
+    if k != "ssh":
         return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
                           "ambiguous": "the tag object carries an ambiguous signature"}[k]
-    m = PATCH.match(tag)
-    if not m:
-        return "refuse", "the CI identity signs patch tags only (vX.Y.Z with Z >= 1); %s is the owner's" % tag
-    if tag in released:
-        return "refuse", "%s is already released" % tag
-    prev = "v%s.%s.%d" % (m.group(1), m.group(2), int(m.group(3)) - 1)
-    if prev not in released:
-        return "refuse", "the CI identity cuts only the next patch: %s is not released" % prev
-    return "gitsign", "a patch tag signed keylessly: the release workflow's identity on main decides"
+    if PATCH.match(tag):
+        return "refuse", "%s is a patch tag: patch tags are not admitted until the owner answers O4 (automatic patch releases are off)" % tag
+    return "ssh", "an SSH signature: the owner's allowed-signers list decides"
 
 
 # REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + the owner's 0126 amendment (Oct 3) + advisor 0150's

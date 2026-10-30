@@ -37,13 +37,17 @@ for obj, want in [(SSH, "ssh"), (X509, "x509"), (PGP, "pgp"), (HEAD, "none"),
     check("kind -> %s" % want, got == want, got)
 REL = ["v0.1.0", "v0.2.0", "v0.2.1"]
 for tag, obj, tags, want, why in [
-    ("v0.2.2", X509, REL, "gitsign", "the CI identity on the next patch"),
+    ("v0.2.2", X509, REL, "refuse", "a keyless signature on the next patch (handoff 0713 P8: no keyless route is left)"),
     ("v0.3.0", X509, REL, "refuse", "the CI identity on a minor tag"),
     ("v1.0.0", X509, REL, "refuse", "the CI identity on a major tag"),
     ("v0.2.3", X509, REL, "refuse", "the CI identity skipping a patch (v0.2.2 not released)"),
     ("v0.2.2-rc.1", X509, REL, "refuse", "the CI identity on an rc"),
     ("v0.4.1", X509, REL, "refuse", "the CI identity on a line with no owner release"),
-    ("v0.2.2", SSH, REL, "ssh", "the owner on a patch"),
+    ("v0.2.2", SSH, REL, "refuse", "the owner's signature on a patch tag (handoff 0713 P8, R6: patch tags are refused until the owner answers O4)"),
+    ("v0.2.1", SSH, REL, "refuse", "the owner's signature on an existing patch tag"),
+    ("v0.3.1", SSH, REL + ["v0.3.0"], "refuse", "the owner's signature on the first patch of a released minor"),
+    ("v0.3.0-rc1", SSH, REL, "ssh", "the owner on a release candidate"),
+    ("v0.3.0-rc1", X509, REL, "refuse", "a keyless signature on a release candidate"),
     ("v0.3.0", SSH, REL, "ssh", "the owner on a minor"),
     ("v0.2.2", HEAD, REL, "refuse", "an unsigned tag (the App pushed it unsigned)"),
     ("v0.2.2", PGP, REL, "refuse", "a PGP signature"),
@@ -57,7 +61,8 @@ d = tempfile.mkdtemp(); o = os.path.join(d, "obj"); open(o, "w").write(X509); t 
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = T.main(["route", "--tag", "v0.2.2", "--tag-object", o, "--tags", t])
-check("CLI prints the route first", rc == 0 and buf.getvalue().split()[0] == "gitsign", buf.getvalue())
+check("CLI prints the route first (a keyless patch tag is refused)", rc == 0 and buf.getvalue().split()[0] == "refuse", buf.getvalue())
+check("no route named gitsign is left in the router", 'return "gitsign"' not in open(sys.argv[1]).read(), "the router still returns the gitsign route")
 
 # --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses
 def req_yaml(entries):

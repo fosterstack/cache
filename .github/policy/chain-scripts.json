@@ -520,7 +520,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "54ed0504dbc63598c821e681c90d06290c7993b91076f57f45594db2c7e59a6b",
+      "sha256": "db9f6ef404f895a0daee927cbb5f7bef8ce376f83e7348786310f68aa1923c9b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -715,7 +715,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
-      "sha256": "2c4eb2557b672c98ed40957734c535cad6e6a363e9bcbd106f4568dc9d415994"
+      "sha256": "ab75b1f7f09424c68dfe9544f95cfe25bc405c85d2c77c4db7a4b9eb8040eb03"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
