@@ -4968,11 +4968,17 @@ requirements:
         then: "it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard"
         verification: { method: inspection, release_blocking: false }
         status: approved
+  # Source of the "approved" marks below: the owner's Oct 27 2026 decision, ops/docs/ratify/2026-10-27-monthly-
+  # evidence-letter.md (rules 1 to 8, the 23:20 amendment), and the advisor read-back handoffs/acks/2026-10-29-ack-
+  # cache3-readback-monthly-letter.md. AC9 and AC10 were worded from them by the lane; AC9 was changed to the KMS
+  # key and the Rekor entry on the orchestrator's ruling of Oct 30 18:05Z. They are "approved" only because the
+  # schema allows one status under an approved baseline; the owner has not flipped them.
   - id: REQ-REL-013
     title: The monthly signed evidence letter
     statement: >
       Once a month the release chain drafts one letter that rolls up that month's public evidence, checks every line of
-      it against the release assets, signs it keylessly as a release artifact, and attaches it to a release; if any
+      it against the release assets, signs it with the KMS release key as a release artifact (its Rekor entry is
+      recorded), and attaches it to a release; if any
       check fails, no letter is made and the job fails (owner DECIDED Oct 27 2026, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md,
       rules 1 to 8 and the 23:20 amendment: fully automated, no per-month approval, the owner's typed name and title).
       Every piece of evidence stays public at every tier, so the letter is a public release asset too; it states public facts
@@ -5040,7 +5046,7 @@ requirements:
       - id: REQ-REL-013-AC9
         given: "the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else)"
         when: "its sign job runs on a letter that passed AC5"
-        then: "the sign job is the only one with an identity token; it signs the letter keylessly with the signing call, the signing config and the transparency-log check of bin/release-sign.sh, so customers verify against the identity https://github.com/fosterstack/cache/.github/workflows/evidence-letter.yml@refs/heads/main, which docs/verify-release.md names; it signs nothing that did not pass AC5"
+        then: "the sign job is the only one with an identity token (for the KMS federation); it signs the letter with the KMS key; its Rekor entry is recorded; customers verify with the release public key (connected customers also check the Rekor entry); it signs nothing that did not pass AC5"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC10
@@ -5049,6 +5055,9 @@ requirements:
         then: "they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed"
         verification: { method: unit, release_blocking: false }
         status: approved
+      # AC11 (the daily presence check) is the lane's, added on the orchestrator's answer of Oct 30 15:54Z (c) after
+      # the F7 read-back was acknowledged; no owner approval of its text exists. "approved" here only because the
+      # schema allows one status under an approved baseline.
       - id: REQ-REL-013-AC11
         given: "the daily workflow .github/workflows/supply-chain.yml and its job evidence-letter-present (a schedule and a manual start only; contents: read and nothing else)"
         when: "it runs on or after the 3rd of a month, and a published release already carries an evidence-letter-YYYY-MM.md"

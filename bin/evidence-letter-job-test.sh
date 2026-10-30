@@ -119,12 +119,9 @@ mutated("draft gets an identity token", lambda d: d["jobs"]["draft"]["permission
 mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release upload --clobber\n")
 mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
 
-rs, pub = read("bin/release-sign.sh"), read("bin/evidence-letter-publish.sh")
-ver = read("bin/evidence-letter-verify.sh")
-check("AC9: the signing config is release-sign.sh's, and the key comes from RELEASE_KMS_KEY_REF (#785's form)",
-      "--signing-config .github/policy/cosign-signing-config.json" in rs
-      and '--key "$RELEASE_KMS_KEY_REF"' in pub
-      and "--signing-config .github/policy/cosign-signing-config.json" in pub)
+pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
+check("AC9: the key comes from RELEASE_KMS_KEY_REF and the signing config is the committed one",
+      '--key "$RELEASE_KMS_KEY_REF"' in pub and "--signing-config .github/policy/cosign-signing-config.json" in pub)
 for banned in ("alias", "--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog",
                "@refs/heads/main", "keyless", "--identity-token", "--fulcio-url", "--oidc-"):
     check("F2: neither the publish nor the verify script holds " + banned,
@@ -375,6 +372,16 @@ KEYLESS = ("--certificate-identity", "--certificate-oidc-issuer", "--insecure-ig
            "stage-promote.yml@", "stage-sign.yml@")
 LETTER_FILES = ("bin/evidence-letter-fetch.sh", "bin/evidence-letter-publish.sh", "bin/evidence-letter-verify.sh",
                 "bin/evidence-letter-present.sh", "bin/evidence-letter.py", ".github/workflows/evidence-letter.yml")
+# every signing line of the letter's files has the key form: "cosign sign-blob --yes --key ... --signing-config ..."
+# matches; a call without --key (keyless), or without the signing config, does not
+SIGN_FORM = re.compile(r'cosign\s+(sign-blob|sign|attest)\s+--yes\s+--key\s+"\$RELEASE_KMS_KEY_REF"\s+'
+                       r'--signing-config\s+\.github/policy/cosign-signing-config\.json\s')
+for f in LETTER_FILES + (".github/workflows/supply-chain.yml",):
+    joined = re.sub(r"\\\n\s*", " ", read(f))
+    calls = [l for l in joined.split("\n") if re.search(r"\bcosign (sign-blob|sign|attest)\b", l)]
+    check("K-5: every signing line of %s has the key form" % f, all(SIGN_FORM.search(l) for l in calls), calls)
+check("K-5: the publish script has exactly one signing line",
+      len([1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if "cosign sign" in l]) == 1)
 for word in KEYLESS:
     hit = [f for f in LETTER_FILES if word in read(f).lower()]
     check("F1 6: no letter file holds %s" % word, not hit, hit)
