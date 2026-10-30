@@ -1163,7 +1163,10 @@ def bundle_to_outputs(bun, out_dir):
         if "certificate" in vm or "x509CertificateChain" in vm:
             refuse("sign", "the bundle cosign wrote carries a certificate: no certificate belongs to this chain")
         dsse = bun["dsseEnvelope"]
-        sig = dsse["signatures"][0]
+        sigs = dsse["signatures"]
+        if not isinstance(sigs, list) or len(sigs) != 1:
+            refuse("sign", "the bundle cosign wrote holds %s signatures, not exactly one: a second signature would be dropped unseen" % (len(sigs) if isinstance(sigs, list) else "no list of"))
+        sig = sigs[0]
         envelope = {"payloadType": dsse["payloadType"], "payload": dsse["payload"], "signatures": [{"keyid": sig.get("keyid", ""), "sig": sig["sig"]}]}
         tlog = vm.get("tlogEntries")
         if not isinstance(tlog, list) or not tlog:
