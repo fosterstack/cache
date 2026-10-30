@@ -693,8 +693,8 @@ def listed(path, root):
 # the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the second review), and
 # install-build-tools.sh compiles nothing.
 # THE ONE KNOWN FINDING on the real tree: the admission step in bin/build-admit.py runs
-# `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported (rule 1 forbids it) while its two lines
-# are in the file; the decision is its own job before Build in stage-build.yml, in its own pull request.
+# `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported (rule 1 forbids it) while
+# its two lines are in the file; the decision is its own job before Build in stage-build.yml, in its own pull request.
 # Until that lands rule 1 is NOT done.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
