@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-013-AC9, REQ-REL-013-AC10
-# The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml, bin/evidence-letter-fetch.sh
-# and bin/evidence-letter-publish.sh. Offline: cosign, gh, date and the Check-record verifier are stand-ins that record their
+# The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml,
+# bin/evidence-letter-fetch.sh and bin/evidence-letter-publish.sh. Offline: cosign, gh, date and the Check-record
+# verifier are stand-ins that record their
 # arguments; nothing is signed or uploaded. A mutation of the workflow must turn its own check red.
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
@@ -138,7 +139,10 @@ check("AC9: no upload may overwrite", "--clobber" not in pub)
 STUBS = {
     "cosign": """#!/bin/sh
 echo "cosign $*" >> "$LOG"
-for a in "$@"; do [ "$k" = 1 ] && [ -f "$a" ] && echo "key-file: $(cat "$a")" >> "$LOG"; k=0; [ "$a" = --key ] && k=1; done
+for a in "$@"; do
+  [ "$k" = 1 ] && [ -f "$a" ] && echo "key-file: $(cat "$a")" >> "$LOG"
+  k=0; [ "$a" = --key ] && k=1
+done
 case "$1" in
   verify-blob)
     n=$(grep -c "^cosign verify-blob" "$LOG")
@@ -155,7 +159,9 @@ case "$*" in *%Y-%m-%d*) cat "$FIX/today_full" ;; *%Y-%m*) cat "$FIX/today" ;; *
 case "$*" in
   *chain-verify.py*policy*make*--ref*)
     echo "python3 $*" >> "$LOG"
-    if [ -e "$FIX/bad-manifest" ]; then echo "refused: the key manifest is not signed by the offline root" >&2; exit 1; fi
+    if [ -e "$FIX/bad-manifest" ]; then
+      echo "refused: the key manifest is not signed by the offline root" >&2; exit 1
+    fi
     while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
     echo '{"release_key":{"public_key":"MANIFEST-KEY"}}' > "$out"; exit 0 ;;
   *chain-verify.py*check-list*)
@@ -179,7 +185,9 @@ case "$1 $2" in
   "release view") echo "$LATEST" ;;
   "release upload")
     kind=letter; case "$4" in *.bundle) kind=bundle ;; esac
-    if [ "$kind" = "$FAIL_UPLOAD" ]; then echo "HTTP 422: Validation Failed (already_exists)" >&2; echo "second line" >&2; exit 1; fi
+    if [ "$kind" = "$FAIL_UPLOAD" ]; then
+      echo "HTTP 422: Validation Failed (already_exists)" >&2; echo "second line" >&2; exit 1
+    fi
     echo "${4##*/}" >> "$FIX/uploaded" ;;
   "release delete-asset")
     [ -z "$FAIL_DELETE" ] || exit 1
@@ -201,7 +209,8 @@ def sandbox(tmp):
         open(os.path.join(fix if name == "uploaded" else tmp, name), "w").close()
     open(os.path.join(fix, "today"), "w").write("2026-12\n")
     open(os.path.join(fix, "today_full"), "w").write("2026-12-10\n")
-    open(os.path.join(fix, "advisories.json"), "w").write(json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
+    open(os.path.join(fix, "advisories.json"), "w").write(
+        json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
                REAL_PYTHON=sys.executable, TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
                FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
@@ -213,7 +222,8 @@ def sha(data):
 
 
 def put_releases(fix, releases):
-    """releases: [(tag, published, draft, prerelease, page)]; every one gets the assets the fetch needs, ids from 100."""
+    """releases: [(tag, published, draft, prerelease, page)]; every one gets the assets the fetch needs,
+    ids from 100."""
     pages, next_id = {}, 100
     for tag, published, draft, pre, page in releases:
         manifest, vex = ("manifest of " + tag).encode(), ("vex of " + tag).encode()
@@ -272,9 +282,11 @@ check("AC10: a month with a release does not fetch the release before it", got3 
 check("AC10: it writes release.json for each and the advisories as one list from every page",
       all(os.path.isfile(out + "/rel/%s/release.json" % g) for g in got)
       and json.load(open(out + "/advisories.json")) == [{"ghsa_id": "GHSA-a"}, {"ghsa_id": "GHSA-b"}])
-check("AC10: it only reads: no upload, no write call", not any(("upload" in l or "-X" in l or "--method" in l) for l in log))
+check("AC10: it only reads: no upload, no write call",
+      not any(("upload" in l or "-X" in l or "--method" in l) for l in log))
 check("AC10: it fetches the files the verification needs and no release is downloaded by the subcommand",
-      os.path.isfile(out + "/rel/v0.3.1/release-files.sha256.bundle") and os.path.isfile(out + "/rel/v0.3.1/digests.json")
+      os.path.isfile(out + "/rel/v0.3.1/release-files.sha256.bundle")
+      and os.path.isfile(out + "/rel/v0.3.1/digests.json")
       and os.path.isfile(out + "/rel/v0.3.1/witness-check/witness-arm64/arm64-collection.json")
       and not any("release download" in l for l in log))
 check("AC10: a bad month is refused", fetch("2026-13")[0].returncode == 2)
@@ -304,7 +316,8 @@ def unsigned(fix):
 
 
 pu = fetch("2026-11", unsigned)
-check("AC10: a release-files list whose signature does not verify ends the fetch, in one line", one_line(pu[0]), pu[0].stderr)
+check("AC10: a release-files list whose signature does not verify ends the fetch, in one line",
+      one_line(pu[0]), pu[0].stderr)
 
 
 def other_manifest(fix):
@@ -373,12 +386,13 @@ p, log, up, letter = publish()
 names = ["evidence-letter-2026-11.md.bundle", "evidence-letter-2026-11.md"]
 SIGN = ("cosign sign-blob --yes --key awskms:///stand-in-key --signing-config "
         ".github/policy/cosign-signing-config.json --bundle " + letter + ".bundle " + letter)
-VERIFY = ("cosign verify-blob --key ", " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
+VERIFY = ("cosign verify-blob --key ",
+          " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
 verifies = [l for l in log if l.startswith("cosign verify-blob")]
-check("F2: a good run takes the key from the root-checked manifest (policy make for main), signs with exactly Sign's argv, "
-      "verifies, then uploads", p.returncode == 0 and SIGN in log
-      and any("chain-verify.py policy make --template .github/policy/release-policy.template.json --ref refs/heads/main" in l
-              for l in log)
+check("F2: a good run takes the key from the root-checked manifest (policy make for main), signs with "
+      "exactly Sign's argv, verifies, then uploads", p.returncode == 0 and SIGN in log
+      and any("chain-verify.py policy make --template .github/policy/release-policy.template.json"
+              " --ref refs/heads/main" in l for l in log)
       and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1]), (p.stderr, log))
 check("F2: the verify reads the manifest's key file", "key-file: MANIFEST-KEY" in log, log)
 check("F2: the verify names no identity, issuer or ignored log",
@@ -390,7 +404,8 @@ check("F2: the order is manifest key, sign, verify, upload",
 check("AC9: the bundle is uploaded first, the letter second, no overwrite",
       [os.path.basename(u) for u in up] == names and not any("--clobber" in l for l in log), (up, log))
 pp, lp, upp, _l = publish(TLOG="[]")
-check("AC9: a bundle with no Rekor entry publishes nothing", pp.returncode == 1 and upp == [] and "Rekor" in pp.stderr, pp.stderr)
+check("AC9: a bundle with no Rekor entry publishes nothing",
+      pp.returncode == 1 and upp == [] and "Rekor" in pp.stderr, pp.stderr)
 
 
 def refused_signature():
@@ -421,7 +436,8 @@ def refused_manifest():
 
 
 pm, upm, lm = refused_manifest()
-check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed or uploaded, in one line",
+check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed "
+      "or uploaded, in one line",
       one_line(pm) and upm == [] and not any("sign-blob" in l or "release upload" in l for l in lm), (pm.stderr, lm))
 for label, value, code in (("unset", "", 2), ("not an awskms reference", "arn:aws:kms:us-east-1:1:key/x", 1)):
     pr_, lg_, up_, _l = publish(RELEASE_KMS_KEY_REF=value)
