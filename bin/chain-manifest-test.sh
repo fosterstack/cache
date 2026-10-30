@@ -2,12 +2,12 @@
 # Tests for the key manifest of the v0.3.0 release chain (handoff 0713, row P1): `chain-verify.py policy make` reads the manifest first.
 # Offline: the root key, the release key and every manifest are made here with openssl; nothing is committed and no AWS is used.
 #
-# The manifest, in .github/policy/ (or the directory given by --keys-dir):
+# The manifest, in .github/policy/ beside the template:
 #   release-key-root.pub        the offline root key's public key (PEM, ECDSA P-256), committed by the owner
 #   release-key-manifest.json   {"public_key": PEM, "key_id": sha256 hex of the key's DER, "valid_from": "YYYY-mm-ddTHH:MM:SSZ",
 #                                optional "valid_to", optional "revoked_at"}; no other field
 #   release-key-manifest.sig    base64 of the root key's ECDSA signature (DER) over the exact bytes of the manifest file
-# `policy make --template T --tag vX.Y.Z [--keys-dir D] [--now ISO8601Z] --out P` checks the manifest BEFORE it writes anything, and a failure
+# `policy make --template T --tag vX.Y.Z --out P` checks the manifest BEFORE it writes anything, and a failure
 # is `refused at manifest: <reason>`, exit 1, no policy file. The policy it writes holds the release key (public_key, key_id) and no
 # certificate root, timestamp authority or OIDC issuer. No time inside a record is trusted: a manifest whose revoked_at is at or
 # before the verification time is refused (ruling R3).
@@ -25,8 +25,10 @@ export OPENSSL
 
 # ---- fixtures: one root key, two release keys, a template, and a manifest maker -----------------------------------------------------------
 cat > "$work/fx.py" <<'PY'
-import base64, hashlib, json, os, subprocess, sys
+import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys
 W = sys.argv[1]
+T0 = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+def at(days): return (T0 + dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")      # the window is judged by the real clock
 def p(n): return os.path.join(W, n)
 def sh(*a):
     r = subprocess.run(a, capture_output=True)
@@ -53,19 +55,21 @@ def write_set(d, manifest, rootkey="root", raw=None, sig=None, root_pub="root"):
     open(p(d + "/release-key-root.pub"), "w").write(pem(root_pub))
     open(p(d + "/release-key-manifest.json"), "wb").write(body)
     open(p(d + "/release-key-manifest.sig"), "w").write(sig if sig is not None else sign_with(rootkey, body))
+    for f in ("template.json", "sigstore-trust.json", "rekor.pub"):      # the key files sit beside the template: no flag points elsewhere
+        shutil.copy(p(f), p(d + "/" + f))
 def good(**over):
     m = {"public_key": pem("rel"), "key_id": der_sha("rel"), "valid_from": "2026-01-01T00:00:00Z"}
     m.update(over)
     return {k: v for k, v in m.items() if v is not None}
 json.dump({"repository": "fosterstack/cache", "stages": ["build", "sign", "rebuild", "check", "release"]}, open(p("template.json"), "w"))
 write_set("good", good())
-write_set("window", good(valid_to="2026-12-31T00:00:00Z"))
-write_set("future-revoke", good(revoked_at="2027-06-01T00:00:00Z"))
-write_set("revoked", good(revoked_at="2026-06-01T00:00:00Z"))
-write_set("revoked-now", good(revoked_at="2026-10-29T12:00:00Z"))
-write_set("notyet", good(valid_from="2026-10-30T00:00:00Z"))
-write_set("expired", good(valid_to="2026-10-01T00:00:00Z"))
-write_set("expired-now", good(valid_to="2026-10-29T12:00:00Z"))
+write_set("window", good(valid_to=at(30)))
+write_set("future-revoke", good(revoked_at=at(30)))
+write_set("revoked", good(revoked_at=at(-30)))
+write_set("revoked-now", good(revoked_at=at(0)))
+write_set("notyet", good(valid_from=at(1)))
+write_set("expired", good(valid_to=at(-30)))
+write_set("expired-now", good(valid_to=at(0)))
 write_set("unknown-field", good(note="x"))
 write_set("no-key", good(public_key=None))
 write_set("no-id", good(key_id=None))
@@ -110,11 +114,10 @@ json.dump({"id": der_sha("rel")}, open(p("expect.json"), "w"))
 PY
 python3 "$work/fx.py" "$work" || { echo "FAIL fixtures could not be made"; exit 1; }
 KID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/expect.json")
-NOW=2026-10-29T12:00:00Z
 
 # ---- harness -------------------------------------------------------------------------------------------------------------------------------
 run() { local rc=0; python3 -I "$cv" "$@" 2> "$work/err" > "$work/out" || rc=$?; return $rc; }
-mk() { local d=$1; shift; rm -f "$work/policy.json"; run policy make --template "$work/template.json" --tag v0.3.0 --keys-dir "$work/$d" --now "$NOW" --out "$work/policy.json" "$@"; }
+mk() { local d=$1; shift; rm -f "$work/policy.json"; run policy make --template "$work/$d/template.json" --tag v0.3.0 --out "$work/policy.json" "$@"; }
 # expect_ok LABEL DIR
 expect_ok() { local rc=0; mk "$2" || rc=$?
   if [ "$rc" = 0 ] && [ -s "$work/policy.json" ]; then ok "$1"; else bad "$1 (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
@@ -141,10 +144,9 @@ for gone in ("roots", "timestampauthorities", "oidc_issuer", "caller_identity"):
 PY
 expect_ok "valid_to in the future is accepted" window
 expect_ok "revoked_at in the future is accepted (the key is still good now)" future-revoke
-expect_ok "the default --keys-dir is the template's directory" good
 cp -r "$work/good/." "$work/"; rm -f "$work/policy.json"
-rc=0; run policy make --template "$work/template.json" --tag v0.3.0 --now "$NOW" --out "$work/policy.json" || rc=$?
-[ "$rc" = 0 ] && [ -s "$work/policy.json" ] && ok "policy make with no --keys-dir reads the three files beside the template" || bad "default keys directory (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+rc=0; run policy make --template "$work/template.json" --tag v0.3.0 --out "$work/policy.json" || rc=$?
+[ "$rc" = 0 ] && [ -s "$work/policy.json" ] && ok "policy make reads the three files beside the template" || bad "default keys directory (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- the manifest is checked FIRST and is all or nothing ----------------------------------------------------------------------------------
 expect_refuse "no manifest file" "manifest|missing" no-manifest
@@ -177,7 +179,7 @@ expect_refuse "an ed25519 key (the KMS key is ECDSA P-256)" "public_key|p-256" e
 expect_refuse "an RSA key" "public_key|p-256" rsa-key
 expect_refuse "an ECDSA P-384 key" "public_key|p-256" p384-key
 
-# ---- time: the verification time (--now) against the manifest's window, never a time inside a record --------------------------------
+# ---- time: the clock of the run against the manifest's window, never a time inside a record --------------------------------
 expect_refuse "valid_from after the verification time" "not yet valid" notyet
 expect_refuse "valid_to before the verification time" "expired" expired
 expect_refuse "valid_to equal to the verification time (the window is half open)" "expired" expired-now
@@ -187,11 +189,9 @@ expect_refuse "a date without a time" "valid_from|date" bad-date
 expect_refuse "a date that does not exist" "valid_from|date" bad-date2
 expect_refuse "a valid_to that is not a date" "valid_to|date" bad-date3
 expect_refuse "a date that is a number" "valid_from|date" date-number
-rc=0; rm -f "$work/policy.json"; run policy make --template "$work/template.json" --tag v0.3.0 --keys-dir "$work/notyet" --now 2026-10-31T00:00:00Z --out "$work/policy.json" || rc=$?
-[ "$rc" = 0 ] && ok "the same manifest is accepted once --now is inside its window" || bad "--now moves the window (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- the manifest is read before the template's tag rules write anything -----------------------------------------------------------------
-rm -f "$work/policy.json"; rc=0; run policy make --template "$work/template.json" --tag v0.3.0 --keys-dir "$work/edited" --now "$NOW" --out "$work/policy.json" || rc=$?
+rm -f "$work/policy.json"; rc=0; run policy make --template "$work/edited/template.json" --tag v0.3.0 --out "$work/policy.json" || rc=$?
 [ "$rc" = 1 ] && [ ! -e "$work/policy.json" ] && ok "a refused manifest leaves no policy file behind" || bad "a policy file exists after a refusal (exit $rc)"
 
 echo "chain-manifest-test: $pass passed, $failn failed"

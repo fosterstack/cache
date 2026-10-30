@@ -60,8 +60,8 @@ def load_sibling(name):
 
 
 _common = load_sibling("chain_common")
-Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json = (_common.Refuse, _common.b64d, _common.b64e, _common.load_json,
-                                                                      _common.parse_now, _common.refuse, _common.ssl, _common.strict_json)
+Refuse, b64d, b64e, load_json, refuse, ssl, strict_json = (_common.Refuse, _common.b64d, _common.b64e, _common.load_json,
+                                                              _common.refuse, _common.ssl, _common.strict_json)
 chain_hostile = load_sibling("chain_hostile")
 chain_items = load_sibling("chain_items")
 
@@ -110,10 +110,10 @@ def manifest_date(m, field, required):
         refuse("manifest", "%s is not a date written YYYY-mm-ddTHH:MM:SSZ" % field)
 
 
-def check_manifest(keys_dir, now):
+def check_manifest(keys_dir):
     """The release key manifest, checked before anything else is read (handoff 0713 P1): the offline root key's signature over the exact
-    bytes of the manifest file, then the closed field list, the key (ECDSA P-256) and its key_id, and the window against `now`.
-    No time inside a record is trusted (ruling R3), so a revoked_at at or before `now` refuses the manifest. Returns {key_id, public_key}."""
+    bytes of the manifest file, then the closed field list, the key (ECDSA P-256) and its key_id, and the window against the clock of this run.
+    No time inside a record is trusted (ruling R3), so a revoked_at at or before now refuses the manifest. Returns {key_id, public_key}."""
     root_p, man_p, sig_p = (os.path.join(keys_dir, n) for n in MANIFEST_FILES)
     root_raw = read_manifest_file(root_p, "root key file")
     body = read_manifest_file(man_p, "manifest file")
@@ -134,6 +134,7 @@ def check_manifest(keys_dir, now):
             refuse("manifest", "the signature of the manifest does not verify with the root key")
         m = parse_manifest_body(body)
         key = manifest_key(m, tmp)
+    now = dt.datetime.now(dt.timezone.utc)
     start, end, revoked = manifest_date(m, "valid_from", True), manifest_date(m, "valid_to", False), manifest_date(m, "revoked_at", False)
     if now < start:
         refuse("manifest", "the key is not yet valid (valid_from %s)" % m["valid_from"])
@@ -197,11 +198,10 @@ def rekor_pin(trust_path, rekor_path):
 
 
 def policy_make(a):
-    key = check_manifest(a.keys_dir or os.path.dirname(os.path.abspath(a.template)), parse_now(a.now))
+    pol_dir = os.path.dirname(os.path.abspath(a.template))      # the key files sit beside the template: there is no flag that points elsewhere
+    key = check_manifest(pol_dir)
     tpl = load_json(a.template, "template")
-    pol_dir = os.path.dirname(os.path.abspath(a.template))
-    rekor_text = rekor_pin(getattr(a, "trust", None) or os.path.join(pol_dir, "sigstore-trust.json"),
-                           getattr(a, "rekor_key", None) or os.path.join(pol_dir, "rekor.pub"))
+    rekor_text = rekor_pin(os.path.join(pol_dir, "sigstore-trust.json"), os.path.join(pol_dir, "rekor.pub"))
     if re.match(r"(refs/tags/)?v0\.0\.0($|-)", a.tag or a.ref or ""):
         refuse("policy", "snapshot version")      # no policy, hence no Sign or Release, can exist for a snapshot version (REQ-CHAIN-004-AC15)
     if a.tag:
@@ -452,10 +452,10 @@ def collection_ref(stage, pol, stmt):
         refuse(stage, "ref: the ref inside the collection (%s) is not the policy's ref %s" % (json.dumps(found), pol.get("ref")))
 
 
-def verify_record(pol, stage, rec_path, now, tmp, rekor_path=None):
+def verify_record(pol, stage, rec_path, tmp, rekor_path=None):
     """Verify one stage's DSSE record against the policy: the envelope, the release key's signature, the record type bound to the stage, and,
     for the provenance and the release policy, the Rekor entry of that signature (ratify B: Release refuses a signature without its entry;
-    a Witness record has none). `now` is kept for the callers; no time inside a record is trusted, so none is read here.
+    a Witness record has none). No time inside a record is trusted.
     Returns (statement-or-policy-dict, payload, envelope)."""
     if stage not in STAGES or stage not in pol.get("stages", {}):
         refuse(stage, "stage %r is not in the policy" % stage)
@@ -750,9 +750,8 @@ def rekor_entries_path(record, given):
 
 def cmd_verify(a):
     pol = load_json(a.policy, "policy")
-    now = parse_now(a.now)
     with tempfile.TemporaryDirectory() as tmp:
-        verify_record(pol, a.stage, a.record, now, tmp, rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
+        verify_record(pol, a.stage, a.record, tmp, rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
     print("ok")
 
 
@@ -765,7 +764,6 @@ def cmd_stage_start(a):
         refuse(a.previous, "stage %s does not start from the %s stage's record (stage)" % (a.stage, a.previous))
     chain_items.check_digest_names(a.previous, a.digests)
     pol = load_json(a.policy, "policy")
-    now = parse_now(a.now)
     if pol.get("dry_run"):
         refuse(a.previous, "the policy is a dry-run policy (dry): no stage may start from it")
     try:
@@ -775,7 +773,7 @@ def cmd_stage_start(a):
     except (OSError, ValueError):
         refuse(a.previous, "digest file is missing or not JSON")
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, payload, dsse = verify_record(pol, a.previous, a.record, now, tmp, rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
+        stmt, payload, dsse = verify_record(pol, a.previous, a.record, tmp, rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
     if dsse["payloadType"] == POLT:
         refuse(a.previous, "predicate: a signed release policy is not a record a stage starts from")
     parse_digest_bytes(d_bytes, a.previous)   # the same format check Sign applies (Codex security r2), before any comparison
@@ -808,14 +806,13 @@ def _release_policy(a, stage):
 def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
-    now = parse_now(a.now)
     product = getattr(a, "product", None) or "items.json"      # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
         refuse("build", "product: %r is not a plain file name" % product)
     want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
     have = _sha256_bytes_of(a.items, "build", product)
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, _payload, dsse = verify_record(pol, "build", a.record, now, tmp)
+        stmt, _payload, dsse = verify_record(pol, "build", a.record, tmp)
     if dsse["payloadType"] == POLT:
         refuse("build", "predicate: a signed release policy is not Build's record")
     hits = [s for s in typed_subjects("build", stmt) if s["name"] == want]
@@ -835,7 +832,6 @@ def cmd_bind_check(a):
     verified under Check's identity at the tag, is the record of the step scanners, and names Build's verified digest list as its material (rule 55: results tied to
     the exact digests). A missing, duplicated, material-named or different product, or a record of another step, is refused."""
     pol = _release_policy(a, "check")
-    now = parse_now(a.now)
     if not BIND_CHECK_PRODUCT.fullmatch(a.product):
         refuse("check", "product: %r is not a plain file of check-results/" % a.product)
     try:
@@ -848,7 +844,7 @@ def cmd_bind_check(a):
     want = hashlib.sha256(d_bytes).hexdigest()
     have = _sha256_bytes_of(a.file, "check", a.product)
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, _payload, dsse = verify_record(pol, "check", a.record, now, tmp)
+        stmt, _payload, dsse = verify_record(pol, "check", a.record, tmp)
     if dsse["payloadType"] == POLT:
         refuse("check", "predicate: a signed release policy is not Check's record")
     step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
@@ -938,7 +934,6 @@ def cmd_check_list(a):
     """Exactly the four Check records, scanners, acceptance, runtime and arm64, each verified under Check's identity at the tag and each tied by its
     material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
     pol = _release_policy(a, "check")
-    now = parse_now(a.now)
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -971,7 +966,7 @@ def cmd_check_list(a):
         path = os.path.join(a.dir, "witness-" + n, "%s-collection.json" % n)
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                stmt, _payload, dsse = verify_record(pol, "check", path, now, tmp)
+                stmt, _payload, dsse = verify_record(pol, "check", path, tmp)
         except Refuse as r:
             refuse("check", "the %s record: %s" % (n, r.reason))
         if dsse["payloadType"] == POLT:
@@ -1019,25 +1014,24 @@ def cmd_rc_proof(a):
     rec = lambda rel: os.path.join(a.records, rel)
     with tempfile.TemporaryDirectory() as tmp:
         pol_path = os.path.join(tmp, "policy.json")
-        ns = argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, keys_dir=a.keys_dir, now=a.now, out=pol_path)
+        ns = argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, out=pol_path)
         policy_make(ns)
-        now = a.now
         quiet = io.StringIO()
         with contextlib.redirect_stdout(quiet):
             digests = rec("witness-build/digests.json")
             cmd_stage_start(argparse.Namespace(stage="release", previous="build", record=rec("witness-build/build-collection.json"),
-                                               digests=digests, policy=pol_path, now=now))
+                                               digests=digests, policy=pol_path))
             cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                              items=rec("witness-build/items.json"), now=now))
+                                              items=rec("witness-build/items.json")))
             # Build's record names the tag through its signed admission-baseline.json product (`tag`): the baseline is bound to the record like items.json, and
             # its tag must be the marker's rc tag, so a Build record made in the run for another tag (the final one) is refused here
             cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                              items=rec("witness-build/admission-baseline.json"), product="admission-baseline.json", now=now))
+                                              items=rec("witness-build/admission-baseline.json"), product="admission-baseline.json"))
             cmd_stage_start(argparse.Namespace(stage="release", previous="sign", record=rec("provenance/provenance.json"), digests=digests,
-                                               policy=pol_path, now=now))
+                                               policy=pol_path))
             cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", record=rec("witness-rebuild/rebuild-collection.json"),
-                                               digests=digests, policy=pol_path, now=now))
-            cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check"), now=now))
+                                               digests=digests, policy=pol_path))
+            cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check")))
         # the marker's run id is the run Sign's provenance came from: the statement (verified above under the rc tag's Sign identity) names its run as
         # invocationId, and that must be exactly this repository's URL for exactly this run (not a prefix, not another repository)
         baseline = load_json(rec("witness-build/admission-baseline.json"), "admission baseline")
@@ -1045,7 +1039,7 @@ def cmd_rc_proof(a):
             refuse("build", "tag: Build's admission baseline is for %s, the marker's rc tag is %s" % (json.dumps(baseline.get("tag") if isinstance(baseline, dict) else None), marker["rc_tag"]))
         pol = load_json(pol_path, "policy")
         with tempfile.TemporaryDirectory() as tmp2:
-            pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), parse_now(now), tmp2, rekor_path=rec("provenance/provenance.rekor.json"))
+            pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), tmp2, rekor_path=rec("provenance/provenance.rekor.json"))
         inv = (((pstmt.get("predicate") or {}).get("runDetails") or {}).get("metadata") or {}).get("invocationId")
         want_run = "https://github.com/%s/actions/runs/%s" % (a.repository, marker["run_id"])
         if inv != want_run:
@@ -1080,7 +1074,7 @@ def make_policy_from_template(a, tpl_path):
         refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z[-rcN] nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
-    ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, keys_dir=a.keys_dir, now=getattr(a, "now", None), out=out.name)
+    ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, out=out.name)
     try:
         policy_make(ns)
         with open(out.name) as f:
@@ -1097,7 +1091,6 @@ def check_build_record(a):
     pol = make_policy_from_template(a, a.template) if a.template else load_json(a.policy, "policy")
     if "release_key" not in pol:
         refuse("sign", "--policy must be a finished policy; a template goes to --template")
-    now = parse_now(a.now)
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -1108,7 +1101,7 @@ def check_build_record(a):
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, now, tmp)
+        stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, tmp)
     if product_digest(typed_subjects("sign", stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
     return pol, parse_digest_bytes(d_bytes)
@@ -1242,7 +1235,7 @@ def cmd_sign(a):
             remove_own_out(a.out)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
         try:
-            convert_and_verify(bundle, a.out, pol, statement, parse_now(a.now), tmpd)
+            convert_and_verify(bundle, a.out, pol, statement, tmpd)
         except Refuse as bad:
             remove_own_out(a.out)   # a failed sign leaves no provenance behind (001-AC2)
             refuse("sign", bad.reason)
@@ -1530,7 +1523,7 @@ def same_json(a, b):
     return a == b
 
 
-def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
+def convert_and_verify(bundle, out_dir, pol, statement, tmpd):
     """Write Release's file from cosign's bundle, then verify it as stage sign exactly as Release will, and require that the
     payload cosign signed IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3; Codex security r1 S1,
     Opus r1-verify F1): Sign never reports success for provenance Release would refuse, nor for a statement it did not make."""
@@ -1542,7 +1535,7 @@ def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
     bundle_to_outputs(bun, out_dir)
     vdir = os.path.join(tmpd, "verify-own-output")
     os.makedirs(vdir)
-    signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), now, vdir, rekor_path=os.path.join(out_dir, "provenance.rekor.json"))
+    signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), vdir, rekor_path=os.path.join(out_dir, "provenance.rekor.json"))
     # compared as parsed JSON, not as bytes: what matters is what the statement says, and cosign may re-serialise the statement file
     # it was given (key order, spacing) without changing a single subject or field; the parse is strict (no duplicate key, no NaN)
     if not same_json(signed, statement):
@@ -1735,17 +1728,12 @@ def build_parser():
     g = m.add_mutually_exclusive_group(required=True)
     g.add_argument("--tag")
     g.add_argument("--ref")
-    m.add_argument("--keys-dir")
-    m.add_argument("--trust")          # sigstore-trust.json (default: next to the template)
-    m.add_argument("--rekor-key")      # rekor.pub (default: next to the template)
-    m.add_argument("--now")
     m.add_argument("--out", required=True)
     v = sub.add_parser("verify")
     v.add_argument("--policy", required=True)
     v.add_argument("--stage", required=True)
     v.add_argument("--record", required=True)
     v.add_argument("--rekor-stub", dest="rekor_entries")      # the Rekor entries file of a provenance or a release policy (provenance.rekor.json)
-    v.add_argument("--now")
     for name in ("sign", "check-build-record"):
         s = sub.add_parser(name)
         if name == "sign":
@@ -1757,8 +1745,6 @@ def build_parser():
         which = s.add_mutually_exclusive_group(required=True)
         which.add_argument("--template")   # the committed release-policy template: the per-tag policy is made here from GITHUB_REF
         which.add_argument("--policy")     # a finished policy (the dry run's policy.json)
-        s.add_argument("--now")
-        s.add_argument("--keys-dir")
     sr = sub.add_parser("sign-records")
     sr.add_argument("--stage", required=True, choices=sorted(SR_STEPS))
     sr.add_argument("--template", required=True)
@@ -1767,7 +1753,6 @@ def build_parser():
     sr.add_argument("--record-dir", action="append", required=True)
     sr.add_argument("--artifacts-dir")
     sr.add_argument("--expect-digests", action="append")
-    sr.add_argument("--keys-dir")
     st = sub.add_parser("stage-start")
     st.add_argument("--stage", required=True)
     st.add_argument("--previous", required=True)
@@ -1775,20 +1760,17 @@ def build_parser():
     st.add_argument("--rekor-stub", dest="rekor_entries")      # the previous stage's Rekor entries file, when its record is a provenance
     st.add_argument("--digests", required=True)
     st.add_argument("--policy", required=True)
-    st.add_argument("--now")
     bi = sub.add_parser("bind-items")
     bi.add_argument("--policy", required=True)
     bi.add_argument("--record", required=True)
     bi.add_argument("--items", required=True)
     bi.add_argument("--product")
-    bi.add_argument("--now")
     bc = sub.add_parser("bind-check")
     bc.add_argument("--policy", required=True)
     bc.add_argument("--record", required=True)
     bc.add_argument("--digests", required=True)
     bc.add_argument("--file", required=True)
     bc.add_argument("--product", required=True)
-    bc.add_argument("--now")
     ap = sub.add_parser("apk-compare")
     ap.add_argument("--file", required=True)
     ap.add_argument("--digests", required=True)
@@ -1796,7 +1778,6 @@ def build_parser():
     cl.add_argument("--policy", required=True)
     cl.add_argument("--digests", required=True)
     cl.add_argument("--dir", required=True)
-    cl.add_argument("--now")
     ac = sub.add_parser("actions")
     ac.add_argument("workflow")
     ac.add_argument("--allowed", required=True)
@@ -1822,8 +1803,6 @@ def build_parser():
     rp.add_argument("--records", required=True)
     rp.add_argument("--template", required=True)
     rp.add_argument("--repository", required=True)      # owner/name of the repository the rc run ran in (GITHUB_REPOSITORY of the caller)
-    for n in ("keys-dir", "now"):
-        rp.add_argument("--" + n)
     chain_items.add_parsers(sub)
     return p
 

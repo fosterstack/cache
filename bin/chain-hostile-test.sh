@@ -336,7 +336,8 @@ d = sys.argv[1]
 der = subprocess.run(["openssl", "pkey", "-pubin", "-in", d + "/rel.pub", "-outform", "DER"], capture_output=True, check=True).stdout
 json.dump({"public_key": open(d + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, open(d + "/release-key-manifest.json", "w"), sort_keys=True, indent=1)
 PY
-prc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$root/.github/policy/release-policy.template.json" --keys-dir "$work/keys" --ref refs/tags/v0.3.0-rc1 --out policy.json 2> policy-make.err > /dev/null) || prc=$?
+for f in release-policy.template.json sigstore-trust.json rekor.pub; do cp "$root/.github/policy/$f" "$work/keys/$f"; done
+prc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$work/keys/release-policy.template.json" --ref refs/tags/v0.3.0-rc1 --out policy.json 2> policy-make.err > /dev/null) || prc=$?
 [ "$prc" = 0 ] && [ -s "$work/stepsign/policy.json" ] || bad "hostile step (Sign refusals): policy make failed (exit $prc: $(head -c 200 "$work/stepsign/policy-make.err" 2> /dev/null | tr '\n' ' '))"
 for a in mint_sign_cert forge_provenance; do
   vrc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" verify --stage sign --record "attempts/$a.json" --policy policy.json 2> "$a.err") || vrc=$?

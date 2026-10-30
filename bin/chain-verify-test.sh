@@ -25,7 +25,7 @@
 #   SLSA provenance: https://slsa.dev/provenance/v1, Statement v1 (in-toto-attestation spec/predicates/provenance.md:3). Only v1 is allowed.
 #
 # THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
-#   chain-verify.py policy make --template T.json (--tag vX.Y.Z | --ref REF) [--keys-dir D] [--now ISO8601Z] --out POLICY.json
+#   chain-verify.py policy make --template T.json (--tag vX.Y.Z | --ref REF) --out POLICY.json
 #       T.json {"repository":"owner/repo","stages":["build","sign","rebuild","check","release"]}. The key manifest in D (default: the template's
 #       directory) is checked FIRST, with the root key in D (see bin/chain-manifest-test.sh): `refused at manifest: ...` on any failure.
 #       POLICY.json {"tag","ref","repository","release_key":{"key_id","public_key"},"stages":[...]} and "dry_run": true for a branch ref.
@@ -45,7 +45,7 @@
 #       subjects equal D.json's entries; for a Witness collection the product subject file:digests.json has sha256 == the sha256 of D.json's
 #       bytes (equal, not subset or superset); exit 1 with PREV and the cause in the message.
 #   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json (--template T.json | --policy POLICY.json)
-#                   [--keys-dir D] [--now ISO8601Z] --out DIR
+#                   --out DIR
 #       exactly ONE of --template (the committed template; the per-tag policy is made here from GITHUB_REF, which must be refs/tags/vX.Y.Z[-rcN]
 #       on a push, or a branch on workflow_dispatch = a dry run) and --policy (a finished policy). Build's record is verified as stage build
 #       FIRST, D.json must be the file its product subject attests by sha256 ("digest") and must pass the format check ("format"); only then
@@ -174,6 +174,10 @@ open(p("keys-otherroot/release-key-manifest.sig"), "w").write(b64(sign_file("oth
 KEYID = "awskms:///alias/fosterstack-release-signing"      # what Witness 0.12.0 writes as the keyid of a KMS signature (go-witness signer/kms/aws/signer.go)
 STAGE_LIST = ["build", "sign", "rebuild", "check", "release"]
 json.dump({"repository": REPO, "stages": STAGE_LIST}, open(p("template.json"), "w"))
+def full_dir(d):      # an alternate key directory is a whole policy directory: the template and the pins sit beside the manifest
+    os.makedirs(p(d), exist_ok=True)
+    for _f in ("template.json", "sigstore-trust.json", "rekor.pub"): shutil.copy(p(_f), p(d + "/" + _f))
+full_dir("keys-otherroot")
 # A minimal VALID SLSA v1 provenance predicate (Codex #249 r4 B4): every provenance fixture carries it, so a record is refused only for
 # what its case names; a case's own predicate fields are laid over it, and raw_predicate=True signs the predicate exactly as given.
 def slsa_ok(ref):
@@ -405,6 +409,7 @@ shutil.copy(p("release-key-root.pub"), p("keys-other/release-key-root.pub"))
 open(p("keys-other/release-key-manifest.json"), "wb").write(json.dumps({"public_key": open(p("other.pub")).read(), "key_id": der_sha("other"),
                                                                       "valid_from": "2020-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n")
 open(p("keys-other/release-key-manifest.sig"), "w").write(b64(sign_file("root", p("keys-other/release-key-manifest.json"))) + "\n")
+full_dir("keys-other")
 
 # (Codex #249 r4 B4, 001-AC4) a signed, logged provenance statement whose predicate is not a standard SLSA v1 record
 def _drop(path):
@@ -826,7 +831,7 @@ expect_refuse() { local l=$1 w=$2 x=; shift 2; local rc=0 miss=0 l1 st reason; r
   else miss=1; fi
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && { [ "${1:-}" != sign ] || [ ! -s "$work/cosign-argv.log" ]; }; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with first line 'refused at <stage>: ...' and '$w'; fake cosign called: $([ -s "$work/cosign-argv.log" ] && echo YES || echo no); $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
-mkpol() { run policy make --template "$work/template.json" --tag v0.3.0 --keys-dir "${2:-$work}" --out "$work/$1"; }
+mkpol() { run policy make --template "${2:-$work}/template.json" --tag v0.3.0 --out "$work/$1"; }
 V() { echo --policy "$work/policy.json"; }
 rec() { echo --record "$work/$1.json"; }
 ST() { local cur=$1 prev=$2; shift 2; echo stage-start --stage "$cur" --previous "$prev" --policy "$work/policy.json" "$@"; }
@@ -840,7 +845,7 @@ der = subprocess.run(["openssl", "pkey", "-pubin", "-in", sys.argv[2], "-outform
 assert p == {"tag": "v0.3.0", "ref": "refs/tags/v0.3.0", "repository": "fosterstack/cache", "stages": ["build", "sign", "rebuild", "check", "release"],
              "release_key": {"key_id": hashlib.sha256(der).hexdigest(), "public_key": pub}, "rekor_public_key": open(sys.argv[3]).read()}, p
 PY
-expect_refuse "002-AC2 a key manifest signed by another root is refused before any policy is written" "manifest|signature" policy make --template "$work/template.json" --tag v0.3.0 --keys-dir "$work/keys-otherroot" --out "$work/policy-bad.json"
+expect_refuse "002-AC2 a key manifest signed by another root is refused before any policy is written" "manifest|signature" policy make --template "$work/keys-otherroot/template.json" --tag v0.3.0 --out "$work/policy-bad.json"
 [ ! -e "$work/policy-bad.json" ] && ok "002-AC2 a refused manifest leaves no policy file" || bad "002-AC2 a policy file exists after a refused manifest"
 expect_ok     "002-AC2 sign provenance made at the policy's ref is accepted as stage sign" verify $(V) --stage sign $(rec sign_prov)
 expect_refuse "002-AC2 the provenance of another tag (v0.3.1) is refused: the ref inside it is not the policy's" "ref|refs/tags/v0.3.1" verify $(V) --stage sign $(rec sign_othertag)
@@ -916,7 +921,7 @@ done
 # ---- REQ-CHAIN-001-AC2: Sign takes Build's digests (a FILE), checked against Build's VERIFIED record ----------------------
 # The record binds the digest file by the sha256 of its bytes (the real product subject file:digests.json); the file's CONTENT is
 # then judged on its own, so the format cases below are attested by their own collections and equality cannot be what refuses them.
-S() { echo sign --check --signer cosign --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --now "${2:-$NOW}" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
+S() { echo sign --check --signer cosign --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
 expect_ok     "001-AC2 a digest file whose bytes Build's record attests is accepted (and signed)" $(S) --digests "$work/digests.json"
 for c in other:"a digest that differs" extra:"an extra entry" subset:"a missing entry" swapped:"two names with their values swapped"; do
   expect_refuse "001-AC2 ${c#*:} (other bytes than Build attested) is refused" "digest|!signature|!identity|!timestamp" $(S) --digests "$work/digests-${c%%:*}.json"
@@ -1017,15 +1022,15 @@ if [ "$rc" = 1 ] && ! crashed && [ -z "$(ls -A "$work/sd/nocheck" 2> /dev/null)"
 # the Sign job passes the committed TEMPLATE as --policy: sign --check makes the per-tag policy itself (rule 57) from the template,
 # the committed trust file and PEMs (defaults next to the template, overridable by flags) and the tag from GITHUB_REF
 TP() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" \
-  --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
+  --digests "$work/digests.json" --out "$work/sd/$1"; }
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 --policy the template + GITHUB_REF=refs/tags/v0.3.0: the per-tag policy is made and Build's record verifies" $(TP tpl1)
 GITHUB_REF=refs/heads/main GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode on a branch (GITHUB_REF is not a tag) is refused" "tag|github_ref" $(TP tpl2)
 GITHUB_REF= GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with no GITHUB_REF is refused" "tag|github_ref" $(TP tpl4)
 
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
 TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --template "$work/template.json" \
-  --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$2"; }
-CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --now "$NOW" --digests "$work/digests.json"; }
+  --digests "$work/digests.json" --out "$work/sd/$2"; }
+CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --digests "$work/digests.json"; }
 for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
   GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll tagnm)
   expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --out "$work/policy-bad.json"
@@ -1100,7 +1105,6 @@ DSC() { echo sign --check --signer cosign --build-record "$work/$1.json" --polic
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_dry digests-other dsc1)
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_badval_dry digests-badval dsc2)
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_dry digests dsc3)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 sign --check with no --now (the Sign job passes none) uses the current time" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" --digests "$work/digests.json" --out "$work/sd/nonow"
 
 # ---- REQ-CHAIN-003-AC1: each stage verifies the one before it, with the cause named ------------------------------------
 expect_ok     "003-AC1 rebuild <- build: a valid record about exactly the given digests lets the stage start" $(ST rebuild build) $(rec build_coll) --digests "$work/digests.json"
@@ -1246,7 +1250,7 @@ expect_refuse "N-8 a policy file in UTF-16 is refused" "policy" verify --policy 
 expect_refuse "N-7 a template given as --policy is refused: it is not a finished policy" "template|policy" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --policy "$work/template.json"
 rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --template "$work/template.json" --policy "$work/policy.json" || rc=$?
 if [ "$rc" = 2 ]; then ok "N-7 --template and --policy together are a usage error (exactly one)"; else bad "N-7 --template with --policy must exit 2, got $rc"; fi
-rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --now "$NOW" || rc=$?
+rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" || rc=$?
 if [ "$rc" = 2 ]; then ok "N-7 neither --template nor --policy is a usage error"; else bad "N-7 neither flag must exit 2, got $rc"; fi
 # S-1: a composite action may be stored under .github/workflows/; only a reference that names a .yml/.yaml FILE (a reusable workflow) is judged as a workflow
 mkdir -p "$work/tree/.github/workflows/acts/thing" "$work/tree/.github/workflows/acts/ok"
@@ -1661,7 +1665,7 @@ cm_no "AC6 marker: the sha equals the commit's but the rc tag's commit holds oth
 # ---- chain-verify.py rc-proof: the rc run's records, verified under the rc tag's identities, and the marker's digests
 # ---- chain-verify.py rc-proof: the rc run's records, verified under the rc tag's identities, and the marker's digests
 RCP() { echo rc-proof --marker "${3:-$MK}" --commit "${2:-$C2}" --repo "$RG" --records "$work/$1" --template "$work/template.json" \
-          --now "$NOW" --repository "${RCREPO:-fosterstack/cache}"; }
+          --repository "${RCREPO:-fosterstack/cache}"; }
 expect_ok "AC6 rc-proof: the marker, the commit and a complete rc run (Build, Sign with its Rekor stub, Rebuild, the four Check records, the hostile verdict) are accepted" $(RCP rc_ok)
 expect_ok "AC6 rc-proof: the same proof is accepted at a later commit with the same chain files" $(RCP rc_ok "$C3")
 expect_refuse "AC6 rc-proof: a marker for other bytes is refused before any record is read" "marker|bytes" $(RCP rc_ok "$cother")
@@ -1777,7 +1781,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=687
+EXPECT=686
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -713,7 +713,7 @@ def sr_expect_check(root, groups=(("check-records.json", ("witness-scanners", "w
 
 def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
     dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else ["witness-scanners", "witness-acceptance", "witness-runtime", "witness-arm64"] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
-    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--keys-dir", KEYS_DIR, "--digests", "digests.json", "--out", out]
+    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
     if stage == "rebuild" and expect:
         a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
     if stage == "check" and expect:
@@ -752,6 +752,9 @@ def make_keys_dir():
 
 
 KEYS_DIR = make_keys_dir()
+for _f in ("release-policy.template.json", "sigstore-trust.json", "rekor.pub"):      # the key files sit beside the template: no flag points elsewhere
+    shutil.copy(root + "/.github/policy/" + _f, KEYS_DIR + "/" + _f)
+REPO_TEMPLATE = KEYS_DIR + "/release-policy.template.json"
 
 
 def sr(label, root, stage, want_rc, words=(), env=None, args=None, at=None):

@@ -41,16 +41,6 @@ def ssl(*args, inp=None, check=True):
     return r
 
 
-def parse_now(s):
-    if not s:
-        return dt.datetime.now(dt.timezone.utc)
-    for f in ("%Y%m%d%H%M%SZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            return dt.datetime.strptime(s, f).replace(tzinfo=dt.timezone.utc)
-        except ValueError:
-            pass
-    raise SystemExit("error: --now must be ISO 8601 UTC (YYYYmmddHHMMSSZ or YYYY-mm-ddTHH:MM:SSZ)")
-
 def no_duplicate_keys(pairs):
     keys = [k for k, _ in pairs]
     if len(set(keys)) != len(keys):

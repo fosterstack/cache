@@ -214,7 +214,7 @@ def stub(ptype, predicate_type):
 def vr(label, stage, ptype, predicate_type, rekor_path, want):
     stub(ptype, predicate_type)
     try:
-        cv.verify_record(vpol, stage, "rec.json", None, tmpd, rekor_path=rekor_path)
+        cv.verify_record(vpol, stage, "rec.json", tmpd, rekor_path=rekor_path)
         res = None
     except cv.Refuse as ex:
         res = str(ex)
@@ -332,6 +332,16 @@ note_lines[2] = b64(b"\x02" * 32); resigned = "\n".join(note_lines[:3]) + "\n"
 e2["inclusionProof"]["checkpoint"]["envelope"] = resigned + "\n\u2014 rekor.sigstore.dev " + b64(hashlib.sha256(rekor_der).digest()[:4] + sign_note(resigned.encode())) + "\n"
 inc("inclusion: a validly signed checkpoint for another root than the proof's is refused", e2, "another root hash")
 good("an entry with a good signed timestamp and no inclusion proof is refused by check_rekor_entry", entry(proof=False), "inclusion proof")
+
+# KMS rule 4 / build-apk rule 22: production code holds no test hook. The flags that swapped the trust root or the clock are gone from every
+# subcommand, and verify_record takes no `now`.
+import inspect
+act = [a for a in cv.build_parser()._actions if a.__class__.__name__ == "_SubParsersAction"][0]
+for flag in ("--keys-dir", "--trust", "--rekor-key", "--now"):
+    held = sorted(n for n, sp in act.choices.items() if any(flag in o.option_strings for o in sp._actions))
+    (ok if not held else bad)("no subcommand takes %s%s" % (flag, "" if not held else ": " + " ".join(held)))
+(ok if "now" not in inspect.signature(cv.verify_record).parameters else bad)("verify_record takes no `now` (no time inside a record is trusted)")
+(ok if not hasattr(cv, "parse_now") else bad)("the verifier has no --now parser")
 
 # Every pinned `chain-verify.py` line in the workflows and the release scripts must parse (it once failed in production with exit 2 when a flag was
 # renamed and five pinned lines were not): each line is run through build_parser(); a $-word or an expression stands for a value.
