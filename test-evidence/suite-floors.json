@@ -23,7 +23,7 @@
  "chain-sign-wiring-test.sh": 2082,
  "chain-snapshot-test.sh": 160,
  "chain-trust-files-test.sh": 24,
- "chain-verify-test.sh": 855,
+ "chain-verify-test.sh": 741,
  "check-action-pins-test.sh": 1159,
  "check-file-allowlist-test.sh": 670,
  "check-no-outbound-test.sh": 135,

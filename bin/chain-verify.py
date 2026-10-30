@@ -635,7 +635,8 @@ def check_rekor_entry(pol, e, body, sig, key_der):
     if len(signatures) != 1 or signatures[0].get("signature") != b64e(sig):
         return "rekor entry body is for another signature than this record's"
     try:
-        verifier_der = public_key_der(b64d(signatures[0]["verifier"]).decode())
+        verifier_pem = b64d(signatures[0]["verifier"]).decode()
+        verifier_der = public_key_der(verifier_pem) if ONE_PUBLIC_KEY_PEM.fullmatch(verifier_pem) else None     # one key block, nothing around it
     except Exception:
         verifier_der = None
     if verifier_der is None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC2, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4, REQ-CHAIN-007-AC16, REQ-CHAIN-001-AC6
+# proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4, REQ-CHAIN-007-AC16, REQ-CHAIN-001-AC6
 # proves: REQ-CHAIN-005-AC4 — apk-compare: the comparison job's result file is accepted only as a pass for Build's attested apk digests
 #
 # Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67), after the move to ONE
@@ -7,7 +7,7 @@
 # Needs: bash, OpenSSL 3 (macOS: brew install openssl@3, found automatically), python3 with PyYAML (apt: python3-yaml).
 # Offline: an offline root key, a release key, a throwaway ed25519 key and every record are made at test time with openssl; no key is
 # committed. Every verify case runs with the network genuinely cut (macOS sandbox-exec, Linux unshare -rn or sudo unshare -n) and a control
-# proves the cut; if no way exists the run says so loudly (CHAIN_TEST_REQUIRE_NETCUT=1 makes that a failure; the CI wiring MUST set it, and on
+# demonstrates the cut; if no way exists the run says so loudly (CHAIN_TEST_REQUIRE_NETCUT=1 makes that a failure; the CI wiring MUST set it, and on
 # ubuntu-24.04 the `sudo -n unshare -n` fallback runs the verifier as root: files it leaves in the work dir are removed by the exit trap with
 # sudo). Every refusal case is judged by exit code 1 (0 accepted; anything else, such as a missing script or a Python traceback, is an ERROR and
 # fails the case) AND by words the message must contain. The key manifest itself is tested in bin/chain-manifest-test.sh.
@@ -145,12 +145,14 @@ def add_proof(e, sign, log_der, pos=2, n=5):
                            "checkpoint": {"envelope": note + "\n\u2014 rekor.sigstore.dev " + base64.b64encode(sg).decode() + "\n"}}
     return e
 
-def rekor_entry(payload, sig, keyname="rel", index="7"):
+def rekor_entry(payload, sig, keyname="rel", index="7", body_mut=None, cb_mut=None):
     """A Rekor v1 dsse entry for this payload and signature, whose verifier is the public key of `keyname`, signed by this run's Rekor key."""
     body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
             "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()},
             "signatures": [{"signature": b64(sig), "verifier": b64(open(p(keyname + ".pub")).read().encode())}]}}
+    if body_mut: body_mut(body)
     cb = b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    if cb_mut: cb = cb_mut(cb)
     log_id = der_sha_early("rekor")
     canon = json.dumps({"body": cb, "integratedTime": 1761800000, "logID": log_id, "logIndex": int(index)}, sort_keys=True, separators=(",", ":")).encode()
     set_sig = sh("openssl", "dgst", "-sha256", "-sign", p("rekor.key"), p("rekor.set.in")) if open(p("rekor.set.in"), "wb").write(canon) else b""
@@ -276,6 +278,54 @@ FMT["dupkey"] = FMT["notobject"] = None
 # ---- Sign's provenance and its variants (001-AC4, 002-AC2). The record carries no workflow identity: the key signs it, the type binds it to Sign's stage,
 # and the ref inside the provenance (the whole ref, never its last segment) must be the policy's ref.
 add("sign_prov", PROV, D)
+# the Rekor entry of Sign's provenance, damaged one way per variant (the CLI refuses each; the entries file sits beside the record)
+def _rv(name, fn):
+    shutil.copy(p("sign_prov.json"), p("sign_prov_rk_%s.json" % name))
+    env = json.load(open(p("sign_prov.json"))); payload, sig = base64.b64decode(env["payload"]), base64.b64decode(env["signatures"][0]["sig"])
+    data = fn(payload, sig)
+    if data is not None: open(p("sign_prov_rk_%s.rekor.json" % name), "wb").write(data if isinstance(data, bytes) else json.dumps({"entries": [data]}).encode())
+def _mut(f):
+    def go(payload, sig):
+        e = rekor_entry(payload, sig); f(e); return e
+    return go
+def _edit(path, val):
+    def f(e):
+        d = e
+        for k in path[:-1]: d = d[k]
+        d[path[-1]] = val(d[path[-1]]) if callable(val) else val
+    return f
+RK_ENTRY = {   # name: (what is wrong, builder)
+    "idx_edit": ("a log index edited after the log signed it", _mut(_edit(["logIndex"], "8"))),
+    "it_edit": ("an integrated time edited after the log signed it", _mut(_edit(["integratedTime"], "1761800001"))),
+    "set_garbage": ("a signed entry timestamp that is garbage", _mut(_edit(["inclusionPromise", "signedEntryTimestamp"], b64(b"garbage")))),
+    "set_star": ("a '*' inside the signed entry timestamp", _mut(_edit(["inclusionPromise", "signedEntryTimestamp"], lambda v: v[:4] + "*" + v[4:]))),
+    "keyid_nl": ("a line break inside logId.keyId", _mut(_edit(["logId", "keyId"], lambda v: v[:8] + "\n" + v[8:]))),
+    "body_nl": ("a line break inside the canonical body, signed by the log as it is", lambda pl, sg: rekor_entry(pl, sg, cb_mut=lambda cb: cb[:10] + "\n" + cb[10:])),
+    "verifier_junk": ("a verifier that is a genuine PEM plus junk", lambda pl, sg: rekor_entry(pl, sg, body_mut=lambda b: b["spec"]["signatures"][0].update(verifier=b64(open(p("rel.pub")).read().encode() + b"junk")))),
+    "verifier_nl": ("a line break inside the verifier's base64, signed by the log as it is", lambda pl, sg: rekor_entry(pl, sg, body_mut=lambda b: b["spec"]["signatures"][0].update(verifier=b64(open(p("rel.pub")).read().encode())[:12] + "\n" + b64(open(p("rel.pub")).read().encode())[12:]))),
+    "hashedrekord": ("an entry of another kind (hashedrekord) although the log signed it", _mut(_edit(["kindVersion", "kind"], "hashedrekord"))),
+    "other_payload": ("an entry for another record's payload", lambda pl, sg: rekor_entry(b"another payload", sg)),
+    "other_sig": ("an entry for another signature", lambda pl, sg: rekor_entry(pl, b"another signature")),
+    "other_key": ("an entry whose verifier is another key", lambda pl, sg: rekor_entry(pl, sg, "other")),
+    "no_proof": ("an entry with no inclusion proof", _mut(lambda e: e.pop("inclusionProof"))),
+    "bad_checkpoint": ("a checkpoint that names another tree size", _mut(_edit(["inclusionProof", "checkpoint", "envelope"], lambda v: v.replace("\n5\n", "\n6\n", 1)))),
+    "idxnum": ("a log index spelled as a number", _mut(_edit(["logIndex"], 7))), "idxplus": ("a log index spelled +7", _mut(_edit(["logIndex"], "+7"))),
+    "idxspace": ("a log index spelled with a space", _mut(_edit(["logIndex"], " 7"))), "idxzero": ("a log index spelled 07", _mut(_edit(["logIndex"], "07"))),
+    "itnum": ("an integrated time spelled as a number", _mut(_edit(["integratedTime"], 1761800000))), "itfloat": ("an integrated time spelled as a float", _mut(_edit(["integratedTime"], 1761800000.0))),
+    "itplus": ("an integrated time spelled with a plus", _mut(_edit(["integratedTime"], "+1761800000"))), "itzero": ("an integrated time with a leading zero", _mut(_edit(["integratedTime"], "01761800000"))),
+}
+RK_FILE = {    # the entries file itself
+    "utf16": ("an entries file in UTF-16", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)]}).encode("utf-16")),
+    "nan": ("an entries file holding NaN", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": NaN').encode()),
+    "inf": ("an entries file holding -Infinity", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": -Infinity').encode()),
+    "big": ("an entries file holding 1e400", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": 1e400').encode()),
+    "nbig": ("an entries file holding -1e400", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": -1e400').encode()),
+    "ent_int": ("an entries file whose entries is an int", lambda pl, sg: b'{"entries": 7}'), "ent_str": ("an entries file whose entries is a string", lambda pl, sg: b'{"entries": "x"}'),
+    "ent_null": ("an entries file whose entries is null", lambda pl, sg: b'{"entries": null}'), "ent_dict": ("an entries file whose entries is an object", lambda pl, sg: b'{"entries": {"a": 1}}'),
+    "ent_nondict": ("an entries file whose entries holds a non-object", lambda pl, sg: b'{"entries": [1]}'), "ent_empty": ("an entries file with an empty list", lambda pl, sg: b'{"entries": []}'),
+    "none": ("no entries file at all", lambda pl, sg: None),
+}
+for _n, (_d, _f) in list(RK_ENTRY.items()) + list(RK_FILE.items()): _rv(_n, _f)
 add("sign_prov_v0.2", "https://slsa.dev/provenance/v0.2", D)
 for s in ("build", "rebuild", "check", "release"): add(s + "_as_sign", PROV, D)
 add("sign_rc", PROV, D, ref=TRC)
@@ -578,15 +628,21 @@ _cl("cl_empty", {})
 dj("gv.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v1.7.0"}})
 dj("gv-other.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v9.9.9"}})
 _GVP = PRD + "check-results/govulncheck.json"
-def _gv(name, step="scanners", key="rel", digests="digests.json", signed=True, prods=None, mats=None):
+def _gv(name, step="scanners", key="rel", digests="digests.json", signed=True, prods=None, mats=None, ref=T):
     m = mats if mats is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}}]
     pr = prods if prods is not None else [{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}]
-    add(name, COLL, None, stmt="v0.1", signed=signed, key=key, payload=_coll(step, m + pr))
+    add(name, COLL, None, stmt="v0.1", signed=signed, key=key, payload=_coll(step, m + pr, ref))
 _gv("gv_ok"); _gv("gv_otherfile", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
 _gv("gv_noprod", prods=[{"name": PRD + "check-results/scan-results.json", "digest": {"sha256": "9" * 64}}])
 _gv("gv_dup", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}, {"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
 _gv("gv_material", prods=[{"name": MAT + "check-results/govulncheck.json", "digest": {"sha256": _fsha("gv.json")}}])
 _gv("gv_wrongstep", step="acceptance"); _gv("gv_otherdigests", digests="digests-other.json")
+# tag and branch binding of every consumer (the environment attestor's GITHUB_REF against the policy's ref): a record made at another tag or on a branch
+add("bi_othertag", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), T2))
+add("bi_branch", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), "refs/heads/main"))
+_chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
+_cl("cl_tag2", dict(OK4, scanners="c_scanners_tag2")); _cl("cl_branch", dict(OK4, scanners="c_scanners_branch"))
+_gv("gv_tag2", ref=T2); _gv("gv_branch", ref="refs/heads/main")
 _gv("gv_nomat", mats=[]); _gv("gv_otherkey", key="other"); _gv("gv_unsigned", signed=False)
 
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc run's records, laid out like Release's own directories ----
@@ -643,6 +699,12 @@ rcdir("rc_build_final", build="rc_build_final", adm="admission-baseline-final")
 rcdir("rc_noadm", build="rc_build_noadm")
 rcdir("rc_check_missing", check={"arm64": None})
 rcdir("rc_check_otherkey", check={"scanners": "rc_c_scanners_otherkey"})
+_chk("rc_c_scanners_tag", "scanners", ref=T)          # a Check record made at the FINAL tag, offered under the rc tag's policy
+add("rc_build_finalref", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], T))
+rcdir("rc_check_finaltag", check={"scanners": "rc_c_scanners_tag"})
+rcdir("rc_build_finalref", build="rc_build_finalref")
+rcdir("rc_norekor")
+os.remove(p("rc_norekor/provenance/provenance.rekor.json"))
 rcdir("rc_rebuild_other", rebuild="rc_rebuild_other")
 rcdir("rc_hostile_accepted", hostile="rc-hostile-accepted")
 rcdir("rc_hostile_missing", hostile="rc-hostile-missing")
@@ -780,6 +842,9 @@ if mode != "notlog":
     def _sg(note): open(w + "/fake.note.in", "wb").write(note); return sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.note.in")
     vm["tlogEntries"] = [add_proof(_e, _sg, sh("pkey", "-pubin", "-in", w + "/rekor.pub", "-outform", "DER"))]
 bundle = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm}
+if mode == "emptylog": vm["tlogEntries"] = []
+if mode == "badset": vm["tlogEntries"][0]["inclusionPromise"]["signedEntryTimestamp"] = b64(b"not the log's signature")
+if mode == "noproof": del vm["tlogEntries"][0]["inclusionProof"]
 if mode == "twosigs": env["signatures"].append(dict(env["signatures"][0]))      # a second signature that the converter would drop
 if mode != "nodsse": bundle["dsseEnvelope"] = env
 json.dump(bundle, open(out, "w"))
@@ -1346,8 +1411,12 @@ expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BU
 expect_postsign_refuse "S1 a bundle with no DSSE envelope is refused after cosign, not a traceback" "bundle|malformed" nodsse
 expect_postsign_refuse "S1 a bundle that carries a certificate is refused: no certificate belongs to this chain" "certificate" withcert
 expect_postsign_refuse "S1 a bundle with two signatures is refused, not converted with one dropped" "signatures" twosigs
+expect_postsign_refuse "S1 a bundle with no tlogEntries is refused after cosign: the Rekor entry is named" "rekor" notlog
+expect_postsign_refuse "S1 a bundle with an EMPTY tlogEntries list is refused: the Rekor entry is named" "rekor" emptylog
+expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badset
+expect_postsign_refuse "S1 a bundle whose Rekor entry has no inclusion proof is refused" "rekor|inclusion" noproof
 expect_postsign_refuse "S1 a bundle whose signature is by a key the manifest does not name is refused: Sign verifies what it wrote before it says ok" "signature" otherkey
-[ "$POSTSIGN" = 4 ] && ok "S1 control: cosign WAS called in each of the four cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the four bundle cases"
+[ "$POSTSIGN" = 8 ] && ok "S1 control: cosign WAS called in each of the eight cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the eight bundle cases"
 expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
 # F1 (Opus r1 verify; 001-AC2): the bundle must carry the statement Sign built; cosign signing another one is refused, naming the mismatch
 expect_postsign_refuse "F1 a cosign that signs a statement with swapped subjects is refused: the signed statement is not the one Sign built" "statement" swapsubj
@@ -1364,7 +1433,7 @@ OPENSSL="$work/fakebin-openssl" expect_postsign_refuse "I1 an openssl failure wh
 OPENSSL=$REALSSL; rm -f "$work/ssl-fail"
 rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
-[ "$POSTSIGN" = 8 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 4)) of the four cases"
+[ "$POSTSIGN" = 12 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 8)) of the four cases"
 
 # H1 (Opus r1-verify info, 001-AC2): --out must not exist yet. Sign creates it and, on a refusal, removes only what it created; an existing
 # path (., a directory, a file, a symlink) is a usage error before anything runs: nothing deleted, nothing written, cosign never called
@@ -1781,7 +1850,31 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=686
+# ---- restored (re-aimed) cases: what the keyless identity used to enforce, now enforced by the ref a collection carries, Sign's workflow ref and the Rekor entry
+expect_refuse "001-AC2 Build's record from another tag is refused" "build|ref" $(S build_coll_otherref) --digests "$work/digests.json"
+expect_refuse "003-AC1 wrong tag through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_otherref) --digests "$work/digests.json"
+expect_refuse "003-AC1 a branch through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_branchref) --digests "$work/digests.json"
+expect_refuse "PR4 bind-items: a record of another tag is refused" "build|ref" $(BI bi_othertag)
+expect_refuse "PR4 bind-items: a record made on a branch is refused" "build|ref" $(BI bi_branch)
+expect_refuse "AB bind-items --product: a record made for another tag is refused for the baseline file too" "build|ref" $(BP bi_othertag)
+expect_refuse "PR4 check-list: a record of another tag is refused" "check|ref" $(CLS cl_tag2)
+expect_refuse "PR4 check-list: a record made on a branch is refused" "check|ref" $(CLS cl_branch)
+expect_refuse "G bind-check: a record of another tag is refused" "check|ref" $(BC gv_tag2)
+expect_refuse "G bind-check: a record made on a branch is refused" "check|ref" $(BC gv_branch)
+expect_refuse "AC6 rc-proof: Build's record of the FINAL tag is refused under the rc tag's policy" "build|ref" $(RCP rc_build_finalref)
+expect_refuse "AC6 rc-proof: a Check record of the final tag is refused" "check|ref" $(RCP rc_check_finaltag)
+expect_refuse "003-AC1 release <- sign without a Rekor entry: names sign and rekor" "sign|rekor" $(ST release sign) $(rec sign_prov_rk_none) --digests "$work/digests.json"
+expect_refuse "001-AC5 verify of a provenance without its entries file is refused 'rekor'" "rekor" verify $(V) --stage sign $(rec sign_prov_rk_none)
+expect_refuse "AC6 rc-proof: no Rekor entry for Sign's provenance is refused" "sign|rekor" $(RCP rc_norekor)
+rm -rf "$work/sd/norek"; mkdir -p "$work/sd/norek"; cp "$work/sd/ok/provenance.json" "$work/sd/norek/provenance.json"
+expect_refuse "001-AC5 Sign's own output without its Rekor entries is refused 'rekor' (no shortcut passes the control)" "rekor" verify $(V) --stage sign --record "$work/sd/norek/provenance.json"
+expect_ok "002-AC3 provenance with a matching, correctly signed Rekor entry (inclusion proof and checkpoint too) is accepted" verify $(V) --stage sign $(rec sign_prov)
+expect_ok "002-AC3 the signed release policy with its Rekor entry is accepted end to end (a real openssl signature, nothing stubbed)" verify $(V) --stage release $(rec release_policy)
+for k in idx_edit it_edit set_garbage set_star keyid_nl body_nl verifier_junk verifier_nl hashedrekord other_payload other_sig other_key no_proof bad_checkpoint idxnum idxplus idxspace idxzero itnum itfloat itplus itzero utf16 nan inf big nbig ent_int ent_str ent_null ent_dict ent_nondict ent_empty; do
+  expect_refuse "002-AC3 verify: a provenance whose Rekor entry file is damaged ($k, see RK_ENTRY and RK_FILE in the fixtures) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov_rk_$k)
+done
+
+EXPECT=741
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

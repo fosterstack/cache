@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-CHAIN-002-AC2
 # Tests for the key manifest of the v0.3.0 release chain (handoff 0713, row P1): `chain-verify.py policy make` reads the manifest first.
 # Offline: the root key, the release key and every manifest are made here with openssl; nothing is committed and no AWS is used.
 #
