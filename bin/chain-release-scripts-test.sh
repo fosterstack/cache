@@ -763,9 +763,11 @@ check(rc == 0 and not re.search(r"crane|docker login|auth login|\bpush\b", L) an
 # ---- REQ-CHAIN-007-AC20 (advisor ruling B, Oct 15): the commands run from the downloaded assets; a jq-only command only after a verify of the same file --------------
 PBF = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ
 PJ = "jq -e '.ok == true' provenance.bundle.json"
-def pva(rows, assets=None, nodir=False, **kw):
-    """pv with files in release-published/ (assets: name -> text), or the directory removed."""
+def pva(rows, assets=None, nodir=False, key=None, **kw):
+    """pv with files in release-published/ (assets: name -> text), or the directory removed; key: the text of the
+    verified release key file release-key.verified.pub (None: no such file)."""
     t = tree()
+    if key is not None: open(os.path.join(t, "release-key.verified.pub"), "w").write(key)
     rp = os.path.join(t, "release-published")
     if nodir: shutil.rmtree(rp)
     else:
@@ -785,6 +787,21 @@ t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}); check(rc 
 t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": '{"ok": false}'}); check(rc != 0 and "post-publish verification failed" in se and PJ in se, "AC20 post-publish: the jq-only command really runs on the file: a false filter fails the run, naming it", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PJ], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command with no earlier verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PJ, PBF], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command listed BEFORE its verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
+# F13: <RELEASE_KEY> is filled only with the path of the verified key file; nothing else, and the run refuses without it
+PUB = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexample\n-----END PUBLIC KEY-----\n"
+PK = "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json provenance.bundle.json"
+t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK}, key=PUB)
+kc = [c for c in calls(t) if "--key" in c]
+check(rc == 0 and len(kc) == 1 and os.path.join(t, "release-key.verified.pub") in kc[0] and "<RELEASE_KEY>" not in kc[0],
+      "F13 post-publish: <RELEASE_KEY> is filled with the verified key file", "rc=%s %s %s" % (rc, kc, first(se)))
+t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK})
+check(rc != 0 and not calls(t) and "release-key.verified.pub" in se,
+      "F13 post-publish: with no verified key file nothing runs and the run names the file", "rc=%s %s" % (rc, first(se)))
+for label, text in (("an awskms reference", "awskms:///alias/example\n"),
+                    ("a private key", "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"),
+                    ("an empty file", "")):
+    t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK}, key=text)
+    check(rc != 0 and not calls(t), "F13 post-publish: %s is not a verified public key: nothing runs" % label, "rc=%s %s" % (rc, first(se)))
 OTHER = PBF.replace("provenance.bundle.json", "other.bundle.json")
 t, rc, so, se = pva([OTHER, PJ], assets={"provenance.bundle.json": OK, "other.bundle.json": OK}); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se, "AC20 post-publish: a verify of a DIFFERENT file does not license the jq-only command: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL_ON": "provenance.bundle.json"}); E = [l for l in se.split("\n") if l.startswith("::error::")]
@@ -880,7 +897,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "396"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "401"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

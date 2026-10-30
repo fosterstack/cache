@@ -1149,6 +1149,19 @@ for c in "$X1" "$X2" "$X3" "$X4"; do g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 
 printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" "cosign verify <IMAGE_REF> --certificate-identity <RELEASE_URL> --certificate-oidc-issuer $ISS" "$FENCE" > "$fx/guide.md"
 lst "cosign verify <IMAGE_REF> --certificate-identity <RELEASE_URL> --certificate-oidc-issuer $ISS"
 gwant_fail "AC7 F8 a listed command with a placeholder Check and Release cannot substitute is refused, not excused" "unsupported placeholder"
+# F13 (customer guide in the key form): the planner reads the REAL page, and <RELEASE_KEY> is allowed only in a listed command
+rp=$(mktemp -d "$work/realpage.XXXXXX"); rc=0
+python3 -I "$root/bin/check-guide-plan.py" "$root/docs/verify-release.md" "$root/docs/verify-release.cannot-run.json" \
+  "$REPO@sha256:$(printf 'a%.0s' $(seq 64))" "$rp/plan.json" "$REPO-fips@sha256:$(printf 'b%.0s' $(seq 64))" > "$rp/out" 2>&1 || rc=$?
+if [ "$rc" = 0 ]; then ok "AC7 F13 the planner plans the real docs/verify-release.md with its real cannot-run list (rc 0)"
+else bad "AC7 F13 the planner refuses the real page -> rc=$rc: $(head -c 200 "$rp/out")"; fi
+DEFS_K="$DEFS"'- `<RELEASE_KEY>`: the release public key file.
+'
+KR="cosign verify-blob --key <RELEASE_KEY> --bundle checksums.txt.bundle checksums.txt"
+printf '%s\n' "$DEFS_K" "$(blk "$KR")" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
+gwant_fail "AC7 F13 <RELEASE_KEY> in a command that is not on the cannot-run list is refused: Check never holds the verified key" "RELEASE_KEY"
+printf '%s\n' "$DEFS_K" "$(blk "$KR")" > "$fx/guide.md"; lst "$KR"
+gwant_ok "AC7 F13 <RELEASE_KEY> in a command on the cannot-run list is planned as not-run (Release fills it)"
 g "$(blk "cosign verify-blob --certificate-identity fail-me --certificate-oidc-issuer $ISS --bundle checksums.txt.bundle checksums.txt")"
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
 g "$(blk "cosign verify-blob --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
