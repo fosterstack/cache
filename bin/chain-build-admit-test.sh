@@ -19,7 +19,8 @@
 #         repos/R/commits/SHA/check-runs?filter=latest   (and the same for the merged PR's head sha)
 #         repos/R/commits/SHA/status
 #         repos/R/commits/SHA/pulls
-#       the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok BASE` for the baseline's consistency; no Go runs here); `gitsign verify-tag`
+# the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok BASE` for the baseline's consistency; no Go
+# runs here); `gitsign verify-tag`
 #       with the exact identity flags for a patch route. Exit 0: wrote admission.json. Exit 1: the first line of stderr is
 #       `admission refused at <check>: <reason>` and NO admission.json is left. Exit 2: usage or environment error.
 #   python3 bin/build-admit.py list-checks                    one check name per line, in order (below)
@@ -380,11 +381,15 @@ fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origi
    git fetch -q --tags origin 2> /dev/null;
    git checkout -q --detach v0.3.0 2> /dev/null;
    git branch -q -f main origin/main 2> /dev/null || true)
-  SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f "$W/c/repo/admission.json"; mkfreeze; }
-mkfreeze() { # mkfreeze [LINE...] : freeze/freeze.txt of the case, by default the line the freeze job writes for every baseline file at the tagged commit
+  SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f \
+    "$W/c/repo/admission.json"; mkfreeze; }
+# mkfreeze [LINE...] : freeze/freeze.txt of the case, by default the line the freeze job writes for every baseline file
+# at the tagged commit
+mkfreeze() {
   rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"
   if [ "$#" -gt 0 ]; then printf '%s\n' "$@" > "$W/c/repo/freeze/freeze.txt"
-  else (cd "$W/c/repo" && for f in requirements/releases/*.yaml; do b=${f##*/}; echo "freeze-ok ${b%.yaml}"; done) > "$W/c/repo/freeze/freeze.txt"; fi; }
+  else (cd "$W/c/repo" && for f in requirements/releases/*.yaml; do b=${f##*/}; echo "freeze-ok ${b%.yaml}"; done) > \
+    "$W/c/repo/freeze/freeze.txt"; fi; }
 run_admit() { # run_admit [ENV=VAL...]  -> sets RC; stderr in $W/c/err, stdout in $W/c/out
   local sha; sha=$(git -C "$W/c/repo" rev-parse HEAD); RC=0
   (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 \
@@ -674,15 +679,20 @@ expect_refuse "AC4 a baseline whose approved is the string 'true' is refused" ba
 fresh; base_edit 'd["version"] = "v0.2.9"'; run_admit;             expect_refuse "AC4 a baseline for another version is refused" baseline version
 fresh; base_edit 'd["approved_on"] = "soon"'; run_admit;           expect_refuse "AC4 a baseline with no real approval date is refused" baseline approved_on
 fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse "AC4 an empty required set is not a baseline" baseline release_blocking_acs
-# REQ-CHAIN-004-AC4 (rule 1 of the sandboxed build): the requirements tool is Go source of the tagged commit, so it no longer runs inside Build. Its own job `freeze` (before Build,
-# contents: read, no secret) runs `verify-freeze` for every baseline file at the tagged commit and writes freeze/freeze.txt, one `freeze-ok BASE` line each. Admission starts no
-# Go: it reads that file, requires `freeze-ok` for exactly the base it computed, and prints the file's sha256 and that line into its own (witnessed) output.
+# REQ-CHAIN-004-AC4 (rule 1 of the sandboxed build): the requirements tool is Go source of the tagged commit, so it no
+# longer runs inside Build. Its own job `freeze` (before Build,
+# contents: read, no secret) runs `verify-freeze` for every baseline file at the tagged commit and writes
+# freeze/freeze.txt, one `freeze-ok BASE` line each. Admission starts no
+# Go: it reads that file, requires `freeze-ok` for exactly the base it computed, and prints the file's sha256 and that
+# line into its own (witnessed) output.
 fresh; run_admit
-expect_ok "AC4 the freeze file lists freeze-ok for the base admission computed (the default file lists every baseline file of the tagged commit): admitted"
+expect_ok "AC4 the freeze file lists freeze-ok for the base admission computed (the default file lists every baseline \
+file of the tagged commit): admitted"
 n_cases=$((n_cases + 1))
 want_sha=$(sha256sum "$W/c/repo/freeze/freeze.txt" | cut -d' ' -f1)
 if [ "$RC" = 0 ] && grep -qx "freeze-file-sha256 $want_sha" "$W/c/out" && grep -qx 'freeze-ok v0.3.0' "$W/c/out"; then
-  ok "AC4 admission prints the freeze file's sha256 and its exact freeze-ok line for its base into its own output (the Build record shows what admission trusted)"
+  ok "AC4 admission prints the freeze file's sha256 and its exact freeze-ok line for its base into its own output \
+(the Build record shows what admission trusted)"
 else bad "AC4 freeze evidence in the output: exit $RC, stdout: $(head -c 300 "$W/c/out" | tr '\n' '|')"; fi
 fresh; rm -rf "$W/c/repo/freeze"; run_admit
 expect_refuse "AC4 no freeze file (the freeze job did not run or its artifact is missing) is refused" baseline freeze
@@ -695,14 +705,20 @@ expect_refuse "AC4 a freeze-ok line with more words than the base is refused" ba
 fresh; mkfreeze "freeze-failed v0.3.0"; run_admit
 expect_refuse "AC4 a line that is not freeze-ok BASE is refused" baseline freeze
 fresh; (cd "$W/c/repo/freeze" && { cat freeze.txt; echo "freeze-ok v9.9.9"; } > f2 && mv f2 freeze.txt); run_admit
-expect_refuse "AC4 a freeze file naming a baseline the tagged commit does not have is refused (every line names a baseline file of the tagged commit)" baseline freeze
-fresh; rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"; ln -s /etc/hostname "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 a freeze file naming a baseline the tagged commit does not have is refused (every line names a \
+baseline file of the tagged commit)" baseline freeze
+fresh; rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"; ln -s /etc/hostname "$W/c/repo/freeze/freeze.txt"; \
+  run_admit
 expect_refuse "AC4 a freeze file that is a symlink is refused" baseline freeze
 fresh; head -c 70000 /dev/zero | tr '\0' 'a' > "$W/c/repo/freeze/freeze.txt"; run_admit
 expect_refuse "AC4 an oversized freeze file is refused" baseline freeze
-# admission starts no Go at all: no verify-freeze, no go path, no --go option left in the file (the judge holds the same from outside: bin/chain-test-shape.py)
+fresh; : > "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 an empty freeze file is refused" baseline v0.3.0
+# admission starts no Go at all: no verify-freeze, no go path, no --go option left in the file (the judge holds the same
+# from outside: bin/chain-test-shape.py)
 n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && ! grep -Eq 'verify-freeze|GO_BIN|fscache-go|--go\b|GOTOOLCHAIN' "$BA"; then ok "AC4 bin/build-admit.py names no Go program, no verify-freeze and no --go option"
+if [ -f "$BA" ] && ! grep -Eq 'verify-freeze|GO_BIN|fscache-go|--go\b|GOTOOLCHAIN' "$BA"; then ok \
+  "AC4 bin/build-admit.py names no Go program, no verify-freeze and no --go option"
 else bad "AC4 build-admit.py still names the Go freeze check (or is missing: RED)"; fi
 # the ACs baseline of a CI patch (REQ-REL-009-AC13) goes through bin/admission-tag-signer.py baseline: its own tests and cache's auto-baseline PR
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
@@ -872,6 +888,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=156
+EXPECT_TOTAL=157
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

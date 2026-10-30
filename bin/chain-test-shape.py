@@ -263,9 +263,12 @@ ADMISSION_BASELINE = ('python3 -I bin/chain-verify.py admission-baseline --admis
     '--admission apk/ubuntu-24.04-arm/admission.json '
                       '--tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --out admission-baseline.json')
 INSTALL_GO = "bash bin/install-scanner.sh go"
-# rule 1 of the sandboxed build (ratify Oct 27): the requirements tool is Go source of the tagged commit, so its freeze check runs in a job of its own, before Build's apk job:
-# contents: read, no secret, no token, no Witness. It writes freeze/freeze.txt (one `freeze-ok BASE` line per baseline file at the tagged commit); the apk job downloads that
-# artifact and admission reads it. The pinned Go comes from the same line as Build's own install (INSTALL_GO): one pin source.
+# rule 1 of the sandboxed build (ratify Oct 27): the requirements tool is Go source of the tagged commit, so its freeze
+# check runs in a job of its own, before Build's apk job:
+# contents: read, no secret, no token, no Witness. It writes freeze/freeze.txt (one `freeze-ok BASE` line per baseline
+# file at the tagged commit); the apk job downloads that
+# artifact and admission reads it. The pinned Go comes from the same line as Build's own install (INSTALL_GO): one pin
+# source.
 FREEZE_RUN = "bash bin/build-freeze.sh"
 FREEZE_ARTIFACT = {"name": "freeze", "path": "freeze"}
 # REQ-CHAIN-004-AC3 (rule 62, advisor 0393 item 1; advisor Oct 12 item 4): the VM runs melange and apko, each in the job that uses it: an apk job of Build and Rebuild installs
@@ -304,8 +307,10 @@ RAPK_CHECK_RUN = 'bash bin/rebuild-records-digests.sh --check "$RAPK_RECORDS" "$
 RAPK_JOBS = {"rapk": "ubuntu-24.04", "rapk-arm": "ubuntu-24.04-arm"}
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "freeze"): dict(kind="freeze", perm=PERM_PLAIN, gh=False, matrix=False, up=[("freeze", "freeze")]),      # judged by freeze_job(): no Witness step, no mode, no tools
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze", down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True,
+    # judged by freeze_job(): no Witness step, no mode, no tools
+    ("build", "freeze"): dict(kind="freeze", perm=PERM_PLAIN, gh=False, matrix=False, up=[("freeze", "freeze")]),
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze",
+    down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
@@ -347,7 +352,8 @@ def stage(path, family, allowed_path=None):
     if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed-local.sh)")
     jobs = d.get("jobs") or {}
     names = ("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("freeze", "apk", "assemble")
-    if "verify-freeze" in text: bad.append("a stage file names verify-freeze: only bin/build-freeze.sh, run by the freeze job of Build, may run it")
+    if "verify-freeze" in text: bad.append("a stage file names verify-freeze: only bin/build-freeze.sh, run by the "
+        "freeze job of Build, may run it")
     if set(jobs) != set(names):
         return bad + ["exactly the jobs %s required (one stage = one file = one identity), found %s" % (" and ".join(names), sorted(jobs))]
     allowed = None
@@ -357,7 +363,10 @@ def stage(path, family, allowed_path=None):
         except (OSError, ValueError):
             bad.append("the allowed-actions list %s is unreadable (fail closed)" % allowed_path)
     for name in names:
-        bad += ["%s: %s" % (name, m) for m in (freeze_job(jobs[name], allowed) if name == "freeze" else job(jobs[name], family, name, allowed))]
+        if name != "freeze" and "build-freeze" in json.dumps(jobs[name]):
+            bad.append("%s: only the freeze job runs bin/build-freeze.sh (it starts go of the tagged tree)" % name)
+        bad += ["%s: %s" % (name, m) for m in (freeze_job(jobs[name], allowed) if name == "freeze" else job(jobs[name],
+            family, name, allowed))]
     return bad
 
 
@@ -369,31 +378,58 @@ def pinned(uses, prefix, allowed):
 
 
 def freeze_job(j, allowed):
-    """The freeze job: a runner of its own, contents: read, no needs, no outputs, no env, no secret; checkout, the pinned Go, bin/build-freeze.sh, one upload. Nothing else."""
+    """The freeze job: a runner of its own, contents: read, no needs, no outputs, no env but the guard's, no secret.
+    Steps: checkout,
+    the mode guard (no if), then in release mode only the pinned Go, bin/build-freeze.sh and one upload. Nothing
+    else."""
     bad = []
-    if set(j) - {"runs-on", "permissions", "steps", "timeout-minutes"}: bad.append("job keys outside the allowlist: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "timeout-minutes"}))
-    if j.get("runs-on") != "ubuntu-24.04": bad.append("the freeze job must run directly on the ubuntu-24.04 VM, got %r" % j.get("runs-on"))
-    if j.get("permissions") != PERM_PLAIN: bad.append("permissions must be exactly %s (no token, no write), got %s" % (PERM_PLAIN, j.get("permissions")))
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
+    if set(j) - keys: bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
+    if j.get("runs-on") != "ubuntu-24.04": bad.append("the freeze job must run directly on the ubuntu-24.04 VM, got "
+        "%r" % j.get("runs-on"))
+    if j.get("permissions") != PERM_PLAIN: bad.append("permissions must be exactly %s (no token, no write), got "
+        "%s" % (PERM_PLAIN, j.get("permissions")))
     steps = j.get("steps") or []
-    want = 4
-    if len(steps) != want: bad.append("%d steps, the grammar has %d (checkout, the Go install, the freeze script, the upload; no extra step)" % (len(steps), want)); return bad
+    for s_ in steps:
+        u_ = (s_.get("uses") or "").split(" ")[0]
+        if allowed is not None and PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the "
+            "allowed-actions list" % u_)
+    want = 5
+    if len(steps) != want: bad.append("%d steps, the grammar has %d (checkout, the mode guard, the Go install, the "
+        "freeze script, the upload)" % (len(steps), want)); return bad
     s = steps[0]
-    if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout", allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
-        bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly %s" % CHECKOUT_WITH)
-    for k, cmd in ((1, INSTALL_GO), (2, FREEZE_RUN)):
+    if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout",
+        allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
+        bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly "
+            "%s" % CHECKOUT_WITH)
+    s = steps[1]
+    if set(s) != {"name", "env",
+        "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
+        bad.append("step 2 must be exactly env %s, run: %s, and no if (the mode guard)" % (MODE_GUARD_ENV,
+            MODE_GUARD_RUN))
+    for k, cmd in ((2, INSTALL_GO), (3, FREEZE_RUN)):
         s = steps[k]
-        if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd: bad.append("step %d must be exactly: run %s (no env, no if, no secret)" % (k + 1, cmd))
-    s = steps[3]
-    if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed) or (s.get("with") or {}) != FREEZE_ARTIFACT:
-        bad.append("step 4 must be a pinned actions/upload-artifact with exactly name freeze and the ONE path freeze and no if")
+        if set(s) - {"run", "name", "if"} or str(s.get("run") or "").strip() != cmd or s.get("if") != MODE_RELEASE_IF:
+            bad.append("step %d must be exactly: run %s under if: %s (no env, no secret)" % (k + 1, cmd,
+                MODE_RELEASE_IF))
+    s = steps[4]
+    if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
+            or (s.get("with") or {}) != FREEZE_ARTIFACT or s.get("if") != MODE_RELEASE_IF):
+        bad.append("step 5 must be a pinned actions/upload-artifact with exactly name freeze and the ONE path freeze "
+            "under if: %s" % MODE_RELEASE_IF)
     return bad
 
 
 def job(j, family, name, allowed):
     spec = JOBS[(family, name)]
     bad = []
-    keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | (({"strategy"} | ({"needs"} if spec.get("needs") else set())) if spec["matrix"] else (set() if spec.get("runner") else {"needs"}))
-    if spec.get("needs") and j.get("needs") not in (spec["needs"], [spec["needs"]]): bad.append("%s must need exactly %s, got %s" % (name, spec["needs"], j.get("needs")))
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
+    if spec["matrix"]:
+        keys |= {"strategy"} | ({"needs"} if spec.get("needs") else set())
+    elif not spec.get("runner"):
+        keys |= {"needs"}
+    if spec.get("needs") and j.get("needs") not in (spec["needs"], [spec["needs"]]):
+        bad.append("%s must need exactly %s, got %s" % (name, spec["needs"], j.get("needs")))
     if spec.get("expose") or spec.get("expose_records") or spec.get("expose_rapk"): keys.add("outputs")
     if set(j) - keys:
         bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
@@ -439,10 +475,14 @@ def job(j, family, name, allowed):
             kind = ("checkout" if k == 0 and set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/checkout", allowed) and (x.get("with") or {}) == CHECKOUT_WITH
                     else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
                     else "install" if set(x) <= {"name", "run"} and run_ in PRE_INSTALLS
-                    else "freeze-download" if set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/download-artifact", allowed) and (x.get("with") or {}) == FREEZE_ARTIFACT else None)
+                    else "freeze-download" if (set(x) <= {"uses", "with", "name", "if"}
+                                               and pinned(x.get("uses"), "actions/download-artifact", allowed)
+                                               and (x.get("with") or {}) == FREEZE_ARTIFACT
+                                               and x.get("if") == MODE_RELEASE_IF) else None)
             if kind is None:
                 bad.append("step %d runs before admission (the first step that runs bin/witnessed-local.sh) and is not the checkout, the mode guard or a checksum-pinned "
-                           "install line or the one download of the freeze result: %s (nothing with an env, a token, a secret, a build command, another download or an upload may come before admission)"
+                           "install line or the one download of the freeze result: %s (nothing with an env, a token, "
+                           "a secret, a build command, another download or an upload may come before admission)"
                            % (k + 1, sorted(x)))
     i = 0
     s = steps[i]; i += 1
@@ -458,7 +498,8 @@ def job(j, family, name, allowed):
     if spec.get("setup_go"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != INSTALL_GO:
-            bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of admission's verify-freeze, right after Witness)" % (i, INSTALL_GO))
+            bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of the melange build, right "
+                "after Witness)" % (i, INSTALL_GO))
     for cmd in spec["tools"]:       # an apk job installs melange only, an assemble job apko only (advisor Oct 12, item 4)
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
@@ -470,8 +511,10 @@ def job(j, family, name, allowed):
                        "bin/install-build-tools.sh and before the downloads; no env, no if, no continue-on-error, no other argument, no other install)" % (i, cmd))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
-                or (s.get("with") or {}) != {"name": nm, "path": path_}):
+        # only the freeze result is downloaded in release mode alone
+        gated = s.get("if") == MODE_RELEASE_IF if nm == "freeze" else "if" not in s
+        if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
+                or (s.get("with") or {}) != {"name": nm, "path": path_} or not gated):
             bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
                        "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
     if spec.get("check_rapk"):       # A1: what assemble downloaded of each rapk record is what that rapk job uploaded (release mode only), checked before anything is built
@@ -721,15 +764,17 @@ def listed(path, root):
 # text or does not parse is a finding (its children could not be followed). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on
 # the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the second review), and
-# install-build-tools.sh compiles nothing.
-# THE ONE KNOWN FINDING on the real tree: the admission step in bin/build-admit.py runs
-# `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported (rule 1 forbids it) while
-# its two lines are in the file; the decision is its own job before Build in stage-build.yml, in its own pull request.
-# Until that lands rule 1 is NOT done.
+# install-build-tools.sh compiles nothing. bin/build-freeze.sh is not read either: stage() lets only the freeze job run
+# it.
+# No finding is known on the real tree. The admission step in bin/build-admit.py runs no go: the requirements tool's
+# freeze check is the job `freeze` before Build (bin/build-freeze.sh), and admission reads its file.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
             "bin/chain-hostile-step.sh", "bin/rebuild-records-digests.sh")
-NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh",
+           # runs only in the freeze job, outside Build; it starts go of the tagged tree, so stage() allows it on that
+           # job's lines only
+           "bin/build-freeze.sh")
 NS_NAME = re.compile(r"(?<![\w/.-])(?:\./)?(bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)")
 
 
@@ -817,17 +862,12 @@ def ns_shell(path, name):
 
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
-NS_KNOWN_FILE = "bin/build-admit.py"
-NS_KNOWN_LINES = (      # the two physical lines of the admission step's go run
-    '    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".",'
-    ' "verify-freeze", base],',
-    '        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))')
 NS_SHA = {
     "bin/admission-tag-signer.py": "03b66ea50f873de93047bfb4becd305ba6c81fcb1506584990ade81bd16bab40",
     "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
-    "bin/build-admit.py": "a18f86d8d7f5919c5457bfd3075a09174d177c7128f54c55aca403fe6fc3b027",
+    "bin/build-admit.py": "d1a03dd469a89043230c0fe7bf49ced22799f1714226c897215e9b0985008e59",
     "bin/build-apk-helper.py": "b8e1f71b9717e681d67eacb6b4eea7d5967d3fb45dac0d2c66874fc8bff26bd1",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
@@ -848,7 +888,7 @@ NS_SHA = {
 
 
 def ns_held(path, raw):
-    """A closure file held whole by sha256; the one known finding is reported while its lines are in the file."""
+    """A closure file held whole by sha256."""
     want, got = NS_SHA.get(path), hashlib.sha256(raw).hexdigest()
     bad = []
     if want is None:
@@ -856,13 +896,6 @@ def ns_held(path, raw):
     elif got != want:
         bad.append("%s: sha256 %s is not the held %s; a file held whole changes only with a re-pin of NS_SHA in "
                    "bin/chain-test-shape.py (short-list review, with this file's diff)" % (path, got[:12], want[:12]))
-    if path == NS_KNOWN_FILE:
-        text = raw.decode("utf-8", "replace").split("\n")
-        for n in range(1, len(text)):
-            if (text[n - 1], text[n]) == NS_KNOWN_LINES:
-                bad.append("%s:%d `%s` runs go of the tagged tree outside melange (sandboxed-build rule 1 is NOT done: "
-                           "the admission step's go run is its own job before Build)"
-                           % (path, n, text[n - 1].strip()[:100]))
     return bad
 
 

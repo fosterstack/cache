@@ -138,14 +138,20 @@ def stage_text(family):
     for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("freeze", "apk", "assemble")):
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
-        if job == "freeze":      # rule 1: the requirements tool's freeze check in a job of its own (no Witness, no mode, no tools)
+        if job == "freeze":      # rule 1: the freeze check in a job of its own (no Witness, no tools)
             out += "    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n"
-            out += "      - uses: %s # v7.0.1\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n" % CHECKOUT
-            out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
-            out += "      - name: the freeze check of every baseline file\n        run: %s\n" % S.FREEZE_RUN
-            out += "      - uses: %s # v7.0.1\n        with:\n          name: freeze\n          path: freeze\n" % UPLOAD
+            out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
+            out += "          persist-credentials: false\n          fetch-depth: 0\n"
+            IF = "        if: %s\n" % S.MODE_RELEASE_IF
+            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n"
+            out += "        run: %s\n" % S.MODE_GUARD_RUN
+            out += "      - name: install Go (pinned by checksum)\n%s        run: %s\n" % (IF, S.INSTALL_GO)
+            out += "      - name: the freeze check of every baseline file\n%s        run: %s\n" % (IF, S.FREEZE_RUN)
+            out += "      - uses: %s # v7.0.1\n%s        with:\n" % (UPLOAD, IF)
+            out += "          name: freeze\n          path: freeze\n"
             continue
-        out += ("    needs: freeze\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
+        out += ("    needs: freeze\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n"
+                "        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
                 else "    runs-on: %s\n" % sp["runner"] if sp.get("runner")
                 else "    needs: [rapk, rapk-arm]\n    runs-on: ubuntu-24.04\n" if family == "rebuild"
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
@@ -164,7 +170,10 @@ def stage_text(family):
         out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
-        for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
+        for name, path in sp["down"]:
+            ifl = "        if: %s\n" % S.MODE_RELEASE_IF if name == "freeze" else ""
+            out += "      - uses: %s # v5.0.0\n%s        with:\n" % (DOWNLOAD, ifl)
+            out += "          name: %s\n          path: %s\n" % (name, path)
         if sp.get("check_rapk"):
             out += "      - name: check the rapk records against their jobs' outputs\n        if: %s\n        env:\n" % S.MODE_RELEASE_IF + "".join("          %s: %s\n" % kv for kv in S.RAPK_CHECK_ENV.items()) + "        run: %s\n" % S.RAPK_CHECK_RUN
         out += witness_block(sp)
@@ -351,6 +360,35 @@ st s_bt_tool   "004-AC3 a third build tool through the same installer" "download
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
 st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+# rule 1 of the sandboxed build: the freeze job's grammar (mode guard first, every other step and apk's download
+# release-only)
+# and the two places the freeze script may not appear
+RIF='if: ${{ inputs.mode == '"'release'"' }}\n'
+FZGO='      - name: install Go (pinned by checksum)\n        '"$RIF"'        run: bash bin/install-scanner.sh go\n'
+FZRUN='      - name: the freeze check of every baseline file\n        '"$RIF"'        run: bash bin/build-freeze.sh\n'
+FZGUARD='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        '\
+'run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
+st s_fz_goif  "AC4 the freeze job's Go install without its release-mode if" "freeze: step 3" "$FZGO" "$GOINST"
+st s_fz_runif "AC4 the freeze job's script step without its release-mode if" "freeze: step 4" \
+       '        '"$RIF"'        run: bash bin/build-freeze.sh' '        run: bash bin/build-freeze.sh'
+st s_fz_upif  "AC4 the freeze job's upload without its release-mode if" "freeze: step 5" \
+       '        '"$RIF"'        with:\n          name: freeze\n          path: freeze\n  apk:' \
+       '        with:\n          name: freeze\n          path: freeze\n  apk:'
+st s_fz_guard "AC4 the freeze job has no mode guard (a mixed-case mode value could pass the ifs)" "freeze: " \
+  "$FZGUARD" ''
+st s_fz_gcond "AC4 the freeze job's mode guard under an if" "freeze: step 2" \
+       "$FZGUARD" '      - name: the mode is release or snapshot\n        '"$RIF"'        env:\n          MODE: ${{ '\
+'inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
+st s_fz_dlif  "AC4 apk's download of the freeze result without its release-mode if" "name freeze" \
+       '        '"$RIF"'        with:\n          name: freeze\n          path: freeze\n      - name: apk' \
+       '        with:\n          name: freeze\n          path: freeze\n      - name: apk'
+st s_fz_apk   "AC4 bin/build-freeze.sh run by a step of the apk job (NS_SKIP leaves it unread: only the freeze job \
+may run it)" \
+       "only the freeze job runs bin/build-freeze.sh" "$WINST" '      - name: freeze in apk\n        run: bash '\
+'bin/build-freeze.sh\n'"$WINST"
+st s_fz_vf    "AC4 verify-freeze named by a step of the assemble job" "names verify-freeze" "$APKINST" \
+       '      - name: freeze in assemble\n        run: cd tools/requirements && go run . verify-freeze '\
+'v0.3.0\n'"$APKINST"
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
 CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
@@ -392,11 +430,16 @@ st s_go_other "AC4 the Go install line names another target" "install-scanner.sh
 FXD_4='run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
 st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' "$FXD_4"
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
-st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
+st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n     '\
+'   run: bash bin/install-scanner.sh go\n      - name: install melange' 'name: install Go (pinned by checksum)\n      '\
+'  if: always()\n        run: bash bin/install-scanner.sh go\n      - name: install melange'
 # Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
 # bin/witnessed-local.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
 # checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
-st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" "before admission" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
+st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" \
+  "before admission" 'name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n      - '\
+'name: install melange' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token '\
+'}}\n        run: bash bin/install-scanner.sh go\n      - name: install melange'
 st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
 st s_pre_build "AC4 a build command before admission" "before admission" "$GOINST" "$GOINST      - name: build early\n        run: bash bin/build-apk.sh --variant standard\n"
 st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
@@ -520,6 +563,10 @@ st s_after "AC2 a third-party action after Witness" "step" \
 st s_comp   "AC2 a local composite action step" "step" '      - name: apk under Witness' '      - uses: ./.github/actions/x\n      - name: apk under Witness'
 st s_docker "AC2 a docker:// step" "step" '      - name: apk under Witness' '      - uses: docker://alpine:3\n      - name: apk under Witness'
 rb() { replace "$work/rebuild.yml" "$work/$1.yml" "$4" "$5" && expect caught "$2" "$3" stage "$work/$1.yml" rebuild "$AL"; return 0; }
+rb s_fz_rb    "AC4 bin/build-freeze.sh run by a step of a Rebuild job (Rebuild runs no go of the tagged tree)" \
+       "only the freeze job runs bin/build-freeze.sh" '      - name: install Witness (pinned by checksum)\n' \
+       '      - name: freeze in rebuild\n        run: bash bin/build-freeze.sh\n      - name: install Witness (pinned '\
+'by checksum)\n'
 rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed-local.sh rebuild bin' \
        'witnessed-local.sh build bin'
 rb r_up   "005-AC4 Rebuild uploads anything but its verdict directory" "upload-artifact" 'name: witness-rebuild' 'name: dist'
@@ -2769,16 +2816,9 @@ assert seen and not bad, bad
 for p in seen + [".github/policy/chain-scripts.json"]:
     os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
     shutil.copy(os.path.join(root, p), os.path.join(dst, p))
-# The real tree has one known finding, the admission step's `go run`; the fixture drops it so each row proves its own.
-adm = dst + "/bin/build-admit.py"
-lines = open(adm).read().split("\n")
-hit = [n for n, l in enumerate(lines) if "[ctx.go," in l and '"verify-freeze"' in l]
-assert len(hit) == 1, "the admission call moved: move this replacement with it"
-lines[hit[0]:hit[0] + 2] = ["    rc, err = 0, b\"\""]      # the call is two physical lines
-open(adm, "w").write("\n".join(lines))
 PY
 # the lists of the closure files for the loops below, and a copy of the judge whose sha256 table matches this fixture
-# (the fixture drops one line of build-admit.py)
+# (the fixture is a copy of the real closure)
 python3 - "$root" "$shape" > "$work/ns.held.list" 2> "$work/ns.sh.list" <<'PY' || true
 import importlib.util, sys
 root, shape = sys.argv[1:3]
@@ -2803,7 +2843,7 @@ open(out, "w").write(s)
 PY
 # the fixture rows below run this judge; the real tree is judged by the real one again after them
 shape_real="$shape"; shape="$work/shape-fx.py"
-expect ok "nosource fixture: the closure of the stage scripts is clean without the one known finding" "" \
+expect ok "nosource fixture: the closure of the stage scripts is clean" "" \
   nosource "$work/ns"
 nsfresh() { # a fresh copy; when the fixture is missing the copy is an empty tree, so each row still ends in one verdict
   rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm" 2> /dev/null || mkdir -p "$work/nsm/bin" "$work/nsm/.github/policy"
@@ -2853,6 +2893,10 @@ PY
   expect caught "$1 $2" "$3" nosource "$work/nsm"
 }
 CNT="commands, the grammar has"; EXP=": expected"
+# the admission go run of the tagged tree, put back into build-admit.py, is a finding (the file is held whole by sha256)
+nsa PLANT "nosource the old admission go run put back into build-admit.py is a finding" "NS_SHA" bin/build-admit.py \
+  '    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", '\
+'base],'
 # option 1: 21 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
 # the stage lines run python3 -I
 while read -r f; do
@@ -3231,10 +3275,8 @@ expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 shape="$shape_real"
-real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
-if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:479"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
-  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:479) is the ONE finding"
-else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:479 -> ${real_json:0:300}"; fi
+expect ok "nosource the real tree: no finding (the admission step runs no go; the freeze check is the job freeze)" "" \
+  nosource "$root"
 ns_hits=""
 for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
   ns_hits+=$(grep -rnw "NS_$n" "$root/bin" || true)
@@ -3592,7 +3634,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1266
+EXPECT=1276
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

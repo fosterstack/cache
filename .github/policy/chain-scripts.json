@@ -529,7 +529,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "a18f86d8d7f5919c5457bfd3075a09174d177c7128f54c55aca403fe6fc3b027",
+      "sha256": "d1a03dd469a89043230c0fe7bf49ced22799f1714226c897215e9b0985008e59",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -539,16 +539,19 @@
           "text": "`git show REV:PATH`",
           "why": "a docstring naming the path operand of git show; nothing is set"
         }
-      ],
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "GO_BIN = \"/usr/local/bin/fscache-go/bin/go\"",
-          "line_sha256": "b0307bc8efcdaafbd89419f85d8a61f4af5918195bfe389b355fc0db4ba5b41f",
-          "count": 1,
-          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); admission runs exactly this go for the freeze check, never the runner's"
-        }
       ]
+    },
+    {
+      "path": "bin/build-freeze.sh",
+      "tools": [
+        "go",
+        "basename",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the freeze job's script: runs the requirements tool's verify-freeze of the tagged tree with the pinned Go for each release baseline file and writes one freeze-ok line per file; it runs only in the freeze job of stage-build.yml, which holds no token and no Witness step",
+      "sha256": "9b0f340a5f73861eaebf3d8a94d0ee6db5480b237553866de174769f883dc715"
     },
     {
       "path": "bin/build-version-check.py",
