@@ -1069,6 +1069,13 @@ def _run_docker(cmd):
         raise RuntimeError("docker timed out") from None
 
 
+def _one_line(error):
+    """An error as one line. Its text can hold a pull request's file path, and a path may contain newlines;
+    a log line that starts with :: is an Actions command, and the runner reads ##[command] anywhere in a line."""
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(error)).split())
+    return text.replace("##[", "## [")
+
+
 def _cosign_verify_main(argv):
     ap = argparse.ArgumentParser(prog="pin-age-check.py cosign-verify")
     ap.add_argument("--root", default=".")
@@ -1088,12 +1095,12 @@ def _cosign_verify_main(argv):
         if not isinstance(a.cosign_image, str) or not re.fullmatch(by_digest, a.cosign_image):
             raise ValueError("the cosign image must be named by digest")
     except (OSError, ValueError, KeyError) as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     try:
         results = cosign_verify_images(a.root, a.head, a.cosign_image, _run_docker)
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     if not results:
         print("pin-age: no pinned image in the tree, nothing to verify")
@@ -1125,19 +1132,19 @@ def main(argv=None):
         base_items = inv.load_at(a.root, a.base)
         head_items = inv.load_at(a.root, a.head)
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {e}", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)}", file=sys.stderr)
         return 2
     moved = inv.moved(base_items, head_items)
     try:
         return _run(a, moved, fx, now)
     except RuntimeError as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
         print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
         return 2
     except CouldNotLook as e:
-        print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass: re-run the check)", file=sys.stderr)
         return 2
 
 
