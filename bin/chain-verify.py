@@ -73,6 +73,7 @@ STMT_TYPES = ("https://in-toto.io/Statement/v0.1", "https://in-toto.io/Statement
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:digests.json"
 STAGES = ("build", "sign", "rebuild", "check", "release")
 WITNESS_STAGES = ("build", "rebuild", "check")
+ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
 
 
 TAG_GRAMMAR = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?"
@@ -433,8 +434,21 @@ def check_record_type(stage, pol, ptype, payload):
     if pt == COLL:
         if stage not in WITNESS_STAGES:
             refuse(stage, "predicate type %s (a witness collection) is not the %s stage's record type" % (pt, stage))
+        collection_ref(stage, pol, stmt)
         return stmt
     refuse(stage, "predicate type %s is not allowed for stage %s" % (pt, stage))
+
+
+def collection_ref(stage, pol, stmt):
+    """Tag binding of a Witness collection: the environment attestor (witnessed-local.sh runs it) records GITHUB_REF, and it must be the
+    policy's ref, so a collection made at another tag, an rc tag or a branch (same digests) is refused. Exactly one environment attestor."""
+    atts = (stmt.get("predicate") or {}).get("attestations") if isinstance(stmt, dict) else None
+    envs = [a for a in atts if isinstance(a, dict) and a.get("type") == ENV_ATTESTOR] if isinstance(atts, list) else []
+    if len(envs) != 1:
+        refuse(stage, "ref: the collection holds %d environment attestations, not exactly one" % len(envs))
+    found = ((envs[0].get("attestation") or {}).get("variables") or {}).get("GITHUB_REF") if isinstance(envs[0].get("attestation"), dict) else None
+    if not isinstance(found, str) or found != pol.get("ref"):
+        refuse(stage, "ref: the ref inside the collection (%s) is not the policy's ref %s" % (json.dumps(found), pol.get("ref")))
 
 
 def verify_record(pol, stage, rec_path, now, tmp, rekor_path=None):
@@ -1207,7 +1221,7 @@ def sr_received(stage, rec_dir, art_dir, name):
     return got
 
 
-def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
+def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     """Checks one record directory; returns (step, payload bytes, [data file names])."""
     steps = SR_STEPS[stage]
     names = sorted(os.listdir(rec_dir))
@@ -1252,6 +1266,11 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     extra, missing = sorted(set(kinds) - set(SR_ATTESTORS)), sorted(set(SR_ATTESTORS) - set(kinds))
     if extra or missing or len(kinds) != len(set(kinds)):
         refuse(stage, "attestors: exactly %s are allowed (beyond: %s; missing: %s; a repeated attestor is refused too)" % (", ".join(SR_ATTESTORS), " ".join(extra) or "none", " ".join(missing) or "none"))
+    for att in atts:         # the KMS key never signs a collection of another ref: the environment attestor's GITHUB_REF is Sign's own
+        if ATTESTOR_URI.fullmatch(att["type"]).group(1) == "environment":
+            found = (att.get("attestation") or {}).get("variables", {}).get("GITHUB_REF") if isinstance(att.get("attestation"), dict) else None
+            if not isinstance(found, str) or found != ref:
+                refuse(stage, "ref: the ref inside %s/%s (%s) is not Sign's ref %s" % (name, fname, json.dumps(found), ref))
     subs = typed_subjects(stage, stmt)
     commits = [x["name"][len(GIT_COMMIT_PREFIX):] for x in subs if x["name"].startswith(GIT_COMMIT_PREFIX)]
     if commits != [commit]:
@@ -1390,7 +1409,7 @@ def cmd_sign_records(a):
         if name in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or not os.path.isdir(rec_dir) or os.path.islink(rec_dir):
             refuse(stage, "record: %r is not a distinct plain record directory" % rec_dir)
         seen.add(name)
-        step, payload, data, prods = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha)
+        step, payload, data, prods = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha, os.environ.get("GITHUB_REF", ""))
         plan.append((rec_dir, name, step, payload, data))
         check_products[name] = prods
     if stage == "check":

@@ -166,7 +166,7 @@ def prov_predicate(ptype, predicate, raw=False, ref=T):
 # (REQ-CHAIN-004-AC13, closed names: build/apk for Build, rebuild/rapk for Rebuild). Every fixture is named for its stage; the Check fixtures keep
 # build, the one name that tests the refusals of a record presented to the wrong stage (the name check does not apply to the Check stage).
 def record(name, ptype, subjects, key="rel", signed=True, stmt="v1", dsse=DSSE, payload=None, coll_file=None, coll_variant=None, coll_name=None,
-           predicate=None, raw_predicate=False, ref=T):
+           predicate=None, raw_predicate=False, ref=T, coll_ref=None, coll_env=None):
     """A DSSE envelope with one signature by `key` over the PAE and no certificate, intermediates or timestamps: the form Witness and cosign write for a KMS key."""
     if payload is None and coll_file:
         # REAL Witness collection shape (in-toto-witness docs/tutorials/artifact-policy.md:58-70): the product attestor names the
@@ -192,7 +192,10 @@ def record(name, ptype, subjects, key="rel", signed=True, stmt="v1", dsse=DSSE, 
                     "material": [wrong, nm(P + "material/v0.1/file:digests.json"), subj[1]],
                     # the right file name but its digest set has only a gitoid, no sha256 key
                     "gitoidonly": [dict(subj[0], digest={k: v for k, v in subj[0]["digest"].items() if k != "sha256"}), subj[1]]}[coll_variant]
-        att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("environment", "git", "product", "command-run")]
+        # the environment attestor records GITHUB_REF (witnessed-local.sh runs it); the verifier binds the collection to the policy's ref by it
+        env_att = coll_env if coll_env is not None else [{"os": "linux", "variables": {"GITHUB_REF": coll_ref or ref}}]
+        att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("git", "product", "command-run")]
+        att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": e} for e in env_att] + att
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": coll_name or "build", "attestations": att}, "subject": subj}).encode()
     if payload is None:
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": prov_predicate(ptype, predicate, raw_predicate, ref),
@@ -211,6 +214,7 @@ PROV = "https://slsa.dev/provenance/v1"
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
 POLT = "https://witness.testifysec.com/policy/v0.1"
 D = {"image-production": "sha256:" + "a" * 64, "image-fips": "sha256:" + "b" * 64, "apk": "sha256:" + "c" * 64}
+ENVATT = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": T}}}]
 def dj(name, d): json.dump(d, open(p(name), "w"))
 dj("digests.json", D)
 dj("digests-other.json", dict(D, apk="sha256:" + "d" * 64))
@@ -289,7 +293,18 @@ add("build_badsubj", COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT[
 add("build_coll_v1", COLL, None, stmt="v1", coll_file="digests.json")
 add("build_coll_plus", COLL, None, stmt="v0.1", coll_file="digests-extra.json")
 for v in ("wrongname", "dup", "dup2", "bak", "xname", "evilhost", "material", "gitoidonly"): add("build_coll_" + v, COLL, None, stmt="v0.1", coll_file="digests.json", coll_variant=v)
+add("build_coll_dry", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref=DRYREF)           # a dry run's Build ran on the branch
+add("build_coll_badval_dry", COLL, None, stmt="v0.1", coll_file="digests-badval.json", coll_ref=DRYREF)
 add("build_coll_swapped", COLL, None, stmt="v0.1", coll_file="digests-swapped.json")
+# tag binding (the environment attestor's GITHUB_REF is compared with the policy's ref): rc tag, other tag, branch, no variable, no attestor, two attestors
+add("build_coll_rcref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref=TRC)
+add("build_coll_otherref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref=T2)
+add("build_coll_branchref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref="refs/heads/v0.3.0")
+add("build_coll_novar", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": {"GITHUB_SHA": "f" * 40}}])
+add("build_coll_noenv", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[])
+add("build_coll_twoenv", COLL, None, stmt="v0.1", coll_file="digests.json",
+    coll_env=[{"os": "linux", "variables": {"GITHUB_REF": T}}, {"os": "linux", "variables": {"GITHUB_REF": T2}}])
+add("build_coll_refnotstr", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": {"GITHUB_REF": [T]}}])
 for k in FMT: add("build_coll_" + k, COLL, None, stmt="v0.1", coll_file="digests-%s.json" % k)
 add("check_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
 add("rebuild_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
@@ -418,9 +433,9 @@ def _subj_payload(pt, subj, st="v1", pred=None):
     return json.dumps(o).encode()
 for _k, _v in SUBJ_BAD.items():
     add("sign_subj_" + _k, PROV, None, payload=_subj_payload(PROV, _v))
-    add("build_subj_" + _k, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, _v, "v0.1", {"name": "build", "attestations": []}))
+    add("build_subj_" + _k, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, _v, "v0.1", {"name": "build", "attestations": ENVATT}))
 add("sign_subj_ok", PROV, None, payload=_subj_payload(PROV, [_G, {"name": "b", "digest": {"sha512": "b" * 128, "sha1": "c" * 40}}]))
-add("build_subj_ok", COLL, None, stmt="v0.1", payload=_subj_payload(COLL, [{"name": "f", "digest": {"sha256": "a" * 64, "gitoid:sha1": "gitoid:blob:sha1:" + "b" * 40}}], "v0.1", {"name": "build", "attestations": []}))
+add("build_subj_ok", COLL, None, stmt="v0.1", payload=_subj_payload(COLL, [{"name": "f", "digest": {"sha256": "a" * 64, "gitoid:sha1": "gitoid:blob:sha1:" + "b" * 40}}], "v0.1", {"name": "build", "attestations": ENVATT}))
 add("sign_type_v02", PROV, None, payload=json.dumps({"_type": "https://in-toto.io/Statement/v0.2", "predicateType": PROV, "predicate": SLSA_OK, "subject": [_G]}).encode())
 add("sign_ptype_num", PROV, None, payload=json.dumps({"_type": STMT["v1"], "predicateType": 5, "predicate": SLSA_OK, "subject": [_G]}).encode())
 open(p("subj-bad.txt"), "w").write(" ".join(sorted(SUBJ_BAD)))
@@ -436,7 +451,7 @@ add("build_baddigest", COLL, None, stmt="v0.1", payload=json.dumps({"_type": STM
 # AC8 (Codex A/B r2): a SIGNED collection whose environment record names a token variable is refused by the next stage's verifier (verify and stage-start),
 # whichever ACTIONS_ID_TOKEN_REQUEST_ name it is, not from a fixed list; the same record without the variable is accepted
 def _envrec(var):
-    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {var: "x"}}}]
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {"GITHUB_REF": T, var: "x"}}}]
     return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build", "attestations": att},
                        "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "1" * 64}}]}).encode()
 add("build_env_custom", COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
@@ -468,7 +483,8 @@ dj("items-other.json", {"image-production": D["image-production"], "image-fips":
 def _prods(items_name, digests_name="digests.json"):
     return [{"name": PRD + "digests.json", "digest": {"sha256": _fsha(digests_name)}}, {"name": PRD + "items.json", "digest": {"sha256": _fsha(items_name)}},
             {"name": "https://witness.dev/attestations/git/v0.1/commithash:" + "f" * 40, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + "f" * 40}}]
-def _coll(step, subj): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": []}, "subject": subj}).encode()
+def _envatt(ref): return [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": ref}}}]
+def _coll(step, subj, ref=T): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": _envatt(ref)}, "subject": subj}).encode()
 add("bi_ok", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 add("bi_otheritems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
 add("bi_noitems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
@@ -483,10 +499,10 @@ _PADM = {"name": PRD + "admission-baseline.json", "digest": {"sha256": _fsha("ad
 add("bi_adm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM]))
 add("bi_adm_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM, dict(_PADM, digest={"sha256": _fsha("admission-baseline-other.json")})]))
 add("bi_adm_material", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
-def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None):
+def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T):
     add(name, COLL, None, stmt="v0.1", signed=signed, key=key,
         payload=_coll(step, subj if subj is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}},
-                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": "9" * 64}}]))
+                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": "9" * 64}}], ref))
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("c_" + _sn, _sn)
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("co_" + _sn, _sn, digests="digests-other.json")      # all four agree with each other, not with Build's list
 _chk("c_arm64_job", "check-arm64"); _chk("c_runtime_arm64name", "arm64")
@@ -541,18 +557,18 @@ _gv("gv_nomat", mats=[]); _gv("gv_otherkey", key="other"); _gv("gv_unsigned", si
 dj("admission-baseline-rc.json", {"baseline": "requirements/releases/v0.3.0-rc1.yaml", "baseline_version": "v0.3.0-rc1", "sha": "c" * 40, "tag": "v0.3.0-rc1"})
 dj("admission-baseline-final.json", {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.0"})
 def _padm(n): return dict(_PADM, digest={"sha256": _fsha(n)})
-add("rc_build", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")]))
-add("rc_build_final", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-final.json")]))     # Q2a: Build's record of the run for the FINAL tag
-add("rc_build_noadm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+add("rc_build", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], TRC))
+add("rc_build_final", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-final.json")], TRC))     # Q2a: Build's record of the run for the FINAL tag
+add("rc_build_noadm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), TRC))
 _RCC = os.environ.get("RC_COMMIT") or ("f" * 40)
 def _src(commit): return {"buildDefinition": dict(slsa_ok(TRC)["buildDefinition"], resolvedDependencies=[{"uri": "git+https://github.com/fosterstack/cache@" + TRC, "digest": {"gitCommit": commit}}])}
 add("rc_sign", PROV, D, ref=TRC, predicate=_src(_RCC))
 add("rc_sign_othersrc", PROV, D, ref=TRC, predicate=_src("e" * 40))
 add("rc_sign_nosrc", PROV, D, ref=TRC, predicate={"buildDefinition": dict(slsa_ok(TRC)["buildDefinition"], resolvedDependencies=[])})
-add("rc_rebuild", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
-add("rc_rebuild_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
-for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn)
-_chk("rc_c_scanners_otherkey", "scanners", key="other")           # a Check record signed by a key the manifest does not name
+add("rc_rebuild", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild", coll_ref=TRC)
+add("rc_rebuild_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild", coll_ref=TRC)
+for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn, ref=TRC)
+_chk("rc_c_scanners_otherkey", "scanners", key="other", ref=TRC)           # a Check record signed by a key the manifest does not name
 _HF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
        "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
@@ -846,6 +862,9 @@ for c in other:"a digest that differs" extra:"an extra entry" subset:"a missing 
 done
 expect_refuse "001-AC2 Build's record for a different file than the one given (extra entries attested) is refused" "digest" $(S build_coll_plus) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record for the swapped file is refused against the real list" "digest" $(S build_coll_swapped) --digests "$work/digests.json"
+for c in rcref:"the rc tag (same digests, other ref)" otherref:"another tag" branchref:"a branch named like the tag" novar:"no GITHUB_REF" noenv:"no environment attestor" twoenv:"two environment attestors" refnotstr:"a GITHUB_REF that is not a string"; do
+  expect_refuse "004-AC1 a Witness collection whose ref is not the policy's (${c#*:}) is refused" "ref" $(S build_coll_${c%%:*}) --digests "$work/digests.json"
+done
 for v in wrongname:"file:digests.json carries the wrong hash while file:other carries the right one" dup:"two subjects named file:digests.json (wrong first)" dup2:"two subjects named file:digests.json (right first)" \
          bak:"the right hash under file:digests.json.bak (a prefix/substring match)" xname:"the right hash under file:xdigests.json (a suffix match)" \
          evilhost:"the right hash under https://evil.example/.../file:digests.json (a basename match)" material:"the right hash under .../material/v0.1/file:digests.json (a wrong attestor kind)" \
@@ -964,7 +983,7 @@ GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "
 GITHUB_REF= GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with an EMPTY ref is refused" "tag" $(TPR build_coll evempty)
 GITHUB_REF=main GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with a ref that is not fully qualified (main) is refused" "tag" $(TPR build_coll evbare)
 GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME= expect_refuse "001-AC2 an empty event name on a branch is refused" "tag" $(TPR build_coll evnone)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC2 DRY RUN: workflow_dispatch on a branch makes the policy for that ref and signs" $(TPR build_coll br1)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC2 DRY RUN: workflow_dispatch on a branch makes the policy for that ref and signs" $(TPR build_coll_dry br1)
 python3 - "$work/sd/br1" <<'PY' 2> /dev/null && ok "001-AC2 DRY RUN: the provenance says dryRun true and DRY-RUN sits beside it" || bad "001-AC2 DRY RUN: marker or dryRun flag missing"
 import base64, json, os, sys
 d = sys.argv[1]; assert os.path.exists(os.path.join(d, "DRY-RUN"))
@@ -1011,9 +1030,9 @@ expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage si
 expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage release is refused)" "dry" verify --policy "$work/policy-br.json" --stage release $(rec release_policy)
 expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names sign and the branch ref" "sign|refs/heads/hostile-proof/x" $(ST release sign) $(rec sign_br) --digests "$work/digests.json"
 DSC() { echo sign --check --signer cosign --build-record "$work/$1.json" --policy "$work/policy-br.json" --digests "$work/$2.json" --out "$work/sd/$3"; }
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll digests-other dsc1)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_badval digests-badval dsc2)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll digests dsc3)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_dry digests-other dsc1)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_badval_dry digests-badval dsc2)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_dry digests dsc3)
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 sign --check with no --now (the Sign job passes none) uses the current time" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" --digests "$work/digests.json" --out "$work/sd/nonow"
 
 # ---- REQ-CHAIN-003-AC1: each stage verifies the one before it, with the cause named ------------------------------------
@@ -1292,7 +1311,7 @@ rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --
 [ "$rc" = 0 ] && [ -s "$work/h1/fresh/provenance.json" ] && ok "H1 control: a fresh --out is created and the provenance is written there" || bad "H1 control: a fresh --out failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 # H2 (Opus r1-verify info, 001-AC2): the signed statement must equal the built one TYPE-exactly (true is not 1, 1 is not 1.0, false is not 0)
 for m in dry1 dry1f; do
-  rc=0; GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch FAKE_BUNDLE=$m run $(TPR build_coll h2-$m) || rc=$?
+  rc=0; GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch FAKE_BUNDLE=$m run $(TPR build_coll_dry h2-$m) || rc=$?
   [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
   if [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*statement" "$work/err" && [ ! -e "$work/sd/h2-$m/provenance.json" ]; then ok "H2 a dry run whose signed statement says dryRun $([ $m = dry1 ] && echo 1 || echo 1.0) where Sign built true is refused"
   else bad "H2 $m: wanted refused at sign ... statement, no provenance (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi
@@ -1307,7 +1326,7 @@ for a in ({"s": [{"n": "x", "d": {"sha256": "a"}}], "p": {"dryRun": True}}, [1, 
     assert m.same_json(a, a) and m.same_json(a, __import__("json").loads(__import__("json").dumps(a))), a
 assert not m.same_json({"a": 1}, {"a": 1, "b": 2}) and not m.same_json([1], [1, 1])
 PY
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "H2 control: the honest dry-run sign (dryRun true as built) is accepted" $(TPR build_coll h2-control)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "H2 control: the honest dry-run sign (dryRun true as built) is accepted" $(TPR build_coll_dry h2-control)
 # S3: one byte string, one spelling: a non-canonical base64 (unused padding bits set, YR== for YQ==) is refused in every field
 expect_ok     "S3 control: the padded record is accepted (each field below differs from it only in its spelling)" verify $(V) --stage sign $(rec sign_pad)
 expect_refuse "S3 a non-canonical payload base64 is refused" "envelope" verify $(V) --stage sign $(rec sign_nc_payload)
@@ -1689,7 +1708,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=669
+EXPECT=676
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
