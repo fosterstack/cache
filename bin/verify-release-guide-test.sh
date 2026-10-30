@@ -267,6 +267,12 @@ for i, l in enumerate(lines):
         if w in l: err("AC7", "line %d: %s is the keyless form; the guide verifies by the release key" % (i+1, w))
 for c, ln, bo, segs in parsed:
     if "--insecure-ignore-tlog" in c: err("AC7", "line %d: --insecure-ignore-tlog is never inside a command" % (ln+1))
+for i, l in enumerate(lines):      # an unrun offline path is marked, as every unrun flag form is
+    if "--insecure-ignore-tlog" in l and "TO-VERIFY" not in l:
+        err("AC7", "line %d: the sentence about --insecure-ignore-tlog carries a TO-VERIFY (it has not been run)" % (i+1))
+sec1 = text.split("## 1.", 1)[1].split("## 2.", 1)[0] if "## 1." in text and "## 2." in text else "TO-VERIFY"
+if "TO-VERIFY" not in sec1:
+    err("AC7", "section 1 carries a TO-VERIFY: its --key commands have not been run against a real release")
 if text.count("--insecure-ignore-tlog") != 1:
     err("AC7", "the page must say once, in prose, that --insecure-ignore-tlog verifies without network access "
         "(found %d)" % text.count("--insecure-ignore-tlog"))
@@ -304,7 +310,7 @@ The production image and the -fips image are both covered.
 - `<TAG>`: the release tag.
 - `<RELEASE_KEY>`: the release public key file.
 
-Without network access, add `--insecure-ignore-tlog`: it checks our key alone and skips the public log entry.
+Without network access, add `--insecure-ignore-tlog`: it checks our key alone and skips the public log entry. TO-VERIFY: offline.
 
 Not run before release: it needs the image in a registry.
 
@@ -412,6 +418,7 @@ mutant "verify-blob on an image placeholder not listed" "the cannot-run list doe
 mutant "a release-asset command not listed" "the cannot-run list does not name it" 's.replace("jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.bundle.json")'
 mutant "the identity form is back"      "is the keyless form"          's.replace("--key <RELEASE_KEY>", "--certificate-identity x --certificate-oidc-issuer y", 1)'
 mutant "the log is skipped in a command" "is never inside a command"    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-tlog", 1)'
+mutant "the offline sentence loses its mark" "carries a TO-VERIFY"    's.replace(" TO-VERIFY: offline.", "")'
 mutant "the offline sentence is missing" "must say once, in prose"      's.replace("--insecure-ignore-tlog", "--no-log")'
 mutant "a stale cannot-run entry"       "a stale entry"                's.replace("--key <RELEASE_KEY>\n```\n\n```sh\n# Not", "--key <RELEASE_KEY> --output json\n```\n\n```sh\n# Not")'
 mutant "a runnable command on the list" "needs no registry image"      's + " "' '[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": "r"}, {"command": "cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>", "reason": "r"}, {"command": "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "reason": "r"}]'
