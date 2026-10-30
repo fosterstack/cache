@@ -477,10 +477,9 @@ def check_record_type(stage, pol, ptype, payload):
 
 
 def collection_ref(stage, pol, stmt):
-    """Tag binding of a Witness collection: the environment attestor (witnessed-local.sh runs it) records GITHUB_REF,
-    and it must be the
-    policy's ref, so a collection made at another tag, an rc tag or a branch (same digests) is refused. Exactly one
-    environment attestor."""
+    """Tag binding of a Witness collection: the environment attestor (the building job runs it under Witness) records
+    GITHUB_REF, and it must be the policy's ref, so a collection made at another tag, an rc tag or a branch (same
+    digests) is refused. Exactly one environment attestor."""
     atts = (stmt.get("predicate") or {}).get("attestations") if isinstance(stmt, dict) else None
     envs = [a for a in atts if isinstance(a, dict) and a.get("type") == ENV_ATTESTOR] if isinstance(atts, list) else []
     if len(envs) != 1:
