@@ -3779,6 +3779,18 @@ check test "$rc" -eq 0
 vfile outbound-test bin/check-no-outbound-test.sh 'mkdir -p "$root/internal/vendor/z"'
 CASE="the outbound check's test may name the vendored folder: it builds a vendor/ fixture (exit 0)"
 check test "$rc" -eq 0
+vfile helper-listed bin/build-apk-helper.py '    if not os.path.isdir(src + "/vendor"):'
+CASE="the build-apk helper may name the vendored folder: its vendor/ refusal moved out of build-apk.sh (exit 0)"
+check test "$rc" -eq 0
+vfile shape-listed bin/chain-test-shape.py '        "--modules $src/vendor/modules.txt",'
+CASE="the shape file may name the vendored folder: it holds the build-apk.sh sbom line as exact text (exit 0)"
+check test "$rc" -eq 0
+vfile sibling-py bin/build-apk-helper2.py '    if not os.path.isdir(src + "/vendor"):'
+CASE="an unlisted .py beside the listed helper (build-apk-helper2.py) that names the vendored folder is refused (1)"
+check test "$rc" -eq 1
+vfile other-shape-py bin/chain-check-shape.py '        "--modules $src/vendor/modules.txt",'
+CASE="an unlisted .py shape file (bin/chain-check-shape.py) that names the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
 python3 - "$root" <<'PY'
 import importlib.util, sys
 sys.path.insert(0, ".")
@@ -3797,7 +3809,10 @@ for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
 _quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
 assert _quiet == ["bin/check-govulncheck.py", "bin/install-scanner.sh", "bin/release-metadata.py"], _quiet     # the rule itself still reports every quiet listed file
 assert [p for p in _quiet if p != "bin/install-scanner.sh"] == ["bin/check-govulncheck.py", "bin/release-metadata.py"]   # the one skip below removes that one path and no other
-extra = [p for p in extra if p != "bin/install-scanner.sh"]   # listed ahead of the chain landing: its govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain branch and not yet on main
+# listed ahead of the chain landing: the govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain
+# branch and not yet on main; the helper and the shape file name vendor/ only once cache#770 lands (then this skip goes)
+ahead = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py")
+extra = [p for p in extra if p not in ahead]
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
 assert not missing, "names vendor but not listed: %s" % sorted(missing)
