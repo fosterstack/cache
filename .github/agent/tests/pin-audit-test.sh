@@ -1097,6 +1097,27 @@ for bad in 0 -3 abc 1.5; do
   CASE="deadline: --deadline $bad is refused with exit 2, by the audit's own message, and nothing is audited"
   check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a "$(grep -c 'audit: cannot do its job: --deadline must be a whole number of seconds, 1 or more' "$work/dl.err")" -eq 1
 done
+# stdout is a pipe under Actions: without line buffering a run killed from OUTSIDE (the job timeout's SIGKILL) loses every line it printed after its last
+# flushed marker. The audit is killed here by the test, not by its own deadline (--deadline 60); the information line it prints after the judging marker must
+# have reached the pipe by then. (Removing sys.stdout.reconfigure(line_buffering=True) from main makes this case fail.)
+CASE="output: a run killed from outside (SIGKILL) with stdout on a pipe has delivered every line it printed (line-buffered stdout)"
+check python3 - "$aud" "$work/gh-hang" "$work/r-hang" "$NOW" <<'PY'
+import os, select, signal, subprocess, sys, time
+aud, gh, repo, now = sys.argv[1:5]
+p = subprocess.Popen([sys.executable, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+got, end = b"", time.time() + 20
+while time.time() < end and b"not checked against the advisory lists" not in got:
+    if select.select([p.stdout], [], [], 0.5)[0]:
+        chunk = os.read(p.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        got += chunk
+os.kill(p.pid, signal.SIGKILL)
+p.wait()
+got += p.stdout.read()
+text = got.decode()
+assert "audit: phase: judging" in text and "not checked against the advisory lists" in text, text
+PY
 # the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
 phases() { python3 - "$1" <<'PY'
 import sys
