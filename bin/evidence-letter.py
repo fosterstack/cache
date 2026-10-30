@@ -30,6 +30,7 @@ RECORDS = ("scanners-collection.json", "acceptance-collection.json", "runtime-co
 FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc2")  # tested on the letter with its spaces removed
 PAGE = "https://github.com/fosterstack/cache/releases/tag/"
 PLACEHOLDER = "PLACEHOLDER"
+CUSTOMER_MARK = "{{customer_name}}"
 SIGNED = "\nSigned, "
 NONE = "- none this month"
 NONE_RELEASED = "- none published this month"
@@ -202,6 +203,8 @@ def check_words(text):
     words = [w for w in FORBIDDEN if w in squeezed]
     if words or "@" in text:
         raise Refuse("the letter would hold a word it must not (%s) or an address" % ", ".join(words or ["@"]))
+    if CUSTOMER_MARK in text:   # the email side swaps this mark for a name; the letter goes out as these bytes
+        raise Refuse("the letter holds %s: it is sent byte for byte, so no mark may stand in it" % CUSTOMER_MARK)
 
 
 def body_of(rel_dir, month, advisories, controls_text):
