@@ -203,6 +203,8 @@ ALLOW_PATTERNS=(
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
   '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
+  # REQ-SUP-001: recorded publisher signatures (public Sigstore data: certificates, signatures, log entries) for the pin-age tests; JSON files in this one folder.
+  '^\.github/agent/tests/fixtures/image-publishers/[A-Za-z0-9._-]+\.json$'
   # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
   '^\.github/agent/coverage-requirements\.txt$'
   # the report lint's hash-pinned, test-only renderer (GitHub's cmark-gfm)
@@ -268,6 +270,9 @@ ALLOW_PATTERNS=(
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
+  # The outbound check (0710 item 4): the module's source and its linked binary have no HTTP client and dial nothing.
+  '^bin/check-no-outbound\.py$'
+  '^bin/check-no-outbound-test\.sh$'
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'

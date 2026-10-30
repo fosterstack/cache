@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC1, REQ-SUP-001-AC4, REQ-SUP-001-AC6
+# proves: REQ-REL-013-AC11
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175): Dependabot waits 7 days on the github-actions and pip entries only (AC1);
 # the pull request check is a job that runs on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
 # held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
 #   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `daily-audit` (schedule), `rerun-held`
-#   (schedule),
-#   `evidence-letter-present` (schedule; the monthly evidence letter's daily presence check, read-only)
+#   (schedule), `evidence-letter-present` (schedule; the monthly evidence letter's daily presence check, read-only)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'

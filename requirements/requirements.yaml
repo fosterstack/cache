@@ -4795,6 +4795,12 @@ requirements:
         then: "every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3)"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-IMAGE-001-AC13
+        given: "the non-test Go code of the cache, and the linked fscache binaries (amd64 and arm64, plain and FIPS)"
+        when: "bin/check-no-outbound.py reads the source, and lists each binary's symbols (go tool nm: the linker keeps only what main can reach)"
+        then: "our own non-test code imports no HTTP client, dials no address (net, syscall, x/sys/unix, a crypto/tls client), runs no outside program and verifies no certificate; the amd64 and arm64 binaries, plain and FIPS, hold none of the listed symbols; a binary without runtime.main is refused; so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials or verifies a certificate through an unlisted symbol (net.Dialer is in every net/http binary) is not caught by the binary check, and the source scan covers our own code only"
+        verification: { method: unit, release_blocking: true }
+        status: approved
   - id: REQ-GUIDE-001
     title: The v0.3.0 customer verification guide
     statement: >
@@ -5041,5 +5047,11 @@ requirements:
         given: "a signed letter and its bundle"
         when: "bin/evidence-letter-publish.sh attaches them"
         then: "they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC11
+        given: "the daily workflow .github/workflows/supply-chain.yml and its job evidence-letter-present (a schedule and a manual start only; contents: read and nothing else)"
+        when: "it runs on or after the 3rd of a month, and a published release already carries an evidence-letter-YYYY-MM.md"
+        then: "last month's evidence-letter-YYYY-MM.md and its .bundle are on the same published (not draft) release, found across every page of releases, and every copy passes bin/evidence-letter-verify.sh: the release key from the key manifest checked against the root, the bundle's Rekor entry, the pinned log, and no identity; otherwise the job fails with one plain line naming the month, and a failed scheduled run is reported"
         verification: { method: unit, release_blocking: false }
         status: approved

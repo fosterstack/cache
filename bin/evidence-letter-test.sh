@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC1, REQ-REL-013-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4, REQ-REL-013-AC5, REQ-REL-013-AC6,
-# REQ-REL-013-AC7, REQ-REL-013-AC8
+# proves: REQ-REL-013-AC1, REQ-REL-013-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4
+# proves: REQ-REL-013-AC5, REQ-REL-013-AC6, REQ-REL-013-AC7, REQ-REL-013-AC8
 # The monthly signed evidence letter (owner Oct 27; ops/docs/ratify/2026-10-27-monthly-evidence-letter.md):
 # bin/evidence-letter.py makes the letter from a template out of the release assets.
 # Offline: no network, no signing here.

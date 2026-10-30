@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC9, REQ-REL-013-AC10
+# proves: REQ-REL-013-AC9, REQ-REL-013-AC10, REQ-REL-013-AC11
 # The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml,
-# bin/evidence-letter-fetch.sh and bin/evidence-letter-publish.sh. Offline: cosign, gh, date and the Check-record
-# verifier are stand-ins that record their
-# arguments; nothing is signed or uploaded. A mutation of the workflow must turn its own check red.
+# bin/evidence-letter-fetch.sh, bin/evidence-letter-publish.sh, bin/evidence-letter-verify.sh and
+# bin/evidence-letter-present.sh. Offline: cosign, gh, date and the Check-record verifier are stand-ins that record
+# their arguments; nothing is signed or uploaded. A mutation of the workflow must turn its own check red.
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
