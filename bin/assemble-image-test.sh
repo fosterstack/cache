@@ -752,8 +752,9 @@ mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 1\n' >"$work/failrm/rm"; chmod 
 printf '#!/bin/sh\nexit 1\n' >"$work/failsudo"; chmod +x "$work/failsudo"
 run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/failsudo" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
 t "rule 40" "assemble: a refusal (exit 2) whose cleanup fails (rm and sudo both fail) still exits 2, the script's own status" test "$(rc)" = 2
-run_s env PATH="$work/failrm:$stubs:$PATH" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
-t "rule 40" "assemble: the network-attempt exit 4 after the lock is taken, with a cleanup (rm) that fails, still exits 4" test "$(rc)" = 4
+printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 1;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; chmod +x "$work/rmfailsudo"
+run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/rmfailsudo" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: the network-attempt exit 4 after the lock is taken, with every cleanup command (rm, sudo rm, sudo rmdir) failing, still exits 4" test "$(rc)" = 4
 # sealed-proof deletes a package of the BASE LOCK (not the first apk in sorted order) and each negative needs its own reason
 mkarch "$work/sp-unrel"; cp "$work/sp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/sp-unrel/x86_64/aaa-unrelated-1-r0.apk"
 sp_unrel=("${sp_common[@]}"); for i in "${!sp_unrel[@]}"; do [ "${sp_unrel[$i]}" = "$fx/archive" ] && sp_unrel[$i]="$work/sp-unrel"; done
