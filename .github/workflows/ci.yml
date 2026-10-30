@@ -680,6 +680,18 @@ jobs:
           BASE: ${{ github.base_ref }}
         run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
 
+      - name: "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-rekor-key-test.sh bin/chain-rekor-key-test.sh
+
+      - name: "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-trust-files-test.sh bin/chain-trust-files-test.sh
+
+      - name: "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
+
+      - name: "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup (handoff 0713)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json witness-kms-test.sh bin/witness-kms-test.sh
+
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
 
