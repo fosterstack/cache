@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "a7356e58994861396a9e99e0e29230c068c3edee787846c37c0fb9742288f665",
+      "sha256": "c6c197ae42f8785a7d4e7a76e5700f356653873de11ecff1b82821b76e6cb955",
       "tools": [
         "make",
         "at",
@@ -225,7 +225,7 @@
     },
     {
       "path": "bin/chain_common.py",
-      "sha256": "c6ae3f738900c141c24118b6acd8b8ee01bf51685ca62bc0ccf9019be7737e27",
+      "sha256": "1de5176f34157afb9c7493932891713a46ff88f4d3f745a910c93a7d5ade806d",
       "tools": [],
       "runs": [],
       "signs": false,
@@ -233,7 +233,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "4bdb05b024d8b9e15b7183e19edab024b63f31adfd77618e767fa9c8f2eb7f8b",
+      "sha256": "a1b04617fbda6040da538cca23b55737b3f5dde133fb48c85b4426629c67618c",
       "tools": [
         "at"
       ],

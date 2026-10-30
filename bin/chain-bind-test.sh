@@ -622,12 +622,16 @@ def run_env(args, cwd, env):
     return p.returncode, p.stdout, p.stderr
 
 
-def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False):
+SR_REF = "refs/tags/v0.3.0"        # the ref the environment attestor of a made record carries (Sign's own, unless a case sets another)
+
+
+def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False, ref=None):
     """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
+    ref = ref or SR_REF
     subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
     if commit:
         subs.append({"name": "https://witness.dev/attestations/git/v0.1/commithash:" + commit, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + commit}})
-    atts = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": ({"variables": env_vars} if k == "environment" and env_vars else {})} for k in attestors]
+    atts = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": ({"variables": dict({"GITHUB_REF": ref}, **(env_vars or {}))} if k == "environment" else {})} for k in attestors]
     statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
                  "subject": subs, "predicate": {"name": name, "attestations": atts}}
     payload = json.dumps(statement).encode()
@@ -709,7 +713,7 @@ def sr_expect_check(root, groups=(("check-records.json", ("witness-scanners", "w
 
 def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
     dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else ["witness-scanners", "witness-acceptance", "witness-runtime", "witness-arm64"] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
-    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--keys-dir", KEYS_DIR, "--digests", "digests.json", "--out", out]
+    a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
     if stage == "rebuild" and expect:
         a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
     if stage == "check" and expect:
@@ -748,6 +752,9 @@ def make_keys_dir():
 
 
 KEYS_DIR = make_keys_dir()
+for _f in ("release-policy.template.json", "sigstore-trust.json", "rekor.pub"):      # the key files sit beside the template: no flag points elsewhere
+    shutil.copy(root + "/.github/policy/" + _f, KEYS_DIR + "/" + _f)
+REPO_TEMPLATE = KEYS_DIR + "/release-policy.template.json"
 
 
 def sr(label, root, stage, want_rc, words=(), env=None, args=None, at=None):
@@ -810,8 +817,15 @@ rc, out, err = run_env(sr_args("build", d), d, GOODENV)
 check("sign-records: an existing --out is a usage error (exit 2), nothing overwritten", rc == 2 and "Traceback" not in err and os.listdir(d + "/staged") == [], "exit %s" % rc)
 d, _ = sr_tree("sr19")
 sr("sign-records: GITHUB_REF that is neither a pushed tag nor a dispatch on a branch is refused", d, "build", 1, ["github_ref"], env={"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "push"}, at="sign")
+SR_REF = "refs/heads/dry"
 d, _ = sr_tree("sr20")
+SR_REF = "refs/tags/v0.3.0"
 sr("sign-records: a dry run (workflow_dispatch on a branch) is accepted", d, "build", 0, env={"GITHUB_REF": "refs/heads/dry", "GITHUB_EVENT_NAME": "workflow_dispatch"})
+for _lab, _r in (("the rc tag", "refs/tags/v0.3.0-rc1"), ("another tag", "refs/tags/v0.3.1"), ("a branch", "refs/heads/v0.3.0")):
+    SR_REF = _r
+    d, _ = sr_tree("sr20x")
+    SR_REF = "refs/tags/v0.3.0"
+    sr("sign-records: a record made at %s is refused at Sign's tag (the KMS key never signs a collection of another ref)" % _lab, d, "build", 1, ["ref"])
 d, _ = sr_tree("sr21", "rebuild")
 rc, out, err = sr("sign-records rebuild: a valid set (Rebuild's record and one rapk leg) is accepted without Rebuild's apks or images", d, "rebuild", 0)
 check("sign-records rebuild: the final names are rebuild-collection.json and rapk-collection.json", rc == 0 and sorted(l.split("\t")[1] for l in out.strip().split("\n")) == ["signed/witness-rapk-ubuntu-24.04/rapk-collection.json", "signed/witness-rebuild/rebuild-collection.json"], out)
@@ -979,7 +993,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 206
+EXPECT = 209
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
