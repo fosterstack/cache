@@ -4,7 +4,8 @@
 # its commands, its placeholders, what it verifies, which images it covers, the tool names it uses, and its open marks.
 # The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads, so a page that passes here
 # is a page that run can read: every command is a line of a ```sh fenced block (a line ending in a backslash joins the next
-# with one space; a line starting with # is a comment); placeholders are <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <RELEASE_KEY>, each defined once
+# with one space; a line starting with # is a comment); placeholders are <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and
+# <RELEASE_KEY>, each defined once
 # before the first fence as a list line  - `<NAME>`: what it is.
 # A verify command whose operand is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, oci://..., or a literal reference with a
 # path and a : or @; flag values are skipped, as pipeline's check skips them) needs a registry and cannot run on
@@ -258,15 +259,17 @@ if listed:
         for ph in CLAIM_PHRASES:
             if re.search(ph, l, re.I):
                 err("AC7", "line %d: wording that claims the commands were checked before release (%s) while %d command(s) are on the cannot-run list" % (i+1, ph, len(listed)))
-# The guide verifies by the release key (ratified Oct 29, rule 2): no identity, no issuer, no keyless wording anywhere on the page, and the log is
-# skipped in exactly one place, one sentence of prose about verifying without network access, never inside a command.
+# The guide verifies by the release key (ratified Oct 29, rule 2): no identity, no issuer, no keyless wording anywhere
+# on the page, and the log is skipped in exactly one place, one sentence of prose about verifying without network
+# access, never inside a command.
 for i, l in enumerate(lines):
     for w in ("--certificate-identity", "--certificate-oidc-issuer", "<IDENTITY>", "keyless"):
         if w in l: err("AC7", "line %d: %s is the keyless form; the guide verifies by the release key" % (i+1, w))
 for c, ln, bo, segs in parsed:
     if "--insecure-ignore-tlog" in c: err("AC7", "line %d: --insecure-ignore-tlog is never inside a command" % (ln+1))
 if text.count("--insecure-ignore-tlog") != 1:
-    err("AC7", "the page must say once, in prose, that --insecure-ignore-tlog verifies without network access (found %d)" % text.count("--insecure-ignore-tlog"))
+    err("AC7", "the page must say once, in prose, that --insecure-ignore-tlog verifies without network access "
+        "(found %d)" % text.count("--insecure-ignore-tlog"))
 marks = [i+1 for i, l in enumerate(lines) if "TO-VERIFY" in l]
 if mode == "final":
     if marks: err("AC7", "final mode: %d TO-VERIFY mark(s) remain (lines %s); the page cannot be final" % (len(marks), marks))
