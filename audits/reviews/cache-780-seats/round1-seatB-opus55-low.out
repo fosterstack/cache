@@ -1,0 +1,16 @@
+Review finished: I read the patch, the checker and the test. I have no shell, so nothing was run.
+
+**Range check:** `pr-stat.txt` lists one file, `.github/agent/tests/pin-age-check-test.sh`, with 1 insertion and 1 deletion. It shows no other files and no origin/main. It also doesn't print the `<base>..f7454a53` range itself, so I checked the range by contents only. One small mismatch: the patch hunk header is `@@ -4414,7 +4414,7 @@`, but the brief pasted `-4415,5 +4415,5`. The changed line is 4417 either way.
+
+**What I could not run:** points 2 and 3 need a shell. That means the test run with no network at base and at head, the counts at each, and breaking the escaping in a scratch copy of the checker. None of these was done. My conclusions on those points come from reading the code only.
+
+1. **Right target: green.** `_go_module` (`pin-age-check.py:328`) looks up `_http_dict` by name in the module's globals each time it runs. The test sets `ac._http_dict`, a module attribute on the loaded module, so the stub is the function that actually gets called. The case uses the default lenient path (`strict=False`), so `_http_json_strict` is never reached. The stub returns a dict with `"Version"` as a string, which is the only key `_MODINFO` asks for. That is the shape `_http_dict` returns, so line 331 runs its real path. The stub does skip `_shaped` validation, which is fine for this case.
+2. **Offline: green by reading, not run.** With the stub, `_go_module` makes no `urlopen` call. `_go_index_time` (test line 4425) only runs after `urllib.request.urlopen` is patched at 4424. I found no other network path in the case.
+3. **Still proves its claim: green by reading, not run.** If `_go_escape` stopped producing `!burnt!sushi`, `fake` would return `None` for every URL. `_go_module` would then return `(None, None)` and the assert at 4419 would fail. The direct assert at 4411 would fail too.
+4. **Scope: green.** One line, inside the Go-proxy case. No checker file and no guard lists are touched.
+5. **Other stubs (notes, not findings): none.** No other line under `.github/` mentions `_http_json` except as part of `_http_json_strict`.
+6. **Line length: finding, low, not a security finding.** `pin-age-check-test.sh:4417` is about 140 characters, over the 120 limit. A fix that fits: `ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline`. Many nearby lines (for example 4419 and 4420) are also over 120, but they are not part of this PR.
+7. **Readability: green.** The line can be read in one sentence: "replace the checker's `_http_dict` with a function that passes the URL to `fake`." Writing out the unused parameters (`need, timeout=30, strict=False`) is a little noisy, but still clear.
+8. **Comments: green.** The comment says why (it keeps the case offline), it doesn't just restate the code, and it is short enough.
+
+Verdict: RED. 1. `.github/agent/tests/pin-age-check-test.sh:4417`, low, not a security finding: the new line is about 140 characters, over the 120-character limit (rule 6). Shorten it, for example by using `*a, **k`, a shorter comment, or both.
