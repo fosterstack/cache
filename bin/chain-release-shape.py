@@ -557,12 +557,17 @@ def metadata(path):
     # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
     # one `cosign attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
     atts = [l for l in lines if l.startswith("cosign attest ")]
-    base = ('cosign attest --yes --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
+    base = ('cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
             '--type https://fosterstack.com/attestations/release-manifest/v1 ')
     want = {base + '"ghcr.io/$repo@$digest"', base + '"docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"'}
     if sorted(atts) != sorted(want):
         bad.append("release-sign.sh must hold exactly these two `cosign attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
                    "the Docker Hub mirror best-effort with a warning): %r" % atts)
+    unkeyed = [l for l in lines if re.match(r"cosign (sign|sign-blob|attest) ", l) and not l.startswith(tuple('cosign %s --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json ' % c for c in ("sign", "sign-blob", "attest")))]
+    if unkeyed:      # handoff 0713 P3: every signature is made with the release KMS key the job pins, and keeps its Rekor entry through the signing config
+        bad.append("every cosign signing line must be `--yes --key \"$RELEASE_KMS_KEY_REF\" --signing-config .github/policy/cosign-signing-config.json ...`: %r" % unkeyed[:2])
+    if sorted(atts) != sorted(want):
+        pass
     elif marks.get("attest") is not None:
         loop = next((i for i in range(marks["attest"], -1, -1) if lines[i].startswith("for digest in ")), None)
         if loop is None or lines[loop] != 'for digest in "$prod" "$fips"; do':
