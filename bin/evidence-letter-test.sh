@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC1, REQ-REL-013-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4, REQ-REL-013-AC5, REQ-REL-013-AC6, REQ-REL-013-AC7, REQ-REL-013-AC8
+# proves: REQ-REL-013-AC1, REQ-REL-013-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4, REQ-REL-013-AC5, REQ-REL-013-AC6,
+# REQ-REL-013-AC7, REQ-REL-013-AC8
 # The monthly signed evidence letter (owner Oct 27; ops/docs/ratify/2026-10-27-monthly-evidence-letter.md):
-# bin/evidence-letter.py makes the letter from a template out of the release assets. Offline: no network, no signing here.
+# bin/evidence-letter.py makes the letter from a template out of the release assets.
+# Offline: no network, no signing here.
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 here=$(cd "$(dirname "$0")" && pwd)
@@ -38,7 +40,8 @@ def release(root, tag, published, body, statements=(), commit=None, records=RECO
     os.makedirs(d)
     json.dump({"tag_name": tag, "published_at": published, "html_url": LINK + tag, "body": body},
               open(d + "/release.json", "w"))
-    vex = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://fosterstack.com/vex/cache/openvex", "version": 1,
+    vex = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://fosterstack.com/vex/cache/openvex",
+           "version": 1,
            "statements": [{"vulnerability": {"name": n}, "timestamp": ts, "status": "not_affected"}
                           for n, ts in statements]}
     json.dump(vex, open(d + "/fosterstack-cache.openvex.json", "w"), sort_keys=True)
@@ -87,7 +90,8 @@ def letter(root, month="2026-11", **kw):
 
 
 NOV = [(("v0.3.1", "2026-11-04T12:00:00Z", "Fix: a parser crash on a long header.\n\nMore text."),
-        {"statements": [("CVE-2026-1111", "2026-11-03T12:00:00-04:00"), ("CVE-2026-0001", "2026-10-02T12:00:00-04:00")]}),
+        {"statements": [("CVE-2026-1111", "2026-11-03T12:00:00-04:00"),
+                        ("CVE-2026-0001", "2026-10-02T12:00:00-04:00")]}),
        (("v0.4.0", "2026-11-20T12:00:00Z", "A new minor release."), {"statements": []}),
        (("v0.2.9", "2026-10-28T12:00:00Z", "Fix: an October patch."), {"statements": []})]
 
@@ -106,7 +110,8 @@ check("AC1: a month with no release still gets a letter, from the latest release
       pq.returncode == 0 and "none published this month" in tq and "Records of v0.2.9, the latest release" in tq
       and "scanners-collection.json" in tq, (pq.stderr, tq))
 check("AC1: that letter has the controls line", "unchanged this month" in tq, tq)
-# a release from before the v0.3 chain (its manifest says "v0.2.2", it has no Check records) is not read when the month has a release
+# a release from before the v0.3 chain (its manifest says "v0.2.2", it has no Check records) is not read when the
+# month has a release
 old = (("v0.2.2", "2026-10-09T19:10:28Z", "Fix: an old patch."), {"version": "v0.2.2", "records": ()})
 po, to = letter(world([NOV[0], old]))
 check("AC1: an older release without v0.3 records does not stop a month that has its own release",
@@ -116,12 +121,14 @@ check("AC1: with only such a release before the month the letter refuses, in one
       pold.returncode == 1 and told == "" and len(pold.stderr.strip().splitlines()) == 1, pold.stderr)
 
 # AC2: patch release and why
-check("AC2: the patch release and its reason, verbatim", "v0.3.1" in text and "Fix: a parser crash on a long header." in text)
+check("AC2: the patch release and its reason, verbatim",
+      "v0.3.1" in text and "Fix: a parser crash on a long header." in text)
 check("AC2: the minor release is not called a patch", "A new minor release." not in text)
 pp, tp = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", "\n\n"), {})]))
 check("AC2: a patch release with no notes line refuses", pp.returncode == 1 and tp == "", pp.stderr)
 ph, th = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", "## Fix: heading marks go."), {})]))
-check("AC2: leading heading marks are dropped from the reason", ph.returncode == 0 and "v0.3.2: Fix: heading marks go." in th, th)
+check("AC2: leading heading marks are dropped from the reason",
+      ph.returncode == 0 and "v0.3.2: Fix: heading marks go." in th, th)
 
 # AC3: VEX statements of the month
 check("AC3: the November statement is listed with its date", "CVE-2026-1111" in text and "2026-11-03" in text)
@@ -213,7 +220,8 @@ check("AC7: a forbidden word in the signatory refuses", pws.returncode == 1 and 
 pwa, twa = reason("Fix: a crash.", signatory="Ada Example, ada@example.test")
 check("AC7: an address in the signatory refuses", pwa.returncode == 1 and twa == "", pwa.stderr)
 pwo, two_ = reason("Fix: a crash (rare), see 1/2: ok; it's fine - really.")
-check("AC7: the allowed characters pass", pwo.returncode == 0 and "Fix: a crash (rare), see 1/2: ok; it's fine - really." in two_,
+check("AC7: the allowed characters pass",
+      pwo.returncode == 0 and "Fix: a crash (rare), see 1/2: ok; it's fine - really." in two_,
       pwo.stderr)
 
 # AC8: the placeholder
@@ -223,7 +231,8 @@ check("AC8: the placeholder refuses and writes no letter",
       pph.returncode == 3 and fph == [] and "placeholder" in pph.stderr.lower(), pph.stderr)
 pd, od, fd = run(rph, "2026-11", "--draft")
 dt = open(os.path.join(od, fd[0])).read() if fd else ""
-check("AC8: --draft writes one file marked DRAFT", pd.returncode == 0 and len(fd) == 1 and "DRAFT" in fd[0] and "DRAFT" in dt,
+check("AC8: --draft writes one file marked DRAFT",
+      pd.returncode == 0 and len(fd) == 1 and "DRAFT" in fd[0] and "DRAFT" in dt,
       (pd.stderr, fd))
 check("AC8: a real signatory is printed in the letter", SIGNATORY in text)
 

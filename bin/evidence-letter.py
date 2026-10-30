@@ -261,7 +261,8 @@ def run(a):
     check_words(text)
     os.makedirs(a.out, exist_ok=True)
     if PLACEHOLDER in signatory:
-        write(os.path.join(a.out, "evidence-letter-%s.DRAFT.md" % a.month), "DRAFT: not signed, not to be sent.\n\n" + text)
+        draft_name = "evidence-letter-%s.DRAFT.md" % a.month
+        write(os.path.join(a.out, draft_name), "DRAFT: not signed, not to be sent.\n\n" + text)
     else:
         write(os.path.join(a.out, "evidence-letter-%s.md" % a.month), text)
     return 0

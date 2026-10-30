@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The monthly evidence letter (REQ-REL-013): downloads what bin/evidence-letter.py reads, and checks it against the
 # release's own signatures first, so the letter never states a file nobody signed.
-#   arguments: the month YYYY-MM (it must be over), then the output folder (GH_TOKEN set; REPO defaults to fosterstack/cache)
+#   arguments: the month YYYY-MM (it must be over), then the output folder
+#   (GH_TOKEN set; REPO defaults to fosterstack/cache)
 # It takes every final release published in the month, or the newest one before it when the month had none. Per release:
 #   release-files.sha256 must verify against its bundle under stage-promote.yml at the release tag, and list the
 #   manifest and OpenVEX files by their hashes; the four Check records must verify under the release policy
@@ -17,10 +18,12 @@ repo=${REPO:-fosterstack/cache}
 issuer=https://token.actions.githubusercontent.com
 mkdir -p "$out/rel"
 
-# every release, all pages; the letter's releases are the final ones published in the month, else the newest one before it
+# every release, all pages; the letter's releases are the final ones published in the month, else the newest
+# one before it
 gh api --paginate --slurp "repos/$repo/releases?per_page=100" | jq 'add // []' > "$out/releases.json"
 tags=$(jq -r --arg m "$month" '
-  [.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] as $final
+  [.[] | select(.draft == false and .prerelease == false
+                and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] as $final
   | [$final[] | select(.published_at | startswith($m))] as $in
   | if ($in | length) > 0 then $in
     else [$final[] | select(.published_at < ($m + "-01"))] | sort_by(.published_at) | .[-1:] end
@@ -37,7 +40,8 @@ verify() { # verify TAG FOLDER: the checks above, one line on any failure
   local tag=$1 dir=$2 name
   cosign verify-blob --bundle "$dir/release-files.sha256.bundle" --certificate-oidc-issuer "$issuer" \
     --certificate-identity "https://github.com/$repo/.github/workflows/stage-promote.yml@refs/tags/$tag" \
-    "$dir/release-files.sha256" > /dev/null 2>&1 || die "$tag: release-files.sha256 does not verify under stage-promote.yml"
+    "$dir/release-files.sha256" > /dev/null 2>&1 ||
+    die "$tag: release-files.sha256 does not verify under stage-promote.yml"
   for name in release-manifest.json fosterstack-cache.openvex.json; do
     grep -qxF "$(sha256sum "$dir/$name" | cut -d' ' -f1)  $name" "$dir/release-files.sha256" ||
       die "$tag: $name is not the file the signed release-files.sha256 lists"
@@ -45,14 +49,16 @@ verify() { # verify TAG FOLDER: the checks above, one line on any failure
   python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$tag" \
     --out "$dir/policy.json" > /dev/null 2> "$dir/refusal" || die "$tag: no release policy: $(head -n 1 "$dir/refusal")"
   python3 -I bin/chain-verify.py check-list --policy "$dir/policy.json" --digests "$dir/digests.json" \
-    --dir "$dir/witness-check" > /dev/null 2> "$dir/refusal" || die "$tag: the Check records: $(head -n 1 "$dir/refusal")"
+    --dir "$dir/witness-check" > /dev/null 2> "$dir/refusal" ||
+    die "$tag: the Check records: $(head -n 1 "$dir/refusal")"
 }
 
 for tag in $tags; do
   dir="$out/rel/$tag"
   mkdir -p "$dir"
   jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$dir/release.json"
-  for name in release-manifest.json fosterstack-cache.openvex.json release-files.sha256 release-files.sha256.bundle digests.json; do
+  for name in release-manifest.json fosterstack-cache.openvex.json release-files.sha256 \
+      release-files.sha256.bundle digests.json; do
     asset "$dir/release.json" "$name" "$dir"
   done
   for step in scanners acceptance runtime arm64; do
@@ -62,7 +68,8 @@ for tag in $tags; do
   done
   verify "$tag" "$dir"
 done
-# published advisories of a public repository are readable without a token; all pages. A refusal (403, 404) ends the letter.
+# published advisories of a public repository are readable without a token; all pages.
+# A refusal (403, 404) ends the letter.
 advisories=$(gh api --paginate --slurp "repos/$repo/security-advisories?state=published&per_page=100" 2>&1) ||
   die "the published advisories cannot be read ($(head -n 1 <<< "$advisories")): no letter"
 jq 'add // []' <<< "$advisories" > "$out/advisories.json"
