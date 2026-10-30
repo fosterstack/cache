@@ -286,7 +286,7 @@ jobs:
         env:
           # head repo vs this repo decides whether an auditor/* head is the real lane (a fork can name a branch anything)
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          # the queue's commit has no head branch: the script looks the pull request up from the queue ref (one API call)
+          # the queue's commit has no head branch: the script reads the pull request from the queue ref (one call)
           GITHUB_QUEUE_REF: ${{ github.event.merge_group.head_ref }}
           GH_TOKEN: ${{ github.token }}
         run: git ls-files | ./bin/check-file-allowlist.sh

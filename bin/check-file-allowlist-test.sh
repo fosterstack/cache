@@ -169,7 +169,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "cbd61befea7fc469dce2d0a77a4b9a6a6f674d04193b74a89c0b7aac31a7162c"
+PINNED_SHA256 = "3997f1f81d04ff08d1ace8856b3fdeaf80984a15ce0e4a029db5509fe90b9905"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -832,12 +832,14 @@ echo "$*" >> "$QGH_LOG"
 printf '%b' "${QGH_OUT-}"
 EOF
 chmod +x "$TMPROOT/qgh/gh"
-# qrun <expect> <desc> <queue ref> <gh output> <paths...>: the queue case, run inside $R (GITHUB_HEAD_REF is empty there)
+# qrun <expect> <desc> <queue ref> <gh output> <paths...>: the queue case, run inside $R
+# (GITHUB_HEAD_REF is empty there)
 qrun() {
   local expect="$1" desc="$2" qref="$3" ghout="$4"; shift 4
   local out rc
   : > "$TMPROOT/qgh.log"
-  out="$(cd "$R" && printf '%s\n' "$@" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
+  out="$(cd "$R" && printf '%s\n' "$@" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
+    QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
     GITHUB_HEAD_REF="" GITHUB_REF_NAME="${qref#refs/heads/}" GITHUB_QUEUE_REF="$qref" GITHUB_REPOSITORY=o/r \
     "$ABS_SCRIPT" 2>&1)"; rc=$?
   if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
@@ -846,7 +848,8 @@ qrun() {
     echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
   fi
 }
-mkrepo "$R"; ( cd "$R" && echo '{"a":9}' > $PS && mkdir -p internal && echo 'package y' > internal/other.go && g add -A && g commit -qm edit )
+mkrepo "$R"; ( cd "$R" && echo '{"a":9}' > $PS && mkdir -p internal && echo 'package y' > internal/other.go \
+    && g add -A && g commit -qm edit )
 qrun pass "queue: an auditor/* branch of this repository may change a suppression file" "$QREF" 'auditor/x\to/r\n' "$PS"
 qrun fail "queue: any other branch may not change a suppression file" "$QREF" 'feature/x\to/r\n' "$PS"
 qrun fail "queue: main as the head branch is not the suppression lane" "$QREF" 'main\to/r\n' "$PS"
@@ -854,23 +857,31 @@ qrun fail "queue: an auditor/* branch of a fork may not change a suppression fil
 qrun fail "queue: an auditor/* look-alike prefix may not change a suppression file" "$QREF" 'auditorX/x\to/r\n' "$PS"
 qrun pass "queue: an ordinary file passes for any branch" "$QREF" 'feature/x\to/r\n' internal/other.go
 
-QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" "$QREF" '' internal/other.go
+QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" \
+    "$QREF" '' internal/other.go
 QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" "$QREF" '' "$PS"
 qrun fail "queue: an empty answer is a failure" "$QREF" '' "$PS"
 qrun fail "queue: two answers are ambiguous, a failure" "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' "$PS"
 qrun fail "queue: an answer with no repository is a failure" "$QREF" 'auditor/x\t\n' "$PS"
 qrun fail "queue: an answer with no branch is a failure" "$QREF" '\to/r\n' "$PS"
-qrun fail "queue: a queue ref with no pull request number is refused" "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' "$PS"
-qrun fail "queue: a queue ref with a non-numeric pull request number is refused" "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: a queue ref with no pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: a queue ref with a non-numeric pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' "$PS"
 qrun fail "queue: a ref that is not a queue ref is refused" "refs/heads/feature/x" 'auditor/x\to/r\n' "$PS"
-qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" \
+    "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
 qrun pass "queue: one lookup" "$QREF" 'auditor/x\to/r\n' "$PS"
-[ "$(wc -l < "$TMPROOT/qgh.log")" -eq 1 ] && gp "queue: the lookup is exactly one gh call" || gf "queue: the lookup is exactly one gh call" "$(cat "$TMPROOT/qgh.log")"
-grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call reads pull request 12 of this repository" || gf "queue: the call reads pull request 12 of this repository" "$(cat "$TMPROOT/qgh.log")"
+[ "$(wc -l < "$TMPROOT/qgh.log")" -eq 1 ] && gp "queue: the lookup is exactly one gh call" \
+    || gf "queue: the lookup is exactly one gh call" "$(cat "$TMPROOT/qgh.log")"
+grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call reads pull request 12 of this repository" \
+    || gf "queue: the call reads pull request 12 of this repository" "$(cat "$TMPROOT/qgh.log")"
 : > "$TMPROOT/qgh.log"
-( cd "$R" && printf '%s\n' "$PS" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" GITHUB_HEAD_REF=auditor/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main \
+( cd "$R" && printf '%s\n' "$PS" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
+    GITHUB_HEAD_REF=auditor/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main \
     GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
-[ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
+[ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" \
+    || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
 # pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
 runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
 runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"

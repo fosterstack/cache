@@ -136,7 +136,8 @@ risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
 def is_risky(k):
     return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
 steps_all = job.get("steps", [])
-# the two steps whose env is judged exactly below are exempt from the name list (BASE, GITHUB_HEAD_REPO, GITHUB_QUEUE_REF)
+# the two steps whose env is judged exactly below are exempt from the name list
+# (BASE, GITHUB_HEAD_REPO, GITHUB_QUEUE_REF)
 for where, env in [("the workflow", d.get("env")), ("the allowlist job", job.get("env"))] + \
         [(f"step {i}", st.get("env")) for i, st in enumerate(steps_all)]:
     if isinstance(env, dict):
@@ -248,7 +249,9 @@ GUARD_STEPS = [
         "env": {
             "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
         },
-        "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n  test-evidence/suite-floors.json\n"
+        "run": "BASE=\"${BASE#refs/heads/}\"\n"
+               "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n"
+               "  test-evidence/suite-floors.json\n"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",

@@ -3546,7 +3546,8 @@ ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch
     and "!cancelled()" in str(qp.get("if")) and "github.event.workflow_run.event == 'merge_group'" in str(qp.get("if"))
     and scoped(tok(qp)) and "actions/checkout" not in yaml.safe_dump(qp) and "git " not in runs(qp)
     and "refs/pull" not in runs(qp)
-    and "${#HEAD_SHA}" in runs(qp) and "[!0-9a-f]" in runs(qp) and "github.event.workflow_run.head_sha" in yaml.safe_dump(qp)
+    and "${#HEAD_SHA}" in runs(qp) and "[!0-9a-f]" in runs(qp)
+    and "github.event.workflow_run.head_sha" in yaml.safe_dump(qp)
     and "needs.queue-judge.outputs.verdict" in yaml.safe_dump(qp) and "-f name=auditor-review-gate" in runs(qp)
     and "RUN_LINK" in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(q)
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
