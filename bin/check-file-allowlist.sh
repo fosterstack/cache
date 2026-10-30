@@ -268,6 +268,9 @@ ALLOW_PATTERNS=(
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
+  # The outbound check (0710 item 4): the module's source and its linked binary have no HTTP client and dial nothing.
+  '^bin/check-no-outbound\.py$'
+  '^bin/check-no-outbound-test\.sh$'
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
