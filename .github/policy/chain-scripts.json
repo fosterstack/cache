@@ -529,7 +529,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
+      "sha256": "a18f86d8d7f5919c5457bfd3075a09174d177c7128f54c55aca403fe6fc3b027",
       "reads_env": [
         "GH_TOKEN"
       ],

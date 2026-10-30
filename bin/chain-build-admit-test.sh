@@ -19,7 +19,7 @@
 #         repos/R/commits/SHA/check-runs?filter=latest   (and the same for the merged PR's head sha)
 #         repos/R/commits/SHA/status
 #         repos/R/commits/SHA/pulls
-#       `go -C tools/requirements run . verify-freeze BASE` with GOTOOLCHAIN=local for the baseline's consistency; `gitsign verify-tag`
+#       the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok BASE` for the baseline's consistency; no Go runs here); `gitsign verify-tag`
 #       with the exact identity flags for a patch route. Exit 0: wrote admission.json. Exit 1: the first line of stderr is
 #       `admission refused at <check>: <reason>` and NO admission.json is left. Exit 2: usage or environment error.
 #   python3 bin/build-admit.py list-checks                    one check name per line, in order (below)
@@ -137,9 +137,6 @@ if [ "${1:-}" = version ] && [ "${2:-}" = -m ]; then cat "${FAKE_BUILDINFO:?}"; 
 exit "${FAKE_GO_RC:-0}"
 EOF
 chmod +x "$FB/go"
-# the PINNED Go (what bash bin/install-scanner.sh go leaves at the fixed path): the same fake, marked, so a case can tell which go ran
-PINNED="$W/pinned/fscache-go/bin"; mkdir -p "$PINNED"
-{ echo '#!/usr/bin/env bash'; echo 'echo "WHICH-GO pinned" >> "${FAKE_LOG:-/dev/null}"'; tail -n +2 "$FB/go"; } > "$PINNED/go"; chmod +x "$PINNED/go"
 SHA=0123456789abcdef0123456789abcdef01234567
 bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	$2	" \
     "	build	-ldflags=\"-s -w\"" "	build	vcs=git" "	build	vcs.revision=$3" "	build	vcs.modified=$4";
@@ -383,13 +380,17 @@ fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origi
    git fetch -q --tags origin 2> /dev/null;
    git checkout -q --detach v0.3.0 2> /dev/null;
    git branch -q -f main origin/main 2> /dev/null || true)
-  SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f "$W/c/repo/admission.json"; }
+  SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f "$W/c/repo/admission.json"; mkfreeze; }
+mkfreeze() { # mkfreeze [LINE...] : freeze/freeze.txt of the case, by default the line the freeze job writes for every baseline file at the tagged commit
+  rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"
+  if [ "$#" -gt 0 ]; then printf '%s\n' "$@" > "$W/c/repo/freeze/freeze.txt"
+  else (cd "$W/c/repo" && for f in requirements/releases/*.yaml; do b=${f##*/}; echo "freeze-ok ${b%.yaml}"; done) > "$W/c/repo/freeze/freeze.txt"; fi; }
 run_admit() { # run_admit [ENV=VAL...]  -> sets RC; stderr in $W/c/err, stdout in $W/c/out
   local sha; sha=$(git -C "$W/c/repo" rev-parse HEAD); RC=0
   (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 \
       GITHUB_RUN_ATTEMPT=1 \
      GH_TOKEN=SENTINEL-GH-TOKEN GH_FIXTURES="$W/c/gh" FAKE_LOG="$W/c/calls.log" FAKE_BUILDINFO="$W/buildinfo.txt" PATH="$FB:$PATH" "$@" \
-     python3 "$BA" run --out admission.json ${RUN_GO_ARG-"--go"} ${RUN_GO_ARG-"$PINNED/go"} > "$W/c/out" 2> "$W/c/err") || RC=$?
+     python3 "$BA" run --out admission.json > "$W/c/out" 2> "$W/c/err") || RC=$?
 }
 expect_ok() { n_cases=$((n_cases + 1)); if [ ! -f "$BA" ]; then bad "$1 (bin/build-admit.py does not exist: RED)"; return; fi
   if grep -q Traceback "$W/c/err" 2> /dev/null; then bad "$1 -> a Python traceback is a crash"; return; fi
@@ -673,37 +674,36 @@ expect_refuse "AC4 a baseline whose approved is the string 'true' is refused" ba
 fresh; base_edit 'd["version"] = "v0.2.9"'; run_admit;             expect_refuse "AC4 a baseline for another version is refused" baseline version
 fresh; base_edit 'd["approved_on"] = "soon"'; run_admit;           expect_refuse "AC4 a baseline with no real approval date is refused" baseline approved_on
 fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse "AC4 an empty required set is not a baseline" baseline release_blocking_acs
-fresh;
-run_admit FAKE_GO_RC=1;
-expect_refuse "AC4 a baseline that fails the requirements tool's freeze check is refused" baseline freeze
-# Codex A r2 blocker 4 / r3 F4: admission's freeze check runs the PINNED Go at its fixed path (`bash bin/install-scanner.sh go` puts it there), never the runner's
-# own `go` on PATH, which may be older than go.mod. GOTOOLCHAIN=local stays: no toolchain download.
-grep -q 'GO_BIN = "/usr/local/bin/fscache-go/bin/go"' "$BA" 2> /dev/null && ok "AC4 the freeze check's Go is the fixed path /usr/local/bin/fscache-go/bin/go (the installer's output)" || bad "AC4 build-admit.py has no fixed GO_BIN path"
-# a runner Go older than go.mod, first on PATH: it must never be used
-OLD="$W/oldgo"; mkdir -p "$OLD"
-cat > "$OLD/go" <<'EOF'
-#!/usr/bin/env bash
-echo "WHICH-GO runner-path" >> "${FAKE_LOG:-/dev/null}"
-echo "go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)" >&2
-exit 1
-EOF
-chmod +x "$OLD/go"
-fresh; RUN_GO_ARG= ; run_admit "PATH=$OLD:$FB:$PATH"
+# REQ-CHAIN-004-AC4 (rule 1 of the sandboxed build): the requirements tool is Go source of the tagged commit, so it no longer runs inside Build. Its own job `freeze` (before Build,
+# contents: read, no secret) runs `verify-freeze` for every baseline file at the tagged commit and writes freeze/freeze.txt, one `freeze-ok BASE` line each. Admission starts no
+# Go: it reads that file, requires `freeze-ok` for exactly the base it computed, and prints the file's sha256 and that line into its own (witnessed) output.
+fresh; run_admit
+expect_ok "AC4 the freeze file lists freeze-ok for the base admission computed (the default file lists every baseline file of the tagged commit): admitted"
 n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 2 ] && grep -q 'fscache-go' "$W/c/err" && ! grep -q 'runner-path' "$W/c/calls.log" 2> /dev/null; then
-  ok "AC4 with no pinned Go at the fixed path admission stops with an environment error and does not fall back to the runner's go"
-else bad "AC4 no pinned go: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
-unset RUN_GO_ARG
-fresh; run_admit "PATH=$OLD:$FB:$PATH"; n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 0 ] && grep -q 'WHICH-GO pinned' "$W/c/calls.log" && ! grep -q 'runner-path' "$W/c/calls.log" \
-   && grep -q 'go -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log" && ! grep -q 'GOTOOLCHAIN=auto' "$W/c/calls.log"; then
-  ok "AC4 a runner Go older than go.mod first on PATH is NOT used: the freeze check runs the pinned Go, with GOTOOLCHAIN=local and no toolchain download"
-else bad "AC4 pinned go: exit $RC $(grep -E 'WHICH|go ' "$W/c/calls.log" 2> /dev/null | head -3 | tr '\n' ' ') $(head -c 160 "$W/c/err")"; fi
-fresh
-run_admit "PATH=$OLD:$FB:$PATH" "FAKE_GO_RC=1" "FAKE_GO_MSG=go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)"; n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' < <(head -1 "$W/c/err") && ! grep -q 'runner-path' "$W/c/calls.log" && [ ! -e "$W/c/repo/admission.json" ]; then
-  ok "AC4 a freeze check that fails under the pinned Go refuses admission at baseline (never retried with another go)"
-else bad "AC4 pinned go failing: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
+want_sha=$(sha256sum "$W/c/repo/freeze/freeze.txt" | cut -d' ' -f1)
+if [ "$RC" = 0 ] && grep -qx "freeze-file-sha256 $want_sha" "$W/c/out" && grep -qx 'freeze-ok v0.3.0' "$W/c/out"; then
+  ok "AC4 admission prints the freeze file's sha256 and its exact freeze-ok line for its base into its own output (the Build record shows what admission trusted)"
+else bad "AC4 freeze evidence in the output: exit $RC, stdout: $(head -c 300 "$W/c/out" | tr '\n' '|')"; fi
+fresh; rm -rf "$W/c/repo/freeze"; run_admit
+expect_refuse "AC4 no freeze file (the freeze job did not run or its artifact is missing) is refused" baseline freeze
+fresh; mkfreeze "freeze-ok v0.2.0"; run_admit
+expect_refuse "AC4 a freeze file without the base admission computed (v0.3.0) is refused" baseline v0.3.0
+fresh; mkfreeze "freeze-ok v0.3.0" "freeze-ok v0.3.0"; run_admit
+expect_refuse "AC4 a freeze file that repeats a line is refused" baseline freeze
+fresh; mkfreeze "freeze-ok v0.3.0 extra"; run_admit
+expect_refuse "AC4 a freeze-ok line with more words than the base is refused" baseline freeze
+fresh; mkfreeze "freeze-failed v0.3.0"; run_admit
+expect_refuse "AC4 a line that is not freeze-ok BASE is refused" baseline freeze
+fresh; (cd "$W/c/repo/freeze" && { cat freeze.txt; echo "freeze-ok v9.9.9"; } > f2 && mv f2 freeze.txt); run_admit
+expect_refuse "AC4 a freeze file naming a baseline the tagged commit does not have is refused (every line names a baseline file of the tagged commit)" baseline freeze
+fresh; rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"; ln -s /etc/hostname "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 a freeze file that is a symlink is refused" baseline freeze
+fresh; head -c 70000 /dev/zero | tr '\0' 'a' > "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 an oversized freeze file is refused" baseline freeze
+# admission starts no Go at all: no verify-freeze, no go path, no --go option left in the file (the judge holds the same from outside: bin/chain-test-shape.py)
+n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && ! grep -Eq 'verify-freeze|GO_BIN|fscache-go|--go\b|GOTOOLCHAIN' "$BA"; then ok "AC4 bin/build-admit.py names no Go program, no verify-freeze and no --go option"
+else bad "AC4 build-admit.py still names the Go freeze check (or is missing: RED)"; fi
 # the ACs baseline of a CI patch (REQ-REL-009-AC13) goes through bin/admission-tag-signer.py baseline: its own tests and cache's auto-baseline PR
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
@@ -839,6 +839,7 @@ fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
 expect_ok "AC6 a release candidate tag is exempt: it is admitted with no marker on main"
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
@@ -851,12 +852,14 @@ fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at rc-proof, naming the marker" rc-proof marker
 fresh; G checkout -q main; printf '# edited\n' >> "$W/c/repo/.github/workflows/release.yml"
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, chain file edited after the proof"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
@@ -869,6 +872,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=150
+EXPECT_TOTAL=156
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

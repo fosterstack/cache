@@ -135,10 +135,17 @@ def stage_text(family):
         call += "      mode:\n        description: release or snapshot\n        type: string\n        default: release\n"
         call += "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
     out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
-    for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("apk", "assemble")):
+    for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("freeze", "apk", "assemble")):
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
-        out += ("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
+        if job == "freeze":      # rule 1: the requirements tool's freeze check in a job of its own (no Witness, no mode, no tools)
+            out += "    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n"
+            out += "      - uses: %s # v7.0.1\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n" % CHECKOUT
+            out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
+            out += "      - name: the freeze check of every baseline file\n        run: %s\n" % S.FREEZE_RUN
+            out += "      - uses: %s # v7.0.1\n        with:\n          name: freeze\n          path: freeze\n" % UPLOAD
+            continue
+        out += ("    needs: freeze\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
                 else "    runs-on: %s\n" % sp["runner"] if sp.get("runner")
                 else "    needs: [rapk, rapk-arm]\n    runs-on: ubuntu-24.04\n" if family == "rebuild"
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
