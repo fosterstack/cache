@@ -126,8 +126,11 @@ def check_manifest(keys_dir):
         for name, data in (("root.pub", root_raw), ("manifest.json", body), ("manifest.sig", sig)):
             with open(os.path.join(tmp, name), "wb") as f:
                 f.write(data)
-        if ssl("pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-noout", check=False).returncode != 0:
+        root_der = ssl("pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-outform", "DER", check=False)
+        if root_der.returncode != 0 or not root_der.stdout:
             refuse("manifest", "the root key file is not a public key")
+        if not is_p256_spki(root_der.stdout):
+            refuse("manifest", "the root key file is not an ECDSA P-256 key")
         verified = ssl("dgst", "-sha256", "-verify", os.path.join(tmp, "root.pub"), "-signature", os.path.join(tmp, "manifest.sig"),
                        os.path.join(tmp, "manifest.json"), check=False)
         if not sig or verified.returncode != 0:
@@ -161,20 +164,24 @@ def parse_manifest_body(body):
     return m
 
 
+P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")      # SubjectPublicKeyInfo of an ECDSA P-256 key, up to its point
+
+
+def is_p256_spki(der):
+    """True for the DER of an ECDSA P-256 public key: the 26-byte SPKI prefix, then the 65-byte uncompressed point (91 bytes in all)."""
+    return len(der) == len(P256_SPKI_PREFIX) + 65 and der.startswith(P256_SPKI_PREFIX) and der[len(P256_SPKI_PREFIX)] == 4
+
+
 def manifest_key(m, tmp):
     """The manifest's key: one PEM public key block, ECDSA P-256 (the KMS key's type), and key_id = the lower-case sha256 of its DER."""
     pem = m["public_key"]
     if not (isinstance(pem, str) and ONE_PUBLIC_KEY_PEM.fullmatch(pem)):
         refuse("manifest", "public_key is not exactly one PEM public key block")
-    path = os.path.join(tmp, "release.pub")
-    with open(path, "w") as f:
-        f.write(pem)
-    text = ssl("pkey", "-pubin", "-in", path, "-text", "-noout", check=False)
-    if text.returncode != 0:
+    der = public_key_der(pem)
+    if der is None:
         refuse("manifest", "public_key is not a public key")
-    if b"ASN1 OID: prime256v1" not in text.stdout:
+    if not is_p256_spki(der):
         refuse("manifest", "public_key is not an ECDSA P-256 key")
-    der = ssl("pkey", "-pubin", "-in", path, "-outform", "DER").stdout
     if m["key_id"] != hashlib.sha256(der).hexdigest():
         refuse("manifest", "key_id is not the lower-case sha256 of the public key")
     return {"key_id": m["key_id"], "public_key": pem}
@@ -182,7 +189,9 @@ def manifest_key(m, tmp):
 
 def rekor_pin(trust_path, rekor_path):
     """The Rekor log's public key (PEM text), taken from rekor.pub only when sigstore-trust.json pins it: the sha256 of the key's DER must be
-    the file's rekor_sha256. This is the only Sigstore material the key-signed chain trusts (ratify B: Rekor kept, Fulcio and the TSA gone)."""
+    the file's rekor_sha256. This is only a drift check, not an authorization: a hash edited in the same pull request authorizes nothing, the
+    boundary is review of these files. rekor_sha256 records the refresh from Sigstore's TUF root. It is the only Sigstore material the
+    key-signed chain trusts (ratify B: Rekor kept, Fulcio and the TSA gone)."""
     trust = load_json(trust_path, "trust file")
     try:
         with open(rekor_path) as f:

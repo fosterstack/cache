@@ -89,6 +89,9 @@ write_set("junk-key", good(public_key="not a key"))
 write_set("pad-key", good(public_key="x\n" + pem("rel")))
 write_set("other-root", good(), rootkey="otherroot")
 write_set("root-mismatch", good(), root_pub="otherroot")
+for _t in ("rsa", "p384"):       # a root key of another type, signing with its own key: refused for its type, before its signature counts
+    write_set("root-" + _t, good(), rootkey=_t, root_pub=_t)
+write_set("root-ed", good(), root_pub="ed", sig=base64.b64encode(os.urandom(64)).decode() + "\n")       # openssl dgst cannot sign with Ed25519
 write_set("dup-key", None, raw=b'{"public_key": %s, "key_id": "%s", "valid_from": "2026-01-01T00:00:00Z", "valid_from": "2026-12-01T00:00:00Z"}\n'
           % (json.dumps(pem("rel")).encode(), der_sha("rel").encode()))
 write_set("array", None, raw=b'[1]\n')
@@ -156,6 +159,9 @@ expect_refuse "a manifest that is a link is not read" "manifest|link" link-manif
 expect_refuse "a manifest edited after it was signed" "signature" edited
 expect_refuse "a manifest signed by another root key" "signature" other-root
 expect_refuse "the committed root key is not the signer's" "signature" root-mismatch
+expect_refuse "an RSA root key" "root key|p-256" root-rsa
+expect_refuse "an Ed25519 root key" "root key|p-256" root-ed
+expect_refuse "an ECDSA P-384 root key" "root key|p-256" root-p384
 expect_refuse "a signature that is not base64" "signature" sig-garbage
 expect_refuse "an empty signature file" "signature" sig-empty
 expect_refuse "a signature that is not an ECDSA signature of the file" "signature" sig-ed

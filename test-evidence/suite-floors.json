@@ -13,7 +13,7 @@
  "chain-hostile-test.sh": 280,
  "chain-install-crane-test.sh": 7,
  "chain-install-witness-test.sh": 44,
- "chain-manifest-test.sh": 45,
+ "chain-manifest-test.sh": 48,
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 98,
  "chain-rekor-key-test.sh": 66,
