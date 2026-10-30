@@ -14,7 +14,7 @@
  "chain-install-crane-test.sh": 7,
  "chain-install-witness-test.sh": 44,
  "chain-rebuild-test.sh": 102,
- "chain-records-test.sh": 98,
+ "chain-records-test.sh": 102,
  "chain-release-metadata-test.sh": 100,
  "chain-release-scripts-test.sh": 385,
  "chain-release-wiring-test.sh": 244,

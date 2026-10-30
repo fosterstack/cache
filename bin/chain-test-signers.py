@@ -716,6 +716,9 @@ def unresolved_signing(e, ctx):
             return "witness run with an unresolved attestor list (a config file or WITNESS_ setting) (fail closed)"
         if any(not lit for _v, lit in witness_attestors(ctx)):
             return "witness run with an unresolved attestor list (fail closed)"
+    if n == "cosign sign-blob":
+        # the release KMS key is named by one pinned variable (handoff 0713 P3): as the value of --key it is the key, not the blob, so it does not make the blob unresolved
+        ctx = re.sub(r"--key[ =]\"?\$\{?RELEASE_KMS_KEY_REF\}?\"?(?=\s|$)", "--key", ctx)
     if n in ("cosign sign-blob", "sigstore python sign") and (UNRESOLVED.search(ctx) or re.search(r"[*?]", ctx)):
         return "%s with an unresolved argument (its blob, and so its type, cannot be known) (fail closed)" % n
     return None

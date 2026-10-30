@@ -216,6 +216,17 @@ expect ok "the same sign-blob with the cosign signature row (consumer: customer)
 d=$(mk relrow); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
 addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
 expect ok "the release policy's sign-blob with a row whose consumer is the release stage passes" "$d"
+# handoff 0713 P3: a sign-blob made with the release KMS key names it as `--key "$RELEASE_KMS_KEY_REF"` (the job pins the value); that one variable as the key's value does not
+# make the blob unresolved, and no other variable does the same
+d=$(mk relkey); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
+addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+expect ok "a sign-blob with --key \"\$RELEASE_KMS_KEY_REF\" and a literal blob resolves like any literal sign-blob" "$d"
+d=$(mk relkey2); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --key "$OTHER_KEY" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
+addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+expect_named "a sign-blob with --key of any other variable is still refused as an unresolved argument" "$d" "unresolved argument"
+d=$(mk relkey3); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config c.json --bundle b.json "$F"\n' > "$d/.github/workflows/stage-verify.yml"
+addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+expect_named "a sign-blob with the KMS key but a variable blob is still refused" "$d" "unresolved argument"
 # (Codex #249 r7 B7, the class closed) a signing call whose type cannot be resolved fails closed BY NAME, even when the rows it would
 # need exist: an unresolved attestor list, type, datatype or argument is an explicit error, never an assumption
 uncase() { # uncase NAME 'run line' LABEL WORD [ok]: stage-verify.yml with that run line; caught and naming WORD (or ok)
@@ -363,7 +374,7 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-EXPECT=99
+EXPECT=102
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
