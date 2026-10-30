@@ -5,7 +5,8 @@
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
 # held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `daily-audit` (schedule), `rerun-held` (schedule)
+#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `image-signatures` (pull_request),
+#   `daily-audit` (schedule), `rerun-held` (schedule)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
@@ -21,7 +22,33 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
 
-CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\nexceptions=trusted/.github/supply-chain-exceptions.json\nif [ ! -f "$exceptions" ]; then\n  exceptions="$RUNNER_TEMP/no-exceptions.json"\n  echo \'{"exceptions": []}\' > "$exceptions"\nfi\npython3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1\nexit $status\n', 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py --observations-out "$RUNNER_TEMP/tag-observations/state.json"', 'rerun-held': 'python3 .github/agent/supply-chain/pin-audit.py --rerun-held'}
+CANONICAL_RUNS = {
+    'image-signatures':
+        'set -euo pipefail\n'
+        'python3 trusted/.github/agent/supply-chain/pin-age-check.py cosign-verify --root pr --head '
+        '"$HEAD_SHA" \\\n'
+        '--tools-file trusted/bin/persona-uat-tools.json',
+    'pin-age':
+        'set -uo pipefail\n'
+        'status=0\n'
+        'python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ '
+        'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n'
+        "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
+        'exceptions=trusted/.github/supply-chain-exceptions.json\n'
+        'if [ ! -f "$exceptions" ]; then\n'
+        '  exceptions="$RUNNER_TEMP/no-exceptions.json"\n'
+        '  echo \'{"exceptions": []}\' > "$exceptions"\n'
+        'fi\n'
+        'python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ '
+        'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions '
+        '"$exceptions" --report-only || status=1\n'
+        'exit $status\n',
+    'daily-audit':
+        'python3 .github/agent/supply-chain/pin-audit.py --observations-out '
+        '"$RUNNER_TEMP/tag-observations/state.json"',
+    'rerun-held':
+        'python3 .github/agent/supply-chain/pin-audit.py --rerun-held',
+}
 
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -66,8 +93,8 @@ def judge_wf(d, real=False):
     if top not in ({}, {"contents": "read"}, None) or (top is None):
         bad.append("the workflow has no top-level permissions block of {} or contents: read")
     jobs = d.get("jobs", {})
-    if sorted(jobs) != ["daily-audit", "pin-age", "rerun-held"]:
-        bad.append(f"the jobs are not exactly pin-age, daily-audit and rerun-held: {sorted(jobs)}")
+    if sorted(jobs) != ["daily-audit", "image-signatures", "pin-age", "rerun-held"]:
+        bad.append(f"the jobs are not exactly pin-age, image-signatures, daily-audit and rerun-held: {sorted(jobs)}")
         return bad
     # pin-age
     j = jobs["pin-age"]
@@ -116,6 +143,27 @@ def judge_wf(d, real=False):
         bad.append(f"rerun-held's permissions are not exactly actions: write + contents: read + pull-requests: read + checks: read (found {j.get('permissions')})")
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
+    # image-signatures: the cosign cross-check of the pin-age proof (reads only, the base checker, no token)
+    j = jobs["image-signatures"]
+    if (j.get("if") != "github.event_name == 'pull_request'"
+            or any(k in j for k in ("needs", "strategy", "continue-on-error", "environment"))):
+        bad.append("image-signatures does not run on exactly pull_request "
+                   "(no needs, strategy, continue-on-error or environment)")
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append(f"image-signatures' permissions are not exactly contents: read (found {j.get('permissions')})")
+    if int(str(j.get("timeout-minutes", "999"))) > 20:
+        bad.append("image-signatures has no bounded timeout-minutes (<= 20)")
+    sig_runs = "\n".join(str(s.get("run", "")) for s in j.get("steps", []))
+    checker = "python3 trusted/.github/agent/supply-chain/pin-age-check.py cosign-verify"
+    if checker not in sig_runs or "--tools-file trusted/bin/persona-uat-tools.json" not in sig_runs:
+        bad.append("image-signatures does not run the BASE branch's checker (trusted/) cosign-verify "
+                   "with the BASE tools file: the pull request's copy never runs")
+    if "${{" in sig_runs:
+        bad.append("image-signatures has ${{ }} inside run: values go through env")
+    head_env = {"HEAD_SHA": "${{ github.event.pull_request.head.sha }}"}
+    if [st.get("env") for st in j.get("steps", []) if "run" in st] != [head_env]:
+        bad.append("image-signatures' run step does not take exactly HEAD_SHA from env "
+                   "(no GH_TOKEN, no other variable)")
     # nothing may change WHERE the checker comes from or what runs it
     for key in ("env", "defaults"):
         if key in d:
@@ -137,21 +185,33 @@ def judge_wf(d, real=False):
             bad.append(f"{name} has a job-level env")
         if name == "pin-age" and "env" in jj:
             bad.append("pin-age has a job-level env (PYTHONPATH and friends could redirect the trusted checker)")
-    seq = [("checkout" if str(st.get("uses", "")).startswith("actions/checkout@") else "run" if "run" in st else "other") for st in jobs["pin-age"].get("steps", [])]
-    if seq != ["checkout", "checkout", "run"]:
-        bad.append(f"pin-age's steps are not exactly [trusted checkout, PR checkout, the check step] (found {seq}): no step may be added between them")
-    pa_steps = [st for st in jobs["pin-age"].get("steps", []) if str(st.get("uses", "")).startswith("actions/checkout@")]
-    if len(pa_steps) != 2:
-        bad.append("pin-age must have exactly two checkouts (the base's trusted checker, the PR's tree)")
-    else:
-        t, pr_ = pa_steps
-        tw, pw = t.get("with") or {}, pr_.get("with") or {}
-        if set(tw) != {"ref", "path", "persist-credentials"} or set(pw) != {"path", "fetch-depth", "persist-credentials"}:
-            bad.append("pin-age's checkouts take inputs other than the ratified ones (e.g. sparse-checkout would empty the trusted checker)")
-        if tw.get("ref") != "${{ github.event.pull_request.base.sha }}" or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false":
-            bad.append("pin-age's trusted checkout is not the BASE sha at path trusted with persist-credentials false")
-        if "ref" in pw or pw.get("path") != "pr" or pw.get("fetch-depth") != "0" or str(pw.get("persist-credentials")).lower() != "false":
-            bad.append("pin-age's PR checkout is not the default (merge) ref at path pr, full depth, persist-credentials false")
+    for jn in ("pin-age", "image-signatures"):
+        steps = jobs[jn].get("steps", [])
+        is_checkout = lambda st: str(st.get("uses", "")).startswith("actions/checkout@")
+        seq = ["checkout" if is_checkout(st) else "run" if "run" in st else "other" for st in steps]
+        if seq != ["checkout", "checkout", "run"]:
+            bad.append(f"{jn}'s steps are not exactly [trusted checkout, PR checkout, the check step] (found {seq}): "
+                       "no step may be added between them")
+        pa_steps = [st for st in steps if is_checkout(st)]
+        if len(pa_steps) != 2:
+            bad.append(f"{jn} must have exactly two checkouts (the base's trusted checker, the PR's tree)")
+        else:
+            t, pr_ = pa_steps
+            tw, pw = t.get("with") or {}, pr_.get("with") or {}
+            if (set(tw) != {"ref", "path", "persist-credentials"}
+                    or set(pw) != {"path", "fetch-depth", "persist-credentials"}):
+                bad.append(f"{jn}'s checkouts take inputs other than the ratified ones "
+                           "(e.g. sparse-checkout would empty the trusted checker)")
+            base_ok = (tw.get("ref") == "${{ github.event.pull_request.base.sha }}" and tw.get("path") == "trusted"
+                       and str(tw.get("persist-credentials")).lower() == "false")
+            if not base_ok:
+                bad.append(f"{jn}'s trusted checkout is not the BASE sha at path trusted "
+                           "with persist-credentials false")
+            pr_ok = ("ref" not in pw and pw.get("path") == "pr" and pw.get("fetch-depth") == "0"
+                     and str(pw.get("persist-credentials")).lower() == "false")
+            if not pr_ok:
+                bad.append(f"{jn}'s PR checkout is not the default (merge) ref at path pr, full depth, "
+                           "persist-credentials false")
     # the check steps' commands are pinned EXACTLY: any other flag, an extra assignment, a duplicated argument, a changed order is a changed (rejected) workflow
     norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip())
     for jn, want in CANONICAL_RUNS.items():
@@ -179,9 +239,12 @@ def judge_wf(d, real=False):
                 bad.append(f"{name}: a step uploads hidden files")
             if str(st.get("uses", "")).startswith("actions/upload-artifact@") and (st.get("with") or {}).get("path") != "${{ runner.temp }}/tag-observations/state.json":
                 bad.append(f"{name}: the artifact path is not exactly the tag-observations state file (only public tag mappings may be uploaded)")
-            extra_env = set(st.get("env") or {}) - {"GH_TOKEN", "GITHUB_REPOSITORY"}
+            may_set = {"HEAD_SHA"} if name == "image-signatures" else {"GH_TOKEN", "GITHUB_REPOSITORY"}
+            extra_env = set(st.get("env") or {}) - may_set
             if extra_env:
-                bad.append(f"{name}: a step sets env {sorted(extra_env)}: only GH_TOKEN and GITHUB_REPOSITORY may be set (PYTHONPATH and friends redirect the trusted checker)")
+                allowed = ' and '.join(sorted(may_set))
+                bad.append(f"{name}: a step sets env {sorted(extra_env)}: only {allowed} may be set "
+                           "(PYTHONPATH and friends redirect the trusted checker)")
         for st in [x for x in jj.get("steps", []) if "run" in x]:
             run_text = str(st["run"])
             if re.search(r"GITHUB_ENV|GITHUB_PATH|BASH_ENV|ENV=", run_text):
@@ -190,7 +253,7 @@ def judge_wf(d, real=False):
                 bad.append(f"{name}: a run step passes a test-only flag or a Python path override (--fixtures, --now, PYTHONPATH): production runs never take fixtures")
             if re.search(r"(^|[;&|\n])\s*exit\s+(?!\$status\b)", run_text) or re.search(r"\|\|\s*true\b", run_text):
                 bad.append(f"{name}: a run step exits early or swallows a failure (exit / || true)")
-            if "GH_TOKEN" not in str(st.get("env", "")) and ("pin-" in run_text):
+            if name != "image-signatures" and "GH_TOKEN" not in str(st.get("env", "")) and ("pin-" in run_text):
                 bad.append(f"{name}: a step that runs the checkers has no GH_TOKEN (without it the live lookups cannot run)")
         for s in jj.get("steps", []):
             u = str(s.get("uses", ""))
@@ -389,7 +452,44 @@ mut_wf("rerun-held loses actions: write", "rerun-held's permissions are not exac
 mut_wf("rerun-held gains issues: write", "can write issues", lambda d: J(d, "rerun-held")["permissions"].update(issues="write"))
 mut_wf("rerun-held never re-runs", "does not run .github/agent/supply-chain/pin-audit.py --rerun-held", lambda d: J(d, "rerun-held").update(steps=[s for s in J(d, "rerun-held")["steps"] if "--rerun-held" not in str(s.get("run", ""))]))
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
-mut_wf("a fourth job appears", "the jobs are not exactly", lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
+SIG = lambda d: J(d, "image-signatures")
+RUN = lambda d: SIG(d)["steps"][2]      # the steps are [trusted checkout, PR checkout, the check step]
+mut_wf("a fifth job appears", "the jobs are not exactly",
+       lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
+mut_wf("image-signatures is removed", "the jobs are not exactly", lambda d: d["jobs"].pop("image-signatures"))
+mut_wf("image-signatures can write contents", "image-signatures' permissions are not exactly",
+       lambda d: SIG(d).update(permissions={"contents": "write"}))
+mut_wf("image-signatures gets an id-token", "image-signatures' permissions are not exactly",
+       lambda d: SIG(d).update(permissions={"contents": "read", "id-token": "write"}))
+mut_wf("image-signatures skips bots", "does not run on exactly pull_request",
+       lambda d: SIG(d).update({"if": "github.actor != 'dependabot[bot]'"}))
+mut_wf("image-signatures runs on every event", "does not run on exactly pull_request", lambda d: SIG(d).pop("if"))
+for key, val in (("needs", "pin-age"), ("strategy", {"matrix": {"x": ["1"]}}),
+                 ("continue-on-error", "true"), ("environment", "prod")):
+    mut_wf(f"image-signatures gets {key}", "does not run on exactly pull_request",
+           lambda d, k=key, v=val: SIG(d).update({k: v}))
+mut_wf("image-signatures has no timeout bound", "no bounded timeout-minutes",
+       lambda d: SIG(d).update({"timeout-minutes": "120"}))
+mut_wf("image-signatures runs the PR's checker", "does not run the BASE branch's checker",
+       lambda d: RUN(d).update(run=RUN(d)["run"].replace("trusted/.github", "pr/.github")))
+mut_wf("image-signatures takes the PR's tools file", "does not run the BASE branch's checker",
+       lambda d: RUN(d).update(run=RUN(d)["run"].replace("trusted/bin/", "pr/bin/")))
+mut_wf("image-signatures puts the head sha inline", "inside run",
+       lambda d: RUN(d).update(run=RUN(d)["run"].replace('"$HEAD_SHA"', "${{ github.event.pull_request.head.sha }}")))
+mut_wf("image-signatures passes a token", "does not take exactly HEAD_SHA",
+       lambda d: RUN(d)["env"].update(GH_TOKEN="${{ github.token }}"))
+mut_wf("image-signatures sets PYTHONPATH", "sets env", lambda d: RUN(d)["env"].update(PYTHONPATH="pr"))
+mut_wf("image-signatures gains a flag", "differ from the ratified text",
+       lambda d: RUN(d).update(run=RUN(d)["run"] + " --report-only"))
+mut_wf("image-signatures gets a third checkout", "exactly two checkouts",
+       lambda d: SIG(d)["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40,
+                                            "with": {"persist-credentials": "false"}}))
+mut_wf("image-signatures checks out the head as trusted", "trusted checkout is not the BASE",
+       lambda d: SIG(d)["steps"][0]["with"].update(ref="${{ github.event.pull_request.head.sha }}"))
+mut_wf("image-signatures keeps credentials", "persist-credentials",
+       lambda d: SIG(d)["steps"][0]["with"].update({"persist-credentials": "true"}))
+mut_wf("image-signatures has a container", "has a job-level container",
+       lambda d: SIG(d).update(container="evil/image:latest"))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot (AC1) ---
 mut_db("github-actions cooldown gains a semver override", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"semver-major-days": "0"}))
