@@ -2129,7 +2129,7 @@
       "env_mentions": [
         {
           "name": "PATH",
-          "text": "os.path.join(d, \"ctrl.bin\")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "text": "stdin=subprocess.DEVNULL, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
           "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
