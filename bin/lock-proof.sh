@@ -61,9 +61,16 @@ for ((i = 0; i + 1 < ${#pass[@]}; i++)); do   # the directories the assembler is
   case ${pass[$i]} in --melange-repo|--keyring-dir) pass[$((i + 1))]=$(absdir "${pass[$((i + 1))]}");; esac
 done
 for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config|--base-lock|--index-record|--key-record) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
-variant=
-for ((i = 0; i < ${#pass[@]}; i++)); do
-  case ${pass[$i]} in --variant) variant=${pass[$((i + 1))]:-};; esac
+variant= version= melrepo= keydir=
+# the assembler's four options, each with its value; the assembler takes them in a fixed order
+for ((i = 0; i < ${#pass[@]}; i += 2)); do
+  case ${pass[$i]} in
+    --variant) variant=${pass[$((i + 1))]:-};;
+    --version) version=${pass[$((i + 1))]:-};;
+    --melange-repo) melrepo=${pass[$((i + 1))]:-};;
+    --keyring-dir) keydir=${pass[$((i + 1))]:-};;
+    *) die "unknown argument after --: ${pass[$i]}" 2;;
+  esac
 done
 root=$(cd "$here/.." && pwd)
 case $variant in
@@ -95,7 +102,8 @@ mkrepo() {
 }
 run() { # <name> <archive> [temp config]: the assembler runs from its own repository root copy with the committed inputs
   mkrepo "$1" "${3:-}"
-  ( cd "$tmp/repo-$1" && "$BASHBIN" bin/assemble-image.sh --archive "$2" --out "$tmp/out-$1" "${pass[@]}" ) >"$tmp/$1.log" 2>&1 && rc=0 || rc=$?
+  ( cd "$tmp/repo-$1" && "$BASHBIN" bin/assemble-image.sh --variant "$variant" --version "$version" --archive "$2" \
+    --melange-repo "$melrepo" --keyring-dir "$keydir" --out "$tmp/out-$1" ) >"$tmp/$1.log" 2>&1 && rc=0 || rc=$?
 }
 
 # the victim: the first package of the BASE LOCK by (name, architecture)
