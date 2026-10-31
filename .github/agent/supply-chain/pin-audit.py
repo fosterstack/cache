@@ -753,6 +753,16 @@ class LiveNet:
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
+            try:
+                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
+            except Fail as e:
+                print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
+                continue
+            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
+                key=lambda x: x.get("created_at", ""), reverse=True)
+            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
+            if not failed:      # only a pull request whose newest run failed can be held: the inventories below cost seconds each
+                continue
             f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
             if f.returncode:
                 continue
@@ -762,14 +772,6 @@ class LiveNet:
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
-            try:
-                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
-            except Fail as e:
-                print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
-                continue
-            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
-                key=lambda x: x.get("created_at", ""), reverse=True)
-            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
                 out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved,
                     "_base": mb, "_head": p["headRefOid"]})

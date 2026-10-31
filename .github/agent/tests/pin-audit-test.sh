@@ -329,6 +329,127 @@ reruns = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)[:2] == ["run
 assert reruns == [["run", "rerun", "99"]], reruns
 PY
 run heldoff "$HELD" "$work/r-clean"
+CASE="rerun-held reads a pull request's inventory only when its newest supply-chain run failed: of three pull requests (success, failure, no run) only the failed one is fetched and loaded (two inventories), and only it is returned"
+check python3 - "$aud" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+H = {n: ("%d" % n) * 40 for n in (1, 2, 3)}
+def run_prs(runs_of):
+    """pa.LiveNet.prs() with git and gh stubbed: what it fetched, which revisions it loaded, what it returned and printed."""
+    seen = {"fetch": [], "load": []}
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+    def fake_run(cmd, **kw):
+        r = R()
+        if "list" in cmd and "pr" in cmd:
+            r.stdout = json.dumps([{"number": n, "title": "t%d" % n, "headRefOid": H[n], "baseRefName": "main"} for n in sorted(runs_of)])
+        elif "fetch" in cmd:
+            seen["fetch"].append(cmd[-2])
+        elif "rev-parse" in cmd:
+            r.stdout = "f" * 40 + "\n"
+        elif "merge-base" in cmd:
+            r.stdout = "b" * 40 + "\n"
+        return r
+    def gh_json(self, path, strict=False):
+        n = [k for k, v in H.items() if "head_sha=" + v in path][0]
+        runs = runs_of[n]
+        if runs == "unreadable":
+            raise pa.Fail("boom")
+        return {"workflow_runs": [{"id": 10 * n + i, "path": ".github/workflows/supply-chain.yml", "created_at": c, "conclusion": k} for i, (c, k) in enumerate(runs)]}
+    pa._run = fake_run
+    pa.LiveNet._gh_json = gh_json
+    pa.inv.load_at = lambda root, rev: seen["load"].append(rev) or {}
+    pa.inv.moved = lambda a, b: [pa.inv.Item("action", "o/r", "v1", "v1")]
+    os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        got = pa.LiveNet(["gh"], ".").prs()
+    return seen, [p["number"] for p in got], out.getvalue()
+seen, got, _ = run_prs({1: [("2026-10-01T00:00:00Z", "success")], 2: [("2026-10-01T00:00:00Z", "failure")], 3: []})
+assert got == [2], got
+assert seen["fetch"] == ["pull/2/head"], seen
+assert len(seen["load"]) == 2, seen
+PY
+CASE="rerun-held: an older failed run with a newer green run is not a held pull request (the newest run decides): it is neither fetched nor loaded"
+check python3 - "$aud" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+H = {n: ("%d" % n) * 40 for n in (1, 2, 3)}
+def run_prs(runs_of):
+    """pa.LiveNet.prs() with git and gh stubbed: what it fetched, which revisions it loaded, what it returned and printed."""
+    seen = {"fetch": [], "load": []}
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+    def fake_run(cmd, **kw):
+        r = R()
+        if "list" in cmd and "pr" in cmd:
+            r.stdout = json.dumps([{"number": n, "title": "t%d" % n, "headRefOid": H[n], "baseRefName": "main"} for n in sorted(runs_of)])
+        elif "fetch" in cmd:
+            seen["fetch"].append(cmd[-2])
+        elif "rev-parse" in cmd:
+            r.stdout = "f" * 40 + "\n"
+        elif "merge-base" in cmd:
+            r.stdout = "b" * 40 + "\n"
+        return r
+    def gh_json(self, path, strict=False):
+        n = [k for k, v in H.items() if "head_sha=" + v in path][0]
+        runs = runs_of[n]
+        if runs == "unreadable":
+            raise pa.Fail("boom")
+        return {"workflow_runs": [{"id": 10 * n + i, "path": ".github/workflows/supply-chain.yml", "created_at": c, "conclusion": k} for i, (c, k) in enumerate(runs)]}
+    pa._run = fake_run
+    pa.LiveNet._gh_json = gh_json
+    pa.inv.load_at = lambda root, rev: seen["load"].append(rev) or {}
+    pa.inv.moved = lambda a, b: [pa.inv.Item("action", "o/r", "v1", "v1")]
+    os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        got = pa.LiveNet(["gh"], ".").prs()
+    return seen, [p["number"] for p in got], out.getvalue()
+seen, got, _ = run_prs({1: [("2026-10-01T00:00:00Z", "failure"), ("2026-10-02T00:00:00Z", "success")]})
+assert got == [] and seen == {"fetch": [], "load": []}, (got, seen)
+PY
+CASE="rerun-held: when the runs of one pull request cannot be read, that one gets its information line and no fetch (never treated as held), and the next pull request is still handled"
+check python3 - "$aud" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+H = {n: ("%d" % n) * 40 for n in (1, 2, 3)}
+def run_prs(runs_of):
+    """pa.LiveNet.prs() with git and gh stubbed: what it fetched, which revisions it loaded, what it returned and printed."""
+    seen = {"fetch": [], "load": []}
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+    def fake_run(cmd, **kw):
+        r = R()
+        if "list" in cmd and "pr" in cmd:
+            r.stdout = json.dumps([{"number": n, "title": "t%d" % n, "headRefOid": H[n], "baseRefName": "main"} for n in sorted(runs_of)])
+        elif "fetch" in cmd:
+            seen["fetch"].append(cmd[-2])
+        elif "rev-parse" in cmd:
+            r.stdout = "f" * 40 + "\n"
+        elif "merge-base" in cmd:
+            r.stdout = "b" * 40 + "\n"
+        return r
+    def gh_json(self, path, strict=False):
+        n = [k for k, v in H.items() if "head_sha=" + v in path][0]
+        runs = runs_of[n]
+        if runs == "unreadable":
+            raise pa.Fail("boom")
+        return {"workflow_runs": [{"id": 10 * n + i, "path": ".github/workflows/supply-chain.yml", "created_at": c, "conclusion": k} for i, (c, k) in enumerate(runs)]}
+    pa._run = fake_run
+    pa.LiveNet._gh_json = gh_json
+    pa.inv.load_at = lambda root, rev: seen["load"].append(rev) or {}
+    pa.inv.moved = lambda a, b: [pa.inv.Item("action", "o/r", "v1", "v1")]
+    os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        got = pa.LiveNet(["gh"], ".").prs()
+    return seen, [p["number"] for p in got], out.getvalue()
+seen, got, out = run_prs({1: "unreadable", 2: [("2026-10-01T00:00:00Z", "failure")]})
+assert "information: the runs of pull request #1 could not be read" in out, out
+assert seen["fetch"] == ["pull/2/head"] and got == [2], (seen, got)
+PY
+
 CASE="without --rerun-held nothing is ever re-run (the re-run permission belongs to one job only)"
 check bash -c "! grep -q 'rerun' '$work/heldoff.gh'"
 run heldfirst "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"x\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {}, \"first_seen\": {\"$ITEM_CO\": \"$(dago 9)\"}}" "$work/r-clean" --rerun-held
