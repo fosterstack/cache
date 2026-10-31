@@ -381,7 +381,7 @@ CASE="inventory: a run line of 200 repeated expressions (a pattern-backtracking 
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
 try:
@@ -390,7 +390,7 @@ except RuntimeError as e:
     assert "refusing to read it partially" in str(e)
 else:
     raise AssertionError("an over-long command line was read as its prefix")
-assert time.time() - t < 3, time.time() - t
+assert time.process_time() - t < 3, time.process_time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -528,13 +528,13 @@ CASE="an unclosed run of expression openers in a huge script is read in linear t
 check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
     try:
         fn()
     except RuntimeError as e:
         assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
-assert time.time() - t < 3, time.time() - t
+assert time.process_time() - t < 3, time.process_time() - t
 # a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
 pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
 try:
@@ -759,10 +759,10 @@ CASE="an option chain of a thousand tokens before pip/docker is read in millisec
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("pip" + " -a" * 1000 + " x", "docker" + " -a" * 1000 + " x", "python3 -m pip" + " -q" * 1000 + " install evilpkg==9.9.9"):
     inv.inventory({"bin/x.sh": body + "\n"})
-assert time.time() - t < 2, time.time() - t
+assert time.process_time() - t < 2, time.process_time() - t
 assert inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker --context x run evil/x:latest\n"})
 PY
 
@@ -770,7 +770,7 @@ CASE="a hostile many-line file or a step that repeats one command hundreds of ti
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
               {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n" + "".join("          " + "pip install " * 320 + "\n" for _ in range(100))},
               {"bin/y.sh": "echo\n" * 30000}):
@@ -780,7 +780,7 @@ for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
         pass
     else:
         raise AssertionError("a hostile file was read")
-assert time.time() - t < 5, time.time() - t
+assert time.process_time() - t < 5, time.process_time() - t
 got = inv.inventory({"bin/x.sh": "cd x&&pip install foo==1.0\necho hi;pip install bar==2.0\n"})
 assert "package:pypi/foo@1.0" in got and "package:pypi/bar@2.0" in got
 PY
