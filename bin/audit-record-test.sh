@@ -184,6 +184,25 @@ r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "7", "--h
 check("cli plan: an actor who is not a dispatcher exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "x", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json"), "--actor", "fosterstack-admin", "--base-root", base], capture_output=True, text=True)
 check("cli plan: a pull request number that is not a number exits 2", r.returncode == 2, (r.returncode, r.stdout, r.stderr))
+# the COMMITTED policy (the repository root, not the in-test WRITERS above): the box's App bot may ask for a record; nobody else is added
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
+def committed_plan(actor):
+    return subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "7", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json"),
+                           "--actor", actor, "--base-root", ROOT], capture_output=True, text=True)
+r = committed_plan("fosterstack-harness[bot]")
+check("committed policy: the review helper App bot (fosterstack-harness[bot]) may ask for a record (exit 0)", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+r = committed_plan("fosterstack-admin")
+check("committed policy: the owner's login may still ask for a record (exit 0)", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+for who in ("fosterstack-automation[bot]", "fosterstack-harness", "someone"):
+    r = committed_plan(who)
+    check("committed policy: %r may not ask for a record (exit 1)" % who, r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+committed = json.load(open(os.path.join(ROOT, ".github/policy/audit-writers.json")))
+check("committed policy: the dispatchers are exactly fosterstack-admin and fosterstack-harness[bot]",
+      sorted(committed["dispatchers"]) == ["fosterstack-admin", "fosterstack-harness[bot]"], committed["dispatchers"])
+check("committed policy: no dispatcher is a writer (the one who asks never writes the record)",
+      not set(committed["dispatchers"]) & {w["login"] for w in committed["writers"]}, committed)
+check("committed policy: the writers are unchanged (fosterstack-automation[bot], id 333151817)",
+      committed["writers"] == [{"login": "fosterstack-automation[bot]", "id": 333151817}], committed["writers"])
 
 # the writer's first half (prepare): a fake gh answers the pull request and the record lookups; it must write only after the plan passes and never over a good record
 PREP_SH = os.path.join(os.path.dirname(JUDGE_SH), "audit-record-prepare.sh")
