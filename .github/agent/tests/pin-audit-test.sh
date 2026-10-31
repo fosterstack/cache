@@ -1333,7 +1333,7 @@ items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B"
 assert err is None, err
 assert sys.argv[6] in " ".join(repr(k) for k in items)
 PY
-CASE="oversize history: the list holds the three Oct 20 RED commits of PR 459, the Oct 23 #597 commit and the seven Oct 30 commits of cache6-0713-p1p5 (full lowercase 40-hex shas), each with a reason that names its file"
+CASE="oversize history: the list holds the named commits (full 40-hex shas), each with a reason that names its file"
 check python3 - "$aud" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
