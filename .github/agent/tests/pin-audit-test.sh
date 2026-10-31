@@ -1342,14 +1342,18 @@ p1p5 = {"27b14e37ed06bca44ae479a8880480fa5855605b", "c4ac17f07ac894c014034ec7e53
         "c5b8f225a378db6fa72200bafcf9af7998ef23e5", "9045a08f287801c75cbf385caae8038774ed9f10",
         "115c746b17620f08c0fe52c789dea720c887d465", "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987",
         "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8", "464b72fea4e356a9876bf9bd70f57cc84e07cab4"}
+p2 = {"7d538938ec3733112eb29b5f495502e8a74d7e33", "16e2e1f9a010dfc966930b7963cec13326fa877c",
+      "28acfea97185023710ee2ba4596cbdb2ca68bfb0", "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa",
+      "fbecada5bf5c37ab9263ca82664b3382c3dd9457"}
 r597 = "6b8c70df66651667e530748db9bc22462e307bee"
-assert set(pa.SKIP_UNREADABLE) == pr459 | p1p5 | {r597}, sorted(pa.SKIP_UNREADABLE)
+assert set(pa.SKIP_UNREADABLE) == pr459 | p1p5 | p2 | {r597}, sorted(pa.SKIP_UNREADABLE)
 for k, why in pa.SKIP_UNREADABLE.items():
     assert re.fullmatch(r"[0-9a-f]{40}", k), k
     if k == r597:
         assert "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
-    elif k in p1p5:
-        assert "cache6-0713-p1p5" in why and "bin/chain-rekor-key-test.sh" in why and "4529" in why, (k, why)
+    elif k in p1p5 | p2:
+        assert ("cache6-0713-p1p5" if k in p1p5 else "cache6-0713-p2") in why, (k, why)
+        assert "bin/chain-rekor-key-test.sh" in why and "4529" in why, (k, why)
         assert why.endswith("since wrapped (0289dc91)"), (k, why)
     else:
         assert "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)

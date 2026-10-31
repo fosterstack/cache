@@ -1190,6 +1190,11 @@ SKIP_UNREADABLE = {
     "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
     "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
     "464b72fea4e356a9876bf9bd70f57cc84e07cab4": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
+    "7d538938ec3733112eb29b5f495502e8a74d7e33": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "16e2e1f9a010dfc966930b7963cec13326fa877c": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "28acfea97185023710ee2ba4596cbdb2ca68bfb0": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
+    "fbecada5bf5c37ab9263ca82664b3382c3dd9457": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
 }
 
 
