@@ -47,10 +47,10 @@ if len(cmds) > 10:
     fail("the guide has %d commands; at most ten are allowed" % len(cmds))
 
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
-FORMS3 = ("gh attestation verify",)
 # the forms as tuples of words: a command word that holds a space ("cosign verify") is one word and is not a form
 FORM_WORDS2 = tuple(tuple(f.split()) for f in FORMS2)
-FORM_WORDS3 = tuple(tuple(f.split()) for f in FORMS3)
+# flags no command may carry: the first skips the public log entry, the second sends cosign to another log
+NO_FLAGS = ("--insecure-ignore-tlog", "--private-infrastructure")
 # The flags of the verify forms that take a value (an unknown flag is taken as taking none, so its next word is judged as an operand:
 # the safe direction, a command the check cannot place is not run).
 VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp",
@@ -62,7 +62,7 @@ VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--cer
 # such a value, not local to Check, is not runnable at Check (it may be listed; Release's post-publish verification runs it with the downloaded files).
 FILE_FLAGS = {"--bundle", "--certificate", "--cert", "--signature", "--sig", "--key", "--certificate-chain", "--rekor-url"}
 JQ_TWO = {"--arg", "--argjson", "--slurpfile", "--rawfile"}
-LOCAL = {"TAG", "IDENTITY"}     # placeholders Check fills with a local value
+LOCAL = {"TAG"}     # the placeholder Check fills with a local value
 IMAGE = {"IMAGE_REF", "IMAGE_REF_FIPS"}
 
 
@@ -165,8 +165,6 @@ def classify(c):
             continue
         if tuple(s[:2]) in FORM_WORDS2:
             words = s[2:]
-        elif tuple(s[:3]) in FORM_WORDS3:
-            words = s[3:]
         else:
             return "no", "`%s` is not one of the verify forms or jq" % " ".join(s[:3])
         i = 0
@@ -197,6 +195,46 @@ def classify(c):
     return "run", ""
 
 
+def shell_segments(c):
+    """The pipe segments of the command as shell words, a placeholder being a marker no file name can equal (so
+    --insecure-ignore-tlo''g is the flag); [] when the command cannot be split (classify refuses it for its syntax)."""
+    lx = shlex.shlex(PH.sub(lambda m: "\u2039%s\u203a" % m.group(1), c), posix=True, punctuation_chars=True)
+    lx.whitespace_split = True
+    try:
+        words = list(lx)
+    except ValueError:
+        return []
+    segs = [[]]
+    for w in words:
+        segs.append([]) if w == "|" else segs[-1].append(w)
+    return segs
+
+
+def no_flag(c):
+    """The first flag of NO_FLAGS the command carries (with or without =value), or None."""
+    return next((w.partition("=")[0] for seg in shell_segments(c) for w in seg if w.partition("=")[0] in NO_FLAGS), None)
+
+
+def key_error(c):
+    """None when every verify segment of the command has exactly one key flag (--key X or --key=X) whose value is
+    <RELEASE_KEY>, and the command carries no flag of NO_FLAGS; else why not."""
+    if no_flag(c):
+        return "the flag %s skips the public log or sends cosign to another log" % no_flag(c)
+    for seg in shell_segments(c):
+        if not seg or seg[0] == "jq":
+            continue
+        keys = []
+        for i, w in enumerate(seg):
+            flag, eq, value = w.partition("=")
+            if flag == "--key":
+                keys.append(value if eq else (seg[i + 1] if i + 1 < len(seg) else ""))
+        if len(keys) != 1:
+            return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
+        if keys[0] != "\u2039RELEASE_KEY\u203a":
+            return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
+    return None
+
+
 excused = {}
 if os.path.exists(listpath):
     try:
@@ -222,21 +260,22 @@ def verify_form(c):
             w = shlex.split(seg)
         except ValueError:
             return False
-        if not (w[:1] == ["jq"] or tuple(w[:2]) in FORM_WORDS2 or tuple(w[:3]) in FORM_WORDS3):
+        if not (w[:1] == ["jq"] or tuple(w[:2]) in FORM_WORDS2):
             return False
     return True
 for c in excused:
     if not verify_form(c):
         fail("the cannot-run entry `%s` is not a verify form (Release runs only the verify forms from this list)" % c)
+    why = key_error(c)
+    if why:
+        fail("the cannot-run entry `%s` is refused: %s (Release runs it with the verified key)" % (c, why))
     if c not in cmds:
         fail("the cannot-run entry `%s` is not in the guide (a stale list)" % c)
 
 PH_BACK = re.compile(r"PH_([A-Z][A-Z0-9_]*)")
 repo = os.environ.get("CANDIDATE_REPOSITORY", "")
-gh_repo, gh_ref = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_REF", "")
 values = {"IMAGE_REF": repo + "@" + digest if repo else "", "IMAGE_REF_FIPS": repo + "@" + digest_fips if repo else "",
-          "TAG": os.environ.get("GITHUB_REF_NAME", ""),
-          "IDENTITY": "https://github.com/%s/.github/workflows/stage-sign.yml@%s" % (gh_repo, gh_ref) if gh_repo and gh_ref else ""}
+          "TAG": os.environ.get("GITHUB_REF_NAME", "")}
 SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 
 
@@ -249,6 +288,9 @@ for c in cmds:
         if u not in defined:
             fail("the command `%s` uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
     kind, why = classify(c)
+    if no_flag(c):
+        fail("the command `%s` carries %s: it skips the public log or sends cosign to another log, so no command of the guide may (listed or not)"
+             % (c, no_flag(c)))
     if kind == "syntax":
         fail("the command `%s` has %s: no command of the guide may, listed as not-run or not (Release runs the listed commands unattended)" % (c, why))
     for u in sorted(set(PH.findall(c))):

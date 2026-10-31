@@ -35,7 +35,7 @@
 #   Q5 (Oct 10, second ruling) bin/check-stage.sh first MAKES policy.json per tag, as PR 2's Rebuild does (`script` judge, POLICY line).
 #   Q9 the last stage's job in release.yml is named release (the ratified rules' name), not promotion; check needs build AND sign.
 #   Q10 bin/check-guide.sh may name exactly the verify-only commands (cosign verify, verify-attestation, verify-blob,
-#      verify-blob-attestation, gh attestation verify); the `plain` judge keeps refusing every other signing word there, and refuses even
+#      verify-blob-attestation); the `plain` judge keeps refusing every other signing word there, and refuses even
 #      these in every other check script.
 #   Q10 interim (advisor, Oct 10 late): the guide's commands that need a registry image are listed in docs/verify-release.cannot-run.json;
 #      bin/check-guide.sh records them as not-run (it exits 0 for listed entries), but while that list is non-empty AC7 is NOT satisfied:
@@ -507,7 +507,7 @@ pm p_vfx     check-guide.sh     'cosign verify-foo x'                 'cosign'  
 pm p_vscan   check-scan.sh      'cosign verify "$IMG"'                'cosign'            "AC8 cosign verify in a check script other than the guide check (Q10)"
 pv() { mkdir -p "$work/$1"; cp "$work"/plain/*.sh "$work/$1/"; printf '%s\n' "$2" >> "$work/$1/check-guide.sh"; expect ok "$3" "" plain "$work/$1"/check-*.sh; }
 pv p_okv     'case "$1 $2" in "cosign verify"|"cosign verify-attestation"|"cosign verify-blob"|"cosign verify-blob-attestation") ;; esac' "AC8 the guide check may name the cosign verify commands (Q10)"
-pv p_okg     'gh attestation verify "oci://$REF" --owner o' "AC8 the guide check may name gh attestation verify (Q10)"
+pm p_okg     check-guide.sh     'gh attestation verify "oci://$REF" --owner o' 'attest' "AC8 the guide check may no longer name gh attestation verify (F2: it verifies by identity)"
 pm p_com     check-fips.sh      '# cosign sign is not used here'      'cosign'            "AC8 a signer named in a comment (over-reports by design)"
 mkdir -p "$work/l" && python3 - "$work/l" <<'PY'
 import hashlib, json, os, sys

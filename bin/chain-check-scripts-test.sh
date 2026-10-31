@@ -26,11 +26,11 @@
 #   [P] bin/check-guide.sh --guide FILE --digests D --images DIR --out DIR (Q10, Oct 10: cache-3f's guide format, rule 79 word for word):
 #         every command is a line of a ```sh fenced block (a ` \` continuation joins the next line; `#` lines are comments), unattended, in
 #         customer order, at most 10 in all; only cosign, gh and jq, each in its verify form (cosign verify / verify-attestation / verify-blob /
-#         verify-blob-attestation, gh attestation verify, jq), joined only by pipes; placeholders are ALL-CAPS in angle brackets, each defined
+#         verify-blob-attestation, jq), joined only by pipes; placeholders are ALL-CAPS in angle brackets, each defined
 #         ONCE in a list line before the first fence (`- `<NAME>`: text`). Check substitutes the candidate's values: <IMAGE_REF> =
 #         $CANDIDATE_REPOSITORY@<image-production digest> (PROPOSED: Check has the digest from Build's digests.json but NO registry reference,
-#         see the report), <TAG> = $GITHUB_REF_NAME, <IDENTITY> = https://github.com/$GITHUB_REPOSITORY/.github/workflows/stage-sign.yml@$GITHUB_REF
-#         (Sign's keyless identity). A command that cannot run on a candidate is excused ONLY by an exact entry of the cannot-run list,
+#         see the report), <TAG> = $GITHUB_REF_NAME; <RELEASE_KEY> is Release's (a listed command only: Check never holds the verified key).
+#         A command that cannot run on a candidate is excused ONLY by an exact entry of the cannot-run list,
 #         GUIDE.cannot-run.json next to the guide ([{"command": exact text, "reason": why}]); it is reported as not-run, never skipped silently.
 #         Fails closed on: no command, more than ten, another tool or subcommand, any other shell syntax, an undefined, twice-defined or
 #         unsubstituted placeholder, a non-zero exit, a cannot-run entry that is runnable or not in the guide. Writes OUT/guide-results.json.
@@ -1069,8 +1069,8 @@ plat_want_fail "PLAT-002-AC1 F1 a platform entry whose config blob is missing is
 # REVISIT (cache-3f's run on the real draft, Oct 10): a verify command whose subject is an image reference (<IMAGE_REF>,
 # <IMAGE_REF_FIPS>, a literal registry reference with `:` or `@`, or oci://...) needs a registry: it is NEVER run, it must be listed
 # exactly in the cannot-run list (then not-run, exit 0, covered by Release's post-publish verification, rule 79 amended Oct 10), or the check fails closed ("unlisted command
-# needs a registry"). A command runs only when every operand is a local file or a placeholder Check fills with a local value (<TAG>,
-# <IDENTITY>). `$` is refused anywhere but inside single quotes ("$TAG", "${TAG}", "$(x)"). The registry text below is in the GUIDE
+# needs a registry"). A command runs only when every operand is a local file or a placeholder Check fills with a local value (<TAG>).
+# A LISTED command is Release's: it carries exactly one key flag whose value is <RELEASE_KEY> (a runnable one names a local key file, fx.pub). `$` is refused anywhere but inside single quotes ("$TAG", "${TAG}", "$(x)"). The registry text below is in the GUIDE
 # FIXTURE only; the check script names no registry. The -fips tag form is cache-3f's to verify (the fixture's `<TAG>-fips` is a guess
 # of nothing: it only has to look like a registry reference).
 cat > "$fake/cosign" <<'EOF'
@@ -1086,7 +1086,7 @@ case " $* " in *fail-me*) exit 1;; esac
 echo "Verification succeeded"
 EOF
 chmod +x "$fake/cosign" "$fake/gh"
-printf 'abc  cache_linux_amd64.tar.gz\n' > "$fx/checksums.txt"; printf '{}\n' > "$fx/checksums.txt.bundle"
+printf 'abc  cache_linux_amd64.tar.gz\n' > "$fx/checksums.txt"; printf '{}\n' > "$fx/checksums.txt.bundle"; printf 'key\n' > "$fx/fx.pub"
 REPO=registry.example/fosterstack/cache
 grun() { # grun SCRIPT ARGS...  like run, with the candidate's environment of a release run
   : > "$work/log"; rc=0
@@ -1102,19 +1102,20 @@ DEFS='# Verify a FosterStack Cache release
 - `<IMAGE_REF>`: the image, by digest
 - `<IMAGE_REF_FIPS>`: the -fips image, by digest
 - `<TAG>`: the release tag, for example v0.3.0
-- `<IDENTITY>`: the signing workflow identity
+- `<RELEASE_KEY>`: the release public key file
 '
 g() { printf '%s\n' "$DEFS" "$1" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"; }
 lst() { python3 -c 'import json,sys; json.dump([{"command": c, "reason": "needs the candidate image in a registry; Check holds it as a file"} for c in sys.argv[1:]], open(sys.argv[0] if False else "'"$fx"'/guide.cannot-run.json","w"))' "$@"; }
 ISS=https://token.actions.githubusercontent.com
-L1="cosign verify-blob --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS --bundle checksums.txt.bundle checksums.txt"
+L1="cosign verify-blob --key fx.pub --type slsa-<TAG> --bundle checksums.txt.bundle checksums.txt"
 L2="jq -n '\"<TAG>\"'"
-R1="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | jq -e '.[0].critical.image'"
-R2="gh attestation verify oci://<IMAGE_REF> --owner fosterstack"
-R3="cosign verify-attestation --type slsaprovenance1 --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS <IMAGE_REF>"
-RF="cosign verify <IMAGE_REF_FIPS> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS"
-RL="cosign verify ghcr.io/fosterstack/cache:<TAG>-fips --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS"
-RO="gh attestation verify oci://ghcr.io/fosterstack/cache@sha256:$(printf 'a%.0s' $(seq 64)) --owner fosterstack"
+R1="cosign verify <IMAGE_REF> --key <RELEASE_KEY> | jq -e '.[0].critical.image'"
+R2="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> oci://<IMAGE_REF>"
+R3="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> <IMAGE_REF>"
+RF="cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>"
+RL="cosign verify ghcr.io/fosterstack/cache:<TAG>-fips --key <RELEASE_KEY>"
+RO="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> oci://ghcr.io/fosterstack/cache@sha256:$(printf 'a%.0s' $(seq 64))"
+U() { printf '%s' "${1//<RELEASE_KEY>/fx.pub}"; }   # the same command with a local key file: what Check could run if it were not a registry command
 blk() { local b=""; for c in "$@"; do b="$b${FENCE}sh
 $c
 ${FENCE}
@@ -1129,25 +1130,25 @@ ${FENCE}"
 rm -f "$fx/out/guide-results.json"
 gwant_ok "AC7 commands on local files and local placeholders run: cosign verify-blob on the checksums file, jq (a text block is prose)"
 if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 2 and all(.commands[]; .outcome == "pass")' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 the results file lists each of the two commands with its outcome"; else bad "AC7 guide-results.json shape"; fi
-if grep -Fq "cosign verify-blob --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log"; then ok "AC7 Sign's identity is substituted for <IDENTITY> (no placeholder left)"; else bad "AC7 substitution: $(tr '\n' ' ' < "$work/log" | cut -c1-200)"; fi
+if grep -Fq "cosign verify-blob --key fx.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log"; then ok "AC7 <TAG> is substituted in a runnable verify command (no placeholder left)"; else bad "AC7 substitution: $(tr '\n' ' ' < "$work/log" | cut -c1-200)"; fi
 g "$(blk "$R1" "$R2" "$R3" "$RF" "$RL" "$RO")"; lst "$R1" "$R2" "$R3" "$RF" "$RL" "$RO"; rm -f "$fx/out/guide-results.json"
 gwant_ok "AC7 registry commands listed exactly in the cannot-run list are not run and do not fail the check (exit 0; covered by Release's post-publish verification)"
 if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 6 and all(.commands[]; .outcome == "not-run" and (.reason | length > 0))' "$fx/out/guide-results.json" > /dev/null 2>&1 && ! grep -Eq '^(cosign|gh) ' "$work/log"; then ok "AC7 each listed registry command is recorded as not-run with its reason and never run"; else bad "AC7 listed registry commands: $(tr '\n' ' ' < "$work/log" | cut -c1-160)"; fi
 if [ "$(grep -c 'NOT RUN' <<< "$out")" = 6 ] && [ "$(grep -c 'run right after publishing' <<< "$out")" = 6 ]; then ok "AC7 each not-run line says the command is run right after publishing (Release's post-publish verification), not skipped"; else bad "AC7 not-run lines name the post-publish step: ${out:0:300}"; fi
-for c in "$R1" "$R2" "$R3"; do g "$(blk "$c")"; gwant_fail "AC7 an unlisted verify command on <IMAGE_REF> fails closed: ${c:0:40}" "unlisted command needs a registry"; done
-g "$(blk "$RF")"; gwant_fail "AC7 an unlisted -fips verify command on <IMAGE_REF_FIPS> fails closed" "unlisted command needs a registry"
-g "$(blk "$RL")"; gwant_fail "AC7 an unlisted -fips verify command on a literal registry reference (host/path:tag) fails closed" "unlisted command needs a registry"
-g "$(blk "$RO")"; gwant_fail "AC7 an unlisted verify command on an oci:// target fails closed" "unlisted command needs a registry"
+for c in "$R1" "$R2" "$R3"; do g "$(blk "$(U "$c")")"; gwant_fail "AC7 an unlisted verify command on <IMAGE_REF> fails closed: ${c:0:40}" "unlisted command needs a registry"; done
+g "$(blk "$(U "$RF")")"; gwant_fail "AC7 an unlisted -fips verify command on <IMAGE_REF_FIPS> fails closed" "unlisted command needs a registry"
+g "$(blk "$(U "$RL")")"; gwant_fail "AC7 an unlisted -fips verify command on a literal registry reference (host/path:tag) fails closed" "unlisted command needs a registry"
+g "$(blk "$(U "$RO")")"; gwant_fail "AC7 an unlisted verify command on an oci:// target fails closed" "unlisted command needs a registry"
 g "$(blk "$RL")"; lst "$RL"; gwant_ok "AC7 the literal -fips registry command, listed, is not run (exit 0)"
 # round 1 F8 (Codex B6): the syntax and the placeholders are judged BEFORE the cannot-run list excuses a command (a listed command is run unattended by
 # Release after publishing, so an excused `$(...)`, `;` or unsupported placeholder would be run there)
-X1="cosign verify <IMAGE_REF> --certificate-identity \"\$(id)\" --certificate-oidc-issuer $ISS"
-X2="cosign verify <IMAGE_REF> --certificate-identity \$IDENT --certificate-oidc-issuer $ISS"
-X3="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS; jq -n 1"
-X4="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer \`id\`"
+X1="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \"\$(id)\""
+X2="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \$IDENT"
+X3="cosign verify <IMAGE_REF> --key <RELEASE_KEY>; jq -n 1"
+X4="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \`id\`"
 for c in "$X1" "$X2" "$X3" "$X4"; do g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F8 a listed command with shell syntax is refused, not excused: ${c:0:70}" "shell syntax"; done
-printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" "cosign verify <IMAGE_REF> --certificate-identity <RELEASE_URL> --certificate-oidc-issuer $ISS" "$FENCE" > "$fx/guide.md"
-lst "cosign verify <IMAGE_REF> --certificate-identity <RELEASE_URL> --certificate-oidc-issuer $ISS"
+printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type <RELEASE_URL>" "$FENCE" > "$fx/guide.md"
+lst "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type <RELEASE_URL>"
 gwant_fail "AC7 F8 a listed command with a placeholder Check and Release cannot substitute is refused, not excused" "unsupported placeholder"
 # F13 (customer guide in the key form): the planner reads the REAL page, and <RELEASE_KEY> is allowed only in a listed command
 rp=$(mktemp -d "$work/realpage.XXXXXX"); rc=0
@@ -1155,31 +1156,48 @@ python3 -I "$root/bin/check-guide-plan.py" "$root/docs/verify-release.md" "$root
   "$REPO@sha256:$(printf 'a%.0s' $(seq 64))" "$rp/plan.json" "$REPO-fips@sha256:$(printf 'b%.0s' $(seq 64))" > "$rp/out" 2>&1 || rc=$?
 if [ "$rc" = 0 ]; then ok "AC7 F13 the planner plans the real docs/verify-release.md with its real cannot-run list (rc 0)"
 else bad "AC7 F13 the planner refuses the real page -> rc=$rc: $(head -c 200 "$rp/out")"; fi
-DEFS_K="$DEFS"'- `<RELEASE_KEY>`: the release public key file.
-'
 KR="cosign verify-blob --key <RELEASE_KEY> --bundle checksums.txt.bundle checksums.txt"
-printf '%s\n' "$DEFS_K" "$(blk "$KR")" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
+printf '%s\n' "$DEFS" "$(blk "$KR")" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
 gwant_fail "AC7 F13 <RELEASE_KEY> in a command that is not on the cannot-run list is refused: Check never holds the verified key" "RELEASE_KEY"
-printf '%s\n' "$DEFS_K" "$(blk "$KR")" > "$fx/guide.md"; lst "$KR"
+printf '%s\n' "$DEFS" "$(blk "$KR")" > "$fx/guide.md"; lst "$KR"
 gwant_ok "AC7 F13 <RELEASE_KEY> in a command on the cannot-run list is planned as not-run (Release fills it)"
-g "$(blk "cosign verify-blob --certificate-identity fail-me --certificate-oidc-issuer $ISS --bundle checksums.txt.bundle checksums.txt")"
+# round 1 (F1, F2, F4): a LISTED command is Release's, so it carries exactly one key flag whose value is <RELEASE_KEY>; no command skips or
+# redirects the public log; gh attestation verify is not a verify form. Each refusal names its own reason.
+CB="--bundle checksums.txt.bundle checksums.txt"
+kfail() { local l=$1 c=$2 w=$3; g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F1 a listed command with $l is refused" "$w"; }
+kfail "a key file by name" "cosign verify-blob --key fx.pub $CB" "its key flag names"
+kfail "a KMS reference" "cosign verify-blob --key awskms:///alias/x $CB" "its key flag names"
+kfail "a URL in --key=" "cosign verify-blob --key=https://example.org/k.pub $CB" "its key flag names"
+kfail "a second key flag beside the placeholder" "cosign verify-blob --key <RELEASE_KEY> --key fx.pub $CB" "exactly one key flag"
+kfail "no key flag" "cosign verify-blob $CB" "exactly one key flag"
+kfail "an identity instead of a key" "cosign verify-blob --certificate-identity x --certificate-oidc-issuer $ISS $CB" "exactly one key flag"
+kfail "no key flag in the second segment of a pipe" "cosign verify-blob --key <RELEASE_KEY> $CB | cosign verify-blob $CB" "exactly one key flag"
+for fl in "--insecure-ignore-tlog" "--insecure-ignore-tlog=true" "--insecure-ignore-tlo''g" "--private-infrastructure" "--private-infrastructure=true"; do
+  c="cosign verify-blob --key <RELEASE_KEY> $CB $fl"
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F4 a listed command with $fl is refused" "skips the public log"
+  g "$(blk "$(U "$c")")"; gwant_fail "AC7 F4 an unlisted command with $fl is refused too" "skips the public log"
+done
+GHV="gh attestation verify oci://<IMAGE_REF> --owner fosterstack"
+g "$(blk "$GHV")"; lst "$GHV"; gwant_fail "AC7 F2 a listed gh attestation verify is refused: it is no verify form (it verifies by identity)" "not a verify form"
+g "$(blk "$GHV")"; gwant_fail "AC7 F2 an unlisted gh attestation verify is refused: it is no verify form" "verify forms"
+g "$(blk "cosign verify-blob --key fx.pub --type fail-me --bundle checksums.txt.bundle checksums.txt")"
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
-g "$(blk "cosign verify-blob --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
+g "$(blk "cosign verify-blob --key fx.pub --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
 gwant_fail "AC7 a command on a file that is not local to Check is not runnable and fails unless listed" "not runnable"
 # PR 3 fix7 (found by running the planner read-only on cache's draft docs/verify-release.md):
 # (1) the verify-form judgement of a LISTED command splits on `|` outside single and double quotes only (a pipe inside a quoted jq filter is jq's);
 #     every F8 check still holds, and a chain to anything that is not a verify form or jq is still refused.
 JQF="jq -e --arg ref <IMAGE_REF> '.payload | @base64d | fromjson | .subject[0].digest.sha256 == \$ref'"
-Q1="cosign verify-attestation --type slsaprovenance1 --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS <IMAGE_REF> | $JQF"
+Q1="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> <IMAGE_REF> | $JQF"
 g "$(blk "$Q1")"; lst "$Q1"
 gwant_ok "AC7 fix7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes is one verify form (not refused as 'not a verify form')"
 if jq -e '(.commands | length) == 1 and .commands[0].outcome == "not-run"' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 fix7 the quoted-pipe jq command is recorded as not-run"; else bad "AC7 fix7 quoted-pipe results"; fi
-g "$(blk "$Q1")"; gwant_fail "AC7 fix7 the same command unlisted still fails closed (it needs a registry)" "unlisted command needs a registry"
+g "$(blk "$(U "$Q1")")"; gwant_fail "AC7 fix7 the same command unlisted still fails closed (it needs a registry)" "unlisted command needs a registry"
 g "$(blk "jq -n '\"a\" | length'")"; gwant_ok "AC7 fix7 a runnable jq whose filter holds a quoted pipe runs"
-QD="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | jq -e \".[0] | .critical\""
+QD="cosign verify <IMAGE_REF> --key <RELEASE_KEY> | jq -e \".[0] | .critical\""
 g "$(blk "$QD")"; lst "$QD"; gwant_ok "AC7 fix7 a pipe inside double quotes (no expansion) is jq's too"
 CHAIN_TO_DL="jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x"
-for c in "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | sh" \
+for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> | sh" \
          "jq -n '.a | .b' | rm -rf x" \
          "$CHAIN_TO_DL" \
          "jq -n \\'.a | rm -rf x" \
@@ -1196,26 +1214,27 @@ for c in "jq -n '.a | .b' ; rm -rf x" \
 done
 # (2) a value of --bundle, --certificate, --cert, --signature, --sig, --key, --certificate-chain, --rekor-url is a file operand unless it is a URL: a command whose
 #     only file operand is such a value, not local to Check, is not runnable at Check (it may be listed; Release runs it with the downloaded files).
-BA="cosign verify-blob-attestation --type slsaprovenance1 --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS"
+BA="cosign verify-blob-attestation --type slsaprovenance1"
 FX2=0
 for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X" "--cert=X" "--signature X" "--signature=X" "--sig X" "--sig=X" \
          "--key X" "--key=X" "--certificate-chain X" "--certificate-chain=X" "--rekor-url X" "--rekor-url=X"; do
-  c="$BA ${f//X/provenance.intoto.jsonl.bundle}"
-  g "$(blk "$c")"; gwant_fail "AC7 fix7 a flag value that is a file not local to Check makes the command not runnable (unlisted, refused): ${f%% *}" "not runnable"
+  case "$f" in --key*) kf="";; *) kf=" --key <RELEASE_KEY>";; esac
+  c="$BA$kf ${f//X/provenance.intoto.jsonl.bundle}"
+  g "$(blk "$(U "$c")")"; gwant_fail "AC7 fix7 a flag value that is a file not local to Check makes the command not runnable (unlisted, refused): ${f%% *}" "not runnable"
+  case "$f" in --key*) continue;; esac   # a listed command's key flag is <RELEASE_KEY>, so the key value cannot be this file
   g "$(blk "$c")"; lst "$c"; gwant_ok "AC7 fix7 the same command listed with its reason is not run and is recorded as not-run (exit 0): $f"
   if ! grep -q '^cosign' "$work/log"; then ok "AC7 fix7 the listed flag-value command was not run: $f"; else bad "AC7 fix7 the listed flag-value command ran: $f"; fi
 done
-c="$BA --bundle=https://example.com/provenance.bundle checksums.txt"
+c="$BA --key fx.pub --bundle=https://example.com/provenance.bundle checksums.txt"
 g "$(blk "$c")"; gwant_ok "AC7 fix7 a URL value of --bundle is not a file operand: the command (local blob) runs"
-g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a runnable command with a URL flag value is still never excused" "runnable"
-c="$BA --bundle checksums.txt.bundle checksums.txt"
+c="$BA --key fx.pub --bundle checksums.txt.bundle checksums.txt"
 g "$(blk "$c")"; gwant_ok "AC7 fix7 a --bundle value that is a local file runs"
-c="$BA --bundle provenance.intoto.jsonl.bundle"
+c="$BA --key <RELEASE_KEY> --bundle provenance.intoto.jsonl.bundle"
 g "$(blk "$c")"; printf '[{"command": "%s ", "reason": "run after publishing"}]\n' "$c" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 fix7 a flag-value command listed with text that does not match exactly is refused" "not in the guide"
 g "$(blk "$c")"; printf '[{"command": "%s", "reason": " "}]\n' "$c" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 fix7 a flag-value command listed without a reason is refused" "cannot-run entry"
-g "$(blk "$c")"; rm -f "$fx/guide.cannot-run.json"
+g "$(blk "$(U "$c")")"; rm -f "$fx/guide.cannot-run.json"
 gwant_fail "AC7 fix7 a flag-value command neither runnable nor listed is refused" "not runnable"
 g "$(blk "jq -n \"\$TAG\"")"; gwant_fail "AC7 \$ inside double quotes (\"\$TAG\") is refused" "shell syntax"
 g "$(blk "jq -n \"\${TAG}\"")"; gwant_fail "AC7 \${...} inside double quotes is refused" "shell syntax"
@@ -1245,7 +1264,7 @@ gwant_fail "AC7 a command outside the runnable set fails when the cannot-run lis
 printf '[{"command": "%s", "reason": "needs the published GitHub release, which exists only after Release"}]\n' "$R4" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a cannot-run entry that is not one of the verify forms fails (Release runs only verify forms from this list; the list is the one exact-text list)" "not a verify form"
 # round 2 (Codex B): a backslash-escaped quote is a literal character, so a $ after it is outside single quotes and is refused
-for c in "cosign verify <IMAGE_REF> --certificate-identity \\'x\${HOME}y\\' --certificate-oidc-issuer $ISS" "jq -n \\'\$TAG\\'"; do
+for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \\'x\${HOME}y\\'" "jq -n \\'\$TAG\\'"; do
   g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 round 2 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" "shell syntax"
 done
 # round 4 (both seats): the command words are compared one word at a time, so a quoted "cosign verify" (one word holding a space) is not the verify form
@@ -1666,7 +1685,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=580
+EXPECT=594
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

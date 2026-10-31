@@ -45,7 +45,7 @@ lines = text.replace("\r", "").split("\n")
 
 PLACEHOLDERS = {"IMAGE_REF", "IMAGE_REF_FIPS", "TAG", "RELEASE_KEY"}
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
-FORMS3 = ("gh attestation verify",)
+NO_FLAGS = ("--insecure-ignore-tlog", "--private-infrastructure")   # skip the public log / send cosign to another log
 # Build-chain tool names that may not appear on the page (AC6). "witness" is allowed on ONE prose line, the pointer.
 CHAIN_TOOLS = ["melange", "apko", "wolfi", "bubblewrap", "bwrap", "docker", "podman", "buildah", "buildkit", "buildx",
                "kaniko", "crane", "oras", "skopeo", "syft", "grype", "trivy", "goreleaser", "ko", "in-toto",
@@ -129,7 +129,6 @@ def segments(c):
 def form(seg):
     if seg[0] == "jq": return "jq"
     if " ".join(seg[:2]) in FORMS2: return " ".join(seg[:2])
-    if " ".join(seg[:3]) in FORMS3: return " ".join(seg[:3])
     return None
 parsed = []
 for c, ln, bo in cmds:
@@ -139,10 +138,19 @@ for c, ln, bo in cmds:
     okc = True
     for s in segs:
         if form(s) is None:
-            err("AC3", "line %d: `%s` is not cosign verify[-attestation|-blob|-blob-attestation], gh attestation verify or jq" % (ln+1, " ".join(s[:3]))); okc = False
+            err("AC3", "line %d: `%s` is not cosign verify[-attestation|-blob|-blob-attestation] or jq" % (ln+1, " ".join(s[:3]))); okc = False
         for t in s:
             if t in ("--web", "-w", "--interactive", "--editor", "--pager", "--paginate"):
                 err("AC2", "line %d: `%s` asks for a browser, prompt, editor or pager" % (ln+1, t)); okc = False
+    for s in segs:      # every verify form: exactly one key flag, its value <RELEASE_KEY>; no flag that skips or redirects the log
+        if form(s) in (None, "jq"): continue
+        keys = []
+        for i, t in enumerate(s):
+            flag, eq, val = t.partition("=")
+            if flag in NO_FLAGS: err("AC7", "line %d: `%s` carries %s, which skips the public log or sends cosign to another log" % (ln+1, c, flag)); okc = False
+            if flag == "--key": keys.append(val if eq else (s[i+1] if i + 1 < len(s) else ""))
+        if len(keys) != 1: err("AC7", "line %d: `%s` needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % (ln+1, c, len(keys))); okc = False
+        elif keys[0] != "<RELEASE_KEY>": err("AC7", "line %d: `%s` names the key %r, not <RELEASE_KEY>" % (ln+1, c, keys[0])); okc = False
     parsed.append((c, ln, bo, segs if okc else None))
 
 # --- AC2 (customer order): a file a jq command reads was verified by an earlier cosign/gh command naming it ---
@@ -164,7 +172,7 @@ def has(pred): return any(segs and pred(c, segs) for c, ln, bo, segs in parsed)
 checks = {
   "signatures": lambda c, segs: any(form(s) == "cosign verify" for s in segs),
   "digests":    lambda c, segs: any(form(s) == "jq" and re.search(r"digest|sha256", " ".join(s)) for s in segs),
-  "provenance": lambda c, segs: any(form(s) in ("cosign verify-attestation", "cosign verify-blob-attestation", "gh attestation verify") for s in segs) and "https://slsa.dev/provenance/v1" in c,
+  "provenance": lambda c, segs: any(form(s) in ("cosign verify-attestation", "cosign verify-blob-attestation") for s in segs) and "https://slsa.dev/provenance/v1" in c,
   "the SBOM":   lambda c, segs: any(form(s) and form(s) != "jq" for s in segs) and re.search(r"sbom", c, re.I),
   "the inputs": lambda c, segs: any(form(s) and form(s) != "jq" for s in segs) and re.search(r"inputs|full\.lock", c, re.I),  # the signed inputs record is the image's full lock (production.full.lock.json, fips.full.lock.json: release-sign.sh)
 }
@@ -265,17 +273,26 @@ if listed:
 for i, l in enumerate(lines):
     for w in ("--certificate-identity", "--certificate-oidc-issuer", "<IDENTITY>", "keyless"):
         if w in l: err("AC7", "line %d: %s is the keyless form; the guide verifies by the release key" % (i+1, w))
-for c, ln, bo, segs in parsed:
-    if "--insecure-ignore-tlog" in c: err("AC7", "line %d: --insecure-ignore-tlog is never inside a command" % (ln+1))
-for i, l in enumerate(lines):      # an unrun offline path is marked, as every unrun flag form is
-    if "--insecure-ignore-tlog" in l and "TO-VERIFY" not in l:
-        err("AC7", "line %d: the sentence about --insecure-ignore-tlog carries a TO-VERIFY (it has not been run)" % (i+1))
-sec1 = text.split("## 1.", 1)[1].split("## 2.", 1)[0] if "## 1." in text and "## 2." in text else "TO-VERIFY"
+# the offline flag is judged on what the shell makes of the text: --insecure-ignore-tlo''g is the flag. Inside a fence (a comment
+# included) it never appears; in prose it appears once, in a sentence that names verify-blob and carries a TO-VERIFY.
+fenced_lines = set(); infence_ = False
+for i, l in enumerate(lines):
+    if l.strip().startswith("```"):
+        infence_ = not infence_; fenced_lines.add(i); continue
+    if infence_: fenced_lines.add(i)
+def has_flag(l): return "--insecure-ignore-tlog" in re.sub(r"['\"\\]", "", l)
+for i in sorted(fenced_lines):
+    if has_flag(lines[i]): err("AC7", "line %d: --insecure-ignore-tlog is never inside a code block, a comment included" % (i+1))
+offline = [i for i, l in enumerate(lines) if i not in fenced_lines and has_flag(l)]
+for i in offline:      # an unrun offline path is marked, as every unrun flag form is, and it covers verify-blob only (images need a registry)
+    if "TO-VERIFY" not in lines[i]: err("AC7", "line %d: the sentence about --insecure-ignore-tlog carries a TO-VERIFY (it has not been run)" % (i+1))
+    if "verify-blob" not in lines[i]: err("AC7", "line %d: the sentence about --insecure-ignore-tlog names verify-blob: images need a registry" % (i+1))
+if len(offline) != 1:
+    err("AC7", "the page must say once, in prose, that --insecure-ignore-tlog verifies without network access (found %d)" % len(offline))
+if "## 1." not in text or "## 2." not in text: err("AC7", "the page has no `## 1.` and `## 2.` headings: section 1 cannot be found")
+sec1 = text.split("## 1.", 1)[1].split("## 2.", 1)[0] if "## 1." in text and "## 2." in text else ""
 if "TO-VERIFY" not in sec1:
     err("AC7", "section 1 carries a TO-VERIFY: its --key commands have not been run against a real release")
-if text.count("--insecure-ignore-tlog") != 1:
-    err("AC7", "the page must say once, in prose, that --insecure-ignore-tlog verifies without network access "
-        "(found %d)" % text.count("--insecure-ignore-tlog"))
 marks = [i+1 for i, l in enumerate(lines) if "TO-VERIFY" in l]
 if mode == "final":
     if marks: err("AC7", "final mode: %d TO-VERIFY mark(s) remain (lines %s); the page cannot be final" % (len(marks), marks))
@@ -310,13 +327,17 @@ The production image and the -fips image are both covered.
 - `<TAG>`: the release tag.
 - `<RELEASE_KEY>`: the release public key file.
 
-Without network access, add `--insecure-ignore-tlog`: it checks our key alone and skips the public log entry. TO-VERIFY: offline.
+Offline: add `--insecure-ignore-tlog` to each verify-blob command below. Images need a registry. TO-VERIFY: offline.
 
-Not run before release: it needs the image in a registry.
+## 1. Images
+
+TO-VERIFY: the flags. Not run before release: it needs the image in a registry.
 
 ```sh
 cosign verify <IMAGE_REF> --key <RELEASE_KEY>
 ```
+
+## 2. Files
 
 ```sh
 # Not run before release: it needs the image in a registry.
@@ -445,23 +466,41 @@ mutant "a registry command not listed"  "the cannot-run list does not name it" \
     's.replace("<IMAGE_REF> --key", "<IMAGE_REF>  --key")'
 mutant "the -fips registry command not listed" "the cannot-run list does not name it" \
     's.replace("<IMAGE_REF_FIPS> --key", "<IMAGE_REF_FIPS>  --key")'
-mutant "gh attestation verify oci:// not listed" "the cannot-run list does not name it" \
+mutant "gh attestation verify is no longer a form" "is not cosign verify" \
     's.replace("jq -e", "gh attestation verify oci://<IMAGE_REF> --repo fosterstack/cache | jq -e")'
 mutant "a literal registry reference not listed" "the cannot-run list does not name it" \
-    's.replace("jq -e", "cosign verify-attestation --type https://slsa.dev/provenance/v1 ghcr.io/fosterstack/cache:<TAG> | jq -e")'
+    's.replace("jq -e", "cosign verify-attestation --type https://slsa.dev/provenance/v1 --key <RELEASE_KEY> ghcr.io/fosterstack/cache:<TAG> | jq -e")'
 mutant "verify-blob on an image placeholder not listed" "the cannot-run list does not name it" \
     's.replace("sbom.json\n", "<IMAGE_REF_FIPS>\n")'
 mutant "a release-asset command not listed" "the cannot-run list does not name it" \
     's.replace("jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.bundle.json")'
 mutant "the identity form is back"      "is the keyless form" \
     's.replace("--key <RELEASE_KEY>", "--certificate-identity x --certificate-oidc-issuer y", 1)'
-mutant "the log is skipped in a command" "is never inside a command" \
+mutant "the log is skipped in a command" "is never inside a code block" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-tlog", 1)'
 mutant "the offline sentence loses its mark" "carries a TO-VERIFY"    's.replace(" TO-VERIFY: offline.", "")'
+mutant "the offline flag is spelled with quotes in a command" "which skips the public log" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-tlo\x27\x27g", 1)'
+mutant "the offline sentence moves into a code comment" "never inside a code block" \
+    's.replace("--insecure-ignore-tlog` to each", "--no-log` to each").replace("```sh\n# Not", "```sh\n# --insecure-ignore-tlog\n# Not")'
+mutant "the other log flag is in a command" "which skips the public log or sends cosign" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --private-infrastructure=true", 1)'
+mutant "a literal key file" "names the key 'cosign.pub', not <RELEASE_KEY>" \
+    's.replace("--key <RELEASE_KEY>", "--key cosign.pub", 1)'
+mutant "a KMS key reference" "names the key 'awskms:///alias/x', not <RELEASE_KEY>" \
+    's.replace("--key <RELEASE_KEY>", "--key=awskms:///alias/x", 1)'
+mutant "a second key flag" "exactly one key flag whose value is <RELEASE_KEY> (found 2)" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --key cosign.pub", 1)'
+mutant "a verify with no key flag" "exactly one key flag whose value is <RELEASE_KEY> (found 0)" \
+    's.replace("--key <RELEASE_KEY>", "", 1)'
+mutant "the offline sentence does not name verify-blob" "names verify-blob: images need a registry" \
+    's.replace("each verify-blob command", "each command")'
+mutant "section 2 has no heading" "no \`## 1.\` and \`## 2.\` headings" 's.replace("## 2. Files", "## Files")'
+mutant "section 1 has no heading" "no \`## 1.\` and \`## 2.\` headings" 's.replace("## 1. Images", "## Images")'
 mutant "the offline sentence is missing" "must say once, in prose" \
     's.replace("--insecure-ignore-tlog", "--no-log")'
 mutant "a stale cannot-run entry"       "a stale entry" \
-    's.replace("--key <RELEASE_KEY>\n```\n\n```sh\n# Not", "--key <RELEASE_KEY> --output json\n```\n\n```sh\n# Not")'
+    's.replace("--key <RELEASE_KEY>\n```\n\n## 2.", "--key <RELEASE_KEY> --output json\n```\n\n## 2.")'
 mutant "a runnable command on the list" "needs no registry image" \
     's + " "' \
     '[{"command": "cosign verify <IMAGE_REF> --key <RELEASE_KEY>", "reason": "r"}, {"command": "cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>", "reason": "r"}, {"command": "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "reason": "r"}]'

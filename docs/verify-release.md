@@ -11,7 +11,7 @@ Set these once:
 - `<TAG>`: the release tag, for example v0.3.0.
 - `<RELEASE_KEY>`: the release public key file, from our key manifest after the manifest is checked against our root public key. TO-VERIFY: where the manifest and the root key are published, and the manifest check.
 
-Without network access, add `--insecure-ignore-tlog` to each cosign command below: it checks our key alone and skips the public log entry. TO-VERIFY: offline.
+Without network access, add `--insecure-ignore-tlog` to each verify-blob command below: it checks our key alone, without the public log. Images need a registry. TO-VERIFY: offline.
 
 ## 1. Image signatures
 

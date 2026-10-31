@@ -4,12 +4,13 @@ Reads docs/verify-release.cannot-run.json (rows {command, reason}, the exact-tex
 each command against what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then
 docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
 registry, with the image-production / image-fips digest of witness-build/digests.json filled in; any other command
-runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <IDENTITY> = Sign's
-workflow identity at the tag.
+runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <RELEASE_KEY> = the verified
+release public key file (verified_key below; nothing else can fill it).
 
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
-verify-attestation, verify-blob, verify-blob-attestation, gh attestation verify) and jq, with at least one verify
-form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. A command that fails
+verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify form, no other shell
+syntax ($ only inside single quotes), and no placeholder left unfilled. Every verify form carries exactly one key
+flag whose value is <RELEASE_KEY>, and none skips the public log or points cosign at another log. A command that fails
 fails the run (exit 1) after all have run. The step holds the job's GITHUB_TOKEN (the Release job's own
 contents/packages/id-token grant) and no registry credential.
 
@@ -34,7 +35,12 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 HOST = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/")   # ghcr.io/x yes, x/y no: a registry host written out
 FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "verify-blob"),
-         ("cosign", "verify-blob-attestation"), ("gh", "attestation", "verify"))
+         ("cosign", "verify-blob-attestation"))
+# flags no listed command may carry: the first skips the public log entry, the second sends cosign to another log
+# (--insecure-ignore-tlog yes, --insecure-ignore-sct no: it is another check)
+NO_FLAGS = ("--insecure-ignore-tlog", "--private-infrastructure")
+# exactly one PEM public key and nothing else: BEGIN, base64 lines, END (a second block or any other line fails)
+PEM = re.compile(r"^-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+\n-----END PUBLIC KEY-----\n?$")
 SYNTAX = "();<>|&"   # a shell word made only of these is an operator; "|" alone is the one we allow
 
 
@@ -138,6 +144,27 @@ def form_error(c, jq_only=False):
             return "`%s` is not a verify form or jq" % " ".join(seg[:3])
         verify = True
     return None if (verify or jq_only) else "no verify form in it"
+
+
+def key_error(c):
+    """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
+    whose value is <RELEASE_KEY>, and none carries a flag of NO_FLAGS; else why not. The words are the shell's
+    (a quoted spelling like --insecure-ignore-tlo''g is the flag), and the placeholder is a marker no file name can equal."""
+    for seg in split_pipe(words_of(c, PHM)):
+        if seg[0] == "jq":
+            continue
+        keys = []
+        for i, w in enumerate(seg):
+            flag, eq, value = w.partition("=")
+            if flag in NO_FLAGS:
+                return "the flag %s skips the public log or sends cosign to another log" % flag
+            if flag == "--key":
+                keys.append(value if eq else (seg[i + 1] if i + 1 < len(seg) else ""))
+        if len(keys) != 1:
+            return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
+        if keys[0] != "\u2039RELEASE_KEY\u203a":
+            return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
+    return None
 
 
 # ---- jq-only commands (REQ-CHAIN-007-AC20): a CLOSED grammar, fail closed -----------------------------------------
@@ -386,26 +413,35 @@ def judge(c, verified):
                 refuse("`%s` is not an allowed verify form (no verify form in it): "
                        "no earlier command of the list is a verify form that names %s" % (c, f))
         return files
-    why = form_error(c)
+    why = form_error(c) or key_error(c)
     if why:
         refuse("`%s` is not an allowed verify form (%s)" % (c, why))
     verified.append(verify_files(c))
     return None
 
 
-KEYFILE = "release-key.verified.pub"   # written only by a step that checked the key manifest against the root key
+KEYNAME = "release-key.verified.pub"
 
 
 def verified_key():
-    """The absolute path of the verified release public key file; a refusal when there is none. Never a key
-    reference, never a private key, never a file of the repository: nothing on this base writes KEYFILE yet."""
-    if os.path.islink(KEYFILE) or not os.path.isfile(KEYFILE):
-        refuse("<RELEASE_KEY> needs the verified release key file %s, and there is none" % KEYFILE)
-    text = open(KEYFILE, errors="replace").read()
-    pem = text.startswith("-----BEGIN PUBLIC KEY-----\n") and text.rstrip().endswith("-----END PUBLIC KEY-----")
-    if not (pem and len(text) < 2000 and "PRIVATE" not in text and "awskms" not in text):
-        refuse("%s is not one PEM public key" % KEYFILE)
-    return os.path.abspath(KEYFILE)
+    """The absolute path of the verified release public key file; a refusal when there is none. The file is read only
+    from $RUNNER_TEMP (absolute, and not inside the checkout, which also keeps out every file git tracks), never a key
+    reference, and it holds exactly one PEM public key. The writer is the manifest-check step of the Release job, which
+    checks the key manifest against the root key; that step is not on this base, so today the file is absent and
+    Release refuses (fail closed)."""
+    tmp = os.environ.get("RUNNER_TEMP", "")
+    if not os.path.isabs(tmp):
+        refuse("<RELEASE_KEY> needs $RUNNER_TEMP, an absolute path, and it is %r" % tmp)
+    tmp, checkout = os.path.realpath(tmp), os.path.realpath(os.getcwd())
+    if tmp == checkout or tmp.startswith(checkout + os.sep):
+        refuse("$RUNNER_TEMP is inside the checkout: the verified release key is never read from the repository")
+    path = os.path.join(tmp, KEYNAME)
+    if os.path.islink(path) or not os.path.isfile(path):
+        refuse("<RELEASE_KEY> needs the verified release key file %s, and there is none" % path)
+    text = open(path, errors="replace").read()
+    if not (len(text) < 2000 and PEM.match(text)):
+        refuse("%s is not one PEM public key" % path)
+    return path
 
 
 def fill(c, values):
@@ -426,9 +462,6 @@ def make_plan(cmds, digests, tag):
     base = {"TAG": tag}
     if any("<RELEASE_KEY>" in c for c in cmds):
         base["RELEASE_KEY"] = verified_key()
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    if repo:
-        base["IDENTITY"] = "https://github.com/%s/.github/workflows/stage-sign.yml@refs/tags/%s" % (repo, tag)
     plan = []
     for reg in REPOSITORIES:
         values = dict(base, IMAGE_REF="%s@%s" % (reg, digests["image-production"]),
