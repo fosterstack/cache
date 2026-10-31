@@ -11,6 +11,8 @@ export SOURCE_DATE_EPOCH
   --keyring archive/keys/wolfi-signing.rsa.pub --go-archive archive/go --melange-lock build/locks/melange.lock --out out
 ./bin/build-apk.sh --variant fips --arch "$(uname -m)" --version "${GITHUB_REF_NAME#v}" --source-dir . --repo archive \
   --keyring archive/keys/wolfi-signing.rsa.pub --go-archive archive/go --melange-lock build/locks/melange.lock --out out
+./bin/build-baselayout-apk.sh --arch "$(uname -m)" --version "${GITHUB_REF_NAME#v}" --source-dir . --repo archive \
+  --keyring archive/keys/wolfi-signing.rsa.pub --melange-lock build/locks/melange.lock --out out
 python3 -I bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant standard --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
 python3 -I bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant fips --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
 python3 -I bin/chain-verify.py items-apk --out-dir "out/$(uname -m)" --result out/items-apk.json

@@ -453,7 +453,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "b2c906817f3613fa2551e1ebce396225b5ccafb16a87aef0e48e5a0a35c65c11",
+      "sha256": "0db49b1ee63163b4c4c78dfe7cfbe85f4325a3c7a5447ae9d9b5d7ccd8a75af7",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -488,7 +488,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "804157671c94fc7ddc0415688ff7f5b8c70c52774221ad8d94a28a683461427e"
+      "sha256": "ddfd6e5933efaac90464ea1bd9a3d9948467de7c80deadde698b44ae36c961e9"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -629,7 +629,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
-      "sha256": "dc18aa249745dcfeb292420cb451cb8b0baa1e678dbcff905ad98560410f96fd",
+      "sha256": "66de628345f5f0b7e3e136054afd6cba8077638573ae8f9bba5501c6f56296d8",
       "exceptions": [
         {
           "rule": "deny",
@@ -678,7 +678,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
-      "sha256": "68d336c6ad6d4835b33e767e43a38c16b3c3ed3f575ada1c2b711dc4ac58126d",
+      "sha256": "e9d1ba7dd11f205262fc5faf3f0efa627a1b68f83934e8cc9d1438bf5294a19d",
       "exceptions": [
         {
           "rule": "deny",

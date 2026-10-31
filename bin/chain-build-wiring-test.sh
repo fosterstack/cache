@@ -1647,6 +1647,18 @@ run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124
 }
 n_calls() { grep -c -- "$1" "$2/calls.log" 2> /dev/null || true; }                         # n_calls REGEX DIR
 line_of() { grep -n -- "$1" "$2/calls.log" 2> /dev/null | head -1 | cut -d: -f1 || true; }  # line_of REGEX DIR
+# 0710: the base-layout apk is built once, after the last fscache build, with the same date; none of --variant, --go-archive, --signing-key, --recipe
+bl_check() { # bl_check LABEL DIR VERSION
+  local label=$1 d=$2 v=$3 nb nl
+  nb=$(grep -n -- '^apk ' "$d/calls.log" 2> /dev/null | tail -1 | cut -d: -f1 || true); nl=$(line_of '^baselayout ' "$d")
+  if [ "$(n_calls '^baselayout ' "$d")" = 1 ] && [ -n "$nb" ] && [ -n "$nl" ] && [ "$nb" -lt "$nl" ] \
+     && grep -Eq -- "^baselayout --arch [^ ]+ --version $v --source-dir \. --repo archive --keyring archive/keys/wolfi-signing\.rsa\.pub --melange-lock build/locks/melange\.lock --out out SDE=1700000000$" "$d/calls.log" \
+     && ! grep -Eq -- '^baselayout .*(--variant|--go-archive|--signing-key|--recipe)' "$d/calls.log"; then
+    ok "0710 $label: the base-layout apk is built once, after both fscache builds, with the same date and none of --variant, --go-archive, --signing-key, --recipe"
+  else
+    bad "0710 $label: the base-layout build call: $(grep '^baselayout ' "$d/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-200)"
+  fi
+}
 json_of() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$1" 2> /dev/null || true; }
 oracle() { python3 "$harness" "$@" 2> /dev/null || true; }
 fails() { # fails DIR SCRIPT MODE TAG LABEL ENVVAR NOT-CALLED-REGEX   a stage that is made to fail must exit non-zero, leave no fragment, and not go on
@@ -1667,16 +1679,17 @@ beh_apk() { # beh_apk TAGNAME SCRIPT MODE VERSIONTAG
     bad "AC3 $t apk $v: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
   if grep -Fq "version standard $(oracle apkname standard "$v")" <<< "$calls" && grep -Fq "version fips $(oracle apkname fips "$v")" <<< "$calls" \
-     && [ "$(n_calls "--version ${v#v} " "$d")" = 2 ]; then
+     && [ "$(n_calls "--version ${v#v} " "$d")" = 3 ]; then
     ok "AC3 $t apk $v: --version is the tag minus v (${v#v}) and the version check finds fscache-$pk-r0.apk and the fips apk (PROPOSED names)"
   else
     bad "AC3 $t apk $v: version or apk names: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  if [ "$(n_calls 'SDE=1700000000' "$d")" = 2 ] && ! grep -q 'SDE=unset' "$d/calls.log"; then
-    ok "AC6 $t apk $v: SOURCE_DATE_EPOCH (the tagged commit's time from cache's script) reaches both builds"
+  if [ "$(n_calls 'SDE=1700000000' "$d")" = 3 ] && ! grep -q 'SDE=unset' "$d/calls.log"; then
+    ok "AC6 $t apk $v: SOURCE_DATE_EPOCH (the tagged commit's time from cache's script) reaches both builds and the base-layout build"
   else
     bad "AC6 $t apk $v: SOURCE_DATE_EPOCH not exported to both builds"
   fi
+  bl_check "$t apk $v" "$d" "${v#v}"
   if [ -f "$d/env-apk.txt" ] && ! grep -Eq '^(GH_TOKEN|APK_RELEASE_SIGNING_KEY|GOPROXY|HTTPS_PROXY|HTTP_PROXY|https_proxy)=' "$d/env-apk.txt" \
      && ! grep -q 'SENTINEL-GH-TOKEN' "$d/env-apk.txt"; then
     ok "AC6 $t apk $v: cache's script sees no GH_TOKEN (not the name, not the value) and none of the variables it refuses"
@@ -1841,12 +1854,13 @@ beh_rebuild_apk() { # beh_rebuild_apk TAGNAME SCRIPT MODE VERSIONTAG
   local t=$1 s=$2 mode=$3 v=$4 d="$work/b-rba-$1-$4" rc calls ns nb
   mk "$d" rebuild-apk "$s" "$mode" "$v"; rc=$(run_stage "$d" rebuild-apk "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   ns=$(line_of 'verify stage-start' "$d"); nb=$(line_of '^apk ' "$d")
-  if [ "$rc" = 0 ] && [ -n "$ns" ] && [ -n "$nb" ] && [ "$ns" -lt "$nb" ] && [ "$(n_calls 'SDE=1700000000' "$d")" = 2 ] \
+  if [ "$rc" = 0 ] && [ -n "$ns" ] && [ -n "$nb" ] && [ "$ns" -lt "$nb" ] && [ "$(n_calls 'SDE=1700000000' "$d")" = 3 ] \
      && [ -f "$d/out/items-apk.json" ]; then
     ok "005-AC2 $t rebuild-apk $v: Build's record is verified FIRST, then the same builds with the same date, then the fragment"
   else
     bad "005-AC2 $t rebuild-apk $v: rc=$rc stage-start=$ns build=$nb"
   fi
+  bl_check "$t rebuild-apk $v" "$d" "${v#v}"
   if [ "$v" = v0.3.0 ]; then
     mk "$d" rebuild-apk "$s" "$mode" "$v"; rc=$(run_stage "$d" rebuild-apk "$mode" "$v" FAKE_VERIFY_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
     if [ "$rc" != 0 ] && ! grep -q '^apk ' <<< "$calls"; then
@@ -1932,7 +1946,7 @@ tag_cases() {
   if [ "$rc" = 0 ] && [ -n "$del" ] && [ -n "$forced" ] && [ -n "$firstbuild" ] && [ "$del" -lt "$forced" ] && [ "$forced" -lt "$firstbuild" ] \
      && [ "$(n_calls 'git tag -d v0.2.9' "$d")" = 1 ] && [ "$(n_calls 'git tag -d v0.3.0' "$d")" = 1 ] && ! grep -q 'git tag -d v0.0.0-rc.1' <<< "$calls" \
      && [ "$(cat "$d/fake-tags.txt")" = v0.0.0-rc.1 ] && ! grep -Eq 'git (push|fetch)' <<< "$calls" \
-     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
+     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 3 ]; then
     ok "$ac $t $kind: the other local v* tags at HEAD (v0.3.0, v0.2.9) are deleted BEFORE v0.0.0-rc.1 is made and before any build; nothing pushed or fetched"
   else
     bad "$ac $t $kind: v0.3.0 v0.2.9 at HEAD -> rc=$rc, tags left: $(tr '\n' ' ' < "$d/fake-tags.txt" 2> /dev/null)," \
@@ -2000,7 +2014,7 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   fi
   mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"; rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 0 ] && ! grep -q '^admit' <<< "$calls" && [ "$(n_calls '^version ' "$d")" = 0 ] && [ "$(n_calls '^apk ' "$d")" = 2 ] \
-     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
+     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 3 ]; then
     ok "AC12 $t snapshot-apk: no admission and no version check, both variants build with --version ${SNAP_TAG#v} although the ref is a pull request's"
   else
     bad "AC12 $t snapshot-apk: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
@@ -2010,11 +2024,12 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   else
     bad "AC12 $t snapshot-apk: gh was called: $(head -c 120 "$d/gh.log")"
   fi
-  if [ "$(n_calls 'SDE=1700000000' "$d")" = 2 ] && ! grep -q 'SDE=unset' "$d/calls.log"; then
+  if [ "$(n_calls 'SDE=1700000000' "$d")" = 3 ] && ! grep -q 'SDE=unset' "$d/calls.log"; then
     ok "AC12 $t snapshot-apk: SOURCE_DATE_EPOCH reaches both builds"
   else
     bad "AC12 $t snapshot-apk: SOURCE_DATE_EPOCH not exported to both builds"
   fi
+  bl_check "$t snapshot-apk" "$d" "${SNAP_TAG#v}"
   if [ "$(json_of "$d/out/items-apk.json")" = "$(oracle fragment "$(uname -m)" "$SNAP_TAG")" ]; then
     ok "AC12 $t snapshot-apk: out/items-apk.json is exactly the oracle's fragment"
   else
@@ -2074,12 +2089,13 @@ beh_snapshot_rebuild_apk() { # beh_snapshot_rebuild_apk TAGNAME SCRIPT MODE
   rc=$(run_stage "$d" snapshot-rebuild-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   tagline=$(line_of 'git tag --force v0.0.0-rc.1 HEAD' "$d"); firstbuild=$(line_of '^apk ' "$d")
   if [ "$rc" = 0 ] && [ -n "$tagline" ] && [ -n "$firstbuild" ] && [ "$tagline" -lt "$firstbuild" ] && ! grep -q 'git push' "$d/calls.log" \
-     && ! grep -Eq '^verify (policy|verify|stage-start)|^admit' <<< "$calls" && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
+     && ! grep -Eq '^verify (policy|verify|stage-start)|^admit' <<< "$calls" && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 3 ]; then
     ok \
         "005-AC7 $t snapshot-rebuild-apk: the local v0.0.0-rc.1 tag, then both builds with --version ${SNAP_TAG#v}; no policy, stage-start, admission or push"
   else
     bad "005-AC7 $t snapshot-rebuild-apk: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
+  bl_check "$t snapshot-rebuild-apk" "$d" "${SNAP_TAG#v}"
   if [ "$(json_of "$d/out/items-apk.json")" = "$(oracle fragment "$(uname -m)" "$SNAP_TAG")" ]; then
     ok "005-AC7 $t snapshot-rebuild-apk: out/items-apk.json is exactly the oracle's fragment"
   else
@@ -2124,7 +2140,7 @@ PY
   fi
   REF_NAME=
 }
-snap_cases_of() { case "$1" in snapshot-apk) echo 11;; snapshot-assemble) echo 5;; snapshot-rebuild-apk) echo 6;; snapshot-rebuild-assemble) echo 4;; esac; }
+snap_cases_of() { case "$1" in snapshot-apk) echo 12;; snapshot-assemble) echo 5;; snapshot-rebuild-apk) echo 7;; snapshot-rebuild-assemble) echo 4;; esac; }
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
@@ -2154,7 +2170,7 @@ for tag in fixture real; do
     fi
   done
 done
-cases_of() { case "$1" in apk) echo 16;; assemble) echo 21;; rebuild-apk) echo 3;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
+cases_of() { case "$1" in apk) echo 18;; assemble) echo 21;; rebuild-apk) echo 5;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in apk assemble rebuild-apk rebuild-assemble; do
@@ -3585,7 +3601,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1266
+EXPECT=1279
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
