@@ -51,7 +51,11 @@ func freshRegistry(t *testing.T) {
 }
 
 // freePort grabs an ephemeral port and returns "127.0.0.1:<port>" after
-// closing the listener, so serve can bind it.
+// closing the listener. Another process can take the port before it is
+// bound again, so use it only where serve fails before it binds, or where
+// the test needs an address it cannot learn from a running serve.
+// Everywhere else set FSCACHE_ADDR to 127.0.0.1:0 and read the bound
+// address with boundAddr.
 func freePort(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -63,6 +67,24 @@ func freePort(t *testing.T) string {
 	return addr
 }
 
+// boundAddr returns the address named by the "fscache: starting" record in
+// logs, a JSON log of the serve under test. serve binds before it logs that
+// record and before it calls ready, so call this from the ready hook.
+func boundAddr(t *testing.T, logs fmt.Stringer) string {
+	t.Helper()
+	for _, line := range strings.Split(logs.String(), "\n") {
+		var rec struct {
+			Msg  string `json:"msg"`
+			Addr string `json:"addr"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "fscache: starting" {
+			return rec.Addr
+		}
+	}
+	t.Errorf("no \"fscache: starting\" record in the log:\n%s", logs)
+	return ""
+}
+
 // serve should start, then shut down gracefully when the context is
 // cancelled via the ready hook, returning nil.
 func TestServeGracefulShutdown(t *testing.T) {
@@ -70,7 +92,7 @@ func TestServeGracefulShutdown(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
@@ -109,7 +131,7 @@ func TestServeReconcilesOnUncleanMarker(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	// Pre-place the marker to simulate an unclean prior shutdown.
 	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
 		t.Fatalf("seed marker: %v", err)
@@ -150,7 +172,7 @@ func TestServeOpenError(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	t.Setenv("FSCACHE_DATA_DIR", filepath.Join(locked, "data"))
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := serve(context.Background(), quietLogger(), nil); err == nil {
 		t.Fatal("serve succeeded against an unwritable data dir")
 	}
@@ -172,7 +194,7 @@ func TestRunMainReturnsZeroOnSignal(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	done := make(chan int, 1)
 	go func() { done <- runMain() }()
 	// Give it a moment to bind and install the signal handler, then ask
@@ -255,7 +277,7 @@ func TestServeBlobOpenError(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := serve(context.Background(), quietLogger(), nil); err == nil ||
 		!strings.Contains(err.Error(), "blob store") {
 		t.Fatalf("serve error = %v, want a blob store open error", err)
@@ -272,7 +294,7 @@ func TestServeMetaOpenError(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := serve(context.Background(), quietLogger(), nil); err == nil ||
 		!strings.Contains(err.Error(), "metadata store") {
 		t.Fatalf("serve error = %v, want a metadata store open error", err)
@@ -288,7 +310,7 @@ func TestServeReconcileError(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
 		t.Fatalf("seed marker: %v", err)
 	}
@@ -334,7 +356,7 @@ func TestServeReconcilePanicKeepsMarker(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
 		t.Fatalf("seed marker: %v", err)
 	}
@@ -372,7 +394,7 @@ func TestServeReconcileResumesAfterAFailedStart(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 
 	// Three blobs with no index records, as after a crash between the writes.
 	blobs, err := blobstore.New(filepath.Join(dir, "blobs"))
@@ -468,7 +490,7 @@ func TestServeCloseErrorKeepsMarker(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	orig := cacheClose
 	cacheClose = func(c *cache.Cache) error { _ = orig(c); return errTestClose }
 	defer func() { cacheClose = orig }()
@@ -496,7 +518,7 @@ func TestServeShutdownError(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	orig := httpShutdown
 	httpShutdown = func(*http.Server, context.Context) error { return errTestShutdown }
 	defer func() { httpShutdown = orig }()
@@ -532,7 +554,7 @@ func TestServeErrorKeepsMarker(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := writeMarker(uncleanMarkerPath(dir)); err != nil { // the reconcile runs and completes
 		t.Fatalf("seed marker: %v", err)
 	}
@@ -566,9 +588,8 @@ func TestServeShutdownErrorWithUploadInFlightKeepsMarker(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	dir := t.TempDir()
-	addr := freePort(t)
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	closes := countCloses(t)
 	orig := httpShutdown
 	httpShutdown = func(*http.Server, context.Context) error { return context.DeadlineExceeded }
@@ -576,9 +597,13 @@ func TestServeShutdownErrorWithUploadInFlightKeepsMarker(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var logs syncBuffer
+	var addr string
 	readyc := make(chan struct{})
 	errc := make(chan error, 1)
-	go func() { errc <- serve(ctx, quietLogger(), func() { close(readyc) }) }()
+	go func() {
+		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() { addr = boundAddr(t, &logs); close(readyc) })
+	}()
 	select {
 	case <-readyc:
 	case <-time.After(10 * time.Second):
@@ -635,7 +660,7 @@ func TestServeShutdownErrorOrphanAdoptedOnNextStart(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 
 	origShutdown := httpShutdown
 	httpShutdown = func(*http.Server, context.Context) error { return context.DeadlineExceeded }
@@ -728,9 +753,9 @@ func realServingErrorThenRestart(t *testing.T, withTLS bool) {
 	clearEnv(t)
 	freshRegistry(t)
 	dir := t.TempDir()
-	addr := freePort(t)
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
+	var addr string // set by each run's ready hook, which runs before the test reads it
 	scheme := "http"
 	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	dial := func() (net.Conn, error) { return net.DialTimeout("tcp", addr, 10*time.Second) }
@@ -747,10 +772,9 @@ func realServingErrorThenRestart(t *testing.T, withTLS bool) {
 			return tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
 		}
 	}
-	base := scheme + "://" + addr
 	do := func(method, path, body string) (int, string) {
 		t.Helper()
-		req, err := http.NewRequest(method, base+path, strings.NewReader(body))
+		req, err := http.NewRequest(method, scheme+"://"+addr+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatalf("request %s %s: %v", method, path, err)
 		}
@@ -788,9 +812,12 @@ func realServingErrorThenRestart(t *testing.T, withTLS bool) {
 
 	// First run: no marker at start, so no reconcile; the marker is written.
 	closes := countCloses(t)
+	var logs1 syncBuffer
 	readyc := make(chan struct{})
 	errc := make(chan error, 1)
-	go func() { errc <- serve(context.Background(), quietLogger(), func() { close(readyc) }) }()
+	go func() {
+		errc <- serve(context.Background(), slog.New(slog.NewJSONHandler(&logs1, nil)), func() { addr = boundAddr(t, &logs1); close(readyc) })
+	}()
 	select {
 	case <-readyc:
 	case <-time.After(10 * time.Second):
@@ -879,12 +906,12 @@ func realServingErrorThenRestart(t *testing.T, withTLS bool) {
 	// Second run on the same data directory.
 	freshRegistry(t)
 	var logs syncBuffer
-	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log := slog.New(slog.NewJSONHandler(&logs, nil))
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	ready2 := make(chan struct{})
 	errc2 := make(chan error, 1)
-	go func() { errc2 <- serve(ctx2, log, func() { close(ready2) }) }()
+	go func() { errc2 <- serve(ctx2, log, func() { addr = boundAddr(t, &logs); close(ready2) }) }()
 	select {
 	case <-ready2:
 	case err := <-errc2:
@@ -901,7 +928,7 @@ func realServingErrorThenRestart(t *testing.T, withTLS bool) {
 	if !strings.Contains(out, "unclean shutdown detected") || !strings.Contains(out, "fscache: reconciled") {
 		t.Fatalf("second run did not reconcile before serving:\n%s", out)
 	}
-	if !strings.Contains(out, "adopted_blobs=0") {
+	if !strings.Contains(out, `"adopted_blobs":0`) {
 		t.Errorf("second run adopted a blob; the held upload was partial:\n%s", out)
 	}
 	if code, body := do(http.MethodGet, "/done-key", ""); code != http.StatusOK || body != doneBody {
@@ -963,7 +990,7 @@ func TestServePanicInReadyKeepsMarker(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	closes := countCloses(t)
 	const boom = "test: ready panicked"
 	if r := recoverServe(context.Background(), func() { panic(boom) }); r != boom {
@@ -983,7 +1010,7 @@ func TestServePanicInServerNewKeepsMarker(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	closes := countCloses(t)
 	const boom = "test: server.New panicked"
 	orig := serverNew
@@ -1008,7 +1035,7 @@ func TestServeErrorAfterShutdownSignalIsReturned(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	release := make(chan struct{})
 	origServe, origShutdown := httpServe, httpShutdown
 	// Serve blocks until Shutdown runs, so the select can only take the
@@ -1075,9 +1102,8 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 			clearEnv(t)
 			freshRegistry(t)
 			dir := t.TempDir()
-			addr := freePort(t)
 			t.Setenv("FSCACHE_DATA_DIR", dir)
-			t.Setenv("FSCACHE_ADDR", addr)
+			t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 			t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 			t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
 			closes := countCloses(t)
@@ -1090,6 +1116,7 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			var logs syncBuffer
 			ready := func() { cancel() }
 			if tc.noSignal {
 				ready = nil
@@ -1121,7 +1148,7 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 				pool.AddCert(p.leaf)
 				ready = func() {
 					d := &net.Dialer{Timeout: 10 * time.Second}
-					conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+					conn, err := tls.DialWithDialer(d, "tcp", boundAddr(t, &logs), &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
 					if err != nil {
 						t.Errorf("TLS handshake with the running ServeTLS: %v", err)
 					} else {
@@ -1134,7 +1161,7 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 			httpServeTLS = func(s *http.Server, l net.Listener) error { tlsCalls.Add(1); return serveTLS(s, l) }
 
 			errc := make(chan error, 1)
-			go func() { errc <- serve(ctx, quietLogger(), ready) }()
+			go func() { errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), ready) }()
 			var err error
 			select {
 			case err = <-errc:
@@ -1172,7 +1199,7 @@ func TestServeMarkerCheckError(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Setenv("FSCACHE_DATA_DIR", filepath.Join(notDir, "data"))
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	if err := serve(context.Background(), quietLogger(), nil); err == nil ||
 		!strings.Contains(err.Error(), "shutdown marker") {
 		t.Fatalf("serve error = %v, want a shutdown-marker check error", err)
@@ -1186,36 +1213,26 @@ func TestServeAuthAndEviction(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	t.Setenv("FSCACHE_USERNAME", "u")
 	t.Setenv("FSCACHE_PASSWORD", "p")
 	t.Setenv("FSCACHE_MAX_BYTES", "64") // holds one small entry, evicts on the next
 
-	// Read the bound address back via the ready hook by resolving the env.
-	addr := os.Getenv("FSCACHE_ADDR")
+	var logs syncBuffer
 	evicted := make(chan bool, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() {
-		errc <- serve(ctx, quietLogger(), func() {
+		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 			defer cancel()
-			// Wait for the listener to actually accept before driving
-			// traffic (ready() fires at goroutine handoff, which can
-			// precede the bind - the source of a CI-only flake).
-			ready := false
-			for range 100 {
-				resp, err := http.Get("http://" + addr + "/healthz")
-				if err == nil {
-					_ = resp.Body.Close()
-					ready = true
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			if !ready {
+			addr := boundAddr(t, &logs)
+			health, err := http.Get("http://" + addr + "/healthz")
+			if err != nil {
+				t.Errorf("healthz: %v", err)
 				evicted <- false
 				return
 			}
+			_ = health.Body.Close()
 			// Two authenticated 40-byte PUTs against a 64-byte cap: the
 			// second must evict the first, firing the onEvict callback.
 			put := func(k string) {
@@ -1258,7 +1275,7 @@ func TestServeClearMarkerError(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	orig := clearMarkerFn
 	clearMarkerFn = func(string) error { return errTestClearMarker }
 	defer func() { clearMarkerFn = orig }()
@@ -1281,23 +1298,22 @@ func TestServeSeedsTheDiskGaugesBeforeAnyRequest(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	addr := freePort(t)
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errc := make(chan error, 1)
+	var logs syncBuffer
 	var body string
 	go func() {
-		errc <- serve(ctx, quietLogger(), func() {
-			for i := 0; i < 100; i++ { // ready() runs as the listener goroutine starts: retry until it accepts
-				resp, err := http.Get("http://" + addr + "/metrics")
-				if err == nil {
-					b, _ := io.ReadAll(resp.Body)
-					_ = resp.Body.Close()
-					body = string(b)
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
+		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
+			addr := boundAddr(t, &logs)
+			resp, err := http.Get("http://" + addr + "/metrics")
+			if err != nil {
+				t.Errorf("scrape: %v", err)
+			} else {
+				b, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				body = string(b)
 			}
 			cancel()
 		})
@@ -1337,7 +1353,7 @@ func TestServeTakesTheFirstSampleBeforeReady(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(filepath.Join(dir, "blobs"), 0o700) }()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	var buf syncBuffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1377,10 +1393,11 @@ func TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	addr := freePort(t)
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var logs syncBuffer
+	var addr string // set in the ready hook, before do is used
 	var putOK, putBad, getCode int
 	var body string
 	do := func(method, path, data string) (int, string) {
@@ -1395,12 +1412,10 @@ func TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets(t *testing.T) {
 	}
 	errc := make(chan error, 1)
 	go func() {
-		errc <- serve(ctx, quietLogger(), func() {
-			for i := 0; i < 100; i++ {
-				if c, _ := do(http.MethodGet, "/healthz", ""); c == 200 {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
+		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
+			addr = boundAddr(t, &logs)
+			if c, _ := do(http.MethodGet, "/healthz", ""); c != 200 {
+				t.Errorf("healthz status = %d, want 200", c)
 			}
 			putOK, _ = do(http.MethodPut, "/kgood", "good data")
 			_ = os.Chmod(filepath.Join(dir, "blobs"), 0o500) // the volume stops accepting writes
@@ -1469,8 +1484,12 @@ func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(dir, 0o700) }()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	addr := freePort(t)
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
+	var serveCalls atomic.Int32
+	origPlain, origTLS := httpServe, httpServeTLS
+	t.Cleanup(func() { httpServe, httpServeTLS = origPlain, origTLS })
+	httpServe = func(*http.Server, net.Listener) error { serveCalls.Add(1); return errTestServe }
+	httpServeTLS = func(*http.Server, net.Listener) error { serveCalls.Add(1); return errTestServe }
 	ready := false
 	err := serve(context.Background(), quietLogger(), func() { ready = true })
 	if err == nil || !strings.Contains(err.Error(), "write shutdown marker") {
@@ -1479,9 +1498,8 @@ func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
 	if ready {
 		t.Error("the ready hook ran: the server started on a directory it could not write")
 	}
-	if c, cerr := net.DialTimeout("tcp", addr, 200*time.Millisecond); cerr == nil {
-		_ = c.Close()
-		t.Error("something listens on the address: the server served on a directory it could not write")
+	if n := serveCalls.Load(); n != 0 {
+		t.Errorf("the server was started %d times on a directory it could not write", n)
 	}
 }
 

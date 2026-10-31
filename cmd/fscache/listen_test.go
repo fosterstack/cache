@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -221,7 +221,7 @@ func TestServeFailureAfterBindIsReturned(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	orig := httpServe
 	httpServe = func(*http.Server, net.Listener) error { return errTestShutdown }
 	defer func() { httpServe = orig }()
@@ -243,16 +243,7 @@ func TestStartupLineReportsBoundAddress(t *testing.T) {
 	if err := serve(ctx, log, func() { cancel() }); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
-	var addr string
-	for _, line := range strings.Split(buf.String(), "\n") {
-		var rec struct {
-			Msg  string `json:"msg"`
-			Addr string `json:"addr"`
-		}
-		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "fscache: starting" {
-			addr = rec.Addr
-		}
-	}
+	addr := boundAddr(t, &buf)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
 		t.Errorf("startup addr = %q, want 127.0.0.1:<the bound port>", addr)
@@ -268,31 +259,56 @@ func TestStartupLineReportsBoundAddress(t *testing.T) {
 //
 // The wrapper delays the "exited" flag after the real Serve returns, so a
 // serve() that does not wait for the goroutine returns first and fails.
-func trackServeExit(t *testing.T) *atomic.Bool {
+// It also keeps the listener Serve was given, to check its release.
+func trackServeExit(t *testing.T) *servedListener {
 	t.Helper()
-	var exited atomic.Bool
+	sl := &servedListener{}
 	orig := httpServe
 	httpServe = func(s *http.Server, ln net.Listener) error {
+		sl.ln = ln
 		err := orig(s, ln)
 		time.Sleep(300 * time.Millisecond)
-		exited.Store(true)
+		sl.exited.Store(true)
 		return err
 	}
 	t.Cleanup(func() { httpServe = orig })
-	return &exited
+	return sl
+}
+
+// servedListener is read only after serve returns, which is after the
+// serving goroutine that wrote ln has been reaped.
+type servedListener struct {
+	exited atomic.Bool
+	ln     net.Listener
+}
+
+// requireClosed fails unless the listener serve was given is closed.
+func (sl *servedListener) requireClosed(t *testing.T) {
+	t.Helper()
+	tcp, ok := sl.ln.(*net.TCPListener)
+	if !ok {
+		t.Fatalf("serve was given a %T, want a *net.TCPListener", sl.ln)
+	}
+	_ = tcp.SetDeadline(time.Now().Add(5 * time.Second)) // an open listener fails here instead of blocking
+	if c, err := tcp.Accept(); !errors.Is(err, net.ErrClosed) {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Fatalf("listener still open after serve returned: Accept = %v", err)
+	}
 }
 
 func TestServeWaitsForServingGoroutineOnShutdown(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", freePort(t))
-	exited := trackServeExit(t)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
+	served := trackServeExit(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := serve(ctx, quietLogger(), func() { cancel() }); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
-	if !exited.Load() {
+	if !served.exited.Load() {
 		t.Fatal("serve returned while its serving goroutine was still running")
 	}
 }
@@ -303,10 +319,9 @@ func TestServeWaitsForServingGoroutineOnShutdown(t *testing.T) {
 func TestServeWaitsForServingGoroutineWhenShutdownFails(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
-	addr := freePort(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", addr)
-	exited := trackServeExit(t)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
+	served := trackServeExit(t)
 	origShutdown := httpShutdown
 	httpShutdown = func(*http.Server, context.Context) error { return errTestShutdown }
 	defer func() { httpShutdown = origShutdown }()
@@ -314,12 +329,8 @@ func TestServeWaitsForServingGoroutineWhenShutdownFails(t *testing.T) {
 	if err := serve(ctx, quietLogger(), func() { cancel() }); err == nil {
 		t.Fatal("serve hid the shutdown error")
 	}
-	if !exited.Load() {
+	if !served.exited.Load() {
 		t.Fatal("serve returned while its serving goroutine was still running")
 	}
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("port still held after serve returned: %v", err)
-	}
-	_ = ln.Close()
+	served.requireClosed(t)
 }
