@@ -6,7 +6,8 @@
 #   sigstore-trust.json          STAYS   read by bin/chain-verify.py; it pins rekor.pub by sha256 and holds nothing else about Sigstore
 #   cosign-signing-config.json   STAYS   read by the cosign calls (bin/release-*.sh); it names Rekor v1 and no certificate authority,
 #                                        no sign-in service and no timestamp authority, so cosign asks for none of them
-#   fulcio-chain.pem             GOES    only the certificate path read it, and that path is gone
+#   fulcio-chain.pem             STAYS   no longer read by the release chain, but the pin-age check (.github/agent/supply-chain/pin-age-check.py, REQ-SUP-001)
+#                                        verifies recorded vendor image signatures against it; those two files are its only readers
 #   tsa-chain.pem                GOES    the Rekor entry carries the integrated time; no kept reader needs a timestamp authority
 # Until the deletions are made this test is red. It reads the committed policy files and the code that names them; it opens no network connection.
 set -euo pipefail
@@ -47,17 +48,27 @@ def code_files():
                 yield p
 
 
-for gone in ("fulcio-chain.pem", "tsa-chain.pem"):
-    check(not os.path.exists(os.path.join(pol, gone)), "%s is deleted (no kept reader needs it)" % gone)
-    readers = []
+def readers_of(name):
+    found = []
     for p in code_files():
         try:
             with open(p, "r", errors="ignore") as f:
-                if gone in f.read():
-                    readers.append(os.path.relpath(p, root))
+                if name in f.read():
+                    found.append(os.path.relpath(p, root))
         except OSError:
             pass
-    check(not readers, "no file under bin/ or .github/ still names %s%s" % (gone, " (readers: %s)" % ", ".join(sorted(readers)[:4]) if readers else ""))
+    return sorted(found)
+
+
+# the Fulcio chain stays for the pin-age check of recorded vendor image signatures; the release chain no longer reads it, and nothing else may
+KEPT_FULCIO_READERS = [".github/agent/supply-chain/pin-age-check.py", ".github/agent/tests/pin-age-check-test.sh"]
+check(os.path.exists(os.path.join(pol, "fulcio-chain.pem")), "fulcio-chain.pem stays (the pin-age check verifies recorded vendor image signatures against it)")
+fulcio_readers = readers_of("fulcio-chain.pem")
+check(fulcio_readers == KEPT_FULCIO_READERS, "fulcio-chain.pem is named by exactly the pin-age check and its test, not by the release chain (readers: %s)" % ", ".join(fulcio_readers[:6]))
+for gone in ("tsa-chain.pem",):
+    check(not os.path.exists(os.path.join(pol, gone)), "%s is deleted (no kept reader needs it)" % gone)
+    readers = readers_of(gone)
+    check(not readers, "no file under bin/ or .github/ still names %s%s" % (gone, " (readers: %s)" % ", ".join(readers[:4]) if readers else ""))
 
 check(os.path.isfile(os.path.join(pol, "rekor.pub")), "rekor.pub stays (the Rekor entry check verifies each entry against it)")
 trust = load("sigstore-trust.json")

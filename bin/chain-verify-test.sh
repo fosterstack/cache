@@ -77,6 +77,32 @@ if ! grep -q '^OpenSSL 3' <<< "$(openssl version 2> /dev/null)"; then
 fi
 grep -q '^OpenSSL 3' <<< "$($OPENSSL version 2> /dev/null)" || { echo "FAIL fixtures need OpenSSL 3 (macOS: install openssl@3 with Homebrew)"; exit 1; }
 export OPENSSL
+# chain_common.py names its openssl on one line. A case that needs a particular openssl runs the verifier from a copy
+# of the tree in which that line is replaced; the copy of chain_common.py is re-pinned in the copy's own
+# chain-scripts.json, which the verifier checks before it runs a module.
+mkcv() {
+  python3 - "$root" "$work/cv-$1" "$2" <<'PY' || { echo "FAIL fixtures: verifier copy $1 not made"; exit 1; }
+import hashlib, json, os, shutil, sys
+root, dest, ssl = sys.argv[1:4]
+os.makedirs(dest + "/bin")
+shutil.copytree(root + "/.github/policy", dest + "/.github/policy")
+for name in os.listdir(root + "/bin"):
+    if name != "chain_common.py":
+        os.symlink(root + "/bin/" + name, dest + "/bin/" + name)
+lines = open(root + "/bin/chain_common.py").read().split("\n")
+hits = [i for i, line in enumerate(lines) if line.startswith("OPENSSL = ")]
+assert len(hits) == 1, hits
+lines[hits[0]] = 'OPENSSL = "%s"  # TEST-SUBST' % ssl
+text = "\n".join(lines)
+open(dest + "/bin/chain_common.py", "w").write(text)
+rows = json.load(open(dest + "/.github/policy/chain-scripts.json"))
+for row in rows["scripts"]:
+    if row["path"] == "bin/chain_common.py":
+        row["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+json.dump(rows, open(dest + "/.github/policy/chain-scripts.json", "w"))
+PY
+  echo "$work/cv-$1/bin/chain-verify.py"; }
+cvr=$(mkcv default "$(command -v "$OPENSSL")")
 python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; exit 1; }
 netcut=()
 if [ "$(uname)" = Darwin ] && command -v sandbox-exec > /dev/null; then netcut=(sandbox-exec -p '(version 1)(allow default)(deny network*)')
@@ -858,16 +884,17 @@ MARK="$work/.start-marker"; : > "$MARK"
 : > "$work/cosign-all.log"; SIGNS_OK=0; LEAKS=0
 ARGV_RE='^attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config [^ ]+/cosign-signing-config\.json --statement [^ ]+ --bundle [^ ]+/provenance\.bundle\.json$'
 SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SENTINEL-CIT-$$-2b8e"; SENT_AWS="SENTINEL-AWS-$$-4d6f"
-# run ARGS...: the verifier under the network cut; PATH (fake cosign first), OPENSSL and GITHUB_REF are passed THROUGH `env` so
-# sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
+# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake cosign first) and
+# GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/cosign-argv.log"; local rc=0
-  "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" OPENSSL="$OPENSSL" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
+  "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
     GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
+    ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
     ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
     AWS_SECRET_ACCESS_KEY="$SENT_AWS" \
-    "$PY3" "$cv" "$@" 2> "$work/err" > "$work/out" || rc=$?
+    "$PY3" "$cvr" "$@" 2> "$work/err" > "$work/out" || rc=$?
   if grep -F -q -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" -e "$SENT_AWS" "$work/err" "$work/out" "$work/cosign-argv.log" 2> /dev/null; then LEAKS=$((LEAKS + 1)); fi
   cat "$work/cosign-argv.log" >> "$work/cosign-all.log"
   [ "$rc" = 0 ] && [ "${1:-}" = sign ] && SIGNS_OK=$((SIGNS_OK + 1))
@@ -1428,9 +1455,10 @@ cat > "$work/fakebin-openssl" <<FSSL
 if [ -e "$work/ssl-fail" ] && [ "\${1:-}" = dgst ] && [ "\${2:-}" = -sha256 ] && [ "\${3:-}" = -verify ]; then echo "fake openssl: failure" >&2; exit 1; fi
 exec "$OPENSSL" "\$@"
 FSSL
-chmod +x "$work/fakebin-openssl"; REALSSL=$OPENSSL
-OPENSSL="$work/fakebin-openssl" expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback), says openssl's exit status and what it said, and removes the output" "signature|openssl exit 1|fake openssl: failure" sslfail
-OPENSSL=$REALSSL; rm -f "$work/ssl-fail"
+chmod +x "$work/fakebin-openssl"
+cvr=$(mkcv fakessl "$work/fakebin-openssl") \
+  expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback), says openssl's exit status and what it said, and removes the output" "signature|openssl exit 1|fake openssl: failure" sslfail
+rm -f "$work/ssl-fail"
 rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 [ "$POSTSIGN" = 12 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 8)) of the four cases"
@@ -1510,7 +1538,7 @@ expect_refuse "R2-4 check-build-record: Build's product subject whose digest is 
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
 WFREF=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
-rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" OPENSSL="$work/nocosign/openssl" "$PY3" "$cv" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
+rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- Codex security round 3 ----
@@ -1548,6 +1576,9 @@ expect_refuse "AB bind-items --product: two products of that name are refused" "
 expect_refuse "AB bind-items --product: a material subject of that name does not count as the product" "build|admission-baseline.json" $(BP bi_adm_material)
 expect_refuse "AB bind-items --product: items.json is still bound under its own name (the default product)" "build|items.json|digest" $(BI bi_adm items-other)
 expect_refuse "AB bind-items --product: a product name with a slash is refused" "build|product" $(BP bi_adm admission-baseline ../items.json)
+expect_ok     "AB bind-items --product '': an empty name is the default product, items.json" $(BI bi_ok) --product ""
+expect_refuse "AB bind-items --product '': ...and is judged as items.json" "build|items.json|digest" \
+  $(BI bi_ok items-other) --product ""
 CLS() { echo check-list --policy "$work/policy.json" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
 expect_ok     "PR4 check-list: exactly scanners, acceptance, runtime and arm64, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
 expect_refuse "PR4 check-list: a missing record (arm64) is refused, naming Check and the record" "check|arm64|missing" $(CLS cl_missing)
@@ -1874,7 +1905,21 @@ for k in idx_edit it_edit set_garbage set_star keyid_nl body_nl verifier_junk ve
   expect_refuse "002-AC3 verify: a provenance whose Rekor entry file is damaged ($k, see RK_ENTRY and RK_FILE in the fixtures) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov_rk_$k)
 done
 
-EXPECT=741
+# chain_common.py names its openssl by one fixed absolute path on one TEST-SUBST line,
+# and reads no environment variable for it
+python3 - "$root/bin/chain_common.py" << 'PY' \
+  && ok "770 chain_common.py: OPENSSL is one fixed path marked TEST-SUBST, no environment read" \
+  || bad "770 chain_common.py: OPENSSL is not one fixed absolute path on a TEST-SUBST line, or the file reads \
+the environment"
+import re, sys
+text = open(sys.argv[1]).read()
+hits = [ln for ln in text.split("\n") if ln.startswith("OPENSSL = ")]
+if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-SUBST', hits[0]):
+    sys.exit("OPENSSL lines: %r" % hits)
+if "environ" in text:
+    sys.exit("chain_common.py reads the environment")
+PY
+EXPECT=744
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

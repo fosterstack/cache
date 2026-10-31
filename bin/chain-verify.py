@@ -8,8 +8,8 @@ subcommands are specified in the header of the hostile test.
 Every refusal exits 1 and prints, as its FIRST stderr line, `refused at <stage>: <reason>`. Anything else
 (bad usage, an unreadable input of the hostile helpers) is `error: ...` and exits 2 (or 1 where the test says so).
 No network is used: the record's signature, the key manifest and the Rekor entries (the signed entry timestamp, the
-inclusion proof and the checkpoint) are verified from files only, with the openssl binary (named by $OPENSSL, default
-`openssl`). Tokens in the environment are never read, printed or stored here.
+inclusion proof and the checkpoint) are verified from files only, with the openssl binary (the fixed path OPENSSL in the
+common helper module). Tokens in the environment are never read, printed or stored here.
 
 Modelled on: in-toto-witness cmd/verify.go:116-163,211 (a verifier's refusal is its exit code and message),
 options/sign.go:36 (policy payloadType), docs/tutorials/artifact-policy.md:58-70 (collection predicate type, product
@@ -60,8 +60,9 @@ def load_sibling(name):
 
 
 _common = load_sibling("chain_common")
-Refuse, b64d, b64e, load_json, refuse, ssl, strict_json = (
-    _common.Refuse, _common.b64d, _common.b64e, _common.load_json, _common.refuse, _common.ssl, _common.strict_json)
+Refuse, b64d, b64e, load_json, refuse, ssl_done, strict_json = (
+    _common.Refuse, _common.b64d, _common.b64e, _common.load_json, _common.refuse, _common.ssl_done, _common.strict_json)
+OPENSSL = _common.OPENSSL
 chain_hostile = load_sibling("chain_hostile")
 chain_items = load_sibling("chain_items")
 
@@ -130,13 +131,13 @@ def check_manifest(keys_dir):
         for name, data in (("root.pub", root_raw), ("manifest.json", body), ("manifest.sig", sig)):
             with open(os.path.join(tmp, name), "wb") as f:
                 f.write(data)
-        root_der = ssl("pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-outform", "DER", check=False)
+        root_der = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-outform", "DER"], capture_output=True)
         if root_der.returncode != 0 or not root_der.stdout:
             refuse("manifest", "the root key file is not a public key")
         if not is_p256_spki(root_der.stdout):
             refuse("manifest", "the root key file is not an ECDSA P-256 key")
-        verified = ssl("dgst", "-sha256", "-verify", os.path.join(tmp, "root.pub"),
-                       "-signature", os.path.join(tmp, "manifest.sig"), os.path.join(tmp, "manifest.json"), check=False)
+        verified = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "root.pub"),
+                       "-signature", os.path.join(tmp, "manifest.sig"), os.path.join(tmp, "manifest.json")], capture_output=True)
         if not sig or verified.returncode != 0:
             refuse("manifest", "the signature of the manifest does not verify with the root key")
         m = parse_manifest_body(body)
@@ -329,8 +330,8 @@ def check_signature(stage, pol, ptype, payload, sig, tmp):
                     ("sig.bin", sig)):
         with open(os.path.join(tmp, n), "wb") as f:
             f.write(data)
-    r = ssl("dgst", "-sha256", "-verify", os.path.join(tmp, "release.pub"), "-signature", os.path.join(tmp, "sig.bin"),
-            os.path.join(tmp, "pae.bin"), check=False)
+    r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "release.pub"), "-signature", os.path.join(tmp, "sig.bin"),
+            os.path.join(tmp, "pae.bin")], capture_output=True)
     # the one pass is exit status 0; openssl exits 1 for a bad signature and for an error alike, so what it said is
     # appended, not matched
     if r.returncode != 0:
@@ -565,7 +566,7 @@ def public_key_der(pem):
         kp = os.path.join(d, "key.pem")
         with open(kp, "w") as f:
             f.write(pem)
-        r = ssl("pkey", "-pubin", "-in", kp, "-outform", "DER", check=False)
+        r = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"], capture_output=True)
     return r.stdout if r.returncode == 0 and r.stdout else None
 
 
@@ -575,7 +576,8 @@ def set_is_valid(e, key_pem):
         for name, data in (("key.pem", key_pem.encode()), ("set.bin", canon), ("set.sig", b64d(e["inclusionPromise"]["signedEntryTimestamp"]))):
             with open(os.path.join(d, name), "wb") as f:
                 f.write(data)
-        r = ssl("dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "set.sig"), os.path.join(d, "set.bin"), check=False)
+        r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature",
+            os.path.join(d, "set.sig"), os.path.join(d, "set.bin")], capture_output=True)
     return r.returncode == 0
 
 
@@ -646,8 +648,8 @@ def check_inclusion(e, rekor_pem):
             for name, data in (("key.pem", rekor_pem.encode()), ("note.bin", text.encode()), ("note.sig", blob[4:])):
                 with open(os.path.join(d, name), "wb") as f:
                     f.write(data)
-            r = ssl("dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "note.sig"),
-                    os.path.join(d, "note.bin"), check=False)
+            r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "note.sig"),
+                    os.path.join(d, "note.bin")], capture_output=True)
         if r.returncode == 0:
             return None
     return "rekor entry checkpoint is not signed by the policy's rekor key"
@@ -873,7 +875,7 @@ def _release_policy(a, stage):
 def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
-    product = getattr(a, "product", None) or "items.json"      # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
+    product = (a.product if "product" in a else None) or "items.json"      # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
         refuse("build", "product: %r is not a plain file name" % product)
     want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
@@ -1342,7 +1344,7 @@ SR_CHECK_PREFIX = "check-results/"
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
 SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}   # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in witness-rebuild/; matched in full, never by basename
-# Witness 0.12.0 `run -- command` writes these five and no other; command-run holds the command, its stdout and stderr and its exit code
+# Witness 0.12.0 writes these five attestors and no other; command-run holds what ran, its stdout and stderr and its exit code
 SR_ATTESTORS = ("environment", "git", "material", "command-run", "product")
 GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
 ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
