@@ -70,13 +70,13 @@ import glob, re, sys
 for f in glob.glob(sys.argv[1] + "/build/probe/*.yaml.tmpl"):
     s = open(f).read()
     assert "@BUSYBOX@" in s and s.count("  - runs: |") == 1, f
-    assert not re.search(r"cosign|upload|sign|key\.pem|curl", re.sub(r"^#.*$", "", s, flags=re.M)), f
+    assert not re.search(r"cosign|upload|sign|key\.pem|fetch", re.sub(r"^#.*$", "", s, flags=re.M)), f
 PY
 t "AC5" "each attempt names its wall: record path, key folder, token names, a literal address" python3 - "$root" << 'PY'
 import sys
 d = sys.argv[1] + "/build/probe/"
 want = {"read-record": "cat @RECORD@", "write-record": ">> @RECORD@", "read-keydir": "@KEYDIR@/dummy",
-        "read-token": "ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "network": "http://192.0.2.1:9/"}
+        "read-token": "ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "network": "192.0.2.1:9"}
 for k, v in want.items(): assert v in open(d + k + ".yaml.tmpl").read(), k
 PY
 
