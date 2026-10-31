@@ -163,16 +163,19 @@ ordered "rule 38a" "sysctl first, then the sealed melange call" '^sudo sysctl -w
 sd "rule 38a" "melange runs directly under sudo unshare -n (the network cut at the kernel)" '^sudo .*unshare -n .*melange build ' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sn "rule 38a" "no docker, podman, kubectl, --privileged or container image anywhere in the calls" 'docker|podman|kubectl|--privileged|cgr\.dev|@sha256' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sd "rule 38a" "melange uses the bubblewrap runner" '^melange build .*--runner bubblewrap' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"   # melange pkg/cli/build.go:68, pkg/container/bubblewrap_runner.go:43
-sd "0707-fix2" "melange gets the namespace fosterstack (the apk's own SBOM reads fosterstack, not unknown)" \
-  '^melange build .*--namespace fosterstack( |$)' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
-sn "0707-fix2" "melange gets the namespace exactly once and never another" \
-  '--namespace (unknown|wolfi|alpine)|--namespace fosterstack .*--namespace' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sbo=$(mo); run_s "${bae[@]}" "$BA" "${ba_args[@]}" --out "$sbo"
+t "0707-fix2" "every melange call gets --namespace once, and its value is exactly fosterstack" python3 -c "
+import sys
+calls = [l.split() for l in open(sys.argv[1]) if l.startswith('melange build ')]
+assert calls, 'no melange call'
+for c in calls:
+    assert [c[i + 1] for i, w in enumerate(c) if w == '--namespace'] == ['fosterstack'], c" "$CALLS"
 t "0707-fix3" "build-apk.sh writes the module SBOM with the shipped package and its apk version as the root package" \
   python3 -c "
 import json, sys
-d = json.load(open(sys.argv[1] + '/fscache-modules.spdx.json')); r = [p for p in d['packages'] if p['SPDXID'] == 'SPDXRef-fscache'][0]
-assert (r['name'], r['versionInfo'], r['supplier']) == ('fscache', '0.3.0-r0', 'Organization: FosterStack'), r" "$sbo"
+d = json.load(open(sys.argv[1] + '/fscache-modules.spdx.json'))
+r = [p for p in d['packages'] if p['SPDXID'] == 'SPDXRef-fscache'][0]
+assert (r['name'], r['versionInfo'], r['supplier']) == ('fscache', '0.3.0-r0', 'Organization: Fosterstack'), r" "$sbo"
 sn "rule 38a" "no network address in the melange call, no proxy" '://|[Pp][Rr][Oo][Xx][Yy]' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"
 sd "rule 12" "the Go tarball is pre-seeded in the cache dir as sha256:<hex> (melange --cache-dir, fetch finds it offline)" "^melange build .*--cache-dir " "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"   # build.go:1028-1040 mounts it at /var/cache/melange; pipelines/fetch.yaml:85-90
 gohex=$(python3 -c "import hashlib;print(hashlib.sha256(open('$fx/archive/go/go1.27.2.linux-amd64.tar.gz','rb').read()).hexdigest())")
@@ -1337,7 +1340,8 @@ src = open(sys.argv[1]).read()
 src = src.replace('--namespace fosterstack\n  --signing-key', '--namespace fosterstack --signing-key', 1)
 CALL = 'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")'
 M = {
- "sc-no-runner":   [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key', '--arch "$arch" --namespace fosterstack --signing-key')],
+ "sc-no-runner":   [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key',
+                      '--arch "$arch" --namespace fosterstack --signing-key')],
  "sc-docker":      [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key',
                       '--arch "$arch" --runner docker --namespace fosterstack --signing-key')],
  "sc-runner-eq":   [('--arch "$arch" --runner bubblewrap --namespace fosterstack --signing-key',
@@ -1370,6 +1374,7 @@ for name, subs in M.items():
     for old, new in subs:
         assert t.count(old) == 1, (name, old, t.count(old))
         t = t.replace(old, new)
+    assert t != src, name
     open(sys.argv[2] + "/" + name + ".sh", "w").write(t)
 PY
 rp_callcheck() { local m=$1 why=$2 desc=$3 o; o=$(mo)
@@ -1389,8 +1394,8 @@ rp_callcheck sc-no-unshare "unshare -n" "a melange call without unshare is refus
 rp_callcheck sc-unshare-r "unshare -n" "unshare with another option instead of -n is refused"
 rp_callcheck sc-no-env-i "env and -i" "a melange call without env -i is refused (the environment is not closed)"
 rp_callcheck sc-not-build "melange build" "a melange call that is not the build subcommand is refused"
-rp_callcheck sc-no-namespace "--namespace fosterstack" "a melange call without the namespace is refused (the apk's SBOM \
-would read unknown)"
+rp_callcheck sc-no-namespace "--namespace fosterstack" "a melange call without the namespace is refused (the apk's SBOM reads \
+unknown)"
 rp_callcheck sc-other-namespace "--namespace fosterstack" "a melange call with another namespace is refused"
 rp_callcheck sc-short-runner "not one of the sealed call's options" "a short runner flag is not one of the sealed \
 call's options"

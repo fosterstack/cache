@@ -106,40 +106,82 @@ fails "rule 20" "go-module-sbom: a module the binary embeds that is not in vendo
 fails "rule 20" "go-module-sbom: an embedded module in vendor/modules.txt but NOT in dependency-provenance.json fails and names it" 'golang\.org/x/sys' python3 "$GS" --modules "$sb/modules.txt" --provenance "$sb/provenance-nosys.json" --buildinfo "$sb/ok.txt" --out "$work/m3b.json"
 fails "rule 20" "go-module-sbom: a version that differs from vendor/modules.txt fails and names the module" 'golang\.org/x/sys' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ver.txt" --out "$work/m4.json"
 t "rule 20" "go-module-sbom: compares path and version only (the vendor-mode binary list has no hashes)" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sb/ok.txt' --out '$work/m6.json'"
-# 0707 fix 3 (NTIA minimum elements): the root package, its supplier, DESCRIBES, DEPENDS_ON each module, the creators, the fixed created time
+# 0707 fix 3 (NTIA minimum elements): the root package and its supplier, DESCRIBES, DEPENDS_ON each module,
+# the creators, the fixed created time
 python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name fscache-fips --version 0.3.0 --out "$work/m7.json"
-t "0707-fix3" "go-module-sbom: the root package is the shipped package, with its supplier, apk version and purl" python3 - "$work/m7.json" <<'PY'
-import json, sys
+# melange v0.61.2 pkg/sbom/package.go:182-183 writes the supplier as "Organization: " + Title(namespace), so the
+# namespace fosterstack reads "Organization: Fosterstack"; the root package here must carry the same string
+SUPPLIER="Organization: Fosterstack"; export SUPPLIER
+t "0707-fix3" "go-module-sbom: the root package is the shipped package, with its supplier, apk version and purl" \
+  python3 - "$work/m7.json" <<'PY'
+import json, os, sys
+SUPPLIER = os.environ["SUPPLIER"]
 d = json.load(open(sys.argv[1])); r = [p for p in d["packages"] if p["SPDXID"] == "SPDXRef-fscache"]
 assert len(r) == 1, r
 r = r[0]
-assert r["name"] == "fscache-fips" and r["versionInfo"] == "0.3.0-r0" and r["supplier"] == "Organization: FosterStack", r
+assert r["name"] == "fscache-fips" and r["versionInfo"] == "0.3.0-r0" and r["supplier"] == SUPPLIER, r
 assert r["externalRefs"][0]["referenceLocator"] == "pkg:apk/fosterstack/fscache-fips@0.3.0-r0", r
 PY
-t "0707-fix3" "go-module-sbom: the document DESCRIBES the root and the root DEPENDS_ON every module package, once each, and nothing else" python3 - "$work/m7.json" <<'PY'
+t "0707-fix3" "go-module-sbom: the document DESCRIBES the root; the root DEPENDS_ON every module once, nothing else" \
+  python3 - "$work/m7.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rel = d["relationships"]
 mods = sorted(p["SPDXID"] for p in d["packages"] if p["SPDXID"] != "SPDXRef-fscache")
 assert mods, "no modules"
-assert rel[0] == {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": "SPDXRef-fscache"}, rel[0]
+assert rel[0] == {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+                  "relatedSpdxElement": "SPDXRef-fscache"}, rel[0]
 assert sorted(r["relatedSpdxElement"] for r in rel[1:]) == mods, rel
 assert all(r["spdxElementId"] == "SPDXRef-fscache" and r["relationshipType"] == "DEPENDS_ON" for r in rel[1:]), rel
 PY
-t "0707-fix3" "go-module-sbom: the creators are the organization and the tool, and the created time is the fixed epoch" python3 - "$work/m7.json" <<'PY'
+t "0707-fix3" "go-module-sbom: the creators are the organization and the tool; the created time is the fixed epoch" \
+  python3 - "$work/m7.json" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1]))["creationInfo"]
-assert c == {"created": "1970-01-01T00:00:00Z", "creators": ["Organization: FosterStack", "Tool: go-module-sbom"]}, c
+assert c == {"created": "1970-01-01T00:00:00Z", "creators": ["Organization: Fosterstack", "Tool: go-module-sbom"]}, c
 PY
-t "0707-fix3" "go-module-sbom: without --version the root package has no version and no purl; the supplier is still named" python3 - "$work/m1.json" <<'PY'
+t "0707-fix3" "go-module-sbom: without --version the root has no version and no purl; the supplier is still named" \
+  python3 - "$work/m1.json" <<'PY'
 import json, sys
 r = [p for p in json.load(open(sys.argv[1]))["packages"] if p["SPDXID"] == "SPDXRef-fscache"][0]
-assert "versionInfo" not in r and "externalRefs" not in r and r["supplier"] == "Organization: FosterStack" and r["name"] == "fscache", r
+assert "versionInfo" not in r and "externalRefs" not in r, r
+assert r["supplier"] == "Organization: Fosterstack" and r["name"] == "fscache", r
 PY
-t "0707-fix3" "go-module-sbom: deterministic with --name and --version too" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sb/ok.txt' --name fscache-fips --version 0.3.0 --out '$work/m8.json' && cmp '$work/m7.json' '$work/m8.json'"
-t "0707-fix3" "go-module-sbom: an apk release-candidate version (0.3.0_rc1, with an underscore) is accepted" python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version 0.3.0_rc1 --out "$work/m10.json"
-fails "0707-fix3" "go-module-sbom: a --name that is not a plain package-name word is refused" 'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name 'a b' --out "$work/m9.json"
-fails "0707-fix3" "go-module-sbom: an --epoch that is not a number is refused" 'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version 0.3.0 --epoch r0 --out "$work/m9.json"
-fails "0707-fix3" "go-module-sbom: a --version with a slash is refused (it goes into a purl)" 'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version '1/2' --out "$work/m9.json"
+t "0707-fix3" "go-module-sbom: deterministic with --name and --version too" \
+  bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sb/ok.txt' --name fscache-fips --version 0.3.0 \
+    --out '$work/m8.json' && cmp '$work/m7.json' '$work/m8.json'"
+t "0707-fix3" "go-module-sbom: an apk release-candidate version (0.3.0_rc1, with an underscore) is accepted" \
+  python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version 0.3.0_rc1 --out "$work/m10.json"
+fails "0707-fix3" "go-module-sbom: a --name that is not a plain package-name word is refused" \
+  'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name 'a b' --out "$work/m9.json"
+fails "0707-fix3" "go-module-sbom: there is no --epoch option (the recipes say epoch: 0)" 'unrecognized arguments' \
+  python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version 0.3.0 --epoch 1 --out "$work/m9.json"
+for bad in FSCACHE a/b a@b; do
+  fails "0707-fix3" "go-module-sbom: --name $bad is refused (lower-case package-name words only)" 'plain package-name' \
+    python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name "$bad" --out "$work/m9.json"
+done
+for bad in 0.3.0+meta 0.3.0-r1; do
+  fails "0707-fix3" "go-module-sbom: --version $bad is refused (digits, dots and underscores only)" \
+    'plain package-name' \
+    python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version "$bad" --out "$work/m9.json"
+done
+for v in 0.3.0 0.3.0-rc1 0.0.0-rc.1; do
+  av=$(python3 -I -B "$root/bin/build-apk-helper.py" arg apkver --version "$v")
+  t "0707-fix3" "go-module-sbom: the apk form $av of the driver's version $v is accepted" \
+    python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version "$av" --out "$work/m11.json"
+done
+t "0707-fix3" "go-module-sbom: the root version is VERSION-r0" python3 - "$work/m7.json" <<'PY'
+import json, sys
+r = [p for p in json.load(open(sys.argv[1]))["packages"] if p["SPDXID"] == "SPDXRef-fscache"][0]
+assert r["versionInfo"] == "0.3.0-r0", r
+PY
+t "0707-fix3" "go-module-sbom: a module package names no supplier (the binary's module list has none): NOASSERTION" \
+  python3 - "$work/m7.json" <<'PY'
+import json, sys
+mods = [p for p in json.load(open(sys.argv[1]))["packages"] if p["SPDXID"] != "SPDXRef-fscache"]
+assert mods and all(p["supplier"] == "NOASSERTION" for p in mods), mods
+PY
+fails "0707-fix3" "go-module-sbom: a --version with a slash is refused (it goes into a purl)" \
+  'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version '1/2' --out "$work/m9.json"
 # ===== rule 16: installing melange and apko on the VM ===================================================================
 t "rule 16" "install-build-tools.sh pins a version and a sha256 per tool and arch, verifies before extracting, no container digest" y pins "$IT"
 sf "rule 16" "unknown tool refused" 'unknown' "$IT" bogus "$work/bin"
@@ -435,7 +477,10 @@ for n in empty garbage spaces nover crlf bom nohead nopath unknown stray; do
   fails "rule 20" "go-module-sbom: the input '$n' is refused (exit 2), never an empty SBOM" 'go-module-sbom' python3 "$GS" "${gsa[@]}" --buildinfo "$sx/$n.txt" --out "$work/sx-$n.json"
   t "rule 20" "...$n: exit code 2 and no SBOM file written" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sx/$n.txt' --out '$work/sx2-$n.json' >/dev/null 2>&1; test \$? = 2 && test ! -e '$work/sx2-$n.json'"
 done
-t "rule 20" "go-module-sbom: a stdlib-only binary (a build-info header, path and mod lines, no dependencies) gives an explicit SBOM with zero packages" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sx/stdlib.txt' --out '$work/sx-stdlib.json' && python3 -c \"import json,sys; d=json.load(open('$work/sx-stdlib.json')); assert [p for p in d['packages'] if p['SPDXID']!='SPDXRef-fscache']==[], d\""
+t "rule 20" "go-module-sbom: a stdlib-only binary (no dependencies) gives an explicit SBOM with zero module packages" \
+  bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sx/stdlib.txt' --out '$work/sx-stdlib.json' \
+    && python3 -c \"import json,sys; d=json.load(open('$work/sx-stdlib.json')); \
+    assert [p for p in d['packages'] if p['SPDXID']!='SPDXRef-fscache']==[], d\""
 fails "rule 14" "apk-tool: a gzip stream missing its CRC/size trailer is refused (not accepted by digest)" 'trailer|complete|truncated|eof' python3 "$AT" digest "$sx/notrailer.apk"
 fails "rule 14" "apk-tool: ...and by signer" 'trailer|complete|truncated|eof' python3 "$AT" signer "$sx/notrailer.apk"
 fails "rule 14" "apk-tool: a data section that is itself gzip(tar) is not read as a tar (binary-check refuses)" 'tar|malformed|compress|plain|header' python3 "$AT" binary-check "$sx/doublegz.apk" "$pr/binA"
@@ -609,7 +654,10 @@ fails "rule 22" "apk-tool: a first block of type K (GNU long link) is refused" '
 for n in slashes dotdir dotslash2 dotdot; do
   fails "rule 14" "apk-tool: the entry spelled as '$n' that aliases usr/bin/fscache is refused (names must be canonical)" 'canonical|twice|duplicate' python3 "$AT" binary-check "$r6a/alias-$n.apk" "$pr/binA"
 done
-t "rule 20" "go-module-sbom: a dep line with an EMPTY sum field (what a -mod=vendor build prints) is accepted" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$r6a/emptysum.txt' --out '$work/es.json' && python3 -c \"import json; d=json.load(open('$work/es.json')); assert [p['name'] for p in d['packages'] if p['SPDXID']!='SPDXRef-fscache']==['github.com/example/x','golang.org/x/sys'], d\""
+t "rule 20" "go-module-sbom: a dep line with an EMPTY sum field (what a -mod=vendor build prints) is accepted" \
+  bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$r6a/emptysum.txt' --out '$work/es.json' \
+    && python3 -c \"import json; d=json.load(open('$work/es.json')); \
+    assert [p['name'] for p in d['packages'] if p['SPDXID']!='SPDXRef-fscache']==['github.com/example/x','golang.org/x/sys'], d\""
 t "rule 20" "go-module-sbom: a dep line with an h1: sum is accepted too" python3 "$GS" "${gsa[@]}" --buildinfo "$r6a/h1sum.txt" --out "$work/hs.json"
 
 # inputs-manifest: an apk whose build environment lists no packages is refused (not a vacuous pass)
@@ -640,7 +688,10 @@ cat >"$work/real-vendored.txt" <<'CAPTURE'
 CAPTURE
 printf '# gopkg.in/yaml.v3 v3.0.1\n## explicit\ngopkg.in/yaml.v3\n' >"$work/real-modules.txt"
 printf '{"modules":[{"path":"gopkg.in/yaml.v3","version":"v3.0.1"}]}' >"$work/real-prov.json"
-t "rule 20" "go-module-sbom: the committed REAL vendored-build capture (empty sum fields) is accepted and lists gopkg.in/yaml.v3 v3.0.1" bash -c "python3 '$GS' --modules '$work/real-modules.txt' --provenance '$work/real-prov.json' --buildinfo '$work/real-vendored.txt' --out '$work/real-sbom.json' && python3 -c \"import json; d=json.load(open('$work/real-sbom.json')); assert [(p['name'],p['versionInfo']) for p in d['packages'] if p['SPDXID']!='SPDXRef-fscache']==[('gopkg.in/yaml.v3','v3.0.1')], d\""
+t "rule 20" "go-module-sbom: the committed REAL vendored-build capture (empty sums) is accepted and lists yaml.v3 v3.0.1" \
+  bash -c "python3 '$GS' --modules '$work/real-modules.txt' --provenance '$work/real-prov.json' \
+    --buildinfo '$work/real-vendored.txt' --out '$work/real-sbom.json' && python3 -c \"import json; d=json.load(open('$work/real-sbom.json')); \
+    assert [(p['name'],p['versionInfo']) for p in d['packages'] if p['SPDXID']!='SPDXRef-fscache']==[('gopkg.in/yaml.v3','v3.0.1')], d\""
 
 # ---- snapshot-7 round 7 (Sonnet/Opus P2): EVERY header of every section is checked the way Go reads it; a melange-shaped data section is accepted -------------------
 python3 - "$work" <<'P'

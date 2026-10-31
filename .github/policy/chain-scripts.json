@@ -2158,7 +2158,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "0b8141aea6e4d75c6367f362287c7fc8fefa7e4ccfad30cc4c59ead738a279bf",
+      "sha256": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2420,7 +2420,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
-      "sha256": "82e3c5033fdfdbe69f6acfd7d2724518e5f40c7fb36730bf2d0b8b182ad8843c"
+      "sha256": "9c85b84e40b3a727dce3b0bf9813b945b1d165b133c5d28e90b2cdecbc3dd9e0"
     },
     {
       "path": "bin/vendor-provenance.py",

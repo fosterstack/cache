@@ -18,7 +18,8 @@ interpreter run on a variable path).
       (sandboxed-build ratify Oct 27 2026, rule 2): an ABSOLUTE `env` and
       `-i`, then NAME=value items only (with --sealed-env: exactly the items FILE yields, in order), then an absolute
       `unshare -n`, then an absolute melange and `build`, the
-      recipe file, and only the options of MELANGE_FLAGS, each once with one value, `--runner` being `bubblewrap`.
+      recipe file, and only the options of MELANGE_FLAGS, each once with one value, `--runner` being `bubblewrap` and
+      `--namespace` being `fosterstack`.
       Prints the first reason on standard error and exits 1 for
       anything else (a call without the bubblewrap runner, without the cut network namespace, with a bare program name,
       another option or an environment that is not the file's).
