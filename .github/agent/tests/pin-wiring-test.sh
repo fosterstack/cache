@@ -102,10 +102,12 @@ for _jid, _j in (d.get("jobs") or {}).items():
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
-# the guard's job is exactly name / runs-on / steps: no `needs` (a skipped prerequisite skips the whole guard),
-# `if`, `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
-for k in sorted(set(job) - {"name", "runs-on", "steps"}):
+# the guard's job is exactly name / runs-on / permissions / steps: no `needs` (a skipped prerequisite skips the whole
+# guard), `if`, `timeout-minutes`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
+for k in sorted(set(job) - {"name", "runs-on", "permissions", "steps"}):
     bad.append(f"the allowlist job has `{k}`")
+if job.get("permissions") != {"contents": "read", "pull-requests": "read"}:
+    bad.append("the allowlist job's permissions are not exactly contents: read + pull-requests: read")
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
@@ -1266,6 +1268,9 @@ case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github
 case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
+case_ job-permissions-removed    bad "d['jobs']['allowlist'].pop('permissions')"
+case_ job-permissions-pr-write   bad \
+  "d['jobs']['allowlist']['permissions'] = {'contents': 'read', 'pull-requests': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"
 case_ runs-on-self-hosted        bad "d['jobs']['allowlist']['runs-on'] = 'self-hosted'"

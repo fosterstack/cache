@@ -94,15 +94,13 @@ step "match opens nothing"                            "$w/match.json"   "$w/no-i
 # REQ-DEP-005 (merge queue, owner ratified Oct 22): every required context runs on the merge_group event on the
 # queue's commit, and none of its jobs or steps is skipped there.
 # The table names, for each context in .github/policy/required-checks.json, the workflow and job that produces it;
-# a context the table does not know fails, so a required
-# check added later cannot be missed. The one listed exception is marker-gate (REQ-DEP-005-AC1;
-# ops/docs/ratify/2026-10-22-merge-queue-checks.md, owner: "add the landing
-# marker check as the second listed exception"): it is a pull-request-only check, so it carries a job-level `if` and
-# reports skipped, which GitHub counts as success, on
-# the queue. The review gate's check (REQ-DEP-005-AC3) is not excepted: the App publishes it on the queue's head from
-# agent-review-gate.yml's `queue-publish` job (after the secret-free `queue-judge` job), which run
-# on the workflow_run event from the default branch's copy (not on merge_group) and fails closed; the dedicated checks
-# below pin that wiring.
+# a context the table does not know fails, so a required check added later cannot be missed. The one listed exception
+# is marker-gate (REQ-DEP-005-AC1; ops/docs/ratify/2026-10-22-merge-queue-checks.md, owner: "add the landing marker
+# check as the second listed exception"): it is a pull-request-only check, so it carries a job-level `if` and reports
+# skipped, which GitHub counts as success, on the queue. The review gate's check (REQ-DEP-005-AC3) is not excepted: the
+# App publishes it on the queue's head from agent-review-gate.yml's `queue-publish` job (after the secret-free
+# `queue-judge` job), which run on the workflow_run event from the default branch's copy (not on merge_group) and fails
+# closed; the dedicated checks below pin that wiring.
 mq="$(python3 -I - "$repo" <<'PY'
 import glob, json, os, re, sys
 import yaml
@@ -134,18 +132,68 @@ def audit(wf):
     def has_event(d, name):
         on = d.get(True) if True in d else d.get("on")
         return (isinstance(on, dict) and name in on) or on == name or (isinstance(on, list) and name in on)
-    def reads_pr(txt):
-        # a condition on the pull request's own fields is false on merge_group, unless it also names merge_group
-        # `fork != true` is true on the queue (the field is empty), so it does not skip the run
-        t = re.sub(r"github\.event\.pull_request\.head\.repo\.fork\s*!=\s*true", "", str(txt))
-        return bool(re.search(r"github\.(event\.pull_request|base_ref|head_ref)", t)) and "merge_group" not in t
-    def skips(txt):
-        if isinstance(txt, bool) or (isinstance(txt, str) and re.fullmatch(r"\s*(\$\{\{\s*)?false(\s*\}\})?\s*", txt)):
-            return True
-        if not isinstance(txt, str) or "github.event_name" not in txt:
-            return False
-        # an event_name condition skips the queue unless it names merge_group, or names it only to exclude it
-        return "merge_group" not in txt or re.search(r"event_name\s*!=\s*['\"]merge_group['\"]", txt) is not None
+    # REQ-DEP-005-AC1 as written: no required job, step or prerequisite is skipped on the queue. A condition is not
+    # judged by its text. Every `if` on a required job, on its steps and on the jobs it needs must be one of these exact
+    # strings at that exact place; a new or edited condition fails here until this table is changed in review.
+    ALLOWED_IF = {   # (workflow, job, step name or None for the job itself): the exact condition
+        ("acceptance.yml", "acceptance-gradle", "stop the capped server"): "always()",
+        ("acceptance.yml", "acceptance-gradle", "stop fscache"): "always()",
+        ("acceptance.yml", "acceptance-maven", "stop the capped server"): "always()",
+        ("acceptance.yml", "acceptance-maven", "stop fscache"): "always()",
+        ("agent-review-gate.yml", "queue-judge", None):
+            "github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'",
+        ("agent-review-gate.yml", "queue-publish", None):
+            "${{ !cancelled() && github.event_name == 'workflow_run' "
+            "&& github.event.workflow_run.event == 'merge_group' }}",
+        ("ci.yml", "allowlist-chain", None): "${{ always() }}",
+        ("ci.yml", "allowlist-chain-4", "suite floors only rise (against the merge base on a pull request)"):
+            "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
+        ("ci.yml", "dependency-review", None):
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+        ("ci.yml", "dependency-review", "the merge queue's base and head are named (REQ-DEP-005-AC2)"):
+            "github.event_name == 'merge_group'",
+        ("ci.yml", "gosec", "upload SARIF"): "always() && github.event.pull_request.head.repo.fork != true",
+        ("scan.yml", "inspector", "Amazon Inspector - restore today's results (same-repo runs only)"):
+            "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
+        ("scan.yml", "inspector", "Amazon Inspector - the UTC day at save time"): "always()",
+        ("scan.yml", "inspector",
+         "Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)"):
+            "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && "
+            "(github.event_name != 'pull_request' "
+            "|| github.event.pull_request.head.repo.full_name == github.repository)",
+        ("scan.yml", "inspector", "keep the Inspector SBOMs and responses"): "always()",
+        ("scan.yml", "reproducibility", None): "always()",
+        ("scan.yml", "scan", None): "always()",
+        ("scan.yml", "scanner", "refuse a scanner this job cannot run"): "matrix.scanner != 'grype'",
+        ("scan.yml", "scanner", "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"):
+            "matrix.scanner == 'grype'",
+        ("scan.yml", "scanner", "verify archives before scanning them"): "matrix.scanner == 'grype'",
+        ("scan.yml", "scanner", "Grype scan every image tar and every archive"): "matrix.scanner == 'grype'",
+        ("supply-chain.yml", "pin-age", "Trusted checker (the base branch)"):
+            "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        ("supply-chain.yml", "pin-age", "The pull request's tree"):
+            "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        ("supply-chain.yml", "pin-age", "Age of every moved version, and what advisories say about it"):
+            "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    }
+    def closure(f, j, acc):
+        if (f, j) in acc: return
+        acc.add((f, j))
+        need = ((wf.get(f) or {}).get("jobs", {}).get(j) or {}).get("needs") or []
+        for n in [need] if isinstance(need, str) else need: closure(f, n, acc)
+    jobs = set()
+    for c in req:
+        if c in TABLE and c not in EXCEPT: closure(*TABLE[c], jobs)
+    found = {}
+    for f, j in jobs:
+        jb = wf[f]["jobs"][j]
+        if "if" in jb: found[(f, j, None)] = jb["if"]
+        for st in jb.get("steps") or []:
+            if "if" in st: found[(f, j, st.get("name") or st.get("uses") or st.get("run", "")[:30])] = st["if"]
+    odd = sorted(str(k) + " = " + repr(v) for k, v in found.items() if ALLOWED_IF.get(k) != v)
+    res(not odd, "every condition on a required job, its steps and its prerequisites is an allowed one (%s)" % odd[:2])
+    res(set(ALLOWED_IF) <= set(found), "every allowed condition still exists (the table is not stale): %s"
+        % sorted(str(k) for k in set(ALLOWED_IF) - set(found))[:2])
     for c in req:
         if c in EXCEPT or c not in TABLE: continue
         f, j = TABLE[c]; d = wf.get(f)
@@ -157,15 +205,10 @@ def audit(wf):
             res(job is not None and has_event(d, "merge_group"),
                 "%s: %s job %s runs on merge_group (the workflow lists the event)" % (c, f, j))
         if not job: continue
-        res(not skips(job.get("if")) and not reads_pr(job.get("if")),
-            "%s: the job has no condition that skips the queue run (%r)" % (c, job.get("if")))
         for st in job.get("steps") or []:
-            res(not skips(st.get("if")) and not reads_pr(st.get("if")),
-                "%s: step %r is not skipped on merge_group (%r)"
-                % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30], st.get("if")))
             blob = json.dumps(st)
             res("github.event.pull_request" not in blob or "github.event.merge_group" in blob
-                or re.search(r"pull_request\.head\.repo\.(fork|full_name)", blob) is not None,
+                or "pull_request.head.repo.fork" in blob or "pull_request.head.repo.full_name" in blob,
                 "%s: step %r reads the pull request only where the queue's commits are read too"
                 % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
             res("github.base_ref" not in blob or "merge_group.base_ref" in blob,
@@ -182,6 +225,7 @@ def audit(wf):
     dr_run = "\n".join(st.get("run", "") for st in wf["ci.yml"]["jobs"]["dependency-review"]["steps"])
     res('"${BASE_SHA:?' in pa_run and '"${HEAD_SHA:?' in pa_run and "|| true" not in pa_run,
         "pin-age: an empty base or head ends the step with an error (${VAR:?...}), and nothing swallows it")
+    # matched: [ -n "$QUEUE_BASE_SHA" ] && [ -n "$QUEUE_HEAD" ] || { echo x; exit 1; }   refused: the same ending exit 0
     res(re.search(r'\[ -n "\$QUEUE_BASE_SHA" \] && \[ -n "\$QUEUE_HEAD" \] \|\| \{[^}]*exit 1', dr_run) is not None
         and "|| true" not in dr_run,
         "dependency-review: an empty base or head exits 1, and nothing swallows it")
@@ -190,8 +234,8 @@ def audit(wf):
     # filtered workflow leaves the required check Pending and blocks the queue)
     ci_wf = wf["ci.yml"]
     mg = ci_wf["jobs"].get("marker-gate") or {}
-    res("github.event_name" in str(mg.get("if")) and "pull_request" in str(mg.get("if")),
-        "marker-gate has a job-level if naming github.event_name and pull_request (%r)" % mg.get("if"))
+    res(mg.get("if") == "github.event_name == 'pull_request'",
+        "marker-gate's job-level if is exactly github.event_name == 'pull_request' (%r)" % mg.get("if"))
     FILTERS = {"paths", "paths-ignore", "branches", "branches-ignore", "tags", "tags-ignore"}
     for fname in ("ci.yml", "codeql.yml", "acceptance.yml", "scan.yml", "supply-chain.yml"):
         con = wf[fname].get(True) if True in wf[fname] else wf[fname].get("on")
@@ -240,8 +284,12 @@ def audit(wf):
     qjrun = "\n".join(st.get("run", "") for st in qj.get("steps") or [])   # the scripts as written, quotes unescaped
     qprun = "\n".join(st.get("run", "") for st in qp.get("steps") or [])
     res("environment" not in qj and not is_agent(qj), "queue-judge has no environment (it holds no secret)")
-    res(qj.get("permissions") == {"contents": "read"},
-        "queue-judge permissions are contents: read only (%r)" % qj.get("permissions"))
+    res(qj.get("permissions") == {"contents": "read", "pull-requests": "read"},
+        "queue-judge permissions are contents: read + pull-requests: read only (%r)" % qj.get("permissions"))
+    res(wf["ci.yml"]["jobs"]["allowlist"].get("permissions") == {"contents": "read", "pull-requests": "read"},
+        "the allowlist job holds contents: read + pull-requests: read only")
+    res(wf["ci.yml"]["jobs"]["dependency-review"].get("permissions") == {"contents": "read"},
+        "dependency-review holds contents: read only (no pull-requests: write)")
     res("secrets." not in qjtxt and "create-github-app-token" not in qjtxt and "AUDITOR_APP" not in qjtxt
         and "permission-checks" not in qjtxt,
         "queue-judge names no secret and mints no App token")
@@ -260,6 +308,8 @@ def audit(wf):
     for st in qp.get("steps") or []:
         nm = st.get("name") or st.get("uses") or st.get("run", "")[:30]
         r = st.get("run") or ""
+        # git matched: "git log", "x && git log"; refused: "legit log". An inlined field matched:
+        # "${{ github.event.workflow_run.x }}" in a script; refused: "$HEAD_SHA" (an env var)
         res(not re.search(r"(^|[\s;&|(])git\s", r), "queue-publish step %r runs no git" % nm)
         res(not re.search(r"\$\{\{[^}]*workflow_run", r),
             "queue-publish step %r never inlines workflow_run fields into the script (env vars only)" % nm)
@@ -277,6 +327,7 @@ def audit(wf):
                 "queue-judge step %r checks out the default branch only (no ref, path or repository "
                 "from workflow_run)" % nm)
         r = st.get("run") or ""
+        # matched: "git checkout x", "git  worktree add"; refused: "git fetch"
         res(not re.search(r"git\s+(checkout|switch|worktree)\b", r),
             "queue-judge step %r checks nothing of the group out" % nm)
         res(not re.search(r"\$\{\{[^}]*workflow_run", r),
@@ -311,16 +362,18 @@ def audit(wf):
 
     # the sweep judges pull requests only: a queue ref is never proved to come from the queue, so it is not read
     sws = "\n".join(st.get("run", "") for st in rg["jobs"]["sweep"]["steps"])
-    res("gh-readonly-queue" not in sws and "queue-gate-judge" not in sws,
-        "the sweep neither lists queue refs nor runs the queue judge")
-    posts = len(re.findall(r"-f name=auditor-review-gate", sws))
-    looks = len(re.findall(r"check_name=auditor-review-gate", sws))
+    LS = "git ls-remote \"https://github.com/${GITHUB_REPOSITORY}\" 'refs/heads/gh-readonly-queue/*'"
+    res("gh-readonly-queue" not in sws.replace(LS, "") and "queue-gate-judge" not in sws and sws.count(LS) == 1,
+        "the sweep neither reads queue refs nor runs the queue judge; its one git ls-remote only names the branches")
+    posts = sws.count("-f name=auditor-review-gate")
+    looks = sws.count("check_name=auditor-review-gate")
     res(posts >= 1 and looks >= posts,
         "every post of the check in the sweep follows a lookup of the App's existing verdict on that head "
         "(%d posts, %d lookups)" % (posts, looks))
+    # matched: "success) continue ;;"; refused: "failure) continue"
     res(re.search(r"success\)\s*continue", sws) is not None,
         "a head that already has a success verdict is skipped (no second post)")
-    res(re.search(r"still failure", sws) is not None, "a head that still fails is not re-posted")
+    res("still failure" in sws, "a head that still fails is not re-posted")
     return out
 
 out = audit(wf)
@@ -350,6 +403,14 @@ run_mutant("a required job with if: false", lambda: set_if("codeql.yml", "analyz
 run_mutant("a merge_group branch filter in a workflow other than ci.yml", lambda: add_filter("acceptance.yml"))
 run_mutant("a step condition on the pull request's head repository", lambda: add_step_if(
     "scan.yml", "reproducibility", "github.event.pull_request.head.repo.full_name == github.repository"))
+run_mutant("a required job that runs on the main branch only", lambda: set_if(
+    "codeql.yml", "analyze", "github.ref == 'refs/heads/main'"))
+run_mutant("a required job skipped by a false term", lambda: set_if(
+    "codeql.yml", "analyze", "false && github.event_name == 'merge_group'"))
+run_mutant("a prerequisite shard that runs on the main branch only", lambda: set_if(
+    "ci.yml", "allowlist-chain-1", "github.ref == 'refs/heads/main'"))
+run_mutant("marker-gate that skips pull requests instead of the queue", lambda: set_if(
+    "ci.yml", "marker-gate", "github.event_name != 'pull_request'"))
 run_mutant("pin-age with the empty-head refusal removed", lambda: edit_run(
     "supply-chain.yml", "pin-age", "${HEAD_SHA:?no head commit to compare: this check fails}", "${HEAD_SHA:-}"))
 run_mutant("dependency-review whose empty-input refusal exits 0", lambda: edit_run(

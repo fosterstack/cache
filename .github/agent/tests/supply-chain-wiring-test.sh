@@ -5,7 +5,7 @@
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
 # held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `image-signatures` (pull_request),
+#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request, merge_group), `image-signatures` (pull_request),
 #   `daily-audit` (schedule), `rerun-held` (schedule)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)

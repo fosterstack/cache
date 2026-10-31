@@ -105,13 +105,13 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", None, None, None, None),
+    "allowlist": ("allowlist", {"contents": "read", "pull-requests": "read"}, None, None, None),
     "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
     "drift-fixer-dispatch": ("dispatch the fixer for required-check drift",
                              {"contents": "read", "issues": "write"}, "agent", None,
                              "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None,
+    "dependency-review": (None, {"contents": "read"}, None, None,
                           "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
 }
 jobs = d.get("jobs") or {}

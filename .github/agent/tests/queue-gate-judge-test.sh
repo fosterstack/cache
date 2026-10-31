@@ -163,13 +163,57 @@ run_main "main's allowlist guard failing over the head -> refused" allow
 run_main "main's pin-wiring judge failing over the head -> refused" wiring
 run_main "main's scanner guard failing over the head -> refused" scan
 
-# the real record judge with a gh that always errors (HTTP 500), and with no token
+# The real record judge (bin/audit-record-judge.sh and audit-record.py, with main's writers policy) against a fake
+# GitHub that holds a valid record for every pull request head: that case must pass. Then one input at a time is
+# varied, and each refusal must print its own reason, so an unrelated failure cannot satisfy it.
+mkdir -p "$w/gh-up"
+cat > "$w/gh-up/gh" <<'EOF'
+#!/usr/bin/env bash
+exec python3 - "$@" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("ar", "bin/audit-record.py")
+ar = importlib.util.module_from_spec(spec); spec.loader.exec_module(ar)
+writer = json.load(open(os.environ["QG_WRITERS"]))["writers"][0]   # the repo's own copy, not the tree under test
+who = {"type": "Bot", "login": writer["login"], "id": writer["id"]}
+url = sys.argv[2]
+ref_url, commit_url = "repos/o/r/git/ref/heads/audit/", "repos/o/r/commits/"
+if url.startswith(ref_url):
+    head = url[len(ref_url):]
+    if head == os.environ.get("QG_NOREC"):
+        sys.stderr.write("gh: HTTP 404: Not Found\n"); sys.exit(1)
+    print(json.dumps({"ref": "refs/heads/audit/" + head, "object": {"type": "commit", "sha": head[::-1]}}))
+elif url.startswith(commit_url):
+    rec = url[len(commit_url):]
+    print(json.dumps({"sha": rec, "parents": [{"sha": rec[::-1]}],
+                      "files": [{"filename": ar.RECORD_FILE, "status": "added"}],
+                      "commit": {"message": ar.RECORD_MESSAGE, "verification": {"verified": True, "reason": "valid"}},
+                      "author": who, "committer": who}))
+else:
+    sys.stderr.write("gh: unexpected " + url + "\n"); sys.exit(1)
+PY
+EOF
+chmod +x "$w/gh-up/gh"
+QGW="QG_WRITERS=$repo/.github/policy/audit-writers.json"
 reset; ROOT="$(variant realrecord)"
 cp "$repo/bin/audit-record-judge.sh" "$repo/bin/audit-record.py" "$ROOT/bin/"
+mkdir -p "$ROOT/.github/policy"; cp "$repo/.github/policy/audit-writers.json" "$ROOT/.github/policy/"
+exec_sut "$G2" PATH="$w/gh-up:$PATH" "$QGW"
+verdict "a valid record for every pull request head (the real record judge) -> accepted" 0
+said() {
+  grep -qF -- "$2" <<<"$LAST_OUT" && ok "$1" || bad "$1 (not in: $(tr '\n' ' ' <<<"$LAST_OUT" | cut -c1-160))"
+}
+exec_sut "$G2" PATH="$w/gh-up:$PATH" "$QGW" QG_NOREC="$P2"
+verdict "one pull request head with no record branch -> refused" 1
+said "the missing record is named" "there is no branch audit/$P2"
 exec_sut "$G2" PATH="$w/gh-down:$PATH"
 verdict "GitHub API unreadable (gh errors, the real record judge) -> refused" 1
-exec_sut "$G2" PATH="$w/gh-down:$PATH" GH_TOKEN= GITHUB_REPOSITORY=
-verdict "no token and no repository name in the environment (real record judge) -> refused" 1
+said "the API error is named" "GitHub API error"
+exec_sut "$G2" PATH="$w/gh-up:$PATH" "$QGW" GITHUB_REPOSITORY=
+verdict "no repository name in the environment (real record judge) -> refused" 1
+said "the missing repository name is named" "GITHUB_REPOSITORY is not owner/name"
+rm -f "$ROOT/.github/policy/audit-writers.json"; exec_sut "$G2" PATH="$w/gh-up:$PATH" "$QGW"
+verdict "the writers policy missing from the tree (real record judge) -> refused" 1
+said "the missing policy is named" "writers policy"
 
 # the script reads git objects only
 if [ -f "$sut" ]; then

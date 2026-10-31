@@ -586,6 +586,7 @@ mappings:
   - ac: REQ-DEP-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+      - { type: shell-test, ref: "bin/check-file-allowlist-test.sh" }
   - ac: REQ-DEP-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }

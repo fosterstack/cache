@@ -263,6 +263,9 @@ jobs:
   allowlist:
     name: allowlist
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read   # the merge queue's one lookup of a pull request's head branch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -833,7 +836,7 @@ jobs:
       - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
         run: bash bin/audit-record-test.sh
       - name: the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)
-        run: bash .github/agent/tests/queue-gate-judge-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json queue-gate-judge-test.sh .github/agent/tests/queue-gate-judge-test.sh
       - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
@@ -1035,7 +1038,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - name: the merge queue's base and head are named (REQ-DEP-005-AC2)
         if: github.event_name == 'merge_group'

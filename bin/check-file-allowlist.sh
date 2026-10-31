@@ -368,6 +368,7 @@ SUPPRESSION_PATTERNS=(
 # or failed lookup stops the check: there is no fallback to the queue ref's name.
 if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
   _q="${GITHUB_QUEUE_REF#refs/heads/}"
+  # accepted: gh-readonly-queue/main/pr-12-<sha>; refused: gh-readonly-queue/main/pr--<sha>, feature/x
   case "$_q" in
     gh-readonly-queue/main/pr-[0-9]*-*) ;;
     *) echo "blocked — not a merge queue ref: ${GITHUB_QUEUE_REF}" >&2; exit 1 ;;
@@ -432,6 +433,13 @@ _resolve_merge_base() {
       _merge_base_err="ALLOWLIST_HEAD_REV is not a commit here"; return 1
     fi
     _head_rev="$_rev"
+  fi
+  if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
+    # a queue entry is judged on its own merge: its first parent is the entry before it in the group, or main
+    if ! _merge_base="$(git rev-parse --verify --quiet "${_head_rev}^1^{commit}")" || [ -z "$_merge_base" ]; then
+      _merge_base=""; _merge_base_err="the queue head $_head_rev has no first parent"; return 1
+    fi
+    return 0
   fi
   if ! [[ "$_base_name" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || [[ "$_base_name" == *..* ]]; then
     _merge_base_err="base ref name '$_base_name' is not usable"; return 1

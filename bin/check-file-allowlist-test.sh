@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-DEP-005-AC1
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
 # scoping of the daily CVE auditor's suppression outputs (.snyk,
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
@@ -169,7 +170,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "3997f1f81d04ff08d1ace8856b3fdeaf80984a15ce0e4a029db5509fe90b9905"
+PINNED_SHA256 = "30d27070677ddcc4050f883c8a6543f236163e3ac39a275a93478f83b118fcc5"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -842,7 +843,9 @@ qrun() {
     QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
     GITHUB_HEAD_REF="" GITHUB_REF_NAME="${qref#refs/heads/}" GITHUB_QUEUE_REF="$qref" GITHUB_REPOSITORY=o/r \
     "$ABS_SCRIPT" 2>&1)"; rc=$?
-  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
+  # QWANT: the refusal text a failing case must print, so it cannot fail for another reason
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } \
+     || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && { [ -z "${QWANT:-}" ] || grep -qF -- "$QWANT" <<<"$out"; }; }; then
     echo "ok:   $desc"; pass=$((pass+1))
   else
     echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
@@ -857,18 +860,67 @@ qrun fail "queue: an auditor/* branch of a fork may not change a suppression fil
 qrun fail "queue: an auditor/* look-alike prefix may not change a suppression file" "$QREF" 'auditorX/x\to/r\n' "$PS"
 qrun pass "queue: an ordinary file passes for any branch" "$QREF" 'feature/x\to/r\n' internal/other.go
 
+# A queue group is a chain of merges: each entry merges one pull request into the entry before it (the first into
+# main), and is judged on its own queue ref under its own pull request's lane. mkgroup <dir> <kind>...: main, then one
+# merge per kind. aud: an auditor pull request changes a suppression file; feat: a pull request changes only code;
+# featps: a pull request that is not an auditor's changes a suppression file (.snyk)
+mkgroup() {
+  local d="$1" k n=0; shift
+  mkrepo "$d"
+  ( cd "$d" && g checkout -q -b queue refs/remotes/origin/main
+    for k in "$@"; do
+      n=$((n+1)); g checkout -q -b "pr$n" refs/remotes/origin/main
+      case "$k" in
+        aud) echo '{"a":2}' > .auditor/panel-state.json ;;
+        feat) mkdir -p internal && echo 'package y' > internal/other.go ;;
+        featps) echo 'ignore: {x: 1}' > .snyk ;;
+      esac
+      g add -A && g commit -qm "pr$n" && g checkout -q queue && g merge -q --no-ff -m "entry$n" "pr$n" || exit 1
+    done ) || { echo "mkgroup failed: $*" >&2; exit 1; }
+}
+G="$TMPROOT/grp"; ALLPATHS=("$PS" .snyk internal/other.go)
+R_SAVED="$R"; R="$G"
+mkgroup "$G" aud feat
+qrun pass "queue group: a code entry behind an auditor entry is judged on its own change" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" feat aud
+qrun pass "queue group: an auditor entry behind a code entry may change a suppression file" \
+    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
+qrun fail "queue group: the same auditor entry named as a feature branch may not" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" feat featps
+qrun fail "queue group: a non-auditor entry that changes a suppression file is refused" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" aud featps
+qrun fail "queue group: the same change behind an auditor entry is refused too" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" featps aud
+qrun pass "queue group: an earlier entry's change is that entry's own run, not this one's" \
+    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
+rm -rf "$G"; mkdir -p "$G/.auditor"
+( cd "$G" && g init -q -b main . && echo '{"a":1}' > "$PS" && g add -A && g commit -q -m root \
+    && g update-ref refs/remotes/origin/main HEAD )
+qrun fail "queue group: a head with no first parent is refused" "$QREF" 'feature/x\to/r\n' "$PS"
+R="$R_SAVED"
+
 QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" \
     "$QREF" '' internal/other.go
-QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" "$QREF" '' "$PS"
-qrun fail "queue: an empty answer is a failure" "$QREF" '' "$PS"
-qrun fail "queue: two answers are ambiguous, a failure" "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' "$PS"
-qrun fail "queue: an answer with no repository is a failure" "$QREF" 'auditor/x\t\n' "$PS"
-qrun fail "queue: an answer with no branch is a failure" "$QREF" '\to/r\n' "$PS"
-qrun fail "queue: a queue ref with no pull request number is refused" \
-    "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' "$PS"
-qrun fail "queue: a queue ref with a non-numeric pull request number is refused" \
-    "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' "$PS"
-qrun fail "queue: a ref that is not a queue ref is refused" "refs/heads/feature/x" 'auditor/x\to/r\n' "$PS"
+# each refusal runs on an ordinary file, which every lane allows, and must print its own reason
+QWANT="could not be looked up" QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" \
+    "$QREF" 'auditor/x\to/r\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an empty answer is a failure" "$QREF" '' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: two answers are ambiguous, a failure" \
+    "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an answer with no repository is a failure" \
+    "$QREF" 'auditor/x\t\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an answer with no branch is a failure" \
+    "$QREF" '\to/r\n' internal/other.go
+QWANT="not a merge queue ref" qrun fail "queue: a queue ref with no pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' internal/other.go
+QWANT="no pull request number" qrun fail "queue: a queue ref with a non-numeric pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' internal/other.go
+QWANT="not a merge queue ref" qrun fail "queue: a ref that is not a queue ref is refused" \
+    "refs/heads/feature/x" 'auditor/x\to/r\n' internal/other.go
 qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" \
     "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
 qrun pass "queue: one lookup" "$QREF" 'auditor/x\to/r\n' "$PS"

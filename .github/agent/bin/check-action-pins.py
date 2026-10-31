@@ -242,7 +242,7 @@ GATE_WORKFLOW_SHA256 = frozenset({
     # main's gate workflow (the passed-audit record judge and writer)
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",
     # the gate workflow with the merge queue judge (REQ-DEP-005-AC3, cache#542)
-    "22d1d46b99f205b8b7d9903c5f4b93578d83556eb02defbf02366ed4a4b954a4",
+    "bbd7e3512a0dbabe4a2b5185c7c7bc2fa8068849cc44051e6a833e92a89a9f3a",
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
