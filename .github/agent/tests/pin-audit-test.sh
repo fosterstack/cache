@@ -2049,6 +2049,31 @@ finally:
     inv._JOB_RUNS[0] = []
 PY
 
+CASE="T6 file memo keeps every read-set: two trees that differ only in a callee, read alternately, hit the caller from the second round on"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %s\n"
+trees = [{".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": callee % n} for n in ("one", "two")]
+walks = []
+real_found = inv._file_found
+inv._file_found = lambda path, text: (walks.append(path), real_found(path, text))[1]
+try:
+    for t in trees:                   # warm-up: each tree once; the caller is walked once per read-set
+        inv.inventory(dict(t))
+    assert walks.count(".github/workflows/caller.yml") == 2, walks
+    walks.clear()
+    for _ in range(2):
+        for t in trees:
+            inv.inventory(dict(t))
+finally:
+    inv._file_found = real_found
+assert walks == [], walks      # then every file of every tree is answered by the memo: no walk at all
+PY
+
 bg_collect
 CASE="background checks: the three long cases were each started once and each reported once"
 check test "$BG_N" -eq 3

@@ -757,7 +757,7 @@ def _walk(node, out, labels, path="", in_step=False):
 
 
 _MEMO_ON = [True]
-_FILE_MEMO = {}     # (path, sha256 of the text) -> (the items _file_found made, the reads they rest on)
+_FILE_MEMO = {}     # (path, sha256 of the text) -> a list of (the items _file_found made, the reads they rest on), one per different set of reads
 _READS = []         # the other files the walk of the current file looked at: (name, is it a workflow of the tree, sha256 of its text), as _exempt_local_call saw them
 
 
@@ -928,13 +928,15 @@ def inventory(files):
     _FILES[0] = files
     for path, text in sorted(files.items()):
         mk = (path, hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()) if _MEMO_ON[0] else None
-        hit = _FILE_MEMO.get(mk) if mk is not None else None
-        if hit is not None and all(_read_of(r[0]) == r for r in hit[1]):      # the reads the walk made are re-asked of THIS tree: the same answers, the same items
+        known = _FILE_MEMO.get(mk, []) if mk is not None else []
+        # the reads the walk made are re-asked of THIS tree: the same answers, the same items
+        hit = next((m for m in known if all(_read_of(r[0]) == r for r in m[1])), None)
+        if hit is not None:
             found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
             found = _file_found(path, text)
-            if mk is not None:                              # a raise left nothing here: only a completed file is remembered
-                _FILE_MEMO[mk] = ([copy.copy(it) for it in found], tuple(_READS))
+            if mk is not None:                              # a raise left nothing here: only a completed file is remembered; each different set of reads is kept
+                _FILE_MEMO.setdefault(mk, []).append(([copy.copy(it) for it in found], tuple(_READS)))
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
