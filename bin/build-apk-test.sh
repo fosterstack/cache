@@ -1394,7 +1394,7 @@ rp_callcheck sc-no-unshare "unshare -n" "a melange call without unshare is refus
 rp_callcheck sc-unshare-r "unshare -n" "unshare with another option instead of -n is refused"
 rp_callcheck sc-no-env-i "env and -i" "a melange call without env -i is refused (the environment is not closed)"
 rp_callcheck sc-not-build "melange build" "a melange call that is not the build subcommand is refused"
-rp_callcheck sc-no-namespace "--namespace fosterstack" "a melange call without the namespace is refused (the apk's SBOM reads \
+rp_callcheck sc-no-namespace "--namespace fosterstack" "a melange call without the namespace is refused (SBOM: \
 unknown)"
 rp_callcheck sc-other-namespace "--namespace fosterstack" "a melange call with another namespace is refused"
 rp_callcheck sc-short-runner "not one of the sealed call's options" "a short runner flag is not one of the sealed \

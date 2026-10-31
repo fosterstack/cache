@@ -26,6 +26,7 @@ import sys
 
 # melange v0.61.2 pkg/sbom/package.go:182-183: "Organization: " + the title-cased namespace (fosterstack)
 SUPPLIER = "Organization: Fosterstack"
+NAMESPACE_BASE = "https://fosterstack.invalid/spdx/go-modules/"
 
 
 def refuse(msg):
@@ -115,10 +116,12 @@ def main():
     ap.add_argument("--buildinfo", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--name", default="fscache")    # the package the binary ships in (fscache or fscache-fips)
-    ap.add_argument("--version", default=None)      # its apk version, e.g. 0.3.0 or 0.3.0_rc1; the recipes say epoch: 0
+    ap.add_argument("--version", default=None)      # its apk version, e.g. 0.3.0 or 0.3.0_rc1
+    # The root version is VERSION-r0: the recipes say epoch: 0, and the build driver expects the apk as VERSION-r0 (its
+    # apk path, line 174) and fails if melange wrote any other.
     a = ap.parse_args()
-    # The build helper's VERSION_GRAMMAR (X.Y.Z or X.Y.Z-rcN, no leading zeros) becomes, in its apk form, X.Y.Z or
-    # X.Y.Z_rcN (and 0.0.0_rc1); the version pattern below admits those and nothing the grammar refuses.
+    # Every apk form of the build helper's VERSION_GRAMMAR (X.Y.Z, X.Y.Z_rcN, 0.0.0_rc1) fits the version pattern below.
+    # The pattern is a word check and also admits e.g. 01.2.3; the driver checks the grammar before it calls this tool.
     # name: fscache-fips (refused: FSCACHE); version: 0.3.0_rc1 (refused: 0.3.0+meta)
     name_ok = re.fullmatch(r"[a-z0-9][a-z0-9._-]*", a.name)
     version_ok = a.version is None or re.fullmatch(r"[0-9][A-Za-z0-9._]*", a.version)
@@ -135,6 +138,7 @@ def main():
                 p, v, "absent" if p not in prov else "recorded as " + prov[p], a.provenance))
     if bad:
         refuse("module list does not match the binary:\n  " + "\n  ".join(bad))
+    ident = a.name if a.version is None else "%s@%s-r0" % (a.name, a.version)   # one URI per document (SPDX 2.3)
     root = {"SPDXID": "SPDXRef-fscache", "name": a.name, "supplier": SUPPLIER,
             "downloadLocation": "NOASSERTION", "filesAnalyzed": False}
     if a.version is not None:
@@ -152,7 +156,7 @@ def main():
     rels += [{"spdxElementId": "SPDXRef-fscache", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": m["SPDXID"]}
              for m in mods]
     doc = {"spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
-           "name": "fscache-go-modules", "documentNamespace": "https://fosterstack.invalid/spdx/fscache-go-modules",
+           "name": "fscache-go-modules", "documentNamespace": NAMESPACE_BASE + ident,
            "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": [SUPPLIER,
                                                                                 "Tool: go-module-sbom"]},
            "packages": [root] + mods, "relationships": rels}
