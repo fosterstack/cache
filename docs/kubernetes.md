@@ -549,7 +549,9 @@ file that is missing, unreadable, not PEM, or a key that does not match the
 certificate, stops the start with a message naming the variable and the path,
 before anything under the data directory is touched. Each file may be at most
 1 MiB, and each must be a regular file (a symlink to one, as in a Secret
-volume, is fine).
+volume, is fine). Issue the server certificate from your organization's approved
+certificate authority; a self-signed certificate is a finding under common
+platform assessments.
 
 Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
 read-only. Both files must be readable by the container's non-root user
