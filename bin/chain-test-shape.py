@@ -798,7 +798,7 @@ NS_SHA = {
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
-    "bin/build-apk-helper.py": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
+    "bin/build-apk-helper.py": "e1f6f1fe46297b2bbe6210904a6436f629c11aebc889fbbb2e69016b3bb8ef20",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
@@ -806,12 +806,12 @@ NS_SHA = {
     "bin/chain-verify.py": "8913741c8e9470165392fe96c72e4611d96507423a8c6e7bbf625262df77a50c",
     "bin/chain_common.py": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
     "bin/chain_hostile.py": "377ac8e8f5440fb51616ae937416ba0a206c70bce93999270c2df5cfb9c92d0c",
-    "bin/chain_items.py": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6",
+    "bin/chain_items.py": "a65ba25d82a27685b81f337bc977ac28396a06b2f69b44fbd3d2ac9f5b5af7db",
     "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
     "bin/install-host-bwrap.py": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
-    "bin/oci-digest.py": "4619886c66e7ccb9d361e221748bb8c195c18fc8acb55c178b7321062361a081",
+    "bin/oci-digest.py": "876eedcb5b1eb7fb0c98a68e3d984ae2221be4600ea8063b79f5b0177f5b38ec",
     "bin/rebuild-records-digests.sh": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49",
     "bin/vex-index.py": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d",
 }
@@ -924,6 +924,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '|| { echo "assemble-image.sh: the archive does not satisfy the base lock $baselock (see above)" >&2; exit 2; '
         '}',
         '"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" "$pkg" "$apkver"',
+        '"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"',
         'workdir=$WORKDIR',
         'lock=$workdir/.assemble.lock',
         '[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" '
@@ -967,7 +968,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'host\' "$tmp/apko.err" 2>/dev/null && probe=0 || probe=',
         '[ -z "$probe" ] || "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1 || probe=$?',
         '"$PY3" -I -B bin/oci-digest.py apko-verdict lock "$rc" "$probe"',
-        '"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" || { echo "assemble-image.sh: the full '
+        '"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg,fscache-baselayout" || { echo '
+        '"assemble-image.sh: the full '
         'lock\'s package entries differ from the base lock (see above);" "not building" >&2; exit 2; }',
         '"$BASHBIN" bin/apko-lock.sh arch-check "$full" || { echo "assemble-image.sh: the full lock resolves '
         'different versions per architecture (see above);" "not building" >&2; exit 2; }',

@@ -112,7 +112,8 @@ idxrec=build/locks/archive-index.sha256
 "$PY3" -I -B bin/oci-digest.py check-index "$idxrec" "$archive" >/dev/null || exit 2
 "$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" --index-record "$idxrec" \
   || { echo "assemble-image.sh: the archive does not satisfy the base lock $baselock (see above)" >&2; exit 2; }
-for own in "$pkg" fscache-baselayout; do "$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" "$own" "$apkver"; done
+"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" "$pkg" "$apkver"
+"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"
 workdir=$WORKDIR
 lock=$workdir/.assemble.lock
 [ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" \

@@ -1,4 +1,6 @@
 [
+ "apk-baselayout-aarch64",
+ "apk-baselayout-x86_64",
  "apk-fips-aarch64",
  "apk-fips-x86_64",
  "apk-standard-aarch64",
@@ -20,6 +22,7 @@
  "image-production",
  "image-production-manifest-amd64",
  "image-production-manifest-arm64",
+ "inputs-manifest-baselayout",
  "inputs-manifest-fips",
  "inputs-manifest-standard",
  "lock-fips",

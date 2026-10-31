@@ -1729,7 +1729,7 @@ beh_assemble() { # beh_assemble TAGNAME SCRIPT MODE VERSIONTAG
     bad "AC9 $t assemble $v: rc=$rc digests.json differs from the oracle (got '${gd:0:100}')"
   fi
   if [ "$rc" = 0 ] && [ "$gi" = "$(oracle expect "$d" assemble items "$v")" ] && [ -n "$gi" ]; then
-    ok "AC9 $t assemble $v: items.json is exactly the oracle's 29 items"
+    ok "AC9 $t assemble $v: items.json is exactly the oracle's 32 items"
   else
     bad "AC9 $t assemble $v: rc=$rc items.json differs from the oracle (got '${gi:0:100}')"
   fi

@@ -5,7 +5,7 @@
 #   build-baselayout-apk.sh --arch x86_64|aarch64 --version X.Y.Z|X.Y.Z-rcN|0.0.0-rc.1 --source-dir DIR --repo DIR
 #                           --keyring FILE --melange-lock FILE --out DIR [--render-dir DIR] [--apk-cache-dir DIR]
 #
-# The sibling of bin/build-apk.sh for the one package that holds only files. The recipe is
+# The sibling of the apk driver for the one package that holds only files. The recipe is
 # build/melange-baselayout.yaml (fixed: there is no --recipe option); it builds no Go, so there is no --variant and
 # no --go-archive. The sealed call is the same: the helper bin/build-apk-helper.py judges the array before it runs
 # (sealed-call: the bubblewrap runner, --namespace fosterstack, the cut network namespace, the closed environment of
@@ -15,7 +15,7 @@
 # bin/build-apk-helper.py, which prints the refusal and sets the exit status. Run it from the repository root.
 #
 # Environment: SOURCE_DATE_EPOCH (digits) is required: the commit time of the tagged commit, which the stage script
-# gets from bin/build-apk.sh --print-source-date-epoch. Refused: APK_RELEASE_SIGNING_KEY defined, GOPROXY other than
+# gets from the apk driver's --print-source-date-epoch. Refused: APK_RELEASE_SIGNING_KEY defined, GOPROXY other than
 # off, HTTP(S)_PROXY / ALL_PROXY defined. There is no --signing-key: the apk is signed with the committed, non-secret
 # assembly key build/keys/assembly.rsa and nothing else. The package is assembled into the images only, never released.
 #
@@ -30,7 +30,7 @@
 #      OUT/inputs-manifest-baselayout.json (bin/apk-tool.py).
 #
 # Exit codes: 0 ok | 1 the build or a post-build check failed | 2 refused (no build tool was run)
-#   | 4 a network attempt was made inside the sealed melange call (rule 40, as bin/build-apk.sh).
+#   | 4 a network attempt was made inside the sealed melange call (rule 40, as the apk driver).
 set -euo pipefail
 
 # Fixed locations: a production call never resolves python3, git, sudo, unshare or melange through the caller's search

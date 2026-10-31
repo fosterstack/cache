@@ -464,7 +464,7 @@ def go_verdict(rc, go_out, buildinfo, go_err):
                       "the recorded build information is not the binary's own", 1)
 
 
-# ---- the base-layout driver (bin/build-baselayout-apk.sh): the same decisions, a smaller set of options ----
+# ---- the base-layout driver: the same decisions, with a smaller set of options ----
 
 BASELAYOUT_PREFIX = "build-baselayout-apk.sh: "
 BASELAYOUT_OPTIONS = ("--arch", "--version", "--source-dir", "--repo", "--keyring", "--melange-lock", "--out",
