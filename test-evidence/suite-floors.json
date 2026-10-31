@@ -5,7 +5,7 @@
  "auditor-labels-test.sh": 22,
  "auditor-matrix-test.sh": 313,
  "branch-sweep-test.sh": 156,
- "chain-bind-test.sh": 209,
+ "chain-bind-test.sh": 216,
  "chain-build-admit-test.sh": 148,
  "chain-build-wiring-test.sh": 1050,
  "chain-check-scripts-test.sh": 310,
