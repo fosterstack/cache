@@ -355,8 +355,10 @@ named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/
 wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
 check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
-check("the real file's CSAF passes the loader's checks; its one statement stays scoped to the jwt/v4 module",
-      bool(google_validate(rc)) and rc["product_tree"].get("relationships") and all(r["product_reference"] == "component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@" for r in rc["product_tree"].get("relationships", [])))
+check("the real file's CSAF passes the loader's checks; its package statements stay scoped to the jwt/v4 module, busybox 1.37.0 and the Go standard library 1.27.2",
+      bool(google_validate(rc)) and rc["product_tree"].get("relationships")
+      and {r["product_reference"] for r in rc["product_tree"].get("relationships", [])}
+      == {"component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@", "component-busybox@1.37.0", "component-stdlib@1.27.2"})
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -597,10 +599,24 @@ check("G a Go module and a generic package of the same last segment stay distinc
 gj = V.inspector({"statements": [scoped("CVE-G4", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"]
 check("G the Inspector rule names the Go module by its full path", [f["filterCriteria"]["vulnerablePackages"] for f in gj] == [[{"name": {"comparison": "EQUALS", "value": "github.com/golang-jwt/jwt/v4"}}]], gj)
 sts = real["statements"]
-check("G the published document holds exactly one statement, CVE-2024-51744", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744"])
-oci = [p_ for s_ in sts for p_ in s_["products"]]
-check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
-      oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
+check("G the published document (version 8) holds these five statements: the jwt/v4 one, the three busybox ones kept until v0.3.0, the Go standard library one",
+      [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744", "CVE-2025-60876", "CVE-2025-46394", "CVE-2024-58251", "CVE-2026-111943"], [s_["vulnerability"]["name"] for s_ in sts])
+SUBS = {"CVE-2024-51744": JWT, "CVE-2025-60876": "pkg:generic/busybox@1.37.0", "CVE-2025-46394": "pkg:generic/busybox@1.37.0",
+        "CVE-2024-58251": "pkg:generic/busybox@1.37.0", "CVE-2026-111943": "pkg:golang/stdlib@1.27.2"}
+check("G every product of every statement names exactly its one subcomponent (jwt/v4, busybox 1.37.0, or the Go standard library 1.27.2), and nothing else",
+      all(all([x["@id"] for x in p_.get("subcomponents", [])] == [SUBS[s_["vulnerability"]["name"]]] for p_ in s_["products"]) for s_ in sts), sts)
+check("G the document's version is 8", real["version"] == 8, real["version"])
+check("G each busybox statement says it is retired when v0.3.0 is published (the rescan stops scanning v0.2.2 then)",
+      all("Retire this statement when v0.3.0 is published" in s_["impact_statement"] for s_ in sts if "busybox" in SUBS[s_["vulnerability"]["name"]]))
+check("G the Go standard library is the package named stdlib, with its version",
+      V._scopes(scoped("CVE-G11", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.2"}]}]), [D("1")]) == [([D("1")], ("stdlib", "1.27.2"))])
+check("G ...and unversioned it is every version of the standard library",
+      V._scopes(scoped("CVE-G12", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib"}]}]), [D("1")]) == [([D("1")], ("stdlib", ""))])
+for sub_ in ("pkg:golang/Stdlib", "pkg:golang/STDLIB@1.27.2", "pkg:golang/stdlib?goos=linux", "pkg:golang/stdlib#crypto/x509", "pkg:golang/stdlib/crypto", "pkg:golang/stdlib%2Fcrypto", "pkg:golang/stdlib%401.27.2"):
+    check("G only the exact name stdlib is the Go standard library: " + sub_, refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+sg = V.inspector({"statements": [scoped("CVE-G13", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.2"}]}])]}, IMAGES, "v0.3.0")["filters"]
+check("G the Inspector rule names the standard library as stdlib at 1.27.2",
+      [f["filterCriteria"]["vulnerablePackages"] for f in sg] == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "1.27.2"}}]], sg)
 for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4", "pkg:generic/busybox%401.37.0", "pkg:generic/busybox@1.37.0%2F1", "pkg:golang/github.com/golang-jwt/jwt%40v4"):
     check("G a subcomponent that is not a Go module path nor a plain generic name stops generation: " + sub_, refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
 check("G a double-encoded delimiter is decoded once and stays a literal name (never the Go module it spells after a second decoding)",
@@ -612,8 +628,6 @@ check("G an encoded slash in a Go module path (host or later segment) stops gene
       all(refused({"@id": OURS, "subcomponents": [{"@id": x}]}) for x in ("pkg:golang/github%2Ecom%2Fgolang-jwt/jwt/v4", "pkg:golang/github.com/golang-jwt%2Fjwt/v4")))
 check("G the empty version leaves no stray space in the published text",
       "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
-check("G the published document no longer describes a :debug image or busybox",
-      "busybox" not in json.dumps(real).lower() and ":debug" not in json.dumps(real) and "distroless" not in json.dumps(real).lower())
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
 check("G the busybox fixture keeps the three retired statements for the generator's tests",
       sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])
