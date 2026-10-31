@@ -235,8 +235,9 @@ def judge_db(d):
         bad.append("the pip groups are not exactly pydantic then pip-minor-patch, in that order")
     if pg.get("pydantic") != {"patterns": ["pydantic", "pydantic-core"]}:
         bad.append("the pip pydantic group is not exactly pydantic and pydantic-core")
-    if pg.get("pip-minor-patch") != {"update-types": ["minor", "patch"]}:
-        bad.append("the pip-minor-patch group is not exactly update-types minor and patch (a major never joins a group; no patterns)")
+    # exclude-patterns ["pip"]: pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any other pin), so a bump of pip must not join a group
+    if pg.get("pip-minor-patch") != {"exclude-patterns": ["pip"], "update-types": ["minor", "patch"]}:
+        bad.append("the pip-minor-patch group is not exactly update-types minor and patch with exclude-patterns pip (a major never joins a group; no patterns)")
     return bad
 
 def judge_rest():
@@ -421,8 +422,10 @@ mut_db("pip-minor-patch takes a major", "pip-minor-patch group is not exactly up
        lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
 mut_db("pip-minor-patch gets patterns", "pip-minor-patch group is not exactly update-types minor and patch",
        lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update(patterns=["*"]))
-mut_db("pip-minor-patch gets exclude-patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+mut_db("pip-minor-patch exclude-patterns changes", "pip-minor-patch group is not exactly update-types minor and patch",
        lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"exclude-patterns": ["anthropic"]}))
+mut_db("pip-minor-patch loses its exclude-patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("exclude-patterns"))
 mut_db("the pydantic group changes", "pip pydantic group is not exactly pydantic and pydantic-core",
        lambda d: eco(d, "pip")["groups"]["pydantic"].update(patterns=["pydantic"]))
 
