@@ -286,8 +286,9 @@ def audit(wf):
     res("environment" not in qj and not is_agent(qj), "queue-judge has no environment (it holds no secret)")
     res(qj.get("permissions") == {"contents": "read", "pull-requests": "read"},
         "queue-judge permissions are contents: read + pull-requests: read only (%r)" % qj.get("permissions"))
-    res(wf["ci.yml"]["jobs"]["allowlist"].get("permissions") == {"contents": "read", "pull-requests": "read"},
-        "the allowlist job holds contents: read + pull-requests: read only")
+    res(wf["ci.yml"].get("permissions") == {"contents": "read", "pull-requests": "read"}
+        and "permissions" not in wf["ci.yml"]["jobs"]["allowlist"],
+        "ci.yml holds contents: read + pull-requests: read on top and the allowlist job holds no block of its own")
     res(wf["ci.yml"]["jobs"]["dependency-review"].get("permissions") == {"contents": "read"},
         "dependency-review holds contents: read only (no pull-requests: write)")
     res("secrets." not in qjtxt and "create-github-app-token" not in qjtxt and "AUDITOR_APP" not in qjtxt

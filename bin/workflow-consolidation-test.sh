@@ -105,7 +105,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", {"contents": "read", "pull-requests": "read"}, None, None, None),
+    "allowlist": ("allowlist", None, None, None, None),
     "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
     "drift-fixer-dispatch": ("dispatch the fixer for required-check drift",
                              {"contents": "read", "issues": "write"}, "agent", None,
@@ -124,7 +124,7 @@ for jid, (name, perms, env, needs, cond) in MOVED.items():
         bad.append("job %s changed: %s" % (jid, got))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
-if d.get("permissions") != {"contents": "read"}:
+if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
 # the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
 LIVE = {"group": "vex-live-test", "cancel-in-progress": "false"}
@@ -180,6 +180,8 @@ case_ci guard-widened            bad "d['jobs']['required-check-guard']['permiss
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
+case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
+case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
 case_ci live-test-cancels        bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
