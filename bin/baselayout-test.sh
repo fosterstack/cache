@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-IMAGE-001-AC14
 # Tests for 0710 item 1: the images carry our own base-layout package and no CA bundle
 # (docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1). Offline: no apko and no melange run here. The recipe's own
 # install steps are run into a temporary folder, so the package's file list is real; the real apk and image listing are

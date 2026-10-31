@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-IMAGE-001-AC12, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
+# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-IMAGE-001-AC12, REQ-IMAGE-001-AC15, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
 # Tests of the PR: apko configs, image assembly, lock and sealed-build proofs, OCI index digest.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
