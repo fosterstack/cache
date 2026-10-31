@@ -22,6 +22,13 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
 
+# AUDIT_DEADLINE is assumed, not read: pin-audit.py's --base deadline (cache#788), not in chain-v030's pin-audit.py yet
+# (until then the audit half is unbounded; PRs into chain-v030 take 77-174 s). SETUP: two checkouts, measured <= 8 s.
+# BOUND + AUDIT_DEADLINE + SETUP must fit timeout-minutes, so a slow age check ends with a line, not a silent cancel.
+BOUND = 540
+AUDIT_DEADLINE = 600
+SETUP = 60
+
 CANONICAL_RUNS = {
     'image-signatures':
         'set -euo pipefail\n'
@@ -38,7 +45,8 @@ CANONICAL_RUNS = {
         'HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"\n'
         ': "${BASE_SHA:?no base commit to compare: this check fails}" \\\n'
         '  "${HEAD_SHA:?no head commit to compare: this check fails}"\n'
-        'python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \\\n'
+        "# 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop\n"
+        'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \\\n'
         '  --head "$HEAD_SHA" || status=1\n'
         "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
         'exceptions=trusted/.github/supply-chain-exceptions.json\n'
@@ -111,6 +119,10 @@ def judge_wf(d, real=False):
     if int(str(j.get("timeout-minutes", "999"))) > 20:
         bad.append("pin-age has no bounded timeout-minutes (<= 20): the 90-day history scan of pin-audit needs the room until it is made cheaper")
     runs = "\n".join(str(s.get("run", "")) for s in j.get("steps", []))
+    if f"timeout -v {BOUND} python3 trusted/.github/agent/supply-chain/pin-age-check.py" not in runs:
+        bad.append("pin-age's age check has no time bound: a slow check ends in a silent cancel")
+    if BOUND + AUDIT_DEADLINE + SETUP > 60 * int(str(j.get("timeout-minutes", "0"))):
+        bad.append("the age check's bound and pin-audit's 600 s (cache#788) do not fit the job")
     for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
             bad.append(f"pin-age does not run {prog} {flag} (the age check and the audit of what the PR moves)")
@@ -429,6 +441,74 @@ mut_wf("PYTHONPATH in the script", "test-only flag", lambda d: [x.update(run="ex
 mut_wf("status=0 before the exit", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("exit $status", "status=0\nexit $status")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("--min-days 0 is added", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("--root pr", "--min-days 0 --root pr", 1)) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("a duplicated --base argument", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("--report-only", "--base ${{ github.event.pull_request.head.sha }} --report-only")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+# the age check's wall-clock bound (cache#788 follow-up): the line, the budget, and a live run of the step's own text
+AGE = "timeout -v 540 "
+mut_wf("the age check loses its timeout prefix", "no time bound",
+       lambda d: [x.update(run=x["run"].replace(AGE, "", 1)) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("the age check's timeout loses -v", "no time bound",
+       lambda d: [x.update(run=x["run"].replace(AGE, "timeout 540 ", 1))
+                  for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("pin-age timeout 19 minutes does not fit 540 + 600 + 60", "do not fit the job",
+       lambda d: J(d, "pin-age").update({"timeout-minutes": 19}))
+
+import subprocess, tempfile, time
+
+def live_pin_age(age_exit=None, bound="1"):
+    """Run the pin-age step's own run text under bash: the 540 replaced by `bound`, the two ${{ }} expressions
+    by b and h, a stub python3 first on PATH.
+    -> (returncode, stderr, seconds, the stub's log) or a string naming what could not be set up."""
+    steps = [x["run"] for x in real_wf["jobs"]["pin-age"]["steps"] if "pin-age-check" in str(x.get("run", ""))]
+    if len(steps) != 1 or steps[0].count(AGE) != 1:
+        return "the step does not hold `timeout -v 540 ` exactly once"
+    text = (steps[0].replace(AGE, f"timeout -v {bound} ")
+            .replace("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}", "b")
+            .replace("${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}", "h")
+            .replace("${{ github.event.pull_request.base.sha }}", "b")
+            .replace("${{ github.event.pull_request.head.sha }}", "h"))
+    with tempfile.TemporaryDirectory() as d:
+        stub = os.path.join(d, "stub"); os.mkdir(stub)
+        log = os.path.join(d, "log")
+        with open(os.path.join(stub, "python3"), "w") as f:
+            f.write('#!/bin/sh\necho "$1" >> "$STUB_LOG"\ncase "$1" in\n'
+                    ' *pin-age-check.py) [ -n "$AGE_EXIT" ] && exit "$AGE_EXIT"; exec sleep 30;;\n *) exit 0;;\nesac\n')
+        os.chmod(os.path.join(stub, "python3"), 0o755)
+        env = {"PATH": stub + ":/usr/bin:/bin", "RUNNER_TEMP": d, "STUB_LOG": log}
+        if age_exit is not None:
+            env["AGE_EXIT"] = str(age_exit)
+        t0 = time.time()
+        try:
+            p = subprocess.run(["bash", "-c", text], env=env, cwd=d, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return "the step did not end within 30 s (the bound did not stop the sleeping age check)"
+        return p.returncode, p.stderr, time.time() - t0, (open(log).read() if os.path.exists(log) else "")
+
+r = live_pin_age()
+if isinstance(r, str):
+    result(False, "live: a slow age check is stopped by its bound: " + r)
+else:
+    rc, err, secs, log = r
+    ok = rc == 1 and "timeout: sending signal TERM to command" in err and secs < 10 and "pin-audit.py" in log
+    result(ok, "live: a slow age check is stopped by `timeout -v`: exit 1, the timeout line on stderr, "
+                "within 10 s, and pin-audit.py still ran"
+           + ("" if ok else f"; saw rc={rc} secs={secs:.1f} stderr={err.strip()[:120]!r} log={log.strip()[:80]!r}"))
+r = live_pin_age(age_exit=1)
+if isinstance(r, str):
+    result(False, "live: an age check that fails by itself shows no timeout line: " + r)
+else:
+    rc, err, secs, log = r
+    ok = rc == 1 and "timeout:" not in err and "pin-audit.py" in log
+    result(ok, "live: an age check that exits 1 by itself fails the job with no timeout line, "
+                "and pin-audit.py still ran"
+           + ("" if ok else f"; saw rc={rc} stderr={err.strip()[:120]!r} log={log.strip()[:80]!r}"))
+r = live_pin_age(age_exit=0)
+if isinstance(r, str):
+    result(False, "live: an age check that exits 0 gives a green job: " + r)
+else:
+    rc, err, secs, log = r
+    ok = rc == 0 and "timeout:" not in err and "pin-audit.py" in log
+    result(ok, "live: an age check that exits 0 gives exit 0 with no timeout line, "
+                "and pin-audit.py ran (the harness can give a green job)"
+           + ("" if ok else f"; saw rc={rc} stderr={err.strip()[:120]!r} log={log.strip()[:80]!r}"))
 mut_wf("--report-only on the daily audit", "differ from the ratified text", lambda d: [x.update(run=x["run"] + " --report-only") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a secret indexed with brackets", "indexes secrets", lambda d: [x["env"].update(GH_TOKEN="${{ secrets['PAT'] }}") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a step sets shell", "sets shell", lambda d: [x.update(shell='bash -c "true" {0}') for x in J(d, "pin-age")["steps"] if "run" in x][-1:])

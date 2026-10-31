@@ -63,7 +63,8 @@ jobs:
           HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
           : "${BASE_SHA:?no base commit to compare: this check fails}" \
             "${HEAD_SHA:?no head commit to compare: this check fails}"
-          python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
+          # 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop
+          timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
             --head "$HEAD_SHA" || status=1
           # the advisor's rulings come from the base branch too: a pull request must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
