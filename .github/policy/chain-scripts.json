@@ -83,7 +83,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "45f99586b72c3cc2ae654981e04af9518a7fb03c4c63e5203ec5186e657a23c5",
+      "sha256": "e5e51cab7dda694ee82f5d7f961b1f9a0b09fb4d5d54fe05835f5c5bb2804777",
       "tools": [
         "at",
         "curl",
@@ -519,8 +519,7 @@
         "ssh",
         "bash",
         "source",
-        "script",
-        "go"
+        "script"
       ],
       "runs": [
         "bin/admission-tag-signer.py",
@@ -529,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
+      "sha256": "0a3c90e8451480bab06171bd51ef440e0630c4bfca9747a93c993c38d6194c81",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -539,16 +538,34 @@
           "text": "`git show REV:PATH`",
           "why": "a docstring naming the path operand of git show; nothing is set"
         }
+      ]
+    },
+    {
+      "path": "bin/build-freeze.sh",
+      "tools": [
+        "go",
+        "git",
+        "basename",
+        "mkdir"
       ],
+      "runs": [],
+      "signs": false,
+      "reason": "the freeze job's script: runs the requirements tool's verify-freeze of the tagged tree with the pinned Go for each release baseline file and writes one freeze-ok line per file; it runs only in the freeze job of stage-build.yml, which holds no token and no Witness step",
       "exceptions": [
         {
           "rule": "deny",
-          "line": "GO_BIN = \"/usr/local/bin/fscache-go/bin/go\"",
-          "line_sha256": "b0307bc8efcdaafbd89419f85d8a61f4af5918195bfe389b355fc0db4ba5b41f",
+          "line": "  if GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze \"$base\"; then",
+          "line_sha256": "da68f7b45e5d02dddd1527dae72168f757ac230e5387c702f68dc6dbb7e73838",
           "count": 1,
-          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); admission runs exactly this go for the freeze check, never the runner's"
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go), named in full so the runner's own go is never used; the pin checker refuses a program named by a variable"
+        },
+        {
+          "rule": "script-name",
+          "text": "GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze \"$base\"",
+          "why": "the pinned Go toolchain by its fixed install path, as above; the runner's own go is never used"
         }
-      ]
+      ],
+      "sha256": "cb8b8d388ffe1649747a8ec115e8c622102a1e84334b264e583f2120d95e914a"
     },
     {
       "path": "bin/build-version-check.py",
@@ -2158,7 +2175,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
+      "sha256": "711d7015fd06366e98a3ba5411a5861a1c330428dd6283d134cdeceac4f5862e",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2260,7 +2277,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "f93baf43ec082446bd19ef51194a52becc006e054d66236e6ee05fec977050be",
+      "sha256": "706af8f7098d61743ce12c21cbd6b8163afa0e55d7fee42377bf3405744345e3",
       "exceptions": [
         {
           "rule": "script-name",

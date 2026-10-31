@@ -1878,8 +1878,8 @@ for rel, want in ((kr, kr), ("kr.pub", kr), ("sub/../kr.pub", kr), ("sub/new.txt
     case("abs-file %s" % rel, ["abs-file", rel], out=want, cwd=T)
 
 # ---- exclude-file
-NINE = ["/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json",
-        "/build-in/", "/witness-build/", "/witness-rapk/", "/policy.json"]
+JOB_PATHS = ["/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json",
+        "/build-in/", "/witness-build/", "/witness-rapk/", "/policy.json", "/freeze/"]
 exn = [0]
 
 
@@ -1899,7 +1899,7 @@ def exclude(label, before, expect_same=False, twice=False):
         problems.append("exit %r stderr %r" % (rc, err))
     if lines[:len(old)] != old:
         problems.append("the old lines are not kept in front: %r" % text)
-    problems += ["%s is there %d times" % (p, lines.count(p)) for p in NINE if lines.count(p) != 1]
+    problems += ["%s is there %d times" % (p, lines.count(p)) for p in JOB_PATHS if lines.count(p) != 1]
     if not text.endswith("\n"):
         problems.append("the last pattern has no newline")
     if expect_same and text != before:
@@ -1912,11 +1912,11 @@ def exclude(label, before, expect_same=False, twice=False):
     print(("FAIL exclude-file %s: %s" % (label, "; ".join(problems))) if problems else "ok exclude-file " + label)
 
 
-exclude("makes the file with the nine paths", None, twice=True)
-exclude("keeps what the file held and adds the nine", "# local\nfoo\n", twice=True)
+exclude("makes the file with the ten paths", None, twice=True)
+exclude("keeps what the file held and adds the ten", "# local\nfoo\n", twice=True)
 exclude("a last line without a newline is not glued to the first pattern", "# local excludes")
 exclude("adds only the paths that are missing", "/out/\n/policy.json\n", twice=True)
-exclude("all nine there: the file is not touched", "".join(p + "\n" for p in NINE), expect_same=True)
+exclude("all ten there: the file is not touched", "".join(p + "\n" for p in JOB_PATHS), expect_same=True)
 exclude("a different pattern is not the same line", " /out/\n/out\n/archive/ \n")
 bad_dir = put(T + "/exf/info", "not a directory")
 EXCLUDE_REFUSED = ("the exclude file %s cannot be used: its directory %s is not a directory, "
@@ -2095,15 +2095,16 @@ run_s "${bae[@]}" "$BA" "${ba_args[@]}" --out "$rel_work/out" --render-dir "$rel
 t "770" "relative --out and --render-dir that do not exist yet: made, and melange gets the absolute --out-dir" \
   bash -c "[ '$(rc)' = 0 ] && [ -d '$work/relnew/out' ] && [ -f '$work/relnew/render/melange.yaml' ] \
     && grep -Eq -- '^melange build .*--out-dir $work/relnew/out( |\$)' '$CALLS'"
-# a checkout without .git/info: the script makes the directory; the exclude file takes the job's nine paths once each
+# a checkout without .git/info: the script makes the directory; the exclude file takes the job's ten paths once each
 cp -R "$src" "$work/src-noinfo"; rm -rf "$work/src-noinfo/.git/info"
 run_s "${bae[@]}" "$BA" "${ba_args[@]}" --source-dir "$work/src-noinfo" --out "$(mo)"
-nine="/archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /witness-build/ /witness-rapk/ /policy.json"
-t "770" "a checkout with no .git/info: the build runs and the exclude file holds each of the nine paths once" bash -c "
+ten="/archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /witness-build/ /witness-rapk/ \
+/policy.json /freeze/"
+t "770" "a checkout with no .git/info: the build runs and the exclude file holds each of the ten paths once" bash -c "
   ex='$work/src-noinfo/.git/info/exclude'; [ '$(rc)' = 0 ] \
-    && for p in $nine; do [ \"\$(grep -cx \"\$p\" \"\$ex\")\" = 1 ] || exit 1; done"
-t "770" "after all the builds of this suite the fixture checkout's exclude file holds each of the nine paths once" \
-  bash -c "for p in $nine; do [ \"\$(grep -cx \"\$p\" '$src/.git/info/exclude')\" = 1 ] || exit 1; done"
+    && for p in $ten; do [ \"\$(grep -cx \"\$p\" \"\$ex\")\" = 1 ] || exit 1; done"
+t "770" "after all the builds of this suite the fixture checkout's exclude file holds each of the ten paths once" \
+  bash -c "for p in $ten; do [ \"\$(grep -cx \"\$p\" '$src/.git/info/exclude')\" = 1 ] || exit 1; done"
 
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
