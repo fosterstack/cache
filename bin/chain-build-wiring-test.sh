@@ -253,14 +253,12 @@ jobs:
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
-    environment: agent
     permissions:
       contents: read
       checks: read
-      id-token: write
       issues: write
     steps:
-      - run: echo ${{ secrets.AUDITOR_APP_ID }}
+      - run: echo decide
   patch-notes:
     needs: decide
     if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
@@ -1249,7 +1247,7 @@ gr g16 "005-AC5 an allowed non-chain job (decide) given a job-level uses" '  dec
        '  decide:\n    uses: ./.github/workflows/ci.yml\n    if:' "job-level uses"
 gr g17 "005-AC5 decide with a write it does not need (packages)" 'issues: write' 'issues: write\n      packages: write' "exactly the permissions"
 gr g18 "005-AC5 decide with no permissions block of its own would inherit contents: read only (less than it needs: refused)" \
-       '    permissions:\n      contents: read\n      checks: read\n      id-token: write\n      issues: write\n' '' "exactly the permissions"
+       '    permissions:\n      contents: read\n      checks: read\n      issues: write\n' '' "exactly the permissions"
 gr g19 "005-AC5 a hostile-* job that can write" '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read' \
        '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write' "exactly the permissions"
 gr g21 "005-AC5 build without the gate G (it would run on every push and the daily cron)" "$BUILD_HEAD" "    uses: ./.github/workflows/stage-build.yml" \
@@ -3225,9 +3223,9 @@ expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 shape="$shape_real"
 real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
-if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:479"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
-  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:479) is the ONE finding"
-else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:479 -> ${real_json:0:300}"; fi
+if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:410"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
+  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:410) is the ONE finding"
+else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:410 -> ${real_json:0:300}"; fi
 ns_hits=""
 for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
   ns_hits+=$(grep -rnw "NS_$n" "$root/bin" || true)

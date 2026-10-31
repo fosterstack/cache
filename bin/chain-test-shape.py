@@ -690,7 +690,7 @@ def listed(path, root):
 # and import). A file that does not read as UTF-8
 # text or does not parse is a finding (its children could not be followed). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on
-# the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the second review), and
+# the review list (its witness, go and crane arms run in Build, so a change there gets the second review), and
 # install-build-tools.sh compiles nothing.
 # THE ONE KNOWN FINDING on the real tree: the admission step in bin/build-admit.py runs
 # `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported (rule 1 forbids it) while
@@ -793,11 +793,11 @@ NS_KNOWN_LINES = (      # the two physical lines of the admission step's go run
     ' "verify-freeze", base],',
     '        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))')
 NS_SHA = {
-    "bin/admission-tag-signer.py": "03b66ea50f873de93047bfb4becd305ba6c81fcb1506584990ade81bd16bab40",
+    "bin/admission-tag-signer.py": "e3df12b9a6dc8d83f24572f2c3a5fe9f11db859d435ae630c785fe5d5b3f2145",
     "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
-    "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
+    "bin/build-admit.py": "9efc9ad8b061414ec0ea50c51249f6fdbba04094a8541fc2c312c8f7a0ac1a05",
     "bin/build-apk-helper.py": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
@@ -1173,8 +1173,10 @@ SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": 
              "sign-check": {"digests": "${{ needs.build.outputs.digests }}", "stage": "check", "records": "${{ needs.check.outputs.records }}", "records-arm64": "${{ needs.check.outputs.records-arm64 }}"}}
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
-# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
-# patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
+# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter.
+# decide (no environment, no
+# secret: it cuts no tag since handoff 0713 P8), patch-notes and patch-failed exist today (automatic patch releases,
+# REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
 LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
@@ -1211,7 +1213,7 @@ def names_secrets(obj):
         return any(names_secrets(v) for v in obj)
     return False
 NON_CHAIN = {
-    "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
+    "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
     # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
@@ -1317,10 +1319,10 @@ def graph(path):
         elif spec.get("env"):
             if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
             if names_other_secrets(job, spec.get("secrets", set())):
-                bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's%s)" % (name, "; %s holds only %s" % (name, sorted(spec["secrets"])) if spec.get("secrets") else ""))
+                bad.append("job %s may not use secrets. (only patch-notes holds the App's%s)" % (name, "; %s holds only %s" % (name, sorted(spec["secrets"])) if spec.get("secrets") else ""))
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
-            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+            if names_secrets(job): bad.append("job %s may not use secrets. (only patch-notes holds the App's)" % name)
         if "if" in spec and job.get("if") != spec["if"]:
             bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
         if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:
