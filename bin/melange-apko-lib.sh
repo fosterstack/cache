@@ -14,7 +14,6 @@
 #   build/melange.yaml  build/melange-fips.yaml  build/apko.yaml  build/apko-fips.yaml
 #   build/locks/apko.base.lock.json  build/locks/apko-fips.base.lock.json  build/locks/melange.lock
 #   build/keys/assembly.rsa  build/keys/assembly.rsa.pub  build/keys/release.rsa.pub
-#   docs/apk-signing-key.md  (the existing docs pattern matches it)
 #   bin/build-apk.sh  bin/assemble-image.sh  bin/apko-lock.sh  bin/apk-tool.py  bin/gen-recipes.py  bin/go-module-sbom.py  bin/oci-digest.py  bin/net-probe.py
 #   bin/install-build-tools.sh  bin/release-sign-apks.sh  bin/sealed-proof.sh  bin/lock-proof.sh  bin/refresh-inputs.sh
 #   bin/melange-apko-test.sh
@@ -87,7 +86,8 @@
 #  15  inputs manifest = our melange lock + the .melange.yaml environment read back from the apk; recipe pinned == lock
 #  16  melange/apko installer: checksum pin per tool and arch, verified before extraction, no container digest
 #  17  build-apk.sh takes no --signing-key and refuses a release key in the environment; only the assembly key is passed
-#  18  docs/apk-signing-key.md (yearly rotation, leak procedure, public key, disclosure timing) and the committed keys
+#  18  SECURITY.md, section "The apk release key" (yearly rotation, leak procedure, public key, disclosure timing),
+#      and the committed keys
 #  19  no --ignore-signatures / --allow-untrusted anywhere; keys appended on every tool call
 #  20  apk SBOM by melange, image SBOM by apko --sbom-path, Go module list by go-module-sbom.py; no scanner in the path
 #  21  gen-recipes.py: both recipes are generated from one template; they differ only in name, description and the FIPS lines
