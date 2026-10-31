@@ -1202,6 +1202,13 @@ kfail "an identity instead of a key" \
   "cosign verify-blob --certificate-identity x --certificate-oidc-issuer $ISS $CB" "exactly one key flag"
 kfail "no key flag in the second segment of a pipe" \
   "cosign verify-blob --key <RELEASE_KEY> $CB | cosign verify-blob $CB" "exactly one key flag"
+# H1 (round 5): cosign reads --key, --bundle and --type WITH their value; a key-looking word after a value-taking flag
+# is that value
+NV="has no value: the next word is a flag"
+kfail "--key as the value of --bundle" "cosign verify-blob --bundle --key <RELEASE_KEY> checksums.txt" "$NV"
+kfail "--key as the value of --type" "cosign verify-blob --type --key <RELEASE_KEY> checksums.txt" "$NV"
+kfail "--bundle as the value of --key" "cosign verify-blob --key --bundle checksums.txt.bundle checksums.txt" "$NV"
+kfail "a trailing --bundle" "cosign verify-blob --key <RELEASE_KEY> checksums.txt --bundle" "$NV"
 # G1 (round 4): bash expands an unquoted brace, glob or tilde AFTER the check reads the words, so each is refused by
 # name, listed or not
 BR="a brace, glob or tilde outside quotes"
@@ -1743,7 +1750,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=581
+EXPECT=585
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

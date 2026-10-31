@@ -16,7 +16,7 @@
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {
-    "command": "jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json",
+    "command": "jq -r '.dsseEnvelope.payload | @base64d | fromjson | (.subject[], .predicate.runDetails.byproducts[]) | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json",
     "reason": "needs a release asset file that Check does not hold (Check has Build's records and the candidate image as files; this file is made by Sign or Release and published with the release), so it is not run before release; Release runs it right after publishing (rule 79, open for the owner)"
   },
   {

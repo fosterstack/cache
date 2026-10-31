@@ -38,13 +38,13 @@ cosign verify-blob-attestation --key <RELEASE_KEY> --bundle provenance.bundle.js
 
 ## 3. Digests
 
-The provenance names each image by digest. The first command succeeds only if the subject named image-production is the production image you set; the second lists every image and digest, so you can compare the -fips digest with yours. TO-VERIFY: the field names against a real bundle.
+The provenance names each image by digest. The first command succeeds only if the subject named image-production is the production image you set; the second lists every image and SBOM digest, so you can compare them with yours. TO-VERIFY: the field names against a real bundle.
 
 ```sh
 # Not run before release.
 jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1" and any(.subject[]; .name == "image-production" and (.digest.sha256 as $d | $ref | endswith("@sha256:" + $d)))' provenance.bundle.json
 # Not run before release.
-jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + " sha256:" + .digest.sha256' provenance.bundle.json
+jq -r '.dsseEnvelope.payload | @base64d | fromjson | (.subject[], .predicate.runDetails.byproducts[]) | .name + " sha256:" + .digest.sha256' provenance.bundle.json
 ```
 
 ## 4. The SBOM and the inputs

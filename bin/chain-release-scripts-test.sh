@@ -927,6 +927,18 @@ for label, tail in (("a brace that builds the offline flag twice", "--insecure-i
                     ("a [ ] class", "a[12].json"),
                     ("a tilde", "~/k.pub"), ("a lone closing brace", "}")):
     refused("%s beside the key flag" % label, BRACE, rows=[PK + " " + tail])
+# H1 (round 5): cosign reads --key, --bundle and --type WITH their value; a value word is never a flag, so a
+# key-looking word after a
+# value-taking flag is that flag's value, not the key flag.
+NOVAL = "has no value: the next word is a flag"
+for label, row in (("--key as the value of --bundle",
+                    "cosign verify-blob --bundle --key <RELEASE_KEY> provenance.bundle.json"),
+                   ("--key as the value of --type",
+                    "cosign verify-blob --type --key <RELEASE_KEY> provenance.bundle.json"),
+                   ("--bundle as the value of --key", "cosign verify-blob --key --bundle provenance.bundle.json"),
+                   ("a trailing --bundle", "cosign verify-blob --key <RELEASE_KEY> provenance.bundle.json --bundle"),
+                   ("a trailing --type", "cosign verify-blob --key <RELEASE_KEY> provenance.bundle.json --type")):
+    refused(label, NOVAL, rows=[row])
 # G2 (round 4): a verify form carries only --key, --bundle, --type and --check-claims (with or without =value); every
 # other flag is refused by name.
 CLOSED = "outside the closed set"
@@ -1044,7 +1056,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "448"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "453"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

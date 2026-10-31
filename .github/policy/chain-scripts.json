@@ -1434,7 +1434,7 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "5f2473809dbfb93159a3f1554ed2c07eea200e6c170735efc9801dea921e592d",
+      "sha256": "24aecb5d29474269df191ad98768c709a28212e9b59a7edd6ce8a246e2753f32",
       "tools": [
         "at",
         "command",
@@ -1857,7 +1857,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "eba152e8dd31486aba0f8e724ee56ca960604d7f24f4858428ade1e27dc4c8e1",
+      "sha256": "0d8f75dddb84e9f9cf6ac58fc1e68badc7b179c1464b89bcb3d31b28836d6b78",
       "env_mentions": [
         {
           "name": "ENV",

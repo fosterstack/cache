@@ -45,7 +45,6 @@ lines = text.replace("\r", "").split("\n")
 
 PLACEHOLDERS = {"IMAGE_REF", "IMAGE_REF_FIPS", "TAG", "RELEASE_KEY"}
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
-ALLOWED_FLAGS = ("--key", "--bundle", "--type", "--check-claims")   # the only flags a verify form carries
 # Build-chain tool names that may not appear on the page (AC6). "witness" is allowed on ONE prose line, the pointer.
 CHAIN_TOOLS = ["melange", "apko", "wolfi", "bubblewrap", "bwrap", "docker", "podman", "buildah", "buildkit", "buildx",
                "kaniko", "crane", "oras", "skopeo", "syft", "grype", "trivy", "goreleaser", "ko", "in-toto",
@@ -104,17 +103,47 @@ for p in sorted(PLACEHOLDERS):
 for u in sorted(set(re.findall(r"<([A-Z][A-Z0-9_]*)>", text)) - PLACEHOLDERS):
     err("AC2", "the placeholder <%s> is not one of <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG>, <RELEASE_KEY>" % u)
 
+def read_flags(words):
+    # cosign's reading: --key, --bundle and --type take a value (=value, else the next word, never starting with "-");
+    # --check-claims only its =value spelling; any other word starting with "-" is outside the closed set
+    keys, novalue, unknown, i = [], None, None, 0
+    while i < len(words):
+        flag, eq, value = words[i].partition("=")
+        if not words[i].startswith("-"):
+            i += 1
+        elif flag in ("--key", "--bundle", "--type"):
+            if eq:
+                val, i = value, i + 1
+            elif i + 1 < len(words) and not words[i + 1].startswith("-"):
+                val, i = words[i + 1], i + 2
+            else:
+                val, i = "", i + 1
+            if val == "" or val.startswith("-"):
+                novalue = novalue or flag
+            elif flag == "--key":
+                keys.append(val)
+        elif flag == "--check-claims":
+            i += 1
+        else:
+            unknown, i = unknown or flag, i + 1
+    return keys, novalue, unknown
+
 # --- AC2 (unattended) + AC3 (only cosign, gh, jq): a pipeline of the verify forms and jq, no other shell syntax ---
 def segments(c):
     if "`" in c: return None, "a backquote"
-    q = None
-    for ch in c:
+    q, k = None, 0
+    while k < len(c):
+        ch = c[k]
+        # a backslash makes the next character literal (not a $)
+        if ch == "\\" and q != "'" and k + 1 < len(c) and c[k+1] != "$":
+            k += 2; continue
         if q == "'": q = None if ch == "'" else q
         elif ch == "$": return None, "a $ expansion outside single quotes"
         elif q == '"': q = None if ch == '"' else q
         elif ch in "{}*?[]~":
             return None, "a brace, glob or tilde outside quotes: bash would expand it after this check"
         elif ch in "'\"": q = ch
+        k += 1
     for bad_ in ("$(", "${"):
         if bad_ in c: return None, "a command or variable substitution"
     lx = shlex.shlex(re.sub(r"<([A-Z][A-Z0-9_]*)>", lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
@@ -146,21 +175,22 @@ for c, ln, bo in cmds:
         for t in s:
             if t in ("--web", "-w", "--interactive", "--editor", "--pager", "--paginate"):
                 err("AC2", "line %d: `%s` asks for a browser, prompt, editor or pager" % (ln+1, t)); okc = False
-    # every verify form: exactly one key flag, its value <RELEASE_KEY>; no flag that skips or redirects the log
+    # every verify form: cosign's reading of --key, --bundle and --type with their values; exactly one key flag,
+    # <RELEASE_KEY>; a closed flag set
     for s in segs:
         if form(s) in (None, "jq"): continue
-        keys = []
-        for i, t in enumerate(s):
-            flag, eq, val = t.partition("=")
-            if t.startswith("-") and flag not in ALLOWED_FLAGS:
-                err("AC7", "line %d: `%s` carries %s, which is outside the closed set "
-                    "(--key, --bundle, --type, --check-claims)" % (ln+1, c, flag)); okc = False
-            if flag == "--key": keys.append(val if eq else (s[i+1] if i + 1 < len(s) else ""))
-        if len(keys) != 1: err("AC7",
-                "line %d: `%s` needs exactly one key flag whose value is <RELEASE_KEY> (found "
-                        "%d)" % (ln+1, c, len(keys))); okc = False
-        elif keys[0] != "<RELEASE_KEY>": err("AC7", "line %d: `%s` names the key %r, not "
-                "<RELEASE_KEY>" % (ln+1, c, keys[0])); okc = False
+        keys, novalue, unknown = read_flags(s[2:])
+        if novalue:
+            err("AC7", "line %d: `%s`: the %sflag %s has no value: the next word is a flag"
+                % (ln+1, c, "key " if novalue == "--key" else "", novalue)); okc = False
+        elif len(keys) != 1:
+            err("AC7", "line %d: `%s` needs exactly one key flag whose value is <RELEASE_KEY> (found %d)"
+                % (ln+1, c, len(keys))); okc = False
+        elif keys[0] != "<RELEASE_KEY>":
+            err("AC7", "line %d: `%s` names the key %r, not <RELEASE_KEY>" % (ln+1, c, keys[0])); okc = False
+        if unknown:
+            err("AC7", "line %d: `%s` carries %s, which is outside the closed set "
+                "(--key, --bundle, --type, --check-claims)" % (ln+1, c, unknown)); okc = False
     parsed.append((c, ln, bo, segs if okc else None))
 
 # --- AC2 (customer order): a file a jq command reads was verified by an earlier cosign/gh command naming it ---
@@ -525,6 +555,14 @@ mutant "a glob in a file operand" "a brace, glob or tilde outside quotes" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --bundle a.bun*", 1)'
 mutant "a ? glob" "a brace, glob or tilde outside quotes" 's.replace("sbom.json\n", "sb?m.json\n", 1)'
 mutant "a tilde" "a brace, glob or tilde outside quotes" 's.replace("sbom.json\n", "~/sbom.json\n", 1)'
+mutant "--key is the value of --bundle" "has no value: the next word is a flag" \
+    's.replace("--key <RELEASE_KEY>", "--bundle --key <RELEASE_KEY>", 1)'
+mutant "--key is the value of --type" "has no value: the next word is a flag" \
+    's.replace("--key <RELEASE_KEY>", "--type --key <RELEASE_KEY>", 1)'
+mutant "--bundle is the value of --key" "has no value: the next word is a flag" \
+    's.replace("--key <RELEASE_KEY>", "--key --bundle x.bundle", 1)'
+mutant "an escaped quote before an unquoted brace" "a brace, glob or tilde outside quotes" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> \"x\\\"\" {--key,awskms:///x}", 1)'
 mutant "a log URL flag in a command" "outside the closed set" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --rekor-url https://example.org", 1)'
 mutant "a trusted root flag in a command" "outside the closed set" \

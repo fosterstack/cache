@@ -37,10 +37,9 @@ SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 HOST = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/")   # ghcr.io/x yes, x/y no: a registry host written out
 FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "verify-blob"),
          ("cosign", "verify-blob-attestation"))
-# the only flags a verify form carries; any other (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes
-# which log or
-# which trust root the default check reads, or skips it
-ALLOWED_FLAGS = ("--key", "--bundle", "--type", "--check-claims")
+# A verify form carries only --key, --bundle, --type and --check-claims (read_flags below): any other flag
+# (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes which log or trust root the default check reads,
+# or skips it.
 # exactly one PEM public key and nothing else: BEGIN, base64 lines, END (a second block or any other line fails)
 PEM = re.compile(r"^-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+\n-----END PUBLIC KEY-----\n?$")
 SYNTAX = "();<>|&"   # a shell word made only of these is an operator; "|" alone is the one we allow
@@ -152,26 +151,52 @@ def form_error(c, jq_only=False):
     return None if (verify or jq_only) else "no verify form in it"
 
 
+def read_flags(words):
+    """Reads the words after the verify form as cosign does: --key, --bundle and --type take a value (the =value part,
+    else the next word, which is never a flag: it does not start with "-"); --check-claims takes only its =value
+    spelling and never the next word; any other word starting with "-" is a flag outside the closed set. Returns (the
+    values of the key flags, the first value-taking flag with no value, the first flag outside the set)."""
+    keys, novalue, unknown, i = [], None, None, 0
+    while i < len(words):
+        flag, eq, value = words[i].partition("=")
+        if not words[i].startswith("-"):
+            i += 1
+        elif flag in ("--key", "--bundle", "--type"):
+            if eq:
+                val, i = value, i + 1
+            elif i + 1 < len(words) and not words[i + 1].startswith("-"):
+                val, i = words[i + 1], i + 2
+            else:
+                val, i = "", i + 1
+            if val == "" or val.startswith("-"):
+                novalue = novalue or flag
+            elif flag == "--key":
+                keys.append(val)
+        elif flag == "--check-claims":
+            i += 1
+        else:
+            unknown, i = unknown or flag, i + 1
+    return keys, novalue, unknown
+
+
 def key_error(c):
     """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
-    whose value is <RELEASE_KEY> and no flag outside ALLOWED_FLAGS; else why not. The words are the shell's
+    whose value is <RELEASE_KEY> and no flag outside --key, --bundle, --type and --check-claims; else why not. The words
+    are the shell's
     (a quoted spelling like --insecure-ignore-tlo''g is the flag); the placeholder is a marker no file name equals."""
     for seg in split_pipe(words_of(c, PHM)):
         if seg[0] == "jq":
             continue
-        keys = []
-        for i, w in enumerate(seg):
-            flag, eq, value = w.partition("=")
-            if flag == "--key":
-                keys.append(value if eq else (seg[i + 1] if i + 1 < len(seg) else ""))
+        keys, novalue, unknown = read_flags(seg[2:])
+        if novalue:
+            return "the %sflag %s has no value: the next word is a flag" % (
+                "key " if novalue == "--key" else "", novalue)
         if len(keys) != 1:
             return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
         if keys[0] != "\u2039RELEASE_KEY\u203a":
             return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
-        for w in seg:
-            flag = w.partition("=")[0]
-            if w.startswith("-") and flag not in ALLOWED_FLAGS:
-                return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % flag
+        if unknown:
+            return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % unknown
     return None
 
 
@@ -196,7 +221,7 @@ JQ_BUILTINS = {
 JQ_FORMATS = {"@base64d", "@base64", "@json", "@text"}
 # The flags of the verify forms whose value is a file. The value of any other flag (an identity, an issuer, a type)
 # never counts as a file the command verified.
-FILE_FLAGS = {"--bundle", "--signature", "--certificate", "--certificate-chain"}
+FILE_FLAGS = {"--bundle"}   # the closed set of flags leaves only --bundle naming a file
 
 
 def jq_filter_why(f, names):

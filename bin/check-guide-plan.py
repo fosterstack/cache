@@ -49,10 +49,9 @@ if len(cmds) > 10:
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
 # the forms as tuples of words: a command word that holds a space ("cosign verify") is one word and is not a form
 FORM_WORDS2 = tuple(tuple(f.split()) for f in FORMS2)
-# the only flags a listed verify carries; any other (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes
-# which log or trust
-# root the default check reads, or skips it
-ALLOWED_FLAGS = ("--key", "--bundle", "--type", "--check-claims")
+# A listed verify carries only --key, --bundle, --type and --check-claims (read_flags below): any other flag
+# (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes which log or trust root the default check reads,
+# or skips it.
 # The flags of the verify forms that take a value (an unknown flag is taken as taking none, so its next word is judged as an operand:
 # the safe direction, a command the check cannot place is not run).
 VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp",
@@ -224,25 +223,50 @@ def shell_segments(c):
     return segs
 
 
+def read_flags(words):
+    """Reads the words after the verify form as cosign does: --key, --bundle and --type take a value (the =value part,
+    else the next word, which is never a flag: it does not start with "-"); --check-claims takes only its =value
+    spelling and never the next word; any other word starting with "-" is a flag outside the closed set. Returns (the
+    values of the key flags, the first value-taking flag with no value, the first flag outside the set)."""
+    keys, novalue, unknown, i = [], None, None, 0
+    while i < len(words):
+        flag, eq, value = words[i].partition("=")
+        if not words[i].startswith("-"):
+            i += 1
+        elif flag in ("--key", "--bundle", "--type"):
+            if eq:
+                val, i = value, i + 1
+            elif i + 1 < len(words) and not words[i + 1].startswith("-"):
+                val, i = words[i + 1], i + 2
+            else:
+                val, i = "", i + 1
+            if val == "" or val.startswith("-"):
+                novalue = novalue or flag
+            elif flag == "--key":
+                keys.append(val)
+        elif flag == "--check-claims":
+            i += 1
+        else:
+            unknown, i = unknown or flag, i + 1
+    return keys, novalue, unknown
+
+
 def key_error(c):
     """None when every verify segment of the command has exactly one key flag (--key X or --key=X) whose value is
-    <RELEASE_KEY> and no flag outside ALLOWED_FLAGS; else why not."""
+    <RELEASE_KEY> and no flag outside --key, --bundle, --type and --check-claims; else why not."""
     for seg in shell_segments(c):
         if tuple(seg[:2]) not in FORM_WORDS2:   # jq, or a word verify_form and classify refuse by name
             continue
-        keys = []
-        for i, w in enumerate(seg):
-            flag, eq, value = w.partition("=")
-            if flag == "--key":
-                keys.append(value if eq else (seg[i + 1] if i + 1 < len(seg) else ""))
+        keys, novalue, unknown = read_flags(seg[2:])
+        if novalue:
+            return "the %sflag %s has no value: the next word is a flag" % (
+                "key " if novalue == "--key" else "", novalue)
         if len(keys) != 1:
             return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
         if keys[0] != "\u2039RELEASE_KEY\u203a":
             return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
-        for w in seg:
-            flag = w.partition("=")[0]
-            if w.startswith("-") and flag not in ALLOWED_FLAGS:
-                return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % flag
+        if unknown:
+            return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % unknown
     return None
 
 
