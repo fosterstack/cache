@@ -293,6 +293,7 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/build-freeze\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
