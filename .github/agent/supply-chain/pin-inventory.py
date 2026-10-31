@@ -610,6 +610,13 @@ def _step(node, out, labels):
                 it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
+def _item_copy(it):
+    """A copy that shares nothing with the stored item (sums is a list): a change to what a caller gets back never reaches the memo."""
+    c = copy.copy(it)
+    c.sums = list(it.sums)
+    return c
+
+
 _STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
 
 
@@ -624,11 +631,11 @@ def _step_line(node, out):
     if made is None:
         n0 = len(out)
         _step(node, out, {})
-        _STEP_MEMO[key] = [copy.copy(it) for it in out[n0:]]
+        _STEP_MEMO[key] = [_item_copy(it) for it in out[n0:]]
         return
     if len(made) > MAX_ITEMS_PER_STEP:
         raise _too_many_items()
-    out.extend(copy.copy(it) for it in made)
+    out.extend(_item_copy(it) for it in made)
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -932,11 +939,11 @@ def inventory(files):
         # the reads the walk made are re-asked of THIS tree: the same answers, the same items
         hit = next((m for m in known if all(_read_of(r[0]) == r for r in m[1])), None)
         if hit is not None:
-            found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
+            found = [_item_copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
             found = _file_found(path, text)
             if mk is not None:                              # a raise left nothing here: only a completed file is remembered; each different set of reads is kept
-                _FILE_MEMO.setdefault(mk, []).append(([copy.copy(it) for it in found], tuple(_READS)))
+                _FILE_MEMO.setdefault(mk, []).append(([_item_copy(it) for it in found], tuple(_READS)))
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2

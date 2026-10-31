@@ -2006,7 +2006,7 @@ paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":
          ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
 revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
 assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
-dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src)
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src, sorted(i.sums))
                              for k, i in sorted(d.items())}, sort_keys=True)
 inv._MEMO_ON[0] = False
 ref = {r: dump(inv.load_at(root, r)) for r in revs}
@@ -2019,7 +2019,7 @@ inv._FILE_MEMO.clear()          # a warm line memo under a cold file memo: every
 for r in reversed(revs):
     assert dump(inv.load_at(root, r)) == ref[r], r
 PY
-CASE="T5 line memo: a script line that makes too many items raises on a hit too, a returned item cannot reach the memo, and nothing is remembered under a context"
+CASE="T5 line memo: a script line that makes too many items raises on a hit too, a returned or replayed item cannot reach the memo (sums included), and no line is read from the memo while a job's run texts are set"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -2030,9 +2030,15 @@ first = inv.inventory(dict(script))
 assert inv._STEP_MEMO, "the line was not remembered"
 for it in first.values():
     it.version = "changed"; it.step = "changed"
+    it.sums.append("sha256:" + "1" * 64)
 inv._FILE_MEMO.clear()
 again = inv.inventory(dict(script))
 assert sorted(i.version for i in again.values()) == ["1.0", "2.0", "3.0"], "a returned item reached the memo"
+assert all(i.sums == [] for i in again.values()), "a returned item's sums reached the memo"
+for it in again.values():
+    it.sums.append("sha256:" + "2" * 64)      # again came from the memo: the replayed copy must be its own too
+inv._FILE_MEMO.clear()
+assert all(i.sums == [] for i in inv.inventory(dict(script)).values()), "a replayed item's sums reached the memo"
 limit = inv.MAX_ITEMS_PER_STEP
 inv.MAX_ITEMS_PER_STEP = 2
 try:
