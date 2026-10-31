@@ -1991,6 +1991,64 @@ for fn in dict.fromkeys(CASES.values()):
     net = pa.LiveNet(["gh"], ".")      # a fresh object per case: no stub leaks from one to the next
     fn()
 PY
+# --- the gate follow-up (supply-chain gate ruling, Oct 31): the costly part of a history scan is reading each new version of a big script line by line. Three more memos, all exact:
+# a script line (in a neutral context), the id of a script line, and the file memo keeps every read-set it has seen for a blob. None may move a verdict. ---
+CASE="T5 line memos: over a real slice of history the inventories with the line memos equal the unmemoised ones, field for field, and the memos were used"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
+         ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src)
+                             for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear(); inv._LINE_ID_MEMO.clear()
+for r in revs:
+    assert dump(inv.load_at(root, r)) == ref[r], r
+assert inv._STEP_MEMO and inv._LINE_ID_MEMO, "the line memos were not used"
+inv._FILE_MEMO.clear()          # a warm line memo under a cold file memo: every file is read again, every line is a hit
+for r in reversed(revs):
+    assert dump(inv.load_at(root, r)) == ref[r], r
+PY
+CASE="T5 line memo: a script line that makes too many items raises on a hit too, a returned item cannot reach the memo, and nothing is remembered under a context"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear()
+script = {"bin/x.sh": "#!/usr/bin/env bash\npip install a==1.0 b==2.0 c==3.0\n"}
+first = inv.inventory(dict(script))
+assert inv._STEP_MEMO, "the line was not remembered"
+for it in first.values():
+    it.version = "changed"; it.step = "changed"
+inv._FILE_MEMO.clear()
+again = inv.inventory(dict(script))
+assert sorted(i.version for i in again.values()) == ["1.0", "2.0", "3.0"], "a returned item reached the memo"
+limit = inv.MAX_ITEMS_PER_STEP
+inv.MAX_ITEMS_PER_STEP = 2
+try:
+    inv._FILE_MEMO.clear()
+    try:
+        inv.inventory(dict(script)); raise SystemExit("the memoised line did not raise on a hit")
+    except RuntimeError as e:
+        assert "more than 2 items" in str(e), str(e)
+finally:
+    inv.MAX_ITEMS_PER_STEP = limit
+inv._JOB_RUNS[0] = ["echo earlier step"]
+try:
+    inv._step_line({"run": "pip install q==1.0"}, [])
+    raise SystemExit("a line was read from the memo while a job's run texts were set")
+except AssertionError:
+    pass
+finally:
+    inv._JOB_RUNS[0] = []
+PY
+
 bg_collect
 CASE="background checks: the three long cases were each started once and each reported once"
 check test "$BG_N" -eq 3

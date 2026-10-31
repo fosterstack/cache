@@ -578,11 +578,15 @@ MAX_ITEMS_PER_FILE = 5000
 MAX_LINES_PER_FILE = 20000
 
 
+def _too_many_items():
+    return RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
+
+
 def _step(node, out, labels):
     n0 = len(out)
     _step_items(node, out, labels)
     if len(out) - n0 > MAX_ITEMS_PER_STEP:
-        raise RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
+        raise _too_many_items()
     run = node.get("run")
     if isinstance(run, str):
         legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
@@ -604,6 +608,27 @@ def _step(node, out, labels):
                 it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart
             elif _NONPIN.search(it.version or "") and not it.step:
                 it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
+
+
+_STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
+
+
+def _step_line(node, out):
+    """_step for one line of a script. A script line is read in the neutral context, so its items are a function of the node and that context: remembered."""
+    if not _MEMO_ON[0]:
+        _step(node, out, {})
+        return
+    assert not _JOB_RUNS[0], "_JOB_RUNS is not in the memo key"
+    key = (json.dumps(node, sort_keys=True), _ENV_CTX[0], _INPUT_CTX[0], tuple(_JOB_SUMS[0]))
+    made = _STEP_MEMO.get(key)
+    if made is None:
+        n0 = len(out)
+        _step(node, out, {})
+        _STEP_MEMO[key] = [copy.copy(it) for it in out[n0:]]
+        return
+    if len(made) > MAX_ITEMS_PER_STEP:
+        raise _too_many_items()
+    out.extend(copy.copy(it) for it in made)
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -807,7 +832,7 @@ def _file_found(path, text):
         sctx = _assign_context(sjoined, sraw)
         for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
             before = len(found)
-            _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
+            _step_line({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found)
             for it in found[before:]:
                 it.src = (path, lid)
                 if it.kind == "tool" and not it.sums and not it.name.startswith("source:"):
@@ -842,7 +867,7 @@ def _file_found(path, text):
             node["_raw"] = rawln
             if actx:
                 node["_assign"] = actx
-            _step(node, found, {})
+            _step_line(node, found)
             for it in found[before:]:
                 it.src = (path, lid)
             if len(found) > MAX_ITEMS_PER_FILE:
@@ -1010,14 +1035,24 @@ def _line_ids(text):
     'unruled:' for a line bash reads differently from that flattening (REQ-SUP-001-AC16, AC20)."""
     mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
     tainted = mark in text
-    ids = []
-    for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
+    return [_line_id(tainted, line) for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n")]
+
+
+_LINE_ID_MEMO = {}      # (the file already held the mark, the line with its marks) -> the id
+
+
+def _line_id(tainted, line):
+    key = (tainted, line)
+    made = _LINE_ID_MEMO.get(key) if _MEMO_ON[0] else None
+    if made is None:
+        mark = "\ue000"
         bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
-        if not tainted:
-            line = line.replace(mark, "")
-        h = hashlib.sha256(" ".join(line.split()).encode("utf-8", "replace")).hexdigest()
-        ids.append(h if bashlike else "unruled:" + h)
-    return ids
+        flat = line if tainted else line.replace(mark, "")
+        h = hashlib.sha256(" ".join(flat.split()).encode("utf-8", "replace")).hexdigest()
+        made = h if bashlike else "unruled:" + h
+        if _MEMO_ON[0]:
+            _LINE_ID_MEMO[key] = made
+    return made
 
 
 # The top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001; owner exception 1 of Oct 15). That premise is held by a
