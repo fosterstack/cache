@@ -33,11 +33,10 @@
 #   | 4 a network attempt was made inside the sealed melange call (rule 40, as the apk driver).
 set -euo pipefail
 
-# Fixed locations: a production call never resolves python3, git, sudo, unshare or melange through the caller's search
+# Fixed locations: a production call never resolves python3, sudo, unshare or melange through the caller's search
 # path. There is no test hook in this file: bin/build-baselayout-apk-test.sh runs a COPY in which exactly the lines
 # ending in TEST-SUBST are replaced, and checks that the copy differs from this file in no other line.
 PY3=/usr/bin/python3            # TEST-SUBST
-GIT=/usr/bin/git                # TEST-SUBST
 SUDO=/usr/bin/sudo              # TEST-SUBST
 UNSHARE=/usr/bin/unshare        # TEST-SUBST
 MELANGE=/usr/local/bin/melange  # TEST-SUBST (the chain installs it there)
@@ -93,11 +92,6 @@ sed "s/@VERSION@/$apkver/g" "$recipe" >"$rendered"
 
 # ---- 3. the sealed call ----
 mkdir -p "$tmp/cache"
-excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) \
-  || { echo "build-baselayout-apk.sh: cannot locate the exclude file of $src (git rev-parse failed)" >&2; exit 1; }
-exdir=${excl%/*}
-mkdir -p "$exdir" 2>/dev/null || true
-"$PY3" -I -B bin/build-apk-helper.py exclude-file "$excl" "$exdir"
 margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --namespace fosterstack
   --signing-key "$assembly_key"
   --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"
@@ -152,8 +146,17 @@ signer=$("$PY3" -I -B bin/apk-tool.py signer "$apk") \
   || { echo "build-baselayout-apk.sh: etc/protocols in $apk differs from build/baselayout/etc/protocols" >&2; exit 1; }
 "$PY3" -I -B bin/apk-tool.py cat "$apk" etc/services | cmp -s - "$src/build/baselayout/etc/services" \
   || { echo "build-baselayout-apk.sh: etc/services in $apk differs from build/baselayout/etc/services" >&2; exit 1; }
-! "$PY3" -I -B bin/apk-tool.py cat "$apk" etc/ssl/certs/ca-certificates.crt >/dev/null 2>&1 \
-  || { echo "build-baselayout-apk.sh: $apk ships a CA bundle file (etc/ssl/certs/ca-certificates.crt)" >&2; exit 1; }
+"$PY3" -I -B bin/apk-tool.py members "$apk" >"$tmp/members" \
+  || { echo "build-baselayout-apk.sh: cannot list the entries of $apk" >&2; exit 1; }
+sed "s/@VERSION@/$apkver/g" "$src/build/baselayout/members.txt" >"$tmp/members.want"
+if ! cmp -s "$tmp/members" "$tmp/members.want"; then
+  first=$(grep -m1 -Fxv -f "$tmp/members.want" "$tmp/members" || true)
+  if [ -z "$first" ]; then
+    first=$(grep -m1 -Fxv -f "$tmp/members" "$tmp/members.want" || true)
+  fi
+  echo "build-baselayout-apk.sh: the entries of $apk differ from build/baselayout/members.txt, first at: ${first:-the order}" >&2
+  exit 1
+fi
 
 # ---- 5. the inputs manifest ----
 "$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" \

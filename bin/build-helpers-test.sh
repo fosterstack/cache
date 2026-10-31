@@ -9,7 +9,8 @@ NONROOT="p['SPDXID']!='SPDXRef-fscache'"      # a module package of a go-module-
 # ---- begin verbatim sections ----
 # ===== rule 21: bin/gen-recipes.py (both recipes are generated from one template; CI checks the committed files are exactly its output) =================
 gt="$fx/melange.yaml.tmpl"; ga="$fx/melange.yaml"; gb="$fx/melange-fips.yaml"
-GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt"   # the fixture data files
+gbt="$fx/melange-baselayout.yaml.tmpl"; gbl="$fx/melange-baselayout.yaml"
+GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt --baselayout-template $gbt --baselayout $gbl"   # the fixture data files and the third recipe
 GR_PROD="$GR"; GR="$fx/gen-recipes.py"; GRX=env   # the fixtures run a copy of the generator whose TEMPLATE_SHA256 line holds the fixture template's own pin (the real one is checked in build-apk-test.sh)
 t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
 t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
@@ -330,8 +331,8 @@ fails "rule 37" "compare: a full lock without our base-layout apk fails and name
 python3 "$work/lib.py" mutate "$FL" "$work/f-onebase.json" dropone fscache-baselayout
 fails "rule 37" "compare: our base-layout apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-onebase.json" --apk "$OWN"
 fails "rule 37" "compare: naming only fscache leaves the base-layout apk an unexpected extra, named" 'fscache-baselayout' "$LK" compare "$BL" "$FL" --apk fscache
-t "rule 37" "compare: a base lock that already holds our base-layout apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk '$OWN' >/dev/null 2>&1; test \$? -eq 2"
-t "rule 37" "compare: a base lock that already holds our apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk "$OWN" >/dev/null 2>&1; test \$? -eq 2"
+python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x["contents"]["packages"]=[e for e in x["contents"]["packages"] if e["name"]=="fscache-baselayout"]; json.dump(x,open(sys.argv[2],"w"))' "$FL" "$work/f-baseonly.json"
+fails "rule 37" "compare: a base lock holding only our base-layout apk is refused, naming it" 'fscache-baselayout' "$LK" compare "$work/f-baseonly.json" "$FL" --apk "$OWN"
 t "rule 33" "arch-check: both archs resolve the same versions -> pass" "$LK" arch-check "$BL"
 python3 "$work/lib.py" mutate "$BL" "$work/b-arch.json" archver
 fails "rule 33" "arch-check: a package whose version differs between archs fails and names it" 'tzdata' "$LK" arch-check "$work/b-arch.json"
@@ -541,7 +542,6 @@ def w_(name, doc): json.dump(doc, open("%s/%s" % (d, name), "w"))
 x = json.load(open(fx + "/full.lock.json"))   # the base lock holds one package, so a package on one architecture only is made from the full lock
 x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "fscache-baselayout" and e["architecture"] == "aarch64")]
 w_("arch-missing-pkg.json", x)
-x = json.loads(json.dumps(lk))
 x = json.loads(json.dumps(lk)); x["contents"]["packages"] = [e for e in x["contents"]["packages"] if e["architecture"] == "x86_64"]; w_("arch-one.json", x)
 x = json.loads(json.dumps(lk)); e0 = dict(x["contents"]["packages"][0]); e0["architecture"] = "riscv64"; x["contents"]["packages"].append(e0); w_("arch-riscv.json", x)
 x = json.loads(json.dumps(lk)); x["contents"]["packages"][0]["name"] = "../evil"; w_("name-dots.json", x)
@@ -926,9 +926,12 @@ fails "rule 22" "apk-tool: a directory header with a non-zero size (data hiding 
 # ---- ruling of review round 9 (P3 finding 1): the package pins and the FIPS module are DATA files the generator reads; the daily job edits only those ----------------
 rm -rf "$work/gd"; mkdir -p "$work/gd"
 gdata() { cp "$fx/melange.lock" "$work/gd/lock"; cp "$fx/fips-module.txt" "$work/gd/fips"; }
-gen_with() { $GRX python3 "$GR" --template "$gt" --regular "$work/gd/a.yaml" --fips "$work/gd/b.yaml" --melange-lock "$work/gd/lock" --fips-module "$work/gd/fips" "$@"; }
+gen_with() { $GRX python3 "$GR" --template "$gt" --regular "$work/gd/a.yaml" --fips "$work/gd/b.yaml" --baselayout-template "$gbt" --baselayout "$work/gd/c.yaml" --melange-lock "$work/gd/lock" --fips-module "$work/gd/fips" "$@"; }
 gdata; gen_with --write
 t "rule 21" "gen-recipes: the package pins in BOTH recipes are the lines of the melange lock, in the lock's order" bash -c "n=\$(grep -c . '$work/gd/lock'); test \"\$(grep -c '^      - [a-z0-9][^ ]*=[0-9]' '$work/gd/a.yaml')\" = \$n && test \"\$(grep -c '^      - [a-z0-9][^ ]*=[0-9]' '$work/gd/b.yaml')\" = \$n"
+gdata; gen_with --write; echo "# edited by hand" >>"$work/gd/c.yaml"
+fails "rule 21" "gen-recipes: a committed base-layout recipe that differs from its template makes --check fail and names the file" 'c\.yaml' gen_with --check
+gdata; gen_with --write
 gdata; printf 'newpkg=9.9-r0\n' >>"$work/gd/lock"
 fails "rule 21" "gen-recipes: a melange lock that gained a line makes --check fail until the recipes are regenerated (the recipes follow the data)" 'generator' gen_with --check
 gen_with --write; t "rule 21" "...after --write the new pin is in both recipes and --check passes" bash -c "grep -q 'newpkg=9.9-r0' '$work/gd/a.yaml' && grep -q 'newpkg=9.9-r0' '$work/gd/b.yaml'" ; t "rule 21" "...--check passes again" gen_with --check

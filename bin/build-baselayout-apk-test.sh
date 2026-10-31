@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # proves: REQ-IMAGE-001-AC16
-# Tests of bin/build-baselayout-apk.sh (0710 chain part a): the sealed melange build of build/melange-baselayout.yaml. Every
-# assertion runs offline against PATH stubs, like bin/build-apk-test.sh: nothing here calls a real sudo, unshare or melange.
-# The production script has no test hook: the tests run a COPY in which exactly the lines ending in TEST-SUBST are replaced
+# Tests of bin/build-baselayout-apk.sh (0710 chain part a): the sealed melange build of build/melange-
+# baselayout.yaml. Every
+# assertion runs offline against PATH stubs, like bin/build-apk-test.sh: nothing here calls a real sudo, unshare or
+# melange.
+# The production script has no test hook: the tests run a COPY in which exactly the lines ending in TEST-SUBST are
+# replaced
 # and which is checked to differ in no other line.
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
 cd "$root"
 unset GITHUB_ACTIONS
 BB="$root/bin/build-baselayout-apk.sh"
-cat >"$work/mkcopy.py" <<'PY'
+bt="$(mktemp -d "$work/bl.XXXXXX")"   # this test's own scratch: the mkcopy helper and the script copies
+cat >"$bt/mkcopy.py" <<'PY'
 import re, sys
 src, out = sys.argv[1:3]
 subst = dict(a.split("=", 1) for a in sys.argv[3:])
@@ -33,8 +37,8 @@ cp -R "$src" "$work/bsrc"; mkdir -p "$work/bsrc/build"; cp -R "$root/build/basel
 export STUB_SRC="$work/bsrc"
 mkcopy() {   # mkcopy OUT RECIPE: a copy of the script with the tool locations of the stubs and RECIPE as the recipe
   [ -f "$BB" ] || { printf '#!/bin/bash\necho "build-baselayout-apk.sh is missing" >&2\nexit 127\n' >"$1"; chmod +x "$1"; return 0; }   # no script yet: every case fails, none aborts
-  python3 "$work/mkcopy.py" "$BB" "$1" \
-    'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  python3 "$bt/mkcopy.py" "$BB" "$1" \
+    'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
     'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
     'ENVBIN='"$(command -v env)" 'RECIPE='"$2" || { echo "FIXTURE SETUP FAILED: copy of $BB"; exit 1; }
   chmod +x "$1"
@@ -56,7 +60,7 @@ EOW
   chmod +x "$1"
 }
 export FSCACHE_ROOT="$root"
-mkcopy "$work/bb-copy.sh" "$root/build/melange-baselayout.yaml"; wrapper "$work/bb.sh" "$work/bb-copy.sh"
+mkcopy "$bt/bb-copy.sh" "$root/build/melange-baselayout.yaml"; wrapper "$work/bb.sh" "$bt/bb-copy.sh"
 BBT="$work/bb.sh"
 bb_args=(--arch x86_64 --version 0.3.0 --source-dir "$work/bsrc" --repo "$fx/envrepo" --keyring "$kr" --melange-lock "$root/build/locks/melange.lock")
 bbe=(env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64)
@@ -83,15 +87,17 @@ sr "0710" "refuses an https repository" 'local' "${bbe[@]}" "$BBT" "${bb_args[@]
 sr "0710" "refuses a version that is not X.Y.Z or X.Y.Z-rcN" 'version' "${bbe[@]}" "$BBT" "${bb_args[@]}" --version 1.2 --out "$(mo)"
 sr "0710" "refuses a source directory with no .git" '\.git' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$work/nogit" --out "$(mo)"
 mkdir -p "$work/nokey/build/keys"
-mkcopy "$work/bb-nokey.sh" "$root/build/melange-baselayout.yaml"; wrapper "$work/bb-nokey-w.sh" "$work/bb-nokey.sh"
+mkcopy "$bt/bb-nokey.sh" "$root/build/melange-baselayout.yaml"; wrapper "$bt/bb-nokey-w.sh" "$bt/bb-nokey.sh"
 ( cd "$work/nokey" && mkdir -p bin build/keys && cp "$root/bin/build-baselayout-apk.sh" "$root/bin/build-apk-helper.py" bin/ && cp "$root/build/sealed-env.json" build/ ) 2>/dev/null
-sr "0710" "refuses when the committed assembly key is missing" 'assembly key' bash -c "cd '$work/nokey' && exec env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 '$work/bb-nokey-w.sh' ${bb_args[*]} --out '$work/nokey-out'"
-mkcopy "$work/bb-other.sh" "$root/build/melange.yaml"; wrapper "$work/bb-other-w.sh" "$work/bb-other.sh"
-sr "0710" "refuses another recipe: the package must be fscache-baselayout" 'fscache-baselayout' "${bbe[@]}" "$work/bb-other-w.sh" "${bb_args[@]}" --out "$(mo)"
-mkcopy "$work/bb-ns.sh" "$root/build/melange-baselayout.yaml"; sed -i 's/--namespace fosterstack/--namespace evil/' "$work/bb-ns.sh"; wrapper "$work/bb-ns-w.sh" "$work/bb-ns.sh"
-sr "0710" "refuses a melange call whose namespace is not fosterstack" 'refusing the melange call' "${bbe[@]}" "$work/bb-ns-w.sh" "${bb_args[@]}" --out "$(mo)"
-sed -e 's/^ca-certificates-bundle=.*//' "$root/build/locks/melange.lock" >"$work/lock-short"
-sr "0710" "refuses a melange lock the recipe does not agree with, both ways" 'lock' "${bbe[@]}" "$BBT" "${bb_args[@]}" --melange-lock "$work/lock-short" --out "$(mo)"
+sr "0710" "refuses when the committed assembly key is missing" 'assembly key' bash -c "cd '$work/nokey' && exec env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 '$bt/bb-nokey-w.sh' ${bb_args[*]} --out '$work/nokey-out'"
+mkcopy "$bt/bb-other.sh" "$root/build/melange.yaml"; wrapper "$bt/bb-other-w.sh" "$bt/bb-other.sh"
+sr "0710" "refuses another recipe: the package must be fscache-baselayout" 'fscache-baselayout' "${bbe[@]}" "$bt/bb-other-w.sh" "${bb_args[@]}" --out "$(mo)"
+mkcopy "$bt/bb-ns.sh" "$root/build/melange-baselayout.yaml"; sed -i 's/--namespace fosterstack/--namespace evil/' "$bt/bb-ns.sh"; wrapper "$bt/bb-ns-w.sh" "$bt/bb-ns.sh"
+sr "0710" "refuses a melange call whose namespace is not fosterstack" 'refusing the melange call' "${bbe[@]}" "$bt/bb-ns-w.sh" "${bb_args[@]}" --out "$(mo)"
+sed -e 's/^ca-certificates-bundle=.*//' "$root/build/locks/melange.lock" >"$bt/lock-short"
+sr "0710" "refuses a melange lock the recipe does not agree with, both ways" 'lock' "${bbe[@]}" "$BBT" "${bb_args[@]}" --melange-lock "$bt/lock-short" --out "$(mo)"
+{ cat "$root/build/locks/melange.lock"; echo "extra-package=1.0-r0"; } >"$bt/lock-long"
+sr "0710" "refuses a melange lock with a line the recipe does not pin" 'lines the recipe does not pin' "${bbe[@]}" "$BBT" "${bb_args[@]}" --melange-lock "$bt/lock-long" --out "$(mo)"
 o="$(mo)"; $RUNNER "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$o"
 t "0710" "the run writes the apk under OUT/ARCH, signed by the assembly key" bash -c "[ -f '$o/x86_64/fscache-baselayout-0.3.0-r0.apk' ] && [ \"\$(python3 -I -B '$AT' signer '$o/x86_64/fscache-baselayout-0.3.0-r0.apk')\" = assembly.rsa.pub ]"
 t "0710" "the run writes inputs-manifest-baselayout.json beside the apk" bash -c "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d' '$o/inputs-manifest-baselayout.json'"
@@ -99,7 +105,36 @@ t "0710" "the run writes no fscache module SBOM and no inputs-manifest.json (tho
   bash -c "[ ! -e '$o/fscache-modules.spdx.json' ] && [ ! -e '$o/inputs-manifest.json' ]"
 sf "0710" "an apk signed by another key is refused" 'signed by' env STUB_SIGNER=other.rsa.pub "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
 sf "0710" "an apk whose etc/passwd differs from build/baselayout/etc/passwd is refused" 'passwd' env STUB_BL_BAD=etc/passwd "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
-sf "0710" "an apk that ships a CA bundle file is refused" 'CA bundle|ca-certificates' env STUB_BL_BUNDLE=1 "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
+sf "0710" "an apk that ships a CA bundle file is refused: its entries differ from members.txt" 'members\.txt.*ca-certificates|members\.txt.*ssl' env STUB_BL_BUNDLE=1 "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
+# recipe copies the allowlist must refuse before any tool runs (exit 2)
+bl_recipe() {   # bl_recipe NAME PYTHON-EDIT: a copy of the recipe edited by the python statements (d is the recipe), and a wrapper for it
+  python3 -I - "$root/build/melange-baselayout.yaml" "$bt/recipe-$1.yaml" "$2" <<'PYE'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+exec(sys.argv[3])
+yaml.safe_dump(d, open(sys.argv[2], "w"))
+PYE
+  mkcopy "$bt/bb-$1.sh" "$bt/recipe-$1.yaml"; wrapper "$bt/bb-$1-w.sh" "$bt/bb-$1.sh"
+}
+bl_recipe link 'd["pipeline"][0]["runs"] += "ln -s usr/bin ${{targets.destdir}}/bin\n"'
+sr "0710" "refuses a recipe with an ln -s step (a symlink in the package)" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-link-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe fetch 'd["pipeline"] = [{"uses": "fetch"}]'
+sr "0710" "refuses a recipe whose pipeline step uses fetch" 'not exactly one runs' "${bbe[@]}" "$bt/bb-fetch-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe wget 'd["pipeline"][0]["runs"] += "wget http://example.test/x\n"'
+sr "0710" "refuses a recipe line that starts with wget" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-wget-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe chain 'd["pipeline"][0]["runs"] += "mkdir -p x; wget http://example.test/x\n"'
+sr "0710" "refuses a mkdir line that chains a second command" 'chains or expands' "${bbe[@]}" "$bt/bb-chain-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe extra 'd["test"] = {"pipeline": []}'
+sr "0710" "refuses a recipe with an extra top-level key" 'exactly the keys' "${bbe[@]}" "$bt/bb-extra-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe nullpipe 'd["pipeline"] = None'
+sr "0710" "refuses a recipe whose pipeline is null" 'pipeline' "${bbe[@]}" "$bt/bb-nullpipe-w.sh" "${bb_args[@]}" --out "$(mo)"
+for k in mode gone; do cp -R "$work/bsrc" "$bt/bsrc-$k"; done
+sed -i 's/^f 0644 etc\/hosts$/f 0600 etc\/hosts/' "$bt/bsrc-mode/build/baselayout/members.txt"
+sed -i '/^f 0644 etc\/services$/d' "$bt/bsrc-gone/build/baselayout/members.txt"
+sf "0710" "an apk with another mode than members.txt names is refused" 'members\.txt.*etc/hosts' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-mode" --out "$(mo)"
+sf "0710" "an apk with a file members.txt does not list is refused" 'members\.txt.*etc/services' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-gone" --out "$(mo)"
+cp -R "$work/bsrc" "$bt/bsrc-miss"; echo "f 0644 etc/missing" >>"$bt/bsrc-miss/build/baselayout/members.txt"
+sf "0710" "an apk missing a file members.txt lists is refused" 'members\.txt.*etc/missing' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-miss" --out "$(mo)"
 sf "0710" "a failed melange call fails the build" 'compile error|melange' env STUB_FAIL=1 "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
 
 echo "build-baselayout-apk-test: $pass passed, $failn failed"

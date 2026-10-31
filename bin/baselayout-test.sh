@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-IMAGE-001-AC14
 # Tests for 0710 item 1: the images carry our own base-layout package and no CA bundle
-# (docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1). Offline: no apko and no melange run here. The recipe's own
+# (ops/docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1). Offline: no apko and no melange run here. The recipe's own
 # install steps are run into a temporary folder, so the package's file list is real; the real apk and image listing are
 # proved by the build on the runner (not run by this script).
 set -uo pipefail
@@ -40,7 +40,7 @@ rec = open("build/melange-baselayout.yaml").read()
 named = set(re.findall(r"build/baselayout/(etc/[a-z.-]+)", rec))
 have = {os.path.join("etc", n) for n in os.listdir("build/baselayout/etc")}
 assert named == have, (named ^ have)
-assert os.listdir("build/baselayout") == ["etc"]
+assert sorted(os.listdir("build/baselayout")) == ["etc", "members.txt"]   # members.txt: the entry list the build checks the apk against
 PY
 chk "os-release is Wolfi's own file byte for byte (scanners identify the OS from it)" \
   bash -c '[ "$(sha256sum build/baselayout/etc/os-release | cut -d" " -f1)" = 8209665b39efdb89514d7cadc50b7ffc3e64dff2cd05736cb04ea078a1a9a24a ]'
@@ -62,13 +62,12 @@ for st in r["pipeline"]:
     print(st["runs"].replace("${{targets.destdir}}", sys.argv[1]))
 PY
 if bash -e "$tmp/steps.sh" >"$tmp/steps.out" 2>&1; then ok "the recipe's install steps run"; else bad "the recipe's install steps run: $(cat "$tmp/steps.out")"; fi
-chk "the package holds the layout: links, modes and files" python3 -I - "$dest" <<'PY'
+chk "the package tree holds no symlink and no hard link, and has the layout modes and files" python3 -I - "$dest" <<'PY'
 import os, stat, sys
 d = sys.argv[1]
 def mode(p): return stat.S_IMODE(os.lstat(os.path.join(d, p)).st_mode)
-links = {"bin": "usr/bin", "sbin": "usr/bin", "lib": "usr/lib", "lib64": "usr/lib", "usr/sbin": "bin", "usr/lib64": "lib"}
-for p, t in links.items():
-    assert os.readlink(os.path.join(d, p)) == t, p
+assert not [r for r, ds, fs in os.walk(d) for n in ds + fs if os.path.islink(os.path.join(r, n))], "a symlink"
+assert not [f for r, _, fs in os.walk(d) for f in fs if os.lstat(os.path.join(r, f)).st_nlink > 1], "a hard link"
 assert mode("tmp") == 0o1777 and mode("var/tmp") == 0o1777 and mode("root") == 0o700
 for p in ("dev", "proc", "sys", "run", "home", "etc", "usr/bin", "usr/lib"):
     assert os.path.isdir(os.path.join(d, p)) and not os.path.islink(os.path.join(d, p)), p

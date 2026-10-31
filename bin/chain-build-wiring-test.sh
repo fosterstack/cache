@@ -1647,7 +1647,8 @@ run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124
 }
 n_calls() { grep -c -- "$1" "$2/calls.log" 2> /dev/null || true; }                         # n_calls REGEX DIR
 line_of() { grep -n -- "$1" "$2/calls.log" 2> /dev/null | head -1 | cut -d: -f1 || true; }  # line_of REGEX DIR
-# 0710: the base-layout apk is built once, after the last fscache build, with the same date; none of --variant, --go-archive, --signing-key, --recipe
+# 0710: the base-layout apk is built once, after the last fscache build, with the same date; none of --variant,
+# --go-archive, --signing-key, --recipe
 bl_check() { # bl_check LABEL DIR VERSION
   local label=$1 d=$2 v=$3 nb nl
   nb=$(grep -n -- '^apk ' "$d/calls.log" 2> /dev/null | tail -1 | cut -d: -f1 || true); nl=$(line_of '^baselayout ' "$d")

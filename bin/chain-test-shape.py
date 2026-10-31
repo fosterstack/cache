@@ -801,11 +801,11 @@ NS_KNOWN_LINES = (      # the two physical lines of the admission step's go run
     '        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))')
 NS_SHA = {
     "bin/admission-tag-signer.py": "03b66ea50f873de93047bfb4becd305ba6c81fcb1506584990ade81bd16bab40",
-    "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
+    "bin/apk-tool.py": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
-    "bin/build-apk-helper.py": "e1f6f1fe46297b2bbe6210904a6436f629c11aebc889fbbb2e69016b3bb8ef20",
+    "bin/build-apk-helper.py": "8645b25f68cc4fefbbb5a69a0bb20787c857c7a1dc5735844502144d75d8e82b",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
@@ -1007,19 +1007,18 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
     'bin/build-baselayout-apk.sh': [
         'set -euo pipefail',
         'PY3=/usr/bin/python3            # TEST-SUBST',
-        'GIT=/usr/bin/git                # TEST-SUBST',
         'SUDO=/usr/bin/sudo              # TEST-SUBST',
         'UNSHARE=/usr/bin/unshare        # TEST-SUBST',
         'MELANGE=/usr/local/bin/melange  # TEST-SUBST (the chain installs it there)',
         'ENVBIN=/usr/bin/env             # TEST-SUBST',
         'SEALED_ENV=build/sealed-env.json  # TEST-SUBST',
         'RECIPE=$PWD/build/melange-baselayout.yaml  # TEST-SUBST',
-        '[ -f bin/build-baselayout-apk.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.js'
-        'on ] || { echo "build-baselayout-apk.sh: run bin/build-baselayout-apk.sh from the repository roo'
-        't" "(its helpers are named by repo-relative paths)" >&2; exit 2; }',
+        '[ -f bin/build-baselayout-apk.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.json ]'
+        ' || { echo "build-baselayout-apk.sh: run bin/build-baselayout-apk.sh from the repository root" "(its'
+        ' helpers are named by repo-relative paths)" >&2; exit 2; }',
         'root_=$PWD',
-        '"$PY3" -I -B bin/build-apk-helper.py baselayout-check-args "$(uname -s)" "$(uname -m)" "$@" >/de'
-        'v/null',
+        '"$PY3" -I -B bin/build-apk-helper.py baselayout-check-args "$(uname -s)" "$(uname -m)" "$@" >/dev/nu'
+        'll',
         'src=$("$PY3" -I -B bin/build-apk-helper.py baselayout-arg src "$@")',
         'arch=$("$PY3" -I -B bin/build-apk-helper.py baselayout-arg arch "$@")',
         'version=$("$PY3" -I -B bin/build-apk-helper.py baselayout-arg version "$@")',
@@ -1032,8 +1031,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'render=$("$PY3" -I -B bin/build-apk-helper.py baselayout-arg render-dir "$@")',
         'apkcache=$("$PY3" -I -B bin/build-apk-helper.py baselayout-arg apk-cache-dir "$@")',
         'assembly_key=$PWD/build/keys/assembly.rsa',
-        '[ -f "$assembly_key" ] || { echo "build-baselayout-apk.sh: the committed assembly key $assembly_'
-        'key is missing" >&2; exit 2; }',
+        '[ -f "$assembly_key" ] || { echo "build-baselayout-apk.sh: the committed assembly key $assembly_key '
+        'is missing" >&2; exit 2; }',
         '[ -f "$RECIPE" ] || { echo "build-baselayout-apk.sh: recipe not found: $RECIPE" >&2; exit 2; }',
         'recipe=$("$PY3" -I -B bin/build-apk-helper.py abs-file "$RECIPE")',
         'mkdir -p "$out"',
@@ -1044,86 +1043,87 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'pkg=$(sed -n \'s/^name=//p\' "$tmp/recipe.facts")',
         'sed -n \'s/^pin=//p\' "$tmp/recipe.facts" >"$tmp/pins"',
         'missing=$(grep -Fxv -f "$mlock" "$tmp/pins" | head -n 1 || true)',
-        '[ -z "$missing" ] || { echo "build-baselayout-apk.sh: the recipe pins $missing but the melange l'
-        'ock $mlock does not" "have it; the recipe and the lock must agree" >&2; exit 2; }',
+        '[ -z "$missing" ] || { echo "build-baselayout-apk.sh: the recipe pins $missing but the melange lock '
+        '$mlock does not" "have it; the recipe and the lock must agree" >&2; exit 2; }',
         'extra=$(grep -v \'^$\' "$mlock" | grep -Fxv -f "$tmp/pins" || true)',
-        '[ -z "$extra" ] || { echo "build-baselayout-apk.sh: the melange lock $mlock has lines the recipe'
-        ' does not pin" "($(printf \'%s\' "$extra" | head -n 3 | tr \'\\n\' \' \')): the recipe and the lock mus'
-        't agree both ways" >&2; exit 2; }',
+        '[ -z "$extra" ] || { echo "build-baselayout-apk.sh: the melange lock $mlock has lines the recipe doe'
+        's not pin" "($(printf \'%s\' "$extra" | head -n 3 | tr \'\\n\' \' \')): the recipe and the lock must agree '
+        'both ways" >&2; exit 2; }',
         'rdir=${render:-$tmp/render}; mkdir -p "$rdir"',
         'rendered=$rdir/$(basename "$recipe")',
         'sed "s/@VERSION@/$apkver/g" "$recipe" >"$rendered"',
         'mkdir -p "$tmp/cache"',
-        'excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) ||'
-        ' { echo "build-baselayout-apk.sh: cannot locate the exclude file of $src (git rev-parse failed)"'
-        ' >&2; exit 1; }',
-        'exdir=${excl%/*}',
-        'mkdir -p "$exdir" 2>/dev/null || true',
-        '"$PY3" -I -B bin/build-apk-helper.py exclude-file "$excl" "$exdir"',
-        'margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --namespace fosterstac'
-        'k',
+        'margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --namespace fosterstack',
         '  --signing-key "$assembly_key"',
         '  --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"',
         '  --cache-dir "$tmp/cache" --source-dir "$src" --out-dir "$out")',
         '[ -z "$apkcache" ] || margs+=(--apk-cache-dir "$apkcache")',
-        'melange_bin=$MELANGE; [ -x "$melange_bin" ] || { echo "build-baselayout-apk.sh: melange is not i'
-        'nstalled (the chain installs it before this step)" >&2; exit 1; }',
+        'melange_bin=$MELANGE; [ -x "$melange_bin" ] || { echo "build-baselayout-apk.sh: melange is not insta'
+        'lled (the chain installs it before this step)" >&2; exit 1; }',
         'mapfile -d \'\' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV")',
-        '[ "${#sealed[@]}" -ge 4 ] || { echo "build-baselayout-apk.sh: the sealed environment could not b'
-        'e made" "(build/sealed-env.json, SOURCE_DATE_EPOCH)" >&2; exit 1; }',
+        '[ "${#sealed[@]}" -ge 4 ] || { echo "build-baselayout-apk.sh: the sealed environment could not be ma'
+        'de" "(build/sealed-env.json, SOURCE_DATE_EPOCH)" >&2; exit 1; }',
         'call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")',
-        'why=$("$PY3" -I -B bin/build-apk-helper.py sealed-call --sealed-env "$SEALED_ENV" "${call[@]}" 2'
-        '>&1) || { echo "build-baselayout-apk.sh: refusing the melange call: $why" >&2; exit 2; }',
+        'why=$("$PY3" -I -B bin/build-apk-helper.py sealed-call --sealed-env "$SEALED_ENV" "${call[@]}" 2>&1)'
+        ' || { echo "build-baselayout-apk.sh: refusing the melange call: $why" >&2; exit 2; }',
         '"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 ||',
-        '  echo "build-baselayout-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_'
-        'userns" "(not needed off Ubuntu 24.04)" >&2',
+        '  echo "build-baselayout-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_user'
+        'ns" "(not needed off Ubuntu 24.04)" >&2',
         'cd "$rdir"',
         '"$SUDO" "${call[@]}" 2>"$tmp/melange.err" && rc=0 || rc=$?',
         'cd "$root_"',
         'cat "$tmp/melange.err" >&2',
         'probe=',
-        '[ "$rc" != 0 ] && grep -Eqi -e \'ENETUNREACH|network is unreachable|dial tcp|no such host|name re'
-        'solution\' -e \'Name or service not known|could not resolve host\' "$tmp/melange.err" 2>/dev/null &'
-        '& probe=0 || probe=',
-        '[ -z "$probe" ] || "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1 || probe='
-        '$?',
+        '[ "$rc" != 0 ] && grep -Eqi -e \'ENETUNREACH|network is unreachable|dial tcp|no such host|name resolu'
+        'tion\' -e \'Name or service not known|could not resolve host\' "$tmp/melange.err" 2>/dev/null && probe='
+        '0 || probe=',
+        '[ -z "$probe" ] || "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1 || probe=$?',
         '"$PY3" -I -B bin/build-apk-helper.py melange-verdict "$rc" "$probe"',
         'apk=$out/$arch/$pkg-$apkver-r0.apk',
         '[ -f "$apk" ] || { echo "build-baselayout-apk.sh: melange did not produce $apk" >&2; exit 1; }',
-        'signer=$("$PY3" -I -B bin/apk-tool.py signer "$apk") || { echo "build-baselayout-apk.sh: cannot '
-        'read the signer of $apk" >&2; exit 1; }',
-        '[ "$signer" = assembly.rsa.pub ] || { echo "build-baselayout-apk.sh: $apk is signed by \'$signer\''
-        ', not assembly.rsa.pub:" "the assembly key is the only build signer" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py verify "$apk" build/keys/assembly.rsa.pub >/dev/null || { echo "bui'
-        'ld-baselayout-apk.sh: the signature of $apk does not verify against the committed" "build/keys/a'
-        'ssembly.rsa.pub: the apk is not signed with the assembly key" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/group | cmp -s - "$src/build/baselayout/etc/group" |'
-        '| { echo "build-baselayout-apk.sh: etc/group in $apk differs from build/baselayout/etc/group" >&'
-        '2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/hosts | cmp -s - "$src/build/baselayout/etc/hosts" |'
-        '| { echo "build-baselayout-apk.sh: etc/hosts in $apk differs from build/baselayout/etc/hosts" >&'
-        '2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/nsswitch.conf | cmp -s - "$src/build/baselayout/etc/'
-        'nsswitch.conf" || { echo "build-baselayout-apk.sh: etc/nsswitch.conf in $apk differs from the so'
-        'urce" "build/baselayout/etc/nsswitch.conf" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/os-release | cmp -s - "$src/build/baselayout/etc/os-'
-        'release" || { echo "build-baselayout-apk.sh: etc/os-release in $apk differs from the source" "bu'
-        'ild/baselayout/etc/os-release" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/passwd | cmp -s - "$src/build/baselayout/etc/passwd"'
-        ' || { echo "build-baselayout-apk.sh: etc/passwd in $apk differs from build/baselayout/etc/passwd'
+        'signer=$("$PY3" -I -B bin/apk-tool.py signer "$apk") || { echo "build-baselayout-apk.sh: cannot read'
+        ' the signer of $apk" >&2; exit 1; }',
+        '[ "$signer" = assembly.rsa.pub ] || { echo "build-baselayout-apk.sh: $apk is signed by \'$signer\', no'
+        't assembly.rsa.pub:" "the assembly key is the only build signer" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py verify "$apk" build/keys/assembly.rsa.pub >/dev/null || { echo "build-b'
+        'aselayout-apk.sh: the signature of $apk does not verify against the committed" "build/keys/assembly.'
+        'rsa.pub: the apk is not signed with the assembly key" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/group | cmp -s - "$src/build/baselayout/etc/group" || { '
+        'echo "build-baselayout-apk.sh: etc/group in $apk differs from build/baselayout/etc/group" >&2; exit '
+        '1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/hosts | cmp -s - "$src/build/baselayout/etc/hosts" || { '
+        'echo "build-baselayout-apk.sh: etc/hosts in $apk differs from build/baselayout/etc/hosts" >&2; exit '
+        '1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/nsswitch.conf | cmp -s - "$src/build/baselayout/etc/nssw'
+        'itch.conf" || { echo "build-baselayout-apk.sh: etc/nsswitch.conf in $apk differs from the source" "b'
+        'uild/baselayout/etc/nsswitch.conf" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/os-release | cmp -s - "$src/build/baselayout/etc/os-rele'
+        'ase" || { echo "build-baselayout-apk.sh: etc/os-release in $apk differs from the source" "build/base'
+        'layout/etc/os-release" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/passwd | cmp -s - "$src/build/baselayout/etc/passwd" || '
+        '{ echo "build-baselayout-apk.sh: etc/passwd in $apk differs from build/baselayout/etc/passwd" >&2; e'
+        'xit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/protocols | cmp -s - "$src/build/baselayout/etc/protocol'
+        's" || { echo "build-baselayout-apk.sh: etc/protocols in $apk differs from build/baselayout/etc/proto'
+        'cols" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/services | cmp -s - "$src/build/baselayout/etc/services"'
+        ' || { echo "build-baselayout-apk.sh: etc/services in $apk differs from build/baselayout/etc/services'
         '" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/protocols | cmp -s - "$src/build/baselayout/etc/prot'
-        'ocols" || { echo "build-baselayout-apk.sh: etc/protocols in $apk differs from build/baselayout/e'
-        'tc/protocols" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/services | cmp -s - "$src/build/baselayout/etc/servi'
-        'ces" || { echo "build-baselayout-apk.sh: etc/services in $apk differs from build/baselayout/etc/'
-        'services" >&2; exit 1; }',
-        '! "$PY3" -I -B bin/apk-tool.py cat "$apk" etc/ssl/certs/ca-certificates.crt >/dev/null 2>&1 || {'
-        ' echo "build-baselayout-apk.sh: $apk ships a CA bundle file (etc/ssl/certs/ca-certificates.crt)"'
-        ' >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out "$out/in'
-        'puts-manifest-baselayout.json" || { echo "build-baselayout-apk.sh: the inputs manifest could not'
-        ' be made (see above)" >&2; exit 1; }',
+        '"$PY3" -I -B bin/apk-tool.py members "$apk" >"$tmp/members" || { echo "build-baselayout-apk.sh: cann'
+        'ot list the entries of $apk" >&2; exit 1; }',
+        'sed "s/@VERSION@/$apkver/g" "$src/build/baselayout/members.txt" >"$tmp/members.want"',
+        'if ! cmp -s "$tmp/members" "$tmp/members.want"; then',
+        '  first=$(grep -m1 -Fxv -f "$tmp/members.want" "$tmp/members" || true)',
+        '  if [ -z "$first" ]; then',
+        '    first=$(grep -m1 -Fxv -f "$tmp/members" "$tmp/members.want" || true)',
+        '  fi',
+        '  echo "build-baselayout-apk.sh: the entries of $apk differ from build/baselayout/members.txt, first'
+        ' at: ${first:-the order}" >&2',
+        '  exit 1',
+        'fi',
+        '"$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out "$out/inputs'
+        '-manifest-baselayout.json" || { echo "build-baselayout-apk.sh: the inputs manifest could not be made'
+        ' (see above)" >&2; exit 1; }',
         'echo "built $apk"',
     ],
     'bin/build-apk.sh': [

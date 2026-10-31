@@ -449,7 +449,8 @@
         "bin/build-admit.py",
         "bin/build-version-check.py",
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
@@ -484,7 +485,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
@@ -625,7 +627,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
@@ -674,7 +677,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
@@ -2102,7 +2106,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
+      "sha256": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
       "exceptions": [
         {
           "rule": "deny",
@@ -2158,7 +2162,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "e1f6f1fe46297b2bbe6210904a6436f629c11aebc889fbbb2e69016b3bb8ef20",
+      "sha256": "8645b25f68cc4fefbbb5a69a0bb20787c857c7a1dc5735844502144d75d8e82b",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2256,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "0710: the fscache-baselayout apk built with melange in the same sealed call as the fscache apk (a file-only recipe, signed with the committed assembly key; assembled into the images only, not released)",
-      "sha256": "5dcccf3c88f1082f93b4f1ab00138b6bf9e643011b495c52b204953e859cb36d",
+      "sha256": "7a7a09e0a956114cfbc4bd3c152694751dee866849b45b315ce4965e0c720d28",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2521,7 +2525,7 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "ee65db258704b1a243eb01e9d500ebff5711df460180b7a376aa2e18b0466a38",
+      "sha256": "6bdfb91375187b921d611357c73fc6b23edc96476f14e6fcc3b9fe5b3e0944a7",
       "tools": [
         "make"
       ],

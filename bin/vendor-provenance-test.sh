@@ -83,7 +83,8 @@ for f in files:
             bad.append("%s:%d" % (f, n))
 assert not bad, bad
 PY
-# recipe_env_check <dir>: every <dir>/melange*.yaml sets GOFLAGS=-mod=vendor and GOPROXY=off, except the one path in SKIPPED.
+# recipe_env_check <dir>: every <dir>/melange*.yaml sets GOFLAGS=-mod=vendor and GOPROXY=off, except the one path in
+# SKIPPED.
 recipe_env_check() {
   python3 - "$1" <<'PY'
 import glob, re, sys
@@ -96,7 +97,8 @@ for f in glob.glob(sys.argv[1] + "/melange*.yaml"):
 PY
 }
 t AC1 "every build recipe that exists sets GOFLAGS=-mod=vendor and GOPROXY=off" recipe_env_check build
-# the check itself, on recipes written for it. A root folder per case, because the skipped path is relative to the repository root.
+# the check itself, on recipes written for it. A root folder per case, because the skipped path is relative to the
+# repository root.
 GOENV=$'  environment:\n    GOFLAGS: -mod=vendor\n    GOPROXY: "off"\n'
 mkrec() { mkdir -p "$work/rec/$1/build"; printf '%s\n' "$3" >"$work/rec/$1/build/$2"; }
 in_rec() { local root=$1; shift; (cd "$root" && "$@"); }

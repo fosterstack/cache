@@ -31,7 +31,8 @@
 # repo root, and Witness names a product subject relative to the working directory, so the real subject is file:items.json (and file:digests.json for
 # PR 1's sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json, a product of Rebuild's record
 # (subject file:witness-rebuild/verdict.json) uploaded in the witness-rebuild artifact: that is how the verdict travels (it is the stage's only output).
-# THE ITEMS (32, the list REQUIRED below; 0710 adds apk-baselayout-<arch> and inputs-manifest-baselayout), from cache-3f's interface note and its UPDATE. What cache's tests fix:
+# THE ITEMS (32, the list REQUIRED below; 0710 adds apk-baselayout-<arch> and inputs-manifest-baselayout), from
+# cache-3f's interface note and its UPDATE. What cache's tests fix:
 #   - the apk item is `apk-tool.py digest APK` by name, in its output form sha256:<hex> [F L748]. Which sections it covers is cache's to change
 #     (control and data, signature excluded), so this test does not name them; bin/chain-bind-test.sh proves, against the real items-apk, that the item
 #     differs from the whole-file sha256 and ignores the signature;
@@ -148,7 +149,7 @@ for i in $REQUIRED; do
 done
 three=$(set -- $REQUIRED; echo "${1}|${8}|${!#}")      # the first, the eighth and the last item: what act-diff3.json changes
 refuse "005-AC3 three differing items are all named, not just the first" differs "$three" rec.json exp.json act-diff3.json
-for i in apk-fips-aarch64 image-production binary-standard-x86_64 archive-checksums; do
+for i in apk-fips-aarch64 apk-baselayout-x86_64 inputs-manifest-baselayout image-production binary-standard-x86_64 archive-checksums; do
   refuse "005-AC3 an item missing on the Rebuild side ($i) is a difference" missing "$i" rec.json exp.json "act-miss-$i.json"
 done
 refuse "005-AC3 an item missing on the Build side is a difference (and is named with its side)" missing "$(echo $REQUIRED | cut -d' ' -f4)" \
@@ -273,7 +274,7 @@ mkdir "$W/clean";
 [ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
     "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
     "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
-TOTAL=$((pass + failn)); EXPECT=108
+TOTAL=$((pass + failn)); EXPECT=110
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -910,8 +910,10 @@ check(digest == "d8c38764f45d912a00a98e1072c42f75685d0f4ce8e4ca15b97709ad1010ae0
 t, rc, so, se = pva([PBF, "jq -e '.ok \u00e9' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
 check(rc != 0 and not calls(t) and "Traceback" not in se and "closed grammar" in se,
       "owner rule 6: a letter outside ASCII in a jq filter is a refusal, not a crash", first(se))
-# ---- 0710 (the proof that the base-layout apk is not released): the released SET only, read from release-apks.sh's fixed table (its variants and
-# pattern()); nothing here names a key, a signer or a signing call, so a rewrite of how the apks are signed does not touch these cases ----------------
+# ---- 0710 (the proof that the base-layout apk is not released): the released SET only, read from release-apks.sh's
+# fixed table (its variants and
+# pattern()); nothing here names a key, a signer or a signing call, so a rewrite of how the apks are signed does not
+# touch these cases ----------------
 _ra = open(os.path.join(BIN, "release-apks.sh")).read()
 _variants = re.search(r'^variants="([^"]*)"$', _ra, re.M)
 _pattern = re.search(r"^pattern\(\) \{.*\}$", _ra, re.M)

@@ -516,34 +516,60 @@ def baselayout_check_args(uname_s, uname_m, *args):
 def baselayout_arg(name, *args):
     """One value of the base-layout driver's options, as the script uses it (the names of arg, without variant, goarch
     and go-archive)."""
-    opts = parse_options(args, BASELAYOUT_OPTIONS)
+    parse_options(args, BASELAYOUT_OPTIONS)   # called for its refusals: an option the base-layout driver does not know stops here
     if name in ("goarch", "variant", "go-archive"):
         raise Refused("unknown value name " + name, 2)
     return arg(name, *(a for a in args))
 
 
+BASELAYOUT_PACKAGE_KEYS = ("name", "version", "epoch", "description", "copyright")
+BASELAYOUT_COMMANDS = ("mkdir", "chmod", "cp")
+BASELAYOUT_BAD_CHARS = ";&|<>$`()"
+DESTDIR_TOKEN = "${{targets.destdir}}"
+
+
+def baselayout_step_lines(step, recipe):
+    """The lines of one pipeline step of the base-layout recipe, each checked: the step has the key runs only, and every
+    line starts with mkdir, chmod or cp and holds no character that chains or expands a command."""
+    if not isinstance(step, dict) or set(step) != {"runs"} or not isinstance(step["runs"], str):
+        raise Refused("the recipe %s has a pipeline step that is not exactly one runs: text" % recipe)
+    for line in step["runs"].split("\n"):
+        text = line.replace(DESTDIR_TOKEN, "").strip()
+        if not text:
+            continue
+        if text.split()[0] not in BASELAYOUT_COMMANDS:
+            raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, text.split()[0]))
+        if any(c in text for c in BASELAYOUT_BAD_CHARS):
+            raise Refused("the recipe %s has a line with a character that chains or expands a command: %s" % (recipe, line.strip()))
+
+
 def baselayout_facts(recipe, outfile):
-    """The recipe must be the base-layout package: file-only (no fetch, no dependency, no provides, no subpackage).
-    Writes name= and one pin= line per build-environment package."""
+    """The recipe must be the base-layout package and nothing more: a closed set of keys, a build environment of package
+    pins, and pipeline steps that only run mkdir, chmod and cp. Writes name= and one pin= line per build-environment package.
+    Everything is read inside the try, so a wrong shape is a refusal and never a traceback."""
     import yaml
     try:
         d = yaml.safe_load(open(recipe))
-        name = d["package"]["name"]
-        pins = [str(p) for p in d["environment"]["contents"]["packages"]]
-    except (OSError, KeyError, TypeError, AttributeError, yaml.YAMLError):
+        if not isinstance(d, dict) or not isinstance(d.get("package"), dict) or d["package"].get("name") != BASELAYOUT_PACKAGE:
+            raise Refused("the recipe %s is not for the package %s: this driver builds only the base layout" % (recipe, BASELAYOUT_PACKAGE))
+        if set(d) != {"package", "environment", "pipeline"}:
+            raise Refused("the recipe %s must have exactly the keys package, environment and pipeline" % recipe)
+        pkg = d["package"]
+        if not set(pkg) <= set(BASELAYOUT_PACKAGE_KEYS):
+            raise Refused("the recipe %s has a package section with keys other than %s" % (recipe, ", ".join(BASELAYOUT_PACKAGE_KEYS)))
+        env = d["environment"]
+        if not isinstance(env, dict) or set(env) != {"contents"} or not isinstance(env["contents"], dict) \
+                or set(env["contents"]) != {"packages"} or not isinstance(env["contents"]["packages"], list) \
+                or not all(isinstance(p, str) for p in env["contents"]["packages"]):
+            raise Refused("the recipe %s must have an environment of exactly contents: packages: a list of strings" % recipe)
+        if not isinstance(d["pipeline"], list) or not d["pipeline"]:
+            raise Refused("the recipe %s must have a pipeline with at least one step" % recipe)
+        for step in d["pipeline"]:
+            baselayout_step_lines(step, recipe)
+        name = pkg["name"]
+        pins = env["contents"]["packages"]
+    except (OSError, yaml.YAMLError):
         raise Refused("cannot read the recipe %s" % recipe)
-    if name != BASELAYOUT_PACKAGE:
-        raise Refused("the recipe %s is for the package %s, not %s: this driver builds only the base layout"
-            % (recipe, name, BASELAYOUT_PACKAGE))
-    for key in ("dependencies", "provides", "scriptlets"):
-        if key in d["package"]:
-            raise Refused("the recipe %s gives the base layout a %s" % (recipe, key))
-    for key in ("subpackages", "update"):
-        if key in d:
-            raise Refused("the recipe %s has a %s section" % (recipe, key))
-    if any("uses" in s for s in d.get("pipeline", [])):
-        raise Refused("the recipe %s has a pipeline step that fetches or builds (uses): it must only copy files"
-            % recipe)
     with open(outfile, "w") as f:
         f.write("name=%s\n" % name)
         f.write("".join("pin=%s\n" % p for p in pins))

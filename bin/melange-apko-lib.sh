@@ -126,7 +126,7 @@ fx="$work/fx"; stubs="$work/stubs"; stubs2="$work/stubs2"; mkdir -p "$stubs" "$s
 
 # ---------- python library: fixtures, stub back-ends, mutations ------------------------------------------------------
 cat >"$work/lib.py" <<'PY'
-import base64, gzip, hashlib, io, json, os, re, shutil, subprocess, sys, tarfile, zlib
+import base64, gzip, hashlib, io, json, os, re, shutil, stat, subprocess, sys, tarfile, zlib
 import yaml
 ARCHS = ["x86_64", "aarch64"]
 BASE = [("tzdata", "2026a-r0")]   # the archive packages the images keep: no CA bundle and no Wolfi base layout (0710)
@@ -150,8 +150,8 @@ def realsig(ctrl, keyfile, alg):
     with tempfile.TemporaryDirectory() as d:
         open(d + "/k", "w").write(pem); open(d + "/c", "wb").write(ctrl)
         return subprocess.run(["openssl", "dgst", "-" + alg, "-sign", d + "/k", d + "/c"], capture_output=True, check=True).stdout
-def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigalg="RSA", datahash=None, signkey=None):
-    data = gz(tarb(sorted(files.items())))
+def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigalg="RSA", datahash=None, signkey=None, datatar=None):
+    data = gz(datatar or tarb(sorted(files.items())))
     dh = datahash or hashlib.sha256(data).hexdigest()   # a real apk's .PKGINFO carries the sha256 of its data stream
     ctl = [(".PKGINFO", ("pkgname = %s\npkgver = %s\ndatahash = %s\n" % (name, ver, dh)).encode())] + sorted((control or {}).items())
     ctrl = gz(tarb(ctl))
@@ -310,20 +310,24 @@ def fixtures(fx):
     open(fx + "/apko.yaml", "w").write(CFG % dict(fs="fscache")); open(fx + "/apko-fips.yaml", "w").write(CFG % dict(fs="fscache-fips"))
     open(fx + "/fips-module.txt", "w").write("v1.0.0-c2097c7c\n")
     open(fx + "/melange.yaml.tmpl", "w").write(recipe(fx, sums))
+    shutil.copy(os.environ["FSCACHE_ROOT"] + "/build/melange-baselayout.yaml.tmpl", fx + "/melange-baselayout.yaml.tmpl")   # the real base-layout template, pinned below
     # the generator has no test switch: the fixtures run a copy of it whose TEMPLATE_SHA256 line (the only line marked TEST-SUBST) holds the fixture template's own pin
     src = open(os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py")).read().split("\n")
     pin = hashlib.sha256(open(fx + "/melange.yaml.tmpl", "rb").read()).hexdigest()
     hit = [i for i, ln in enumerate(src) if re.match(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"\s+# TEST-SUBST', ln)]
     assert len(hit) == 1, "bin/gen-recipes.py must hold exactly one TEMPLATE_SHA256 line marked TEST-SUBST (found %d)" % len(hit)
     src[hit[0]] = 'TEMPLATE_SHA256 = "%s"   # TEST-SUBST' % pin
+    bhit = [i for i, ln in enumerate(src) if re.match(r'^BASELAYOUT_TEMPLATE_SHA256 = "[0-9a-f]{64}"\s+# TEST-SUBST', ln)]
+    assert len(bhit) == 1, "bin/gen-recipes.py must hold exactly one BASELAYOUT_TEMPLATE_SHA256 line marked TEST-SUBST (found %d)" % len(bhit)
+    src[bhit[0]] = 'BASELAYOUT_TEMPLATE_SHA256 = "%s"   # TEST-SUBST' % hashlib.sha256(open(fx + "/melange-baselayout.yaml.tmpl", "rb").read()).hexdigest()
     open(fx + "/gen-recipes.py", "w").write("\n".join(src))
-    subprocess.run([sys.executable, fx + "/gen-recipes.py", "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
+    subprocess.run([sys.executable, fx + "/gen-recipes.py", "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--baselayout-template", fx + "/melange-baselayout.yaml.tmpl", "--baselayout", fx + "/melange-baselayout.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
     # a repo tree for the refresh job
     r = fx + "/repo"
     os.makedirs(r + "/build/locks", exist_ok=True)
-    for f in ("apko.yaml", "apko-fips.yaml", "melange.yaml", "melange-fips.yaml"): shutil.copy(fx + "/" + f, r + "/build/" + f)
+    for f in ("apko.yaml", "apko-fips.yaml", "melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"): shutil.copy(fx + "/" + f, r + "/build/" + f)
     shutil.copy(fx + "/base.lock.json", r + "/build/locks/apko.base.lock.json"); shutil.copy(fx + "/base-fips.lock.json", r + "/build/locks/apko-fips.base.lock.json")
-    shutil.copy(fx + "/melange.lock", r + "/build/locks/melange.lock"); shutil.copy(fx + "/fips-module.txt", r + "/build/locks/fips-module.txt"); shutil.copy(fx + "/melange.yaml.tmpl", r + "/build/melange.yaml.tmpl")
+    shutil.copy(fx + "/melange.lock", r + "/build/locks/melange.lock"); shutil.copy(fx + "/fips-module.txt", r + "/build/locks/fips-module.txt"); shutil.copy(fx + "/melange.yaml.tmpl", r + "/build/melange.yaml.tmpl"); shutil.copy(fx + "/melange-baselayout.yaml.tmpl", r + "/build/melange-baselayout.yaml.tmpl")
     # apks for tools
     pr = fx + "/pair"
     mkapk(pr + "/a.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"})
@@ -392,6 +396,35 @@ def split(raw):
         d = zlib.decompressobj(31); data = d.decompress(raw); used = len(raw) - len(d.unused_data)
         out.append((raw[:used], data)); raw = d.unused_data
     return out
+def baselayout_tree(recipe, ver):
+    """the data section of the base-layout apk the stub makes: the recipe's `runs:` steps run into a temp destdir (from the checkout, as melange runs them),
+    then every entry is packed with its real type and mode, plus melange's SBOM file; STUB_BL_BAD / STUB_BL_BUNDLE tamper with it"""
+    import tempfile
+    dest = tempfile.mkdtemp(prefix="bl-dest.")
+    for st in recipe["pipeline"]:
+        r = subprocess.run(["bash", "-e", "-c", "umask 022\n" + st["runs"].replace("${{targets.destdir}}", dest)], cwd=os.environ["STUB_SRC"], capture_output=True, text=True)
+        if r.returncode: sys.exit("stub melange: a recipe step failed: " + r.stderr)
+    sbom = "var/lib/db/sbom/fscache-baselayout-%s-r0.spdx.json" % ver
+    os.umask(0o022)
+    os.makedirs(os.path.join(dest, os.path.dirname(sbom)), exist_ok=True)
+    open(os.path.join(dest, sbom), "w").write("{}")
+    bad = os.environ.get("STUB_BL_BAD")
+    if bad: open(os.path.join(dest, bad), "ab").write(b"tampered")
+    if os.environ.get("STUB_BL_BUNDLE"):
+        os.makedirs(os.path.join(dest, "etc/ssl/certs"), exist_ok=True)
+        open(os.path.join(dest, "etc/ssl/certs/ca-certificates.crt"), "wb").write(b"bundle")
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for root_, dirs, fs in os.walk(dest):
+            dirs.sort()
+            for n in sorted(dirs + fs):
+                p = os.path.join(root_, n); rel = os.path.relpath(p, dest); st = os.lstat(p)
+                i = tarfile.TarInfo(rel); i.mtime = 0; i.mode = stat.S_IMODE(st.st_mode)
+                if os.path.islink(p): i.type = tarfile.SYMTYPE; i.linkname = os.readlink(p); t.addfile(i)
+                elif os.path.isdir(p): i.type = tarfile.DIRTYPE; t.addfile(i)
+                else:
+                    data = open(p, "rb").read(); i.size = len(data); t.addfile(i, io.BytesIO(data))
+    return b.getvalue()
 def stubbuild(recipe_path, out, arch, cache):
     d = yaml.safe_load(open(recipe_path)); pkg = d["package"]; name = pkg["name"]; ver = str(pkg["version"])
     goarch = {"x86_64": "amd64", "aarch64": "arm64"}[arch]
@@ -407,16 +440,13 @@ def stubbuild(recipe_path, out, arch, cache):
                 "\tdep\tgithub.com/example/x\tv1.0.0\n\tdep\tgolang.org/x/sys\tv0.30.0\n\tbuild\t-trimpath=true\n\tbuild\tvcs.revision=" + subprocess.run(["git", "-C", os.environ.get("STUB_SRC", "."), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() + "\n\tbuild\tvcs.modified=false\n")
         if name.endswith("-fips"): text += "\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n"
     files = {"usr/bin/fscache": ("fscache-binary %s %s %s" % (name, arch, os.environ.get("STUB_SALT", ""))).encode(), "usr/share/fscache/buildinfo.txt": text.encode()}
-    if name == "fscache-baselayout":   # the file-only recipe (0710): the files of build/baselayout/etc, put under etc/
-        etc = os.environ["STUB_SRC"] + "/build/baselayout/etc"
-        files = {"etc/" + f: open(etc + "/" + f, "rb").read() for f in sorted(os.listdir(etc))}
-        bad = os.environ.get("STUB_BL_BAD")
-        if bad: files[bad] = files.get(bad, b"") + b"tampered"
-        if os.environ.get("STUB_BL_BUNDLE"): files["etc/ssl/certs/ca-certificates.crt"] = b"bundle"
+    datatar = None
+    if name == "fscache-baselayout":   # the file-only recipe (0710): its own steps run into a folder and that real tree is packed, links included
+        datatar = baselayout_tree(d, ver)
     envd = d.get("environment", {})
     if os.environ.get("STUB_ENV_EXTRA"): envd = {"contents": {"packages": list(envd.get("contents", {}).get("packages", [])) + [os.environ["STUB_ENV_EXTRA"]]}}   # a package melange used that is not in the lock
     ctl = {".melange.yaml": yaml.safe_dump({"package": {"name": name}, "environment": envd}).encode()}
-    mkapk("%s/%s/%s-%s-r0.apk" % (out, arch, name, ver), name, ver + "-r0", files, control=ctl, signer=os.environ.get("STUB_SIGNER", "assembly.rsa.pub"), signkey=os.environ.get("STUB_SIGNKEY") or None)
+    mkapk("%s/%s/%s-%s-r0.apk" % (out, arch, name, ver), name, ver + "-r0", files, datatar=datatar, control=ctl, signer=os.environ.get("STUB_SIGNER", "assembly.rsa.pub"), signkey=os.environ.get("STUB_SIGNKEY") or None)
     open("%s/%s/APKINDEX.tar.gz" % (out, arch), "wb").write(b"index")
 def stuboci(out, lockfile, salt, sde, tamper=False, noindex=False):
     seed = hashlib.sha256(open(lockfile, "rb").read()).hexdigest() + salt + sde
