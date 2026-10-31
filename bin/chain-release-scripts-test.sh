@@ -90,7 +90,12 @@ echo "gh $*" >> "$LOG"
 if [ "$1 $2" = "release create" ] || [ "$1 $2" = "release edit" ]; then a=("$@"); for i in "${!a[@]}"; do
   [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"; done; fi
 pub="$LOG.published"
-if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; for f in "$@"; do cp "$f" "$pub/"; done
+if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; clobber=0; ex=
+  for f in "$@"; do [ "$f" = --clobber ] && clobber=1; done
+  # like gh (v2.45.0): without --clobber it checks every name first, and one attached name refuses the whole upload
+  if [ "$clobber" = 0 ]; then for f in "$@"; do [ ! -e "$pub/${f##*/}" ] || ex="$ex ${f##*/}"; done
+    [ -z "$ex" ] || { echo "asset under the same name already exists:$ex" >&2; exit 1; }; fi
+  for f in "$@"; do [ "$f" = --clobber ] || cp "$f" "$pub/"; done
 elif [ "$1 $2" = "release download" ]; then d=; while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; mkdir -p "$d"; cp "$pub"/* "$d"/ 2>/dev/null || true
   [ -z "${GH_DROP:-}" ] || rm -f "$d/$GH_DROP"; [ -z "${GH_ALTER:-}" ] || printf x >> "$d/$GH_ALTER"; fi''',
  "bin/vex-forms.py": r'''import json, os, sys
@@ -636,6 +641,38 @@ for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: con
     t4 = full_assets(); rc4, so4, se4 = run(t4, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": err})
     check(rc4 != 0 and not [l for l in log(t4) if l.startswith("gh release create") or l.startswith("gh release upload")], "AC9 R3 a failed release view (%s) is not 'no release': nothing is created or uploaded" % err, "rc=%s %s" % (rc4, first(se4)))
 
+# A re-run of the job (cache6 P2, cache#798 round 1): release-sign signs again (new bundles, the run attempt in the
+# manifest), so its evidence never equals the attached one, and gh refuses the whole upload when any name is
+# attached. gh's refusal is the behaviour: no step deletes an attached asset, an operator does by hand
+# before a re-run (REQ-CHAIN-007-AC9).
+def pub_of(t): return os.path.join(t, "calls.log.published")
+def pub_bytes(t):
+    return {n: open(os.path.join(pub_of(t), n), "rb").read() for n in sorted(os.listdir(pub_of(t)))}
+tb = full_assets(); rcb1, sob, seb = run(tb, "release-assets", creds=["GH_TOKEN"]); before = pub_bytes(tb)
+rcb, sob, seb = run(tb, "release-assets", creds=["GH_TOKEN"])
+check(rcb1 == 0 and rcb != 0 and "already exists" in seb,
+      "AC9 a second run on a release that holds the assets fails, naming them (gh refuses)",
+      "rc=%s/%s %s" % (rcb1, rcb, first(seb)))
+check(before and pub_bytes(tb) == before,
+      "AC9 a refused second run leaves every attached file as it was and copies nothing")
+tc = full_assets(); rcc1, soc, sec = run(tc, "release-assets", creds=["GH_TOKEN"])
+for n in sorted(pub_bytes(tc))[3:]: os.remove(os.path.join(pub_of(tc), n))
+three = pub_bytes(tc)
+manifest = os.path.join(tc, "release-metadata", "release-manifest.json")
+man1 = open(manifest, "rb").read()
+# the job ran again: it signs again, and its manifest carries the new run attempt
+rcs, sos, ses = run(tc, "release-sign", creds=REG, env={"GITHUB_RUN_ATTEMPT": "2"})
+man2 = open(manifest, "rb").read()
+rcc, soc, sec = run(tc, "release-assets", creds=["GH_TOKEN"])
+check(rcc1 == 0 and rcs == 0 and man2 != man1 and b"attempts/2" in man2 and len(three) == 3
+      and rcc != 0 and "already exists" in sec,
+      "AC9 a re-signed re-run over a release that holds three of the files fails, naming them",
+      "rc=%s/%s/%s %s" % (rcc1, rcs, rcc, first(sec)))
+check(pub_bytes(tc) == three,
+      "AC9 that refused re-run attaches nothing of its new evidence: the release holds exactly its three files")
+src = open(os.path.join(tc, "bin", "release-assets.sh")).read()
+check("--clobber" not in src and not [l for t_ in (tb, tc) for l in log(t_) if "--clobber" in l],
+      "AC9 release-assets.sh never passes --clobber, in the source or in any run above")
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0 and "release-upload/release-files.sha256 " in L + " " and "release-upload/release-manifest.json" in L and "release-upload/release-files.sha256.bundle" in L, "AC13 the four metadata files, release-files.sha256 and its bundle are attached", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); os.remove(os.path.join(t, "release-evidence/release-files.sha256.bundle")); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
@@ -880,7 +917,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "396"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "401"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

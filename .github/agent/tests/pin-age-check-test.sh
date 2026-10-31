@@ -381,7 +381,7 @@ CASE="inventory: a run line of 200 repeated expressions (a pattern-backtracking 
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
 try:
@@ -390,7 +390,7 @@ except RuntimeError as e:
     assert "refusing to read it partially" in str(e)
 else:
     raise AssertionError("an over-long command line was read as its prefix")
-assert time.time() - t < 3, time.time() - t
+assert time.process_time() - t < 3, time.process_time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -528,13 +528,13 @@ CASE="an unclosed run of expression openers in a huge script is read in linear t
 check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
     try:
         fn()
     except RuntimeError as e:
         assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
-assert time.time() - t < 3, time.time() - t
+assert time.process_time() - t < 3, time.process_time() - t
 # a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
 pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
 try:
@@ -759,10 +759,10 @@ CASE="an option chain of a thousand tokens before pip/docker is read in millisec
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("pip" + " -a" * 1000 + " x", "docker" + " -a" * 1000 + " x", "python3 -m pip" + " -q" * 1000 + " install evilpkg==9.9.9"):
     inv.inventory({"bin/x.sh": body + "\n"})
-assert time.time() - t < 2, time.time() - t
+assert time.process_time() - t < 2, time.process_time() - t
 assert inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker --context x run evil/x:latest\n"})
 PY
 
@@ -770,7 +770,7 @@ CASE="a hostile many-line file or a step that repeats one command hundreds of ti
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
               {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n" + "".join("          " + "pip install " * 320 + "\n" for _ in range(100))},
               {"bin/y.sh": "echo\n" * 30000}):
@@ -780,7 +780,7 @@ for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
         pass
     else:
         raise AssertionError("a hostile file was read")
-assert time.time() - t < 5, time.time() - t
+assert time.process_time() - t < 5, time.process_time() - t
 got = inv.inventory({"bin/x.sh": "cd x&&pip install foo==1.0\necho hi;pip install bar==2.0\n"})
 assert "package:pypi/foo@1.0" in got and "package:pypi/bar@2.0" in got
 PY
@@ -3779,6 +3779,18 @@ check test "$rc" -eq 0
 vfile outbound-test bin/check-no-outbound-test.sh 'mkdir -p "$root/internal/vendor/z"'
 CASE="the outbound check's test may name the vendored folder: it builds a vendor/ fixture (exit 0)"
 check test "$rc" -eq 0
+vfile helper-listed bin/build-apk-helper.py '    if not os.path.isdir(src + "/vendor"):'
+CASE="the build-apk helper may name the vendored folder: its vendor/ refusal moved out of build-apk.sh (exit 0)"
+check test "$rc" -eq 0
+vfile shape-listed bin/chain-test-shape.py '        "--modules $src/vendor/modules.txt",'
+CASE="the shape file may name the vendored folder: it holds the build-apk.sh sbom line as exact text (exit 0)"
+check test "$rc" -eq 0
+vfile sibling-py bin/build-apk-helper2.py '    if not os.path.isdir(src + "/vendor"):'
+CASE="an unlisted .py beside the listed helper (build-apk-helper2.py) naming the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
+vfile other-shape-py bin/chain-check-shape.py '        "--modules $src/vendor/modules.txt",'
+CASE="an unlisted .py shape file (bin/chain-check-shape.py) that names the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
 python3 - "$root" <<'PY'
 import importlib.util, sys
 sys.path.insert(0, ".")
@@ -3791,13 +3803,20 @@ naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "ve
           and any(m._names_vendor(l) for l in t.split("\n"))}
 extra = m.vendor_list_extras(root, files)
 import tempfile
+# listed ahead of the chain landing: the govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain
+# branch and not yet on main
+ahead = ("bin/install-scanner.sh",)
 _t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
-_names = ("bin/install-scanner.sh", "bin/check-govulncheck.py", "bin/release-metadata.py")
+# not built from ahead: a change of ahead must fail the assert below
+_names = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py",
+          "bin/check-govulncheck.py", "bin/release-metadata.py")
 for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
 _quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
-assert _quiet == ["bin/check-govulncheck.py", "bin/install-scanner.sh", "bin/release-metadata.py"], _quiet     # the rule itself still reports every quiet listed file
-assert [p for p in _quiet if p != "bin/install-scanner.sh"] == ["bin/check-govulncheck.py", "bin/release-metadata.py"]   # the one skip below removes that one path and no other
-extra = [p for p in extra if p != "bin/install-scanner.sh"]   # listed ahead of the chain landing: its govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain branch and not yet on main
+assert _quiet == sorted(_names), _quiet      # the rule itself still reports every quiet listed file
+# ahead drops exactly one path and no other
+assert [p for p in _quiet if p not in ahead] == [
+    "bin/build-apk-helper.py", "bin/chain-test-shape.py", "bin/check-govulncheck.py", "bin/release-metadata.py"]
+extra = [p for p in extra if p not in ahead]
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
 assert not missing, "names vendor but not listed: %s" % sorted(missing)
@@ -5140,6 +5159,86 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
     rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", "--tools-file", t])
 assert rc == 2 and err.getvalue().count("\n") == 1 and "not a pass" in err.getvalue() and "Traceback" not in err.getvalue(), (rc, err.getvalue())
 assert ac._checked_pins({"gcr.io/a/b": {"keyless": [ID], "source": "a note", "key_source": "a note"}})
+PY
+CASE="pin age (error lines): an error that carries a path with newlines is one line at every print site"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ac)
+root = sys.argv[2]
+EVIL = "a\n::warning::x\n\x1b[31m##[warning]y/requirements.txt is too large to read safely"
+def run(argv):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(argv)
+    return rc, err.getvalue()
+def one_line(label, rc, text):
+    lines = text.split("\n")
+    ok = rc == 2 and len(lines) == 2 and lines[1] == "" and not any(l.startswith("::") for l in lines)
+    assert ok, (label, rc, text)
+    assert "::warning::x" in lines[0] and "too large to read safely" in lines[0], (label, text)
+    assert "\x1b" not in lines[0] and "##[" not in lines[0], (label, text)
+def raising(error):
+    def boom(*a, **k):
+        raise error
+    return boom
+SCAN = ["--root", root, "--base", "HEAD", "--head", "HEAD"]
+VERIFY = ["cosign-verify", "--root", root, "--head", "HEAD"]
+ac.inv.load_at = raising(RuntimeError(EVIL))      # the tree read: its error carries a path of the pull request
+one_line("cosign-verify, a tree read error", *run(VERIFY + ["--cosign-image", "gcr.io/x/y@sha256:" + "0" * 64]))
+one_line("the age check, a tree read error", *run(SCAN))
+ac._json_file = raising(OSError(EVIL))
+one_line("cosign-verify, a tools file error", *run(VERIFY + ["--tools-file", "x"]))
+ac.inv.load_at = lambda *a, **k: {}
+ac._run = raising(RuntimeError(EVIL))
+one_line("the age check, a RuntimeError while it runs", *run(SCAN))
+ac._run = raising(ac.CouldNotLook(EVIL))
+one_line("the age check, a CouldNotLook", *run(SCAN))
+PY
+CASE="pin age (report lines): pull request text in a report line is one line, at each report line that prints it"
+check python3 - "$chk" "$work" <<'PY'
+import argparse, contextlib, hashlib, importlib.util, io, json, sys, types
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ac)
+out_json = sys.argv[2] + "/report-lines.json"
+def evil(tag):
+    return tag + "\n::warning::x\n\x1b[31m##[warning]y"
+ITEM, REASON, KEY, PATH = (evil(t) for t in ("item", "reason", "key", "path"))
+LINE = hashlib.sha256(b"curl x").hexdigest() + ":curl x"      # every unmeasured line is a hash, a colon, the text
+def item(key):
+    return types.SimpleNamespace(key=key, label="", name="base:b.json", src=("w.yml",))
+a = argparse.Namespace(root=".", base="b", head="h", exceptions=None, base_inputs=None, json=out_json, min_days=3.0)
+ac._unmeasured_counts = lambda *x: {(PATH, "a thing", "L"): {"h0": 1}, ("scripts/run.sh", "a thing", LINE): {"h1": 1}}
+ac._context_regressions = lambda *x: {}
+ac._context_proved = lambda *x: True
+ac.ruled_unpinned_lines = lambda *x: []
+ac.drop_ruled_unpinned = lambda moved, ruled: moved
+ac.load_base_inputs = lambda *x, **k: {}
+ac.split_base_inputs = lambda moved, paths: (moved, [item("tool:file:bin/tools.json@(file)")])
+ac.split_ruled_local_calls = lambda moved, rulings: (moved, [(item(KEY), "ruled")])
+ac.split_go_exempt = lambda moved, root, head: ([], [item("tool:go@1.23.4")])
+ac.load_file_pins = lambda *x, **k: {}
+ac.FilePinSource = lambda *x: None
+ac.Live = lambda *x: None
+ac.check = lambda *x: [{"item": ITEM, "label": "", "ok": False, "proof": None, "reason": REASON}]
+ac.load_ruled_text = lambda *x, **k: {("scripts/run.sh", "a thing", LINE.split(":", 1)[0], "h1"): ("ruled", 1)}
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = ac._run(a, [item("moved")], None, 0)
+text = out.getvalue()
+lines = text.split("\n")
+# 8 lines: the header, one for each of the six report lines (the first holds two fields), then the verdict
+assert rc == 1 and len(lines) == 9 and lines[-1] == "", (rc, text)
+assert not any(l.lstrip().startswith("::") for l in lines), text
+assert "##[" not in text and "\x1b" not in text, text
+for word in ("item", "reason", "key", "path"):
+    assert word + " ::warning::x" in text, (word, text)      # the text stays, made inert
+rows = json.load(open(out_json))["moved"]
+items = [r["item"] for r in rows]
+# the data file keeps the raw text
+assert ITEM in items and "unmeasured:" + PATH in items and KEY in items, items
 PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
