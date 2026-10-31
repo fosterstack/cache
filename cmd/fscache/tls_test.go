@@ -409,9 +409,8 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 	t.Run("valid start", func(t *testing.T) {
 		clearEnv(t)
 		freshRegistry(t)
-		addr := freePort(t)
 		t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-		t.Setenv("FSCACHE_ADDR", addr)
+		t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
 		stderr := captureStderr(t)
@@ -420,6 +419,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		err := serve(ctx, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), func() {
 			defer cancel()
+			addr := boundAddr(t, &logs)
 			c := tlsTestClient(p.leaf)
 			for _, path := range []string{"/metrics", "/statusz", "/"} {
 				code, body, _ := getTLS(t, c, "https://"+addr+path)
@@ -472,9 +472,8 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 	t.Run("handshake errors stay out of an INFO-level log and stderr", func(t *testing.T) {
 		clearEnv(t)
 		freshRegistry(t)
-		addr := freePort(t)
 		t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-		t.Setenv("FSCACHE_ADDR", addr)
+		t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
 		stderr := captureStderr(t)
@@ -482,7 +481,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		err := serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 			defer cancel()
-			induceHandshakeErrors(t, addr)
+			induceHandshakeErrors(t, boundAddr(t, &logs))
 			time.Sleep(300 * time.Millisecond)
 		})
 		if err != nil {
@@ -566,9 +565,8 @@ func TestTLSCertificateReadOnceAtStartup(t *testing.T) {
 	repl := writePair(t, replDir, "live", "MARKER-NEW-4e5f6a")
 	clearEnv(t)
 	freshRegistry(t)
-	addr := freePort(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	t.Setenv("FSCACHE_TLS_CERT", old.certPath)
 	t.Setenv("FSCACHE_TLS_KEY", old.keyPath)
 
@@ -580,9 +578,11 @@ func TestTLSCertificateReadOnceAtStartup(t *testing.T) {
 		TLSClientConfig:   &tls.Config{RootCAs: both, MinVersion: tls.VersionTLS12},
 	}}
 
+	var logs syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
-	err := serve(ctx, quietLogger(), func() {
+	err := serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 		defer cancel()
+		addr := boundAddr(t, &logs)
 		if _, _, got := getTLS(t, c, "https://"+addr+"/healthz"); got == nil || got.SerialNumber.Cmp(old.leaf.SerialNumber) != 0 {
 			t.Fatalf("first connection: presented %v, want the original certificate", got)
 		}
@@ -604,9 +604,11 @@ func TestTLSCertificateReadOnceAtStartup(t *testing.T) {
 	}
 
 	freshRegistry(t)
+	var logs2 syncBuffer
 	ctx, cancel = context.WithCancel(context.Background())
-	err = serve(ctx, quietLogger(), func() {
+	err = serve(ctx, slog.New(slog.NewJSONHandler(&logs2, nil)), func() {
 		defer cancel()
+		addr := boundAddr(t, &logs2)
 		if _, _, got := getTLS(t, c, "https://"+addr+"/healthz"); got == nil || got.SerialNumber.Cmp(repl.leaf.SerialNumber) != 0 {
 			t.Errorf("after the restart: presented %v, want the replacement certificate", got)
 		}
@@ -633,7 +635,7 @@ func TestStartupLineCarriesTLSState(t *testing.T) {
 			clearEnv(t)
 			freshRegistry(t)
 			t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-			t.Setenv("FSCACHE_ADDR", freePort(t))
+			t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -724,13 +726,14 @@ func TestTLSServeOffersOnlyHTTP11(t *testing.T) {
 	p := writePair(t, t.TempDir(), "alpn", "MARKER-ALPN-77aa01")
 	clearEnv(t)
 	freshRegistry(t)
-	addr := freePort(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 	t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
 	pool := x509.NewCertPool()
 	pool.AddCert(p.leaf)
+	var logs syncBuffer
+	var addr string // set in the ready hook, before dial is used
 	dial := func(protos ...string) (tls.ConnectionState, error) {
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
 			&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, NextProtos: protos})
@@ -741,8 +744,9 @@ func TestTLSServeOffersOnlyHTTP11(t *testing.T) {
 		return conn.ConnectionState(), nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	err := serve(ctx, quietLogger(), func() {
+	err := serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 		defer cancel()
+		addr = boundAddr(t, &logs)
 		if st, err := dial("h2"); err == nil {
 			t.Errorf("an h2-only ALPN offer completed a handshake (negotiated %q), want a failed ALPN negotiation", st.NegotiatedProtocol)
 		}
