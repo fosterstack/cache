@@ -4,8 +4,9 @@
 # The guide's format (cache-3f's): every command is a line of a ```sh fenced block (a line ending in a backslash joins the next; lines
 # starting with # are comments; other fenced blocks are prose), unattended, in customer order, at most ten in all. Placeholders are
 # ALL-CAPS in angle brackets, each defined once in a list line before the first fence, as  - `<NAME>`: what it is. Check knows
-# <IMAGE_REF> and <IMAGE_REF_FIPS> ($CANDIDATE_REPOSITORY@ the image-production / image-fips digest of the digest list) and <TAG>
-# ($GITHUB_REF_NAME). <RELEASE_KEY> is Release's: only a listed command may name it, and Check never holds the verified key.
+# <IMAGE_REF> and <IMAGE_REF_FIPS> ($CANDIDATE_REPOSITORY@ the image-production / image-fips digest of the digest list)
+# and <TAG> ($GITHUB_REF_NAME). <RELEASE_KEY> is Release's: only a listed command may name it, and Check never holds
+# the verified key.
 # A command RUNS only when it is a pipeline of the verify forms (cosign verify, cosign verify-attestation, cosign verify-blob,
 # cosign verify-blob-attestation) and jq, with no other shell syntax ($ only inside single quotes), and every
 # operand is a local file or a placeholder Check fills with a local value; a runnable command that exits non-zero fails the check.

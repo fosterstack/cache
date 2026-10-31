@@ -507,7 +507,8 @@ pm p_vfx     check-guide.sh     'cosign verify-foo x'                 'cosign'  
 pm p_vscan   check-scan.sh      'cosign verify "$IMG"'                'cosign'            "AC8 cosign verify in a check script other than the guide check (Q10)"
 pv() { mkdir -p "$work/$1"; cp "$work"/plain/*.sh "$work/$1/"; printf '%s\n' "$2" >> "$work/$1/check-guide.sh"; expect ok "$3" "" plain "$work/$1"/check-*.sh; }
 pv p_okv     'case "$1 $2" in "cosign verify"|"cosign verify-attestation"|"cosign verify-blob"|"cosign verify-blob-attestation") ;; esac' "AC8 the guide check may name the cosign verify commands (Q10)"
-pm p_okg     check-guide.sh     'gh attestation verify "oci://$REF" --owner o' 'attest' "AC8 the guide check may no longer name gh attestation verify (F2: it verifies by identity)"
+pm p_okg     check-guide.sh     'gh attestation verify "oci://$REF" --owner o' 'attest' \
+   "AC8 the guide check may no longer name gh attestation verify (F2: it verifies by identity)"
 pm p_com     check-fips.sh      '# cosign sign is not used here'      'cosign'            "AC8 a signer named in a comment (over-reports by design)"
 mkdir -p "$work/l" && python3 - "$work/l" <<'PY'
 import hashlib, json, os, sys

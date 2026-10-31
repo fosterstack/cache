@@ -212,7 +212,8 @@ def shell_segments(c):
 
 def no_flag(c):
     """The first flag of NO_FLAGS the command carries (with or without =value), or None."""
-    return next((w.partition("=")[0] for seg in shell_segments(c) for w in seg if w.partition("=")[0] in NO_FLAGS), None)
+    flags = (w.partition("=")[0] for seg in shell_segments(c) for w in seg)
+    return next((f for f in flags if f in NO_FLAGS), None)
 
 
 def key_error(c):
@@ -289,8 +290,8 @@ for c in cmds:
             fail("the command `%s` uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
     kind, why = classify(c)
     if no_flag(c):
-        fail("the command `%s` carries %s: it skips the public log or sends cosign to another log, so no command of the guide may (listed or not)"
-             % (c, no_flag(c)))
+        fail("the command `%s` carries %s: it skips the public log or sends cosign to another log, so no command "
+             "of the guide may (listed or not)" % (c, no_flag(c)))
     if kind == "syntax":
         fail("the command `%s` has %s: no command of the guide may, listed as not-run or not (Release runs the listed commands unattended)" % (c, why))
     for u in sorted(set(PH.findall(c))):

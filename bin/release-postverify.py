@@ -4,8 +4,8 @@ Reads docs/verify-release.cannot-run.json (rows {command, reason}, the exact-tex
 each command against what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then
 docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
 registry, with the image-production / image-fips digest of witness-build/digests.json filled in; any other command
-runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <RELEASE_KEY> = the verified
-release public key file (verified_key below; nothing else can fill it).
+runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <RELEASE_KEY> = the
+verified release public key file (verified_key below; nothing else can fill it).
 
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
 verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify form, no other shell
@@ -149,7 +149,7 @@ def form_error(c, jq_only=False):
 def key_error(c):
     """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
     whose value is <RELEASE_KEY>, and none carries a flag of NO_FLAGS; else why not. The words are the shell's
-    (a quoted spelling like --insecure-ignore-tlo''g is the flag), and the placeholder is a marker no file name can equal."""
+    (a quoted spelling like --insecure-ignore-tlo''g is the flag); the placeholder is a marker no file name equals."""
     for seg in split_pipe(words_of(c, PHM)):
         if seg[0] == "jq":
             continue
