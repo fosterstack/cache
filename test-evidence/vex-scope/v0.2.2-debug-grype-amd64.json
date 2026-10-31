@@ -1,0 +1,97 @@
+{
+ "matches": [
+  {
+   "vulnerability": {
+    "id": "GO-2026-6809",
+    "severity": "Medium",
+    "fix": {
+     "versions": [
+      "1.26.10",
+      "1.27.3"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "1.26.10",
+       "date": "2026-10-20",
+       "kind": "release"
+      },
+      {
+       "version": "1.27.3",
+       "date": "2026-10-20",
+       "kind": "release"
+      }
+     ]
+    }
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2026-111943"
+    }
+   ],
+   "artifact": {
+    "name": "stdlib",
+    "version": "go1.27.2",
+    "purl": "pkg:golang/stdlib@1.27.2",
+    "type": "go-module"
+   }
+  }
+ ],
+ "ignoredMatches": [
+  {
+   "vulnerability": {
+    "id": "CVE-2024-58251",
+    "severity": "Low",
+    "fix": {
+     "versions": [],
+     "state": ""
+    }
+   },
+   "relatedVulnerabilities": [],
+   "artifact": {
+    "name": "busybox",
+    "version": "1.37.0",
+    "purl": "pkg:generic/busybox@1.37.0",
+    "type": "binary"
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2025-46394",
+    "severity": "Low",
+    "fix": {
+     "versions": [],
+     "state": ""
+    }
+   },
+   "relatedVulnerabilities": [],
+   "artifact": {
+    "name": "busybox",
+    "version": "1.37.0",
+    "purl": "pkg:generic/busybox@1.37.0",
+    "type": "binary"
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2025-60876",
+    "severity": "Medium",
+    "fix": {
+     "versions": [],
+     "state": ""
+    }
+   },
+   "relatedVulnerabilities": [],
+   "artifact": {
+    "name": "busybox",
+    "version": "1.37.0",
+    "purl": "pkg:generic/busybox@1.37.0",
+    "type": "binary"
+   }
+  }
+ ],
+ "descriptor": {
+  "name": "grype",
+  "version": "0.118.0"
+ }
+}

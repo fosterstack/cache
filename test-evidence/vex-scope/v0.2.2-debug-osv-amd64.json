@@ -1,0 +1,246 @@
+{
+ "results": [
+  {
+   "source": {
+    "path": "/usr/local/bin/fscache",
+    "type": "artifact"
+   },
+   "packages": [
+    {
+     "package": {
+      "name": "stdlib",
+      "version": "1.27.2",
+      "ecosystem": "Go",
+      "image_origin_details": {
+       "index": 15
+      }
+     },
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-6809"
+       ],
+       "aliases": [
+        "BIT-golang-2026-111943",
+        "CVE-2026-111943",
+        "GO-2026-6809",
+        "RUSTSEC-2026-0381",
+        "RUSTSEC-2026-0382",
+        "RUSTSEC-2026-0383"
+       ],
+       "max_severity": ""
+      }
+     ],
+     "vulnerabilities": [
+      {
+       "affected": [
+        {
+         "database_specific": {
+          "source": "https://vuln.go.dev/ID/GO-2026-6809.json"
+         },
+         "ecosystem_specific": {
+          "imports": [
+           {
+            "path": "crypto/x509",
+            "symbols": [
+             "Certificate.Verify"
+            ]
+           }
+          ]
+         },
+         "package": {
+          "ecosystem": "Go",
+          "name": "stdlib",
+          "purl": "pkg:golang/stdlib"
+         },
+         "ranges": [
+          {
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "1.26.10"
+            },
+            {
+             "introduced": "1.27.0-0"
+            },
+            {
+             "fixed": "1.27.3"
+            }
+           ],
+           "type": "SEMVER"
+          }
+         ]
+        }
+       ],
+       "aliases": [
+        "BIT-golang-2026-111943",
+        "CVE-2026-111943",
+        "RUSTSEC-2026-0381",
+        "RUSTSEC-2026-0382",
+        "RUSTSEC-2026-0383"
+       ],
+       "database_specific": {
+        "review_status": "REVIEWED",
+        "url": "https://pkg.go.dev/vuln/GO-2026-6809"
+       },
+       "details": "On most platforms, Go uses the given system root certificates. However, in some narrower cases, the system trust stores may not be updated without further action.\n\nTo defend against the narrower set of cases that may remain affected, a denylist was added in crypto/x509 to return an error when calling Verify with any of the known intermediate certificates that are no longer considered to be trustworthy.",
+       "id": "GO-2026-6809",
+       "modified": "2026-10-29T10:55:54.096394276Z",
+       "published": "2026-10-21T00:27:29Z",
+       "references": [
+        {
+         "type": "FIX",
+         "url": "https://go.dev/cl/851047"
+        },
+        {
+         "type": "REPORT",
+         "url": "https://go.dev/issue/82345"
+        },
+        {
+         "type": "WEB",
+         "url": "https://groups.google.com/g/golang-announce/c/66pojueaQek"
+        }
+       ],
+       "schema_version": "1.9.0",
+       "summary": "Distrust compromised intermediate certificates in crypto/x509"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "experimental_config": {
+  "licenses": {
+   "summary": false,
+   "allowlist": null
+  }
+ },
+ "image_metadata": {
+  "os": "Distroless",
+  "layer_metadata": [
+   {
+    "diff_id": "sha256:9486261b5a13f63ca6904b36721527ac8f19df53d300560138d69ae9b4c203de",
+    "command": "bazel build @trixie//base-files/amd64:data_statusd",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:621c35e751a51a9a9dc3e80aa0b7fe8be2a93402ea6ccd307d30852cd7776cda",
+    "command": "bazel build @trixie//netbase/amd64:data_statusd",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:763a77745f27b86cf26b97887b6842d83720e63b1c48848c0ba9ee54e351d63a",
+    "command": "bazel build @trixie//tzdata/amd64:data_statusd",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:f0d0eff4c2312a7bd6e21797bdfea5eb35f60e76b555ce2b22794424af2cad36",
+    "command": "bazel build @trixie//tzdata-legacy/amd64:data_statusd",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:275a30dd8ce958b21daa9ad962c6fbc09f98306ee2f486b65c9075dc257b1412",
+    "command": "bazel build @trixie//media-types/amd64:data_statusd",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:4d049f83d9cf21d1f5cc0e11deaf36df02790d0e60c1a3829538fb4b61685368",
+    "command": "bazel build //common:rootfs",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:af5aa97ebe6ce1604747ec1e21af7136ded391bcabe4acef882e718a87c86bcc",
+    "command": "bazel build //common:passwd",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:6f1cdceb6a3146f0ccb986521156bef8a422cdbb0863396f7f751f575ba308f4",
+    "command": "bazel build //common:home",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:bd3cdfae1d3fdd83a2231d608969b38b82349777c2fff9a7c12d54f8ac5c9b38",
+    "command": "bazel build //common:group",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:4cde6b0bb6f50a5f255eef7b2a42162c661cf776b803225dcac9a659e396bb6b",
+    "command": "bazel build //common:tmp",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:ad51d0769d16ba578106a177987dfe3d2e02c1668c852b795b2f6b024068242a",
+    "command": "bazel build //static:nsswitch",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:187cfc6d1e3e8a40a5e64653bcd3239c140807dcf1c09e48021178705a5a6139",
+    "command": "bazel build //common:os_release_debian13",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:f2392a9484bf6b18f06beaf705b994e31dbb2716c99cf7d03c9c495cd107f364",
+    "command": "bazel build //common:cacerts_debian13_amd64_tar",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "sha256:233df71936e4f6ff30b88434fc6d6ee92944635984166d81daa44fd94e94e3a2",
+    "command": "bazel build //experimental/busybox:busybox_amd64",
+    "is_empty": false,
+    "base_image_index": 1
+   },
+   {
+    "diff_id": "",
+    "command": "ARG TARGETARCH=amd64",
+    "is_empty": true,
+    "base_image_index": 0
+   },
+   {
+    "diff_id": "sha256:6aa076bafcb0098fd26fa6164f6e01fa9d32927ab126b10874c398455f7a196a",
+    "command": "COPY --chmod=0755 binaries/amd64/fscache /usr/local/bin/fscache # buildkit",
+    "is_empty": false,
+    "base_image_index": 0
+   },
+   {
+    "diff_id": "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+    "command": "WORKDIR /home/nonroot",
+    "is_empty": false,
+    "base_image_index": 0
+   },
+   {
+    "diff_id": "",
+    "command": "ENTRYPOINT [\"/usr/local/bin/fscache\"]",
+    "is_empty": true,
+    "base_image_index": 0
+   }
+  ],
+  "base_images": [
+   [],
+   [
+    {
+     "name": "static",
+     "tags": null
+    },
+    {
+     "name": "static-debian13",
+     "tags": null
+    }
+   ]
+  ]
+ }
+}

@@ -654,5 +654,40 @@ expect "latest: an affected statement on another product (the Go product) does n
 vexdoc "$D/v/lw-alias.json" "[$(st CVE-2024-9999 '["GO-2024-0001"]' not_affected "[$PROD_REPO]"),$(st GO-2024-0001 '[]' affected "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-alias.json"
 expect "latest: a later affected statement under the alias retracts (same vulnerability)" findings true 1 0
 
+# ---- VEX version 8: the four findings of the PUBLISHED v0.2.2 debug image, from the real inputs of the Oct 31 rescan (run 41181771666) -------------------
+# Grype reads the VEX itself, so its own report shows what it saw: one match (GO-2026-6809 on the Go standard library 1.27.2) and three IGNORED matches (the
+# busybox 1.37.0 CVEs, which the VEX removed). osv-scanner, which the pipeline filters, sees only the standard library. The rescan scans v0.2.2 until v0.3.0
+# is out, so the committed document must cover all four. Offline: the fixtures are the reports, the matcher is the one the gate uses.
+DBGG=test-evidence/vex-scope/v0.2.2-debug-grype-amd64.json
+DBGO=test-evidence/vex-scope/v0.2.2-debug-osv-amd64.json
+DBGREF="$REPO@sha256:87887f55ffa41cc63d4aa6f6d9459fd0dbf919491b83f1d3c8b7fc5444b5a081"
+covered() { # vexfile -> "<covered> <distinct findings>", the findings read from grype's matches AND ignoredMatches by package URL
+  python3 - "$SCRIPT" "$DBGG" "$1" "$DBGREF" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("rs", sys.argv[1]); rs = importlib.util.module_from_spec(spec); spec.loader.exec_module(rs)
+rep = json.load(open(sys.argv[2])); doc = rs._vex_load(sys.argv[3]); repo = rs._image_repo(sys.argv[4])
+found, hit = set(), set()
+for m in rep["matches"] + rep["ignoredMatches"]:
+    name, ver = rs._sub_purl(m["artifact"]["purl"])
+    ids = [m["vulnerability"]["id"]] + [r["id"] for r in m.get("relatedVulnerabilities", [])]
+    found.add(ids[0])
+    if rs._vex_match(doc, {"id": ids[0], "ids": ids, "package": name, "version": ver, "platform": "linux/amd64"}, "debug", repo):
+        hit.add(ids[0])
+print(len(hit), len(found))
+PY
+}
+if [ "$(covered .vex/fosterstack-cache.openvex.json)" = "4 4" ]; then ok; else bad "the committed VEX covers $(covered .vex/fosterstack-cache.openvex.json) (covered, found) of the v0.2.2 debug image's findings, not 4 4"; fi
+# without the three busybox statements only the standard library finding is covered: the busybox statements are load-bearing
+jq '.statements |= map(select(.vulnerability.name | startswith("CVE-2026-")))' .vex/fosterstack-cache.openvex.json >"$D/v/no-busybox.json"
+if [ "$(covered "$D/v/no-busybox.json")" = "1 4" ]; then ok; else bad "without the busybox statements the VEX should cover 1 of 4, got $(covered "$D/v/no-busybox.json")"; fi
+# and without the standard library statement only the three busybox ones
+jq '.statements |= map(select(.vulnerability.name != "CVE-2026-111943"))' .vex/fosterstack-cache.openvex.json >"$D/v/no-stdlib.json"
+if [ "$(covered "$D/v/no-stdlib.json")" = "3 4" ]; then ok; else bad "without the standard library statement the VEX should cover 3 of 4, got $(covered "$D/v/no-stdlib.json")"; fi
+# the pipeline-filtered scanner: osv-scanner's debug report (the standard library) is cleaned by the committed document, platform linux/amd64, our published image
+vrun osv-scanner 1 "$(cat "$DBGO")" ".vex/fosterstack-cache.openvex.json" debug linux/amd64 "$DBGREF"
+expect "v0.2.2 debug: osv-scanner's one finding (GO-2026-6809 on stdlib 1.27.2) is removed by the committed VEX" clean false 0 1
+vrun osv-scanner 1 "$(cat "$DBGO")" "$D/v/no-stdlib.json" debug linux/amd64 "$DBGREF"
+expect "v0.2.2 debug: without the standard library statement that finding counts" findings true 1 0
+
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
