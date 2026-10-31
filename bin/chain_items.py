@@ -180,10 +180,10 @@ def cmd_bind(a):
 
 
 # ---- items-apk --------------------------------------------------------------------------------------------------------------------
-def apk_tool(*args):
-    result = subprocess.run(["python3", "bin/apk-tool.py"] + list(args), capture_output=True)
+def apk_output(result, command):
+    """The stdout of a finished bin/apk-tool.py run; a failed run is a refusal."""
     if result.returncode:
-        refuse("build", "apk-tool: %s failed" % args[0])
+        refuse("build", "apk-tool: %s failed" % command)
     return result.stdout
 
 
@@ -210,8 +210,11 @@ def cmd_items_apk(a):
     items = {}
     for variant, suffix in (("standard", ""), ("fips", "-fips")):
         apk = one_apk(out_dir, variant)
-        items["apk-%s-%s" % (variant, arch)] = apk_tool("digest", apk).decode().strip()
-        items["binary-%s-%s" % (variant, arch)] = "sha256:" + hashlib.sha256(apk_tool("cat", apk, "usr/bin/fscache")).hexdigest()
+        digest = subprocess.run(["python3", "-I", "bin/apk-tool.py", "digest", apk], capture_output=True)
+        items["apk-%s-%s" % (variant, arch)] = apk_output(digest, "digest").decode().strip()
+        binary = subprocess.run(["python3", "-I", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"],
+            capture_output=True)
+        items["binary-%s-%s" % (variant, arch)] = "sha256:" + hashlib.sha256(apk_output(binary, "cat")).hexdigest()
         items["modules-sbom-" + variant] = read_input("%s/fscache-modules%s.spdx.json" % (parent, suffix))
         items["inputs-manifest-" + variant] = read_input("%s/inputs-manifest%s.json" % (parent, suffix))
     items["apkindex-" + arch] = read_input(out_dir + "/APKINDEX.tar.gz")
