@@ -38,13 +38,12 @@ SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)
 KEYLESS = "release-workflow-keyless"
 OWNER_SSH = "owner-ssh"
 ISSUER = "https://token.actions.githubusercontent.com"
-# The freeze check (the requirements tool, Go source of the tagged commit) runs in the `freeze` job before Build, not
-# here: that job writes this file, one `freeze-ok BASE` line per
-# baseline file of the tagged commit, and Build's apk job downloads it. Admission starts no Go; it reads the file and
-# prints what it trusted.
+# The freeze check (the requirements tool, Go code of the tagged commit) runs in the `freeze` job before Build, not
+# here. That job writes this file, one `freeze-ok COMMIT BASE` line per baseline file that passed, and Build's apk job
+# downloads it. Admission starts no Go: it reads the file and prints what it trusted.
 FREEZE_FILE = "freeze/freeze.txt"
 FREEZE_CAP = 65536
-FREEZE_LINE = re.compile(r"freeze-ok (v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?)")
+FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?)")
 RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
 RC_BYTES = "bin/chain-bytes-sha.py"
 RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
@@ -467,8 +466,8 @@ def baseline_problems(d, base, tag):
 
 
 def check_freeze(ctx, base):
-    """The freeze job's file says freeze-ok for this base and names no baseline the tagged commit lacks. Prints the
-    file's sha256 and the line, so the Build record shows what was trusted."""
+    """The freeze job's file has a line for the tagged commit and this base. The prints are log lines; the Build
+    record binds the file itself, which Witness hashes as a material before the wrapped step runs."""
     try:
         st = os.lstat(FREEZE_FILE)
     except OSError:
@@ -481,20 +480,12 @@ def check_freeze(ctx, base):
     lines = text(raw).split("\n")
     found = [FREEZE_LINE.fullmatch(line) for line in lines[:-1]]
     if lines[-1] != "" or not all(found):
-        raise Refusal("baseline", "%s holds a line that is not exactly `freeze-ok BASE`, or does not end in a "
-            "newline" % FREEZE_FILE)
-    names = [m.group(1) for m in found]
-    rc, out, _ = outcome(lambda: subprocess.run(["git", "ls-tree", "--name-only", ctx.sha, "requirements/releases/"],
-        capture_output=True, check=False))
-    listed = text(out).split("\n") if rc == 0 else []
-    files = {os.path.basename(x)[:-len(".yaml")] for x in listed if x.endswith(".yaml")}
-    if base not in names:
-        raise Refusal("baseline", "%s has no freeze-ok for %s, the baseline admission uses" % (FREEZE_FILE, base))
-    if len(set(names)) != len(names) or not set(names) <= files:
-        raise Refusal("baseline", "%s repeats a line or names a baseline file the tagged commit does not "
-            "have" % FREEZE_FILE)
+        raise Refusal("baseline", "%s holds a line that is not exactly `freeze-ok COMMIT BASE`, or does not end in "
+            "a newline" % FREEZE_FILE)
+    if (ctx.sha, base) not in [m.groups() for m in found]:
+        raise Refusal("baseline", "%s has no freeze-ok for commit %s and baseline %s" % (FREEZE_FILE, ctx.sha, base))
     print("freeze-file-sha256 %s" % hashlib.sha256(raw).hexdigest())
-    print("freeze-ok %s" % base)
+    print("freeze-ok %s %s" % (ctx.sha, base))
 
 
 def check_baseline(ctx):

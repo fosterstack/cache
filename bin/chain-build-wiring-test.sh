@@ -329,16 +329,40 @@ st s_noid   "AC1 id-token: write on a building job (the building jobs hold no id
 st s_nochk  "AC1 the admission job without checks: read (the required-checks check could not run)" permissions '      checks: read\n' ''
 st s_wfperm "AC1 workflow-level permissions beyond contents: read" permissions 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: write\njobs'
 st s_push   "AC1 an extra trigger" workflow_call 'workflow_call:' 'push:\n  workflow_call:'
-st s_job3 "AC1 a third job (one stage = one file = two jobs)" "required (one stage = one file = one identity)" '  assemble:' \
+st s_job3 "AC1 a fourth job (one stage = one file = three jobs)" "required (one stage = one file = one identity)" \
+  '  assemble:' \
        '  third:\n    runs-on: ubuntu-24.04\n    steps: []\n  assemble:'
 st s_top    "AC1 a top-level env" top-level 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: read\nenv:\n  X: y\njobs'
-st s_unpin  "AC2 checkout not pinned by digest" checkout 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
-st s_unlist "AC2 an action digest that is not on the allowed-actions list" "allowed-actions" \
+# The AC2 checkout and allow-list mutants hit the apk job (the one that holds GH_TOKEN): the anchor is the apk job's own
+# permissions tail and its checkout. The s_fz_ copies hit the freeze job, the first job of the file.
+APKCO='      pull-requests: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 '\
+'# v7.0.1\n'
+APKWITH='        with:\n          persist-credentials: false\n'
+APKUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n       '\
+'   name: apk-'
+st s_unpin  "AC2 apk's checkout not pinned by digest" "apk: step 1" "$APKCO" \
+  "${APKCO/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/checkout@v7}"
+UPDIG=043fb46d1a93c77aae656e7c1c64a875d1fc6a0a; UPOTHER=1111111111111111111111111111111111111111
+st s_unlist "AC2 an apk upload digest that is not on the allowed-actions list" "apk: action" "$APKUP" \
+       "${APKUP/$UPDIG/$UPOTHER}"
+st s_cred   "AC2 apk's persisted credentials" "apk: step 1" "$APKCO$APKWITH" "$APKCO${APKWITH/false/true}"
+st s_ref    "AC2 apk's checkout of another ref" "apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          ref: main\n"
+st s_repo   "AC2 apk's checkout of another repository" "apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          \
+repository: evil/fork\n"
+st s_token  "AC2 apk's checkout with a token" "apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          token: \${{ \
+secrets.X }}\n"
+st s_fz_unpin  "AC2 the freeze job's checkout not pinned by digest" "freeze: step 1" \
+       'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
+st s_fz_unlist "AC2 the freeze job's upload digest that is not on the allowed-actions list" "freeze: action" \
        'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' 'actions/upload-artifact@1111111111111111111111111111111111111111'
-st s_cred   "AC2 persisted credentials" "exactly" 'persist-credentials: false' 'persist-credentials: true'
-st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          ref: main'
-st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
-st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
+st s_fz_cred   "AC2 the freeze job's persisted credentials" "freeze: step 1" 'persist-credentials: false' \
+  'persist-credentials: true'
+st s_fz_ref    "AC2 the freeze job's checkout of another ref" "freeze: step 1" 'persist-credentials: false' \
+       'persist-credentials: false\n          ref: main'
+st s_fz_repo   "AC2 the freeze job's checkout of another repository" "freeze: step 1" 'persist-credentials: false' \
+       'persist-credentials: false\n          repository: evil/fork'
+st s_fz_token  "AC2 the freeze job's checkout with a token" "freeze: step 1" 'persist-credentials: false' \
+       'persist-credentials: false\n          token: ${{ secrets.X }}'
 ADMUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: ${{ inputs.mode == '"'release'"' && matrix.runner == '"'ubuntu-24.04'"' }}\n        with:\n          name: admission\n          path: admission.json\n'
 st s_adm_gone "AC8 Build's admission record is not uploaded (Release could not read the baseline a patch tag used)" "admission" "$ADMUP" ''
 st s_adm_all  "AC8 admission.json uploaded from every apk leg (one fixed name from a matrix clashes)" "admission" " && matrix.runner == 'ubuntu-24.04'" ''
@@ -346,7 +370,8 @@ st s_adm_name "AC8 admission.json uploaded under another name" "admission" 'name
 st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission ran: the upload would fail)" "admission" "inputs.mode == 'release' && matrix.runner" "matrix.runner"
 GOINST='      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n'
 WINST='      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n'
-st s_go_gone  "AC4 the Go toolchain install of admission is missing from Build's apk job" "install-scanner.sh go" "$GOINST" ''
+st s_go_gone  "AC4 the Go toolchain install of the melange build is missing from Build's apk job" "install-scanner.sh \
+go" "$GOINST" ''
 MELINST='      - name: install melange (pinned by checksum)\n        run: bash bin/install-build-tools.sh melange\n'
 APKINST='      - name: install apko (pinned by checksum)\n        run: bash bin/install-build-tools.sh apko\n'
 st s_bt_gone   "004-AC3 the melange install is missing from Build's apk job (rule 62: the VM runs melange)" "install-build-tools.sh melange" "$MELINST" ''
@@ -388,6 +413,32 @@ may run it)" \
 'bin/build-freeze.sh\n'"$WINST"
 st s_fz_vf    "AC4 verify-freeze named by a step of the assemble job" "names verify-freeze" "$APKINST" \
        '      - name: freeze in assemble\n        run: echo verify-freeze v0.3.0\n'"$APKINST"
+# the freeze job's own refusals (job keys, runner, permissions, env on its steps, its upload) and apk's needs
+FZHEAD='  freeze:\n    runs-on: ubuntu-24.04\n'
+FZPERM='    permissions:\n      contents: read\n    steps:\n'
+st s_fz_needs "AC4 a needs key on the freeze job" "freeze: job keys" "$FZHEAD" "$FZHEAD    needs: []\n"
+st s_fz_jenv  "AC4 an env on the freeze job" "freeze: job keys" "$FZHEAD" "$FZHEAD    env:\n      A: b\n"
+st s_fz_cont  "AC4 a container on the freeze job" "freeze: job keys" "$FZHEAD" "$FZHEAD    container: debian:12\n"
+st s_fz_runs  "AC4 the freeze job on another runner" "freeze: the freeze job must run" "$FZHEAD" '  freeze:\n    '\
+'runs-on: ubuntu-22.04\n'
+st s_fz_pw    "AC4 contents: write on the freeze job" "freeze: permissions" "$FZHEAD$FZPERM" \
+       "$FZHEAD"'    permissions:\n      contents: write\n    steps:\n'
+st s_fz_pid   "AC4 id-token: write on the freeze job" "freeze: permissions" "$FZHEAD$FZPERM" \
+       "$FZHEAD"'    permissions:\n      contents: read\n      id-token: write\n    steps:\n'
+st s_fz_env3  "AC4 an env on the freeze job's Go install" "freeze: step 3" "$FZGO" \
+       '      - name: install Go (pinned by checksum)\n        env:\n          K: v\n        '"$RIF"'        run: '\
+'bash bin/install-scanner.sh go\n'
+st s_fz_env4  "AC4 an env on the freeze job's script step" "freeze: step 4" "$FZRUN" \
+       '      - name: the freeze check of every baseline file\n        env:\n          K: v\n        '"$RIF"'        '\
+'run: bash bin/build-freeze.sh\n'
+FZUP='          name: freeze\n          path: freeze\n  apk:'
+st s_fz_path  "AC4 the freeze upload with another path" "freeze: step 5" "$FZUP" '          name: freeze\n          '\
+'path: .\n  apk:'
+st s_fz_over  "AC4 the freeze upload with overwrite" "freeze: step 5" "$FZUP" \
+       '          name: freeze\n          path: freeze\n          overwrite: true\n  apk:'
+st s_fz_apkn  "AC4 apk without needs: freeze" "apk must need exactly freeze" 'needs: freeze\n    runs-on: ${{ '\
+'matrix.runner }}' \
+       'needs: []\n    runs-on: ${{ matrix.runner }}'
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
 CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
@@ -2812,7 +2863,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 assert seen and not bad, bad
-for p in seen + [".github/policy/chain-scripts.json"]:
+for p in seen + [".github/policy/chain-scripts.json", "bin/build-freeze.sh"]:
     os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
     shutil.copy(os.path.join(root, p), os.path.join(dst, p))
 PY
@@ -2894,7 +2945,25 @@ PY
 CNT="commands, the grammar has"; EXP=": expected"
 # the admission go run of the tagged tree, put back into build-admit.py, is a finding (the file is held whole by sha256)
 nsa PLANT "nosource the old admission go run put back into build-admit.py is a finding" "NS_SHA" bin/build-admit.py \
-  'rc, _, err = outcome(lambda: subprocess.run(\n    [ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base],\n    check=False))'
+  'rc, _, err = outcome(lambda: subprocess.run(\n    [ctx.go, "-C", "tools/requirements", "run", ".", '\
+'"verify-freeze", base],\n    check=False))'
+# bin/build-freeze.sh is no root and not skipped: a closure file that names it, or a `runs` entry that lists it, is a
+# finding
+nsa FZ1 "nosource a Python closure file that names bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
+  bin/build-archives.py 'x = "bin/build-freeze.sh"'
+nsa FZ2 "nosource a shell closure file that runs bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
+  bin/assemble-image.sh 'bash bin/build-freeze.sh'
+nsfresh
+python3 - "$work/nsm/.github/policy/chain-scripts.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+row = next(r for r in d["scripts"] if r["path"] == "bin/build-admit.py")
+row["runs"].append("bin/build-freeze.sh")
+json.dump(d, open(f, "w"), indent=2)
+PY
+expect caught "FZ3 nosource a runs entry that lists bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
+  nosource "$work/nsm"
 # option 1: 21 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
 # the stage lines run python3 -I
 while read -r f; do
@@ -2961,6 +3030,7 @@ for wf in ("stage-build.yml", "stage-reproducibility.yml"):
         if re.match(r"\s+run:", line):
             ran.update(re.findall(r"bin/[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:sh|py)", line))
 roots = {p.replace(root + "/", "") for g in S.NS_ROOTS for p in glob.glob(root + "/" + g)} | set(S.NS_SKIP)
+roots.add(S.NS_FREEZE)      # the freeze job runs it; no closure file may
 assert ran == roots, (sorted(ran - roots), sorted(roots - ran))
 PY
 then ok "nosource the bin/ scripts on the run: lines of stage-build.yml and stage-reproducibility.yml are exactly \
@@ -3565,12 +3635,15 @@ assert used >= 3, "the scan found no use of the host-tools root"
 PY
 # REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/,
 # admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
-# exactly those nine paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json; Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
+# exactly those ten paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json freeze/;
+# Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the
+# recipe check and build-apk.sh stay strict.
 TREE=$(mktemp -d)/tree.sh
 { echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'
   sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
 tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
-  mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > "$f/f"; done; echo '{}' > admission.json ); echo "$d"; }
+  mkdir archive host-tools out witness-apk freeze && for f in archive host-tools out witness-apk freeze; do echo x > \
+    "$f/f"; done; echo '{}' > admission.json; echo x > freeze/freeze.txt ); echo "$d"; }
 d=$(tree_repo)
 [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: the job's directories make the tree dirty without the block (the cause of vcs.modified=true)" || bad "REQ-BUILDAPK-001-AC4 tree: the cause did not reproduce"
 trc=127; if [ -f "$TREE" ]; then trc=0; bash "$TREE" "$d" > /dev/null 2>&1 || trc=$?; fi
@@ -3632,7 +3705,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1276
+EXPECT=1296
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

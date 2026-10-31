@@ -161,6 +161,7 @@ ALLOW_PATTERNS=(
   '^bin/rebuild-records-digests\.sh$'
   '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
+  '^bin/build-freeze\.sh$'
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'

@@ -384,13 +384,19 @@ fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origi
   SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f \
     "$W/c/repo/admission.json"; mkfreeze; }
 # mkfreeze [LINE...] : freeze/freeze.txt of the case, by default the line the freeze job writes for every baseline file
-# at the tagged commit
+# at the checked-out commit
+headsha() { git -C "$W/c/repo" rev-parse HEAD; }
+default_freeze() { # the lines the freeze job writes for the checked-out commit: one per baseline file
+  (cd "$W/c/repo" && for f in requirements/releases/*.yaml; do b=${f##*/}; echo "freeze-ok $(headsha) ${b%.yaml}"; \
+    done); }
 mkfreeze() {
-  rm -rf "$W/c/repo/freeze"; mkdir -p "$W/c/repo/freeze"
+  rm -rf "$W/c/repo/freeze" "$W/c/freeze-default.txt"; mkdir -p "$W/c/repo/freeze"
   if [ "$#" -gt 0 ]; then printf '%s\n' "$@" > "$W/c/repo/freeze/freeze.txt"
-  else (cd "$W/c/repo" && for f in requirements/releases/*.yaml; do b=${f##*/}; echo "freeze-ok ${b%.yaml}"; done) > \
-    "$W/c/repo/freeze/freeze.txt"; fi; }
+  else default_freeze > "$W/c/repo/freeze/freeze.txt"; cp "$W/c/repo/freeze/freeze.txt" "$W/c/freeze-default.txt"; fi; }
 run_admit() { # run_admit [ENV=VAL...]  -> sets RC; stderr in $W/c/err, stdout in $W/c/out
+  # a case that committed after fresh moved HEAD: the untouched default file follows it (a changed file stays as it is)
+  if cmp -s "$W/c/repo/freeze/freeze.txt" "$W/c/freeze-default.txt" 2> /dev/null; then
+    default_freeze > "$W/c/repo/freeze/freeze.txt"; cp "$W/c/repo/freeze/freeze.txt" "$W/c/freeze-default.txt"; fi
   local sha; sha=$(git -C "$W/c/repo" rev-parse HEAD); RC=0
   (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 \
       GITHUB_RUN_ATTEMPT=1 \
@@ -679,34 +685,33 @@ expect_refuse "AC4 a baseline whose approved is the string 'true' is refused" ba
 fresh; base_edit 'd["version"] = "v0.2.9"'; run_admit;             expect_refuse "AC4 a baseline for another version is refused" baseline version
 fresh; base_edit 'd["approved_on"] = "soon"'; run_admit;           expect_refuse "AC4 a baseline with no real approval date is refused" baseline approved_on
 fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse "AC4 an empty required set is not a baseline" baseline release_blocking_acs
-# REQ-CHAIN-004-AC4 (rule 1 of the sandboxed build): the requirements tool is Go source of the tagged commit, so it no
-# longer runs inside Build. Its own job `freeze` (before Build,
-# contents: read, no secret) runs `verify-freeze` for every baseline file at the tagged commit and writes
-# freeze/freeze.txt, one `freeze-ok BASE` line each. Admission starts no
-# Go: it reads that file, requires `freeze-ok` for exactly the base it computed, and prints the file's sha256 and that
-# line into its own (witnessed) output.
+# REQ-CHAIN-004-AC4 (rule 1 of the sandboxed build): the requirements tool is Go code of the tagged commit, so it no
+# longer runs inside Build. Its own job `freeze` (before Build, contents: read, no secret) runs `verify-freeze` for
+# every
+# baseline file at the tagged commit and writes freeze/freeze.txt, one `freeze-ok COMMIT BASE` line for each that
+# passed.
+# Admission starts no Go: it reads that file, requires the line for the tagged commit and the base it computed, and
+# prints the file's sha256 and that line (log lines; the Build record binds the file as a material).
 fresh; run_admit
 expect_ok "AC4 the freeze file lists freeze-ok for the base admission computed (the default file lists every baseline \
 file of the tagged commit): admitted"
 n_cases=$((n_cases + 1))
 want_sha=$(sha256sum "$W/c/repo/freeze/freeze.txt" | cut -d' ' -f1)
-if [ "$RC" = 0 ] && grep -qx "freeze-file-sha256 $want_sha" "$W/c/out" && grep -qx 'freeze-ok v0.3.0' "$W/c/out"; then
+if [ "$RC" = 0 ] && grep -qx "freeze-file-sha256 $want_sha" "$W/c/out" && grep -qx "freeze-ok $(headsha) v0.3.0" \
+  "$W/c/out"; then
   ok "AC4 admission prints the freeze file's sha256 and its exact freeze-ok line for its base into its own output \
 (the Build record shows what admission trusted)"
 else bad "AC4 freeze evidence in the output: exit $RC, stdout: $(head -c 300 "$W/c/out" | tr '\n' '|')"; fi
 fresh; rm -rf "$W/c/repo/freeze"; run_admit
 expect_refuse "AC4 no freeze file (the freeze job did not run or its artifact is missing) is refused" baseline freeze
-fresh; mkfreeze "freeze-ok v0.2.0"; run_admit
+fresh; mkfreeze "freeze-ok $(headsha) v0.2.0"; run_admit
 expect_refuse "AC4 a freeze file without the base admission computed (v0.3.0) is refused" baseline v0.3.0
-fresh; mkfreeze "freeze-ok v0.3.0" "freeze-ok v0.3.0"; run_admit
-expect_refuse "AC4 a freeze file that repeats a line is refused" baseline freeze
-fresh; mkfreeze "freeze-ok v0.3.0 extra"; run_admit
+fresh; mkfreeze "freeze-ok ${SHAC//[0-9a-f]/0} v0.3.0"; run_admit
+expect_refuse "AC4 a freeze line for another commit and the right base is refused" baseline "freeze-ok"
+fresh; mkfreeze "freeze-ok $(headsha) v0.3.0 extra"; run_admit
 expect_refuse "AC4 a freeze-ok line with more words than the base is refused" baseline freeze
-fresh; mkfreeze "freeze-failed v0.3.0"; run_admit
-expect_refuse "AC4 a line that is not freeze-ok BASE is refused" baseline freeze
-fresh; (cd "$W/c/repo/freeze" && { cat freeze.txt; echo "freeze-ok v9.9.9"; } > f2 && mv f2 freeze.txt); run_admit
-expect_refuse "AC4 a freeze file naming a baseline the tagged commit does not have is refused (every line names a \
-baseline file of the tagged commit)" baseline freeze
+fresh; mkfreeze "freeze-failed $(headsha) v0.3.0"; run_admit
+expect_refuse "AC4 a line that is not freeze-ok COMMIT BASE is refused" baseline freeze
 fresh; mkfreeze; mv "$W/c/repo/freeze/freeze.txt" "$W/c/repo/freeze/real.txt"
 ln -s real.txt "$W/c/repo/freeze/freeze.txt"; run_admit
 expect_refuse "AC4 a freeze file that is a symlink is refused" baseline freeze
@@ -714,6 +719,40 @@ fresh; head -c 70000 /dev/zero | tr '\0' 'a' > "$W/c/repo/freeze/freeze.txt"; ru
 expect_refuse "AC4 an oversized freeze file is refused" baseline freeze
 fresh; : > "$W/c/repo/freeze/freeze.txt"; run_admit
 expect_refuse "AC4 an empty freeze file is refused" baseline v0.3.0
+# bin/build-freeze.sh decides which baselines get a line: a stub go (its pinned path substituted in a copy) fails the
+# bases
+# named in STUB_FAIL. The repo has two baseline files; the line carries the checked-out commit.
+BF="$W/bf"; mkdir -p "$BF/bin"
+printf '#!/usr/bin/env bash\ncase " $STUB_FAIL " in *" ${@: -1} "*) exit 1 ;; esac\nexit 0\n' > "$BF/go-stub"; chmod \
+  +x "$BF/go-stub"
+sed "s|/usr/local/bin/fscache-go/bin/go|$BF/go-stub|g" "$root/bin/build-freeze.sh" > "$BF/bin/build-freeze.sh"
+(cd "$BF" && git init -q . && mkdir -p requirements/releases && : > requirements/releases/v0.1.0.yaml \
+  && : > requirements/releases/v0.1.1.yaml && git add . && git -c user.name=t -c user.email=t@t commit -q -m i)
+bf_run() { # bf_run FAILING-BASES -> BF_RC; freeze/freeze.txt of the run is left in $BF
+  BF_RC=0; (cd "$BF" && STUB_FAIL="$1" bash bin/build-freeze.sh > "$BF/out.txt" 2>&1) || BF_RC=$?; }
+bf_head=$(git -C "$BF" rev-parse HEAD)
+bf_run ""; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 0 ] && [ "$(cat "$BF/freeze/freeze.txt")" = "freeze-ok $bf_head v0.1.0
+freeze-ok $bf_head v0.1.1" ]; then ok "AC4 build-freeze.sh: every passing baseline gets a freeze-ok line with the \
+  checked-out commit"
+else bad "AC4 build-freeze.sh: passing baselines (exit $BF_RC): $(tr '\n' '|' < "$BF/freeze/freeze.txt")"; fi
+bf_run "v0.1.0"; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 0 ] && [ "$(cat "$BF/freeze/freeze.txt")" = "freeze-ok $bf_head v0.1.1" ]; then
+  ok "AC4 build-freeze.sh: a baseline that fails verify-freeze gets no line and the run goes on"
+else bad "AC4 build-freeze.sh: one failing baseline (exit $BF_RC): $(tr '\n' '|' < "$BF/freeze/freeze.txt")"; fi
+bf_run "v0.1.0 v0.1.1"; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 1 ] && [ ! -s "$BF/freeze/freeze.txt" ]; then ok "AC4 build-freeze.sh: no baseline passing exits 1 \
+with an empty file"
+else bad "AC4 build-freeze.sh: no baseline passing (exit $BF_RC)"; fi
+mkdir -p "$BF/freeze"; echo "freeze-ok $bf_head v9.9.9" > "$BF/freeze/freeze.txt"; bf_run "v0.1.0"; \
+  n_cases=$((n_cases + 1))
+if [ "$(cat "$BF/freeze/freeze.txt")" = "freeze-ok $bf_head v0.1.1" ]; then ok "AC4 build-freeze.sh: a file left from \
+before is emptied first"
+else bad "AC4 build-freeze.sh: the old file was kept: $(tr '\n' '|' < "$BF/freeze/freeze.txt")"; fi
+sed "s|/usr/local/bin/fscache-go/bin/go|$BF/missing-go|g" "$root/bin/build-freeze.sh" > "$BF/bin/build-freeze.sh"; \
+  bf_run ""; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 2 ]; then ok "AC4 build-freeze.sh: a missing pinned Go exits 2"; else bad "AC4 build-freeze.sh: \
+missing Go (exit $BF_RC)"; fi
 # admission starts no Go at all: no verify-freeze, no go path, no --go option left in the file (the judge holds the same
 # from outside: bin/chain-test-shape.py)
 n_cases=$((n_cases + 1))
@@ -888,6 +927,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=157
+EXPECT_TOTAL=161
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

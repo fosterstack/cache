@@ -1,6 +1,9 @@
 # The Build stage of the v0.3.0 release chain (rules 50, 51, 59, 62, 68; REQ-CHAIN-004). Called only from release.yml, and, in snapshot mode, from the proof
-# workflows scan.yml and main-candidate-rescan.yml. Two jobs: `apk` builds the apks on a native runner of each architecture, `assemble` builds the images and
-# archives on an ubuntu-24.04 VM from them. Every command runs through bin/witnessed-local.sh, which records the step under a throwaway key (no job here holds an id-token; Sign checks the record and signs it keyless); the
+# workflows scan.yml and main-candidate-rescan.yml. Three jobs: `freeze` runs the requirements tool's freeze check (no
+# token, no Witness step), `apk` builds the apks on a
+# native runner of each architecture, `assemble` builds the images and archives on an ubuntu-24.04 VM from them. Every
+# command runs through bin/witnessed-local.sh, which records the step under a throwaway key (no job here holds an
+# id-token; Sign checks the record and signs it keyless); the
 # scripts it runs are listed with their sha256 in .github/policy/chain-scripts.json. Nothing here is published: Sign gets the digests.json text (the stage
 # output `digests`), Rebuild and Check get the artifacts.
 # `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the guard step (no if: GitHub compares case-insensitively) refuses any other value, and each job has one Witness step per mode,

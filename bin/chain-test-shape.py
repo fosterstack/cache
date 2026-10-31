@@ -248,7 +248,8 @@ MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
 # Rebuild's apk job installs the same pinned Go toolchain (release review R1, Oct 21: bin/build-apk.sh refuses to run in CI without the pinned Go at /usr/local/bin/fscache-go, REQ-CHAIN-005-AC2: Rebuild uses the same pinned tools as Build)
-# Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod) the way the chain installs Witness: a
+# Build's apk job installs the Go toolchain the melange build needs (bin/build-apk.sh refuses to run in CI without it)
+# the way the chain installs Witness: a
 # checksum-pinned `bash bin/install-scanner.sh go` run line, AFTER the Witness install (rule 68: Witness first) and before the downloads and the Witness step
 # (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
 # admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
@@ -764,17 +765,17 @@ def listed(path, root):
 # text or does not parse is a finding (its children could not be followed). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on
 # the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the second review), and
-# install-build-tools.sh compiles nothing. bin/build-freeze.sh is not read either: stage() lets only the freeze job run
-# it.
+# install-build-tools.sh compiles nothing. bin/build-freeze.sh is no root: a closure file that names it is a finding.
 # No finding is known on the real tree. The admission step in bin/build-admit.py runs no go: the requirements tool's
 # freeze check is the job `freeze` before Build (bin/build-freeze.sh), and admission reads its file.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
             "bin/chain-hostile-step.sh", "bin/rebuild-records-digests.sh")
-NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh",
-           # runs only in the freeze job, outside Build; it starts go of the tagged tree, so stage() allows it on that
-           # job's lines only
-           "bin/build-freeze.sh")
+NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+# The freeze job's script starts go of the tagged tree. It is no root of the closure; a closure file that names it or
+# lists
+# it in `runs` is a finding (ns_closure), and stage() lets only the freeze job run it.
+NS_FREEZE = "bin/build-freeze.sh"
 NS_NAME = re.compile(r"(?<![\w/.-])(?:\./)?(bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)")
 
 
@@ -823,14 +824,18 @@ def ns_closure(root):
         if p not in rows:
             bad.append("%s is started by a stage script but is not a row of chain-scripts.json" % p)
             continue
-        todo += rows[p].get("runs", [])
+        children = list(rows[p].get("runs", []))
         try:
             text = open(root + "/" + p, encoding="utf-8").read()
-            todo += [n for n in ns_named(p, text) if n != p and os.path.isfile(root + "/" + n)]
+            children += [n for n in ns_named(p, text) if n != p and os.path.isfile(root + "/" + n)]
         except (OSError, ValueError) as e:
             bad.append("%s cannot be followed: it %s (its children are not in the closure)" % (
                 p, "does not read as UTF-8 text" if isinstance(e,
                 UnicodeDecodeError) else str(e) if "parse" in str(e) else "cannot be read"))
+        if NS_FREEZE in children:
+            bad.append("%s reaches %s: only the freeze job runs it, and it starts go of the tagged tree" % (p,
+                NS_FREEZE))
+        todo += [n for n in children if n != NS_FREEZE]
     return sorted(seen), bad
 
 
@@ -867,8 +872,8 @@ NS_SHA = {
     "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
-    "bin/build-admit.py": "d1a03dd469a89043230c0fe7bf49ced22799f1714226c897215e9b0985008e59",
-    "bin/build-apk-helper.py": "b8e1f71b9717e681d67eacb6b4eea7d5967d3fb45dac0d2c66874fc8bff26bd1",
+    "bin/build-admit.py": "0a3c90e8451480bab06171bd51ef440e0630c4bfca9747a93c993c38d6194c81",
+    "bin/build-apk-helper.py": "2cea57637d2cc9bea3395374bbcd69ea8fcf1ea60c327f7814887bb55e8f5f31",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
