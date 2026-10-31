@@ -252,6 +252,10 @@ def record(name, ptype, subjects, key="rel", signed=True, stmt="v1", dsse=DSSE, 
                     "gitoidonly": [dict(subj[0], digest={k: v for k, v in subj[0]["digest"].items() if k != "sha256"}), subj[1]]}[coll_variant]
         # the environment attestor records GITHUB_REF (witnessed-local.sh runs it); the verifier binds the collection to the policy's ref by it
         env_att = coll_env if coll_env is not None else [{"os": "linux", "variables": {"GITHUB_REF": coll_ref or ref}}]
+        if not coll_variant:
+            idata = open(p("items.json"), "rb").read()
+            subj.append({"name": "https://witness.dev/attestations/product/v0.1/file:items.json",
+                         "digest": {"sha256": hashlib.sha256(idata).hexdigest(), "gitoid:sha1": "gitoid:blob:sha1:" + gitoid(idata, "sha1"), "gitoid:sha256": "gitoid:blob:sha256:" + gitoid(idata, "sha256")}})
         att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("git", "product", "command-run")]
         att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": e} for e in env_att] + att
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": coll_name or "build", "attestations": att}, "subject": subj}).encode()
@@ -274,6 +278,10 @@ POLT = "https://witness.testifysec.com/policy/v0.1"
 D = {"image-production": "sha256:" + "a" * 64, "image-fips": "sha256:" + "b" * 64, "apk": "sha256:" + "c" * 64}
 ENVATT = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": T}}}]
 def dj(name, d): json.dump(d, open(p(name), "w"))
+# items.json (a product of Build's record next to digests.json): the bind-items fixtures and, since 0707 fix 4, every normal Build record and Sign's byproducts use this one file
+ITEMS = {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "1" * 64,
+         "modules-sbom-fips": "sha256:" + "2" * 64, "modules-sbom-standard": "sha256:" + "3" * 64, "sbom-fips": "sha256:" + "4" * 64, "sbom-production": "sha256:" + "5" * 64}
+dj("items.json", ITEMS)
 dj("digests.json", D)
 dj("digests-other.json", dict(D, apk="sha256:" + "d" * 64))
 dj("digests-extra.json", dict(D, extra="sha256:" + "e" * 64))
@@ -592,7 +600,6 @@ for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("pty
 MAT = "https://witness.dev/attestations/material/v0.1/file:"
 PRD = "https://witness.dev/attestations/product/v0.1/file:"
 def _fsha(n): return hashlib.sha256(open(p(n), "rb").read()).hexdigest()
-dj("items.json", {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "1" * 64})
 dj("items-other.json", {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "2" * 64})
 def _prods(items_name, digests_name="digests.json"):
     return [{"name": PRD + "digests.json", "digest": {"sha256": _fsha(digests_name)}}, {"name": PRD + "items.json", "digest": {"sha256": _fsha(items_name)}},
@@ -600,6 +607,15 @@ def _prods(items_name, digests_name="digests.json"):
 def _envatt(ref): return [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": ref}}}]
 def _coll(step, subj, ref=T): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": _envatt(ref)}, "subject": subj}).encode()
 add("bi_ok", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+# 0707 fix 4: Build records that ARE bound to an items.json with one SBOM entry missing or malformed (so the refusal is about the entry, not about a hash mismatch)
+for _sb in ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production"):
+    dj("items-no-%s.json" % _sb, {k: v for k, v in ITEMS.items() if k != _sb})
+    add("si_no_" + _sb, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-no-%s.json" % _sb)))
+dj("items-badsbom.json", dict(ITEMS, **{"sbom-fips": "sha256:" + "G" * 64}))
+add("si_bad", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-badsbom.json")))
+dj("items-dupkey.json", {})
+open(p("items-dupkey.json"), "w").write(json.dumps(ITEMS)[:-1] + ', "sbom-fips": "sha256:' + "4" * 64 + '"}')
+add("si_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-dupkey.json")))
 add("bi_otheritems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
 add("bi_noitems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
 add("bi_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
@@ -1013,7 +1029,7 @@ done
 # ---- REQ-CHAIN-001-AC2: Sign takes Build's digests (a FILE), checked against Build's VERIFIED record ----------------------
 # The record binds the digest file by the sha256 of its bytes (the real product subject file:digests.json); the file's CONTENT is
 # then judged on its own, so the format cases below are attested by their own collections and equality cannot be what refuses them.
-S() { echo sign --check --signer cosign --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
+S() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
 expect_ok     "001-AC2 a digest file whose bytes Build's record attests is accepted (and signed)" $(S) --digests "$work/digests.json"
 for c in other:"a digest that differs" extra:"an extra entry" subset:"a missing entry" swapped:"two names with their values swapped"; do
   expect_refuse "001-AC2 ${c#*:} (other bytes than Build attested) is refused" "digest|!signature|!identity|!timestamp" $(S) --digests "$work/digests-${c%%:*}.json"
@@ -1044,7 +1060,7 @@ expect_refuse "001-AC2 Build's record of another type (made up) is refused" "bui
 expect_refuse "001-AC2 Build's record presented as the signed policy type is refused" "build|predicate|policy" $(S build_policy) --digests "$work/digests.json"
 # the sign side (rule 52: Sign WRITES the provenance only after the check passes), with a fake cosign on PATH
 mkdir -p "$work/sd"
-rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/ok" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/ok" || rc=$?
 if [ -f "$work/cosign-argv.log" ] && grep -E -q "$ARGV_RE" "$work/cosign-argv.log" \
    && ! grep -E -q -- '--identity-token|--sk|--output-key|--use-signing-config|--fulcio|--rekor|--tlog-upload|--insecure|arn:aws' "$work/cosign-argv.log"; then
   ok "001-AC3 sign runs exactly 'cosign attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config <committed config> --statement S --bundle DIR/provenance.bundle.json', with no token, endpoint or ARN"
@@ -1067,7 +1083,7 @@ assert env["signatures"] and env["payloadType"] == "application/vnd.in-toto+json
 pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"), pr
 PY
 # rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before cosign is asked
-SGN() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/$1"; }
+SGN() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/$1"; }
 for _w in "fosterstack/cache-evil/.github/workflows/release.yml@refs/tags/v0.3.0" "fosterstack/cache/.github/workflows/prerelease.yml@refs/tags/v0.3.0" "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.1" ""; do
   GITHUB_WORKFLOW_REF="$_w" expect_refuse "Q2b sign refuses to write a provenance when GITHUB_WORKFLOW_REF is '$_w'" "workflow" $(SGN wfref-${#_w}-$RANDOM)
 done
@@ -1082,7 +1098,7 @@ GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID="" expect_refu
 GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=42a expect_refuse "R1a a GITHUB_RUN_ID that is not digits is refused by sign, naming it" "github_run_id" $(SGN r1a-badid)
 [ ! -e "$work/sd/r1a-badid" ] && ok "R1a r1a-badid: no output folder was made" || bad "R1a r1a-badid: an output folder exists"
 # the provenance says what was built from which source in which run (SLSA v1 buildDefinition / runDetails), from GitHub's own variables
-GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/meta" || true
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/meta" || true
 python3 - "$work/sd/meta" <<'PY' 2> /dev/null && ok "001-AC2 the provenance names the source commit and the run (resolvedDependencies gitCommit, invocationId = the run URL) and the Sign workflow as builder" || bad "001-AC2 the provenance lacks the commit or the run"
 import base64, json, os, sys
 st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
@@ -1092,6 +1108,57 @@ assert dep and dep[0]["digest"]["gitCommit"] == "0123456789abcdef0123456789abcde
 assert pr["runDetails"]["metadata"]["invocationId"].endswith("/fosterstack/cache/actions/runs/424242"), pr["runDetails"]
 assert pr["buildDefinition"]["externalParameters"]["workflow"].endswith("/.github/workflows/release.yml@refs/tags/v0.3.0"), pr["buildDefinition"]
 PY
+# 0707 fix 4: the signed provenance names the four SBOMs (byproducts), from items.json, which Sign binds to Build's verified record. This is an input Sign did not read before.
+python3 - "$work/sd/meta" "$work/items.json" <<'PY' 2> /dev/null && ok "0707-fix4 the provenance lists the four SBOMs of items.json as byproducts, sorted by name, with their sha256" || bad "0707-fix4 the byproducts of the provenance are not the four SBOM digests of items.json"
+import base64, json, os, sys
+st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
+items = json.load(open(sys.argv[2]))
+want = [{"name": n, "digest": {"sha256": items[n].split(":", 1)[1]}} for n in ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production")]
+assert st["predicate"]["runDetails"]["byproducts"] == want, st["predicate"]["runDetails"]
+PY
+# a copy of the fixtures' folder per refusal, changed in one way
+mkitems() { # mkitems NAME: $work/it-NAME/ holds digests.json and items.json copies
+  mkdir -p "$work/it-$1" && cp "$work/digests.json" "$work/it-$1/digests.json" && cp "$work/items.json" "$work/it-$1/items.json"; }
+SGI() { echo sign --check --signer cosign --items "${3:-$work/it-$1/items.json}" --build-record "$work/${2:-build_coll}.json" --policy "$work/policy.json" --digests "$work/it-$1/digests.json" --out "$work/sd/$1"; }
+mkdir -p "$work/it-none" && cp "$work/digests.json" "$work/it-none/digests.json"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 a missing --items file is refused by sign, naming --items" "sign|--items" $(SGI none)
+[ ! -e "$work/sd/none" ] && ok "0707-fix4 none: no output folder was made" || bad "0707-fix4 none: an output folder exists"
+mkitems changed; python3 - "$work/it-changed/items.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["sbom-production"] = "sha256:" + "9" * 64; json.dump(d, open(sys.argv[1], "w"))
+PY
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an items.json that is not the file Build's record holds is refused" "sign|not the file build" $(SGI changed)
+mkitems unbound
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 a Build record with no items.json product is refused" "sign|exactly one is required" $(SGI unbound bi_noitems)
+mkitems twice
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 a Build record with two items.json products is refused" "sign|exactly one is required" $(SGI twice bi_dup)
+for miss in modules-sbom-fips modules-sbom-standard sbom-fips sbom-production; do
+  mkitems "no-$miss"; cp "$work/items-no-$miss.json" "$work/it-no-$miss/items.json"
+  GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an items.json bound to Build's record but without $miss is refused, naming it" "sign|$miss" $(SGI "no-$miss" "si_no_$miss")
+done
+mkitems bad; cp "$work/items-badsbom.json" "$work/it-bad/items.json"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an SBOM entry that is not sha256:<64 lower-case hex> is refused, naming it" "sign|sbom-fips" $(SGI bad si_bad)
+mkitems dup; cp "$work/items-dupkey.json" "$work/it-dup/items.json"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 an items.json with a duplicate key is refused" "sign|duplicate key" $(SGI dup si_dup)
+# the input is named: a different items.json sits beside digests.json, the one Build's record holds comes in through --items
+mkitems other; python3 - "$work/it-other/items.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["sbom-fips"] = "sha256:" + "8" * 64; json.dump(d, open(sys.argv[1], "w"))
+PY
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run $(SGI other build_coll "$work/items.json") || true
+python3 - "$work/sd/other" "$work/items.json" <<'PY' 2> /dev/null && ok "0707-fix4 the byproducts come from the --items file, not from a file beside the digest list" || bad "0707-fix4 the byproducts do not come from the --items file"
+import base64, json, os, sys
+st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
+items = json.load(open(sys.argv[2]))
+by = {b["name"]: b["digest"]["sha256"] for b in st["predicate"]["runDetails"]["byproducts"]}
+assert by["sbom-fips"] == items["sbom-fips"].split(":", 1)[1] and by["sbom-fips"] != "8" * 64, by
+PY
+rc=0; GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign \
+  --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" \
+  --out "$work/sd/noitems" || rc=$?
+if [ "$rc" = 2 ] && grep -q -- '--items' "$work/err" && [ ! -e "$work/sd/noitems" ]; then
+  ok "0707-fix4 sign without --items is a usage error naming --items, and writes nothing"
+else bad "0707-fix4 sign without --items must exit 2 naming --items (got $rc)"; fi
 python3 - "$work/sd/ok" <<'PY' 2> /dev/null && ok "001-AC3 nothing Sign leaves in its output folder is key material (no PRIVATE KEY text, no .key/.pem/.p12 file)" || bad "001-AC3 key material, or no output folder, in what sign wrote"
 import os, re, sys
 n = 0
@@ -1105,22 +1172,22 @@ PY
 expect_ok     "001-AC4 the provenance Sign itself wrote verifies as stage sign (the bundle shape and the verify shape agree)" verify $(V) --stage sign --record "$work/sd/ok/provenance.json"
 expect_ok     "001-AC5 positive-control shape: verify --stage sign --record <Sign's output> --policy P is accepted" verify --stage sign --record "$work/sd/ok/provenance.json" --policy "$work/policy.json"
 expect_ok     "003-AC1 and release <- sign accepts Sign's own output for exactly the digests it signed" $(ST release sign) --record "$work/sd/ok/provenance.json" --digests "$work/digests.json"
-rc=0; run sign --check --signer cosign --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/bad" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/bad" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(ls -A "$work/sd/bad" 2> /dev/null)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "001-AC2 a failed check writes NOTHING to the output folder and never calls cosign"; else bad "001-AC2 a failed check left output or called cosign (exit $rc)"; fi
-rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests-other.json" --out "$work/sd/bad2" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests-other.json" --out "$work/sd/bad2" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(ls -A "$work/sd/bad2" 2> /dev/null)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "001-AC2 replay: provenance is not written, and cosign is not called, for digests Build did not attest"; else bad "001-AC2 replay with other digests wrote output (exit $rc)"; fi
-rc=0; run sign --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocheck" || rc=$?
+rc=0; run sign --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocheck" || rc=$?
 if [ "$rc" = 1 ] && ! crashed && [ -z "$(ls -A "$work/sd/nocheck" 2> /dev/null)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "001-AC2 sign without --check is not a mode: it refuses, calls no cosign and writes nothing"; else bad "001-AC2 sign without --check wrote output (exit $rc)"; fi
 # the Sign job passes the committed TEMPLATE as --policy: sign --check makes the per-tag policy itself (rule 57) from the template,
 # the committed trust file and PEMs (defaults next to the template, overridable by flags) and the tag from GITHUB_REF
-TP() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" \
+TP() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/template.json" \
   --digests "$work/digests.json" --out "$work/sd/$1"; }
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 --policy the template + GITHUB_REF=refs/tags/v0.3.0: the per-tag policy is made and Build's record verifies" $(TP tpl1)
 GITHUB_REF=refs/heads/main GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode on a branch (GITHUB_REF is not a tag) is refused" "tag|github_ref" $(TP tpl2)
 GITHUB_REF= GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with no GITHUB_REF is refused" "tag|github_ref" $(TP tpl4)
 
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
-TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --template "$work/template.json" \
+TPR() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --template "$work/template.json" \
   --digests "$work/digests.json" --out "$work/sd/$2"; }
 CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --digests "$work/digests.json"; }
 for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
@@ -1193,7 +1260,7 @@ expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run policy for eve
 expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage build is refused)" "dry" verify --policy "$work/policy-br.json" --stage build $(rec build_coll)
 expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage release is refused)" "dry" verify --policy "$work/policy-br.json" --stage release $(rec release_policy)
 expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names sign and the branch ref" "sign|refs/heads/hostile-proof/x" $(ST release sign) $(rec sign_br) --digests "$work/digests.json"
-DSC() { echo sign --check --signer cosign --build-record "$work/$1.json" --policy "$work/policy-br.json" --digests "$work/$2.json" --out "$work/sd/$3"; }
+DSC() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --policy "$work/policy-br.json" --digests "$work/$2.json" --out "$work/sd/$3"; }
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_dry digests-other dsc1)
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_badval_dry digests-badval dsc2)
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_dry digests dsc3)
@@ -1409,7 +1476,7 @@ def spy(f, *a, **k):
     return real_open(f, *a, **k)
 builtins.open = spy
 ns = argparse.Namespace(template=None, policy=w + "/policy.json", now=now, digests=w + "/digests.json", build_record=w + "/build_coll.json")
-pol, obj = m.check_build_record(ns)
+pol, obj, _stmt = m.check_build_record(ns)
 builtins.open = real_open
 assert len(opened) == 1, "digest file opened %d times" % len(opened)
 assert obj == json.load(open(w + "/digests.json")), "the digest object does not match the attested file"
@@ -1426,7 +1493,7 @@ expect_refuse "S-2 the URL-safe alphabet (- and _) in the signature is refused" 
 
 # ---- sign checks what cosign returned before it says ok: a bundle that is wrong is refused, and no provenance is left behind -------------------
 POSTSIGN=0
-expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --build-record "$work/build_coll.json" \
+expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" \
     --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
   [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
   l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
@@ -1444,7 +1511,7 @@ expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refu
 expect_postsign_refuse "S1 a bundle whose Rekor entry has no inclusion proof is refused" "rekor|inclusion" noproof
 expect_postsign_refuse "S1 a bundle whose signature is by a key the manifest does not name is refused: Sign verifies what it wrote before it says ok" "signature" otherkey
 [ "$POSTSIGN" = 8 ] && ok "S1 control: cosign WAS called in each of the eight cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the eight bundle cases"
-expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
+expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
 # F1 (Opus r1 verify; 001-AC2): the bundle must carry the statement Sign built; cosign signing another one is refused, naming the mismatch
 expect_postsign_refuse "F1 a cosign that signs a statement with swapped subjects is refused: the signed statement is not the one Sign built" "statement" swapsubj
 expect_postsign_refuse "F1 a cosign that signs a statement with a changed predicate is refused" "statement" predicate
@@ -1459,14 +1526,14 @@ chmod +x "$work/fakebin-openssl"
 cvr=$(mkcv fakessl "$work/fakebin-openssl") \
   expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback), says openssl's exit status and what it said, and removes the output" "signature|openssl exit 1|fake openssl: failure" sslfail
 rm -f "$work/ssl-fail"
-rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 [ "$POSTSIGN" = 12 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 8)) of the four cases"
 
 # H1 (Opus r1-verify info, 001-AC2): --out must not exist yet. Sign creates it and, on a refusal, removes only what it created; an existing
 # path (., a directory, a file, a symlink) is a usage error before anything runs: nothing deleted, nothing written, cosign never called
 expect_out_refused() { local l=$1 out=$2 dir=$3 rc=0
-  (cd "$dir" && run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$out") || rc=$?
+  (cd "$dir" && run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$out") || rc=$?
   if [ "$rc" = 2 ] && ! crashed && grep -q -i "already exists" "$work/err" && [ -e "$dir/keep.txt" ] && [ -z "$(find "$dir" -name 'provenance*' -print -quit)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 2 'already exists', keep.txt kept, nothing written, no cosign; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
 mkdir -p "$work/h1/dot" "$work/h1/dir/existing" "$work/h1/file" "$work/h1/link/target"
@@ -1476,7 +1543,7 @@ expect_out_refused "H1 --out . (the current directory) is refused, and nothing i
 expect_out_refused "H1 --out an existing directory is refused, and nothing in it is deleted or written" existing "$work/h1/dir"
 expect_out_refused "H1 --out an existing file is refused, and the file is kept" out.txt "$work/h1/file"
 expect_out_refused "H1 --out a symlink to a directory is refused, and the directory it points to is untouched" "$work/h1/link/out" "$work/h1/link/target"
-rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/h1/fresh" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/h1/fresh" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/h1/fresh/provenance.json" ] && ok "H1 control: a fresh --out is created and the provenance is written there" || bad "H1 control: a fresh --out failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 # H2 (Opus r1-verify info, 001-AC2): the signed statement must equal the built one TYPE-exactly (true is not 1, 1 is not 1.0, false is not 0)
 for m in dry1 dry1f; do
@@ -1510,7 +1577,7 @@ mkdir -p "$work/noyaml"; printf 'raise ImportError("no PyYAML here (test stub)")
 rc=0; PYTHONPATH="$work/noyaml" "$PY3" -S "$cv" --help > /dev/null 2> "$work/err" || rc=$?
 [ "$rc" = 0 ] && ! crashed && ok "S4 python3 -S chain-verify.py --help works with PyYAML unimportable" || bad "S4 --help needs PyYAML (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 PYTHONPATH="$work/noyaml" expect_ok "S4 verify (the Sign path) works with PyYAML unimportable" verify $(V) --stage sign $(rec sign_prov)
-PYTHONPATH="$work/noyaml" expect_ok "S4 sign --check works with PyYAML unimportable" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/noyaml"
+PYTHONPATH="$work/noyaml" expect_ok "S4 sign --check works with PyYAML unimportable" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/noyaml"
 rc=0; PYTHONPATH="$work/noyaml" run $(A w_good) || rc=$?
 [ "$rc" = 2 ] && ! crashed && grep -q -i "pyyaml" "$work/err" && ok "S4 actions without PyYAML is a clear usage error (exit 2) naming PyYAML, not a traceback" || bad "S4 actions without PyYAML (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 expect_ok     "S4 control: actions works with PyYAML" $(A w_good)
@@ -1538,7 +1605,7 @@ expect_refuse "R2-4 check-build-record: Build's product subject whose digest is 
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
 WFREF=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
-rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
+rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- Codex security round 3 ----
@@ -1919,7 +1986,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=744
+EXPECT=758
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
