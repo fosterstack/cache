@@ -425,7 +425,7 @@ KEYNAME = "release-key.verified.pub"
 
 def verified_key():
     """The absolute path of the verified release public key file; a refusal when there is none. The file is read only
-    from $RUNNER_TEMP (absolute, and not inside the checkout, which also keeps out every file git tracks), never a key
+    from $RUNNER_TEMP (absolute, and not inside the checkout, which also keeps out every tracked file), never a key
     reference, and it holds exactly one PEM public key. The writer is the manifest-check step of the Release job, which
     checks the key manifest against the root key; that step is not on this base, so today the file is absent and
     Release refuses (fail closed)."""

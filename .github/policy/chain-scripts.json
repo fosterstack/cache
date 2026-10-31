@@ -1857,7 +1857,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "52fff85f39c441db2a62a3e571209bddd18d24bc40abf4149bcf6ac67b0d1ae8",
+      "sha256": "a6e54a1db4d34754ec2c74723a8a8ba8869b7f600073fa1e63909c64059c955e",
       "env_mentions": [
         {
           "name": "ENV",
