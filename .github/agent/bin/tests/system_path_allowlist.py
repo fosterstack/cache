@@ -30,7 +30,7 @@ LINK_ROWS = [
 # needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
 PINS = {
     '.github/agent/bin/tests/test_check_action_pins.py': (
-        '6c34d314160b9508090e16b8de63d629445a3819b39a4462f5ff99322ee6cedc',
+        '7f8606aca5eda7dad734569aa4487da24bde353f3cd99d76048cee57629141d1',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',

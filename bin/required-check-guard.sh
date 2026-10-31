@@ -34,13 +34,26 @@ actual=$(jq -c '[.[] | select(.type=="required_status_checks")
 expected=$(jq -c '[.required_checks[] | {context, integration_id}] | sort_by(.context)' "$list" 2>/dev/null) \
   || fail2 "${list} is missing or has no required_checks array"
 [ "$(jq length <<<"$actual")" -gt 0 ] || fail2 "main enforces NO required status checks"
+# The merge queue's two settings the review gate depends on (REQ-DEP-005-AC3): the merge method MERGE (every group
+# commit is a two-parent merge) and the grouping ALLGREEN (every entry's checks must pass, so each entry is judged by
+# its own run). No merge_queue rule means the queue is off and there is nothing to check.
+queue_bad=$(jq -r '[.[] | select(.type=="merge_queue") | .parameters
+                    | select(.merge_method != "MERGE" or .grouping_strategy != "ALLGREEN")
+                    | "merge_method=\(.merge_method) grouping_strategy=\(.grouping_strategy)"] | .[]' \
+            <<<"$rules" 2>/dev/null) || fail2 "main's rules are not the expected JSON"
 
 echo "expected (${list}): $(jq -c '[.[].context]' <<<"$expected")"
 echo "actual   (ruleset on main): $(jq -c '[.[].context]' <<<"$actual")"
-if [ "$(jq -cS . <<<"$actual")" = "$(jq -cS . <<<"$expected")" ]; then
+same=0; [ "$(jq -cS . <<<"$actual")" = "$(jq -cS . <<<"$expected")" ] && same=1
+if [ "$same" = 1 ] && [ -z "$queue_bad" ]; then
   echo "required-check guard: match ($(jq length <<<"$actual") checks, contexts and integration IDs)"
   exit 0
 fi
+if [ -n "$queue_bad" ]; then
+  echo "::error::merge queue drift: the merge_queue rule on main needs merge method MERGE and grouping ALLGREEN" \
+       "(REQ-DEP-005-AC3); found ${queue_bad}" >&2
+fi
+[ "$same" = 1 ] && exit 1
 echo "::error::required-check drift: the ruleset on main and ${list} differ (contexts and integration IDs must both match, exactly). Update the ruleset (owner) or the list (PR), whichever is wrong." >&2
 echo "diff (- ruleset on main only, + list only):"
 diff <(jq -cS '.[]' <<<"$actual") <(jq -cS '.[]' <<<"$expected") | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'

@@ -131,6 +131,9 @@ run "a group commit with ONE parent at the head -> refused" 1 "$GL"
 run "a group commit with THREE parents below the head -> refused" 1 "$GT"
 run "a group commit with THREE parents at the head -> refused" 1 "$GO"
 run "history that never meets main (a parentless commit below the head) -> refused" 1 "$UG"
+grep -qF "not a two-parent merge (0 parents)" <<<"$LAST_OUT" \
+  && ok "the parentless commit is refused for its own reason: it is not a two-parent merge" \
+  || bad "the parentless refusal does not say it is not a two-parent merge ($LAST_OUT)"
 run "an empty group (the head is main's tip itself) -> refused" 1 "$M0"
 NOSUCH="$(printf '1%.0s' $(seq 40))"
 run "a head that is not in the repository -> refused" 1 "$NOSUCH"

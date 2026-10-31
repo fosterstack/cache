@@ -38,7 +38,7 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # the queue's base, which is main as it is now
+          # in the queue the group's parent commit: main, or the entry ahead of this one (reviewed, audit-gated)
           ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           path: trusted
           persist-credentials: false

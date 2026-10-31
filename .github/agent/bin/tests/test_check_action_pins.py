@@ -883,7 +883,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
 # main's gate workflow (the passed-audit record judge)
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"
 # the gate workflow with the merge queue judge (cache#542)
-GATE_B = "bbd7e3512a0dbabe4a2b5185c7c7bc2fa8068849cc44051e6a833e92a89a9f3a"
+GATE_B = "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc"
 # the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
 # so main's copy is made by undoing them
 QUEUE_HUNKS = (
@@ -968,7 +968,8 @@ concurrency:
         r''''refs/heads/gh-readonly-queue/*')" \
             || { echo "::warning::the merge queue branches could not be listed: nothing is posted"; '''
         r'''exit 0; }
-          if printf '%s\n' "$queue_tips" | cut -f1 | grep -qx "$HEAD_SHA"; then
+          tips="$(cut -f1 <<<"$queue_tips")"
+          if grep -qxF "$HEAD_SHA" <<<"$tips"; then
             echo "::notice::this head is the tip of a live merge queue branch: the queue publishes '''
         r'''its verdict"; exit 0
           fi
@@ -1090,19 +1091,7 @@ concurrency:
 '''),
     ),
     (
-        (r'''            --jq '.[] | "\(.number) \(.headRefOid) \(.headRefName) \((.headRepositoryOwner.login // '''
-        r'''"") + "/" + (.headRepository.name // ""))"' > "$RUNNER_TEMP/prs.txt"
-          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" '''
-        r'''"$RUNNER_TEMP/yaml-shim/yaml"
-          fail=0
-          while read -r n sha headref headrepo; do
-            case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue '''
-        r''';; esac
-            # the App's latest verdict on this head: none -> judge; success -> done; a failure from '''
-        r'''the
-            # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand '''
-        r'''the
-            # head) and publish only if it has turned to success, so a head that still fails is not
+        (r'''            # head) and publish only if it has turned to success, so a head that still fails is not
             # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
             last="$(GH_TOKEN="$APP_TOKEN" gh api '''
         r'''"repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
@@ -1110,29 +1099,7 @@ concurrency:
         r'''| last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
 '''),
-        (r'''            --jq '.[] | "\(.number) \(.headRefOid) \(.headRefName) \((.headRepositoryOwner.login // '''
-        r'''"") + "/" + (.headRepository.name // ""))"' > "$RUNNER_TEMP/prs.txt"
-          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" '''
-        r'''"$RUNNER_TEMP/yaml-shim/yaml"
-          # a head that is the tip of a live merge queue branch is the queue publisher's (same '''
-        r'''check name, same SHA)
-          queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" '''
-        r''''refs/heads/gh-readonly-queue/*')" \
-            || { echo "::error::the merge queue branches could not be listed: nothing is posted"; '''
-        r'''exit 1; }
-          fail=0
-          while read -r n sha headref headrepo; do
-            case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue '''
-        r''';; esac
-            if printf '%s\n' "$queue_tips" | cut -f1 | grep -qx "$sha"; then
-              echo "PR #${n} ${sha:0:7}: the head of a live merge queue branch, not posted"; '''
-        r'''continue
-            fi
-            # the App's latest verdict on this head: none -> judge; success -> done; a failure from '''
-        r'''the
-            # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand '''
-        r'''the
-            # head) and publish only if it has turned to success, so a head that still fails is not
+        (r'''            # head) and publish only if it has turned to success, so a head that still fails is not
             # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
             last="$(GH_TOKEN="$APP_TOKEN" gh api \
               "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" '''
@@ -1140,6 +1107,35 @@ concurrency:
               --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) '''
         r'''| last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
+'''),
+    ),
+    (
+        (r'''            fi
+            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} '''
+        r'''${sha:0:7}: still failure"; continue; fi
+            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f '''
+        r'''name=auditor-review-gate -f head_sha="$sha" \
+              -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
+'''),
+        (r'''            fi
+            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} '''
+        r'''${sha:0:7}: still failure"; continue; fi
+            # a head that is the tip of a live merge queue branch is the queue publisher's (same '''
+        r'''check name and SHA);
+            # a head can become one while it is judged, so the branches are read here, right before '''
+        r'''the post
+            queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" '''
+        r''''refs/heads/gh-readonly-queue/*')" \
+              || { echo "PR #${n} ${sha:0:7}: the queue branches could not be listed, not posted"; '''
+        r'''fail=1; continue; }
+            tips="$(cut -f1 <<<"$queue_tips")"
+            if grep -qxF "$sha" <<<"$tips"; then
+              echo "PR #${n} ${sha:0:7}: the head of a live merge queue branch, not posted"; '''
+        r'''continue
+            fi
+            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f '''
+        r'''name=auditor-review-gate -f head_sha="$sha" \
+              -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
 '''),
     ),
 )

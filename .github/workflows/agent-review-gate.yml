@@ -169,7 +169,8 @@ jobs:
           # the queue's own publisher owns this check name on a queue head: a later post would replace its verdict
           queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" 'refs/heads/gh-readonly-queue/*')" \
             || { echo "::warning::the merge queue branches could not be listed: nothing is posted"; exit 0; }
-          if printf '%s\n' "$queue_tips" | cut -f1 | grep -qx "$HEAD_SHA"; then
+          tips="$(cut -f1 <<<"$queue_tips")"
+          if grep -qxF "$HEAD_SHA" <<<"$tips"; then
             echo "::notice::this head is the tip of a live merge queue branch: the queue publishes its verdict"; exit 0
           fi
           if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."
@@ -353,15 +354,9 @@ jobs:
             --json number,headRefOid,headRefName,headRepository,headRepositoryOwner \
             --jq '.[] | "\(.number) \(.headRefOid) \(.headRefName) \((.headRepositoryOwner.login // "") + "/" + (.headRepository.name // ""))"' > "$RUNNER_TEMP/prs.txt"
           mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
-          # a head that is the tip of a live merge queue branch is the queue publisher's (same check name, same SHA)
-          queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" 'refs/heads/gh-readonly-queue/*')" \
-            || { echo "::error::the merge queue branches could not be listed: nothing is posted"; exit 1; }
           fail=0
           while read -r n sha headref headrepo; do
             case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue ;; esac
-            if printf '%s\n' "$queue_tips" | cut -f1 | grep -qx "$sha"; then
-              echo "PR #${n} ${sha:0:7}: the head of a live merge queue branch, not posted"; continue
-            fi
             # the App's latest verdict on this head: none -> judge; success -> done; a failure from the
             # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the
             # head) and publish only if it has turned to success, so a head that still fails is not
@@ -391,6 +386,14 @@ jobs:
               conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)
             fi
             if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi
+            # a head that is the tip of a live merge queue branch is the queue publisher's (same check name and SHA);
+            # a head can become one while it is judged, so the branches are read here, right before the post
+            queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" 'refs/heads/gh-readonly-queue/*')" \
+              || { echo "PR #${n} ${sha:0:7}: the queue branches could not be listed, not posted"; fail=1; continue; }
+            tips="$(cut -f1 <<<"$queue_tips")"
+            if grep -qxF "$sha" <<<"$tips"; then
+              echo "PR #${n} ${sha:0:7}: the head of a live merge queue branch, not posted"; continue
+            fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \
               -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
               -f "output[title]=auditor review gate: ${conclusion}" \
