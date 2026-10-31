@@ -1202,13 +1202,27 @@ kfail "an identity instead of a key" \
   "cosign verify-blob --certificate-identity x --certificate-oidc-issuer $ISS $CB" "exactly one key flag"
 kfail "no key flag in the second segment of a pipe" \
   "cosign verify-blob --key <RELEASE_KEY> $CB | cosign verify-blob $CB" "exactly one key flag"
-for fl in "--insecure-ignore-tlog" "--insecure-ignore-tlog=true" "--insecure-ignore-tlo''g" \
-  "--private-infrastructure" "--private-infrastructure=true";
+# G1 (round 4): bash expands an unquoted brace, glob or tilde AFTER the check reads the words, so each is refused by
+# name, listed or not
+BR="a brace, glob or tilde outside quotes"
+for tail in "--insecure-ignore-{tlog,tlog}" "{--key,awskms:///alias/x}" "--bundle a.bun*" "a?.json" "a[12].json" \
+  "~/k.pub" "}";
 do
-  c="cosign verify-blob --key <RELEASE_KEY> $CB $fl"
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F4 a listed command with $fl is refused" "skips the public log"
-  g "$(blk "$(U "$c")")"; gwant_fail "AC7 F4 an unlisted command with $fl is refused too" "skips the public log"
+  c="cosign verify-blob --key <RELEASE_KEY> $CB $tail"
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 G1 a listed command with $tail is refused" "$BR"
+  g "$(blk "$(U "$c")")"; gwant_fail "AC7 G1 an unlisted command with $tail is refused too" "$BR"
 done
+# G2 (round 4): a listed verify carries only --key, --bundle, --type and --check-claims; every other flag is refused by
+# name
+for tail in "--rekor-url https://example.org" "--rekor-url=x" "--trusted-root x.json" "--custom-trusted-root x.json" \
+            "--insecure-ignore-tlog" "--insecure-ignore-tlo''g" "--private-infrastructure" "-o json"; do
+  c="cosign verify-blob --key <RELEASE_KEY> $CB $tail"
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 G2 a listed command with $tail is refused" "outside the closed set"
+done
+c="cosign verify-blob-attestation --key <RELEASE_KEY> --type slsaprovenance1 --check-claims=false $CB"
+g "$(blk "$c")";
+lst "$c";
+gwant_ok "AC7 G2 --key, --bundle, --type and --check-claims (with =value) are the whole allowed set"
 GHV="gh attestation verify oci://<IMAGE_REF> --owner fosterstack"
 g "$(blk "$GHV")";
 lst "$GHV";
@@ -1254,7 +1268,7 @@ done
 BA="cosign verify-blob-attestation --type slsaprovenance1"
 FX2=0
 for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X" "--cert=X" "--signature X" "--signature=X" "--sig X" "--sig=X" \
-         "--key X" "--key=X" "--certificate-chain X" "--certificate-chain=X" "--rekor-url X" "--rekor-url=X"; do
+         "--key X" "--key=X" "--certificate-chain X" "--certificate-chain=X"; do
   case "$f" in --key*) kf="";; *) kf=" --key <RELEASE_KEY>";; esac
   c="$BA$kf ${f//X/provenance.intoto.jsonl.bundle}"
   g "$(blk "$(U "$c")")";
@@ -1263,6 +1277,9 @@ for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X
     "not runnable"
   # a listed command's key flag is <RELEASE_KEY>, so the key value cannot be this file
   case "$f" in --key*) continue;; esac
+  # only --bundle is in a listed command's closed flag set; the other file-valued flags are refused there (G2), so no
+  # listed half
+  case "$f" in --bundle*) ;; *) continue;; esac
   g "$(blk "$c")"; lst "$c"; gwant_ok "AC7 fix7 the same command listed with its reason is not run and is recorded as not-run (exit 0): $f"
   if ! grep -q '^cosign' "$work/log"; then ok "AC7 fix7 the listed flag-value command was not run: $f"; else bad "AC7 fix7 the listed flag-value command ran: $f"; fi
 done
@@ -1726,7 +1743,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=594
+EXPECT=581
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

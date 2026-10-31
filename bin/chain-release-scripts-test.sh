@@ -798,10 +798,12 @@ for bad_cmd, what in (("curl -sS https://example.com/x", "curl"), ("cosign sign 
                       ("cosign verify <IMAGE_REF> --certificate-identity \\'x${HOME}y\\'", "a backslash-escaped quote before a $"),
                       ("cosign verify <IMAGE_REF> # '\nprintf LOCAL_MARKER", "a comment holding a quote, then a newline and a second command"), ("cosign verify <IMAGE_REF> #\nprintf LOCAL_MARKER", "a comment, then a newline and a second command")):
     t, rc, so, se = pv([PV1, bad_cmd, PV2]); check(rc != 0 and "not an allowed verify form" in se and not calls(t), "AC7 post-publish: %s is refused (not an allowed verify form) and NOTHING runs, not even the good commands before it" % what, "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
-t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> " + IDQ + " --extra <DIGEST>"])
+t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> " + IDQ + " --type <DIGEST>"])
 check(rc != 0 and "<DIGEST>" in se and not calls(t), "AC7 post-publish: a command with a placeholder the step "
         "cannot fill is refused, never run literally, and nothing runs")
-t, rc, so, se = pv([PV1 + " --extra <TAGS>"]); check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run literally")
+t, rc, so, se = pv([PV1 + " --type <TAGS>"])
+check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run "
+        "literally")
 digs = {"image-production": DIG["image-production"], "apk-amd64": "sha256:" + "c" * 64}
 t, rc, so, se = pv([PV2], digs=digs); check(rc != 0 and "image-fips" in se and not calls(t), "AC7 post-publish: <IMAGE_REF_FIPS> with no image-fips digest in the digest list is refused")
 t, rc, so, se = pv([PV1], digs={"image-production": "sha256:zz"}); check(rc != 0 and not calls(t), "AC7 post-publish: a malformed image digest is refused")
@@ -914,13 +916,35 @@ refused("a key flag in the second segment of a pipe", "key flag", rows=[PK + " |
         "x.txt"])
 refused("gh attestation verify (it verifies by identity), even with a key flag", "is not a verify form or jq",
         rows=["gh attestation verify oci://<IMAGE_REF> --key <RELEASE_KEY> --owner fosterstack"])
-# F4: the flags that skip the public log or send cosign to another log, spelled any way the shell reads them
-for label, flag in (("--insecure-ignore-tlog", "--insecure-ignore-tlog"), ("--insecure-ignore-tlog=true",
-        "--insecure-ignore-tlog=true"),
+# G1 (round 4): bash runs a listed command and expands these AFTER the judge reads its words, so an unquoted brace,
+# glob or tilde is refused by name.
+# `--insecure-ignore-{tlog,tlog}` would become the flag twice, `{--key,awskms:///alias/x}` a second key beside the
+# placeholder.
+BRACE = "a brace, glob or tilde outside quotes"
+for label, tail in (("a brace that builds the offline flag twice", "--insecure-ignore-{tlog,tlog}"),
+                    ("a brace that builds a second key flag", "{--key,awskms:///alias/x}"),
+                    ("a glob in a file operand", "--bundle a.bun*"), ("a ? glob", "a?.json"),
+                    ("a [ ] class", "a[12].json"),
+                    ("a tilde", "~/k.pub"), ("a lone closing brace", "}")):
+    refused("%s beside the key flag" % label, BRACE, rows=[PK + " " + tail])
+# G2 (round 4): a verify form carries only --key, --bundle, --type and --check-claims (with or without =value); every
+# other flag is refused by name.
+CLOSED = "outside the closed set"
+for label, tail in (("--rekor-url with a value", "--rekor-url https://example.org"), ("--rekor-url=x", "--rekor-url=x"),
+                    ("--trusted-root", "--trusted-root x.json"),
+                    ("--custom-trusted-root", "--custom-trusted-root x.json"),
+                    ("--insecure-ignore-tlog", "--insecure-ignore-tlog"),
+                    ("--insecure-ignore-tlog=true", "--insecure-ignore-tlog=true"),
                     ("a quoted --insecure-ignore-tlo''g", "--insecure-ignore-tlo''g"),
                     ("--private-infrastructure", "--private-infrastructure"),
-                    ("--private-infrastructure=true", "--private-infrastructure=true")):
-    refused("%s in a listed command" % label, "skips the public log", rows=[PK + " " + flag])
+                    ("--certificate-identity", "--certificate-identity x"),
+                    ("a short flag", "-o json")):
+    refused("%s in a listed command" % label, CLOSED, rows=[PK + " " + tail])
+t, rc, so, se = pva([PK + " --type https://slsa.dev/provenance/v1 "
+        "--check-claims=false"], assets={"provenance.bundle.json": OK})
+check(rc == 0 and len(calls(t)) == 1,
+        "G2 post-publish: --key, --bundle, --type and --check-claims (with =value) are the whole allowed set",
+        "rc=%s %s" % (rc, first(se)))
 OTHER = PBF.replace("provenance.bundle.json", "other.bundle.json")
 t, rc, so, se = pva([OTHER, PJ], assets={"provenance.bundle.json": OK, "other.bundle.json": OK}); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se, "AC20 post-publish: a verify of a DIFFERENT file does not license the jq-only command: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL_ON": "provenance.bundle.json"}); E = [l for l in se.split("\n") if l.startswith("::error::")]
@@ -948,7 +972,7 @@ for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined 
                       ("jq -e '.ok' provenance.bundle.json > out.json", "a redirect"), ("jq -e '.ok' provenance.bundle.json; id", "a ; after it")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "unverified.jq": ".ok", "other.json": OK, "-unverified.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
 # a verify command's FLAG VALUES (an identity, an issuer, a type) never license a file; only a file flag's value and a positional do
-VID = "cosign verify-blob " + IDQ + " --certificate-identity provenance.bundle.json --bundle b.json x.txt"
+VID = "cosign verify-blob " + IDQ + " --check-claims provenance.bundle.json --bundle b.json x.txt"
 t, rc, so, se = pva([VID, PJ], assets={"provenance.bundle.json": OK, "b.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 round 1: a jq operand equal to a verify's --certificate-identity value is NOT licensed (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
 VT = "cosign verify-blob-attestation --type provenance.bundle.json --bundle b.json " + IDQ
 t, rc, so, se = pva([VT, PJ], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: a verify's --type value does not license a file", "rc=%s %s" % (rc, first(se)))
@@ -956,7 +980,7 @@ VP = "cosign verify-blob " + IDQ + " --bundle b.json provenance.bundle.json"
 t, rc, so, se = pva([VP, PJ], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc == 0, "AC20 round 1: a verify's positional blob operand licenses the jq read of that file", "rc=%s %s" % (rc, first(se)))
 VB = "cosign verify-blob " + IDQ + " --bundle=provenance.bundle.json x.txt"
 t, rc, so, se = pva([VB, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc == 0, "AC20 round 1: a --bundle=FILE value licenses the file", "rc=%s %s" % (rc, first(se)))
-VU = "cosign verify-blob " + IDQ + " --insecure-flag provenance.bundle.json x.txt"
+VU = "cosign verify-blob " + IDQ + " --check-claims provenance.bundle.json x.txt"
 t, rc, so, se = pva([VU, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t), "AC20 round 1: the word after an unknown flag is taken as its value and licenses nothing (fail closed)", "rc=%s %s" % (rc, first(se)))
 # the page's own two jq commands (docs/verify-release.md section 3, cache#360) are in the grammar
 J1 = "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json"
@@ -982,7 +1006,8 @@ t, rc, so, se = pva([], nodir=True); check(rc != 0 and "release-published" in se
 # code of base commit 5916cbc4, before the rewrite. Re-pinned for cache#797 round 1: the `gh attestation verify` form
 # is gone from the
 # judge (F2) and the corpus's commands now carry the key flag; on the old corpus the old and the new judge differ on
-# the gh forms only.
+# the gh forms only. Re-pinned again in round 4 (G1): a command that goes to bash is refused for an unquoted brace,
+# glob or tilde; on this corpus every command whose answer changed holds one (a jq-only command never goes to bash).
 src = open(os.path.join(BIN, "release-postverify.py")).read().rstrip()
 src = src[:-len("main()")] if src.endswith("\nmain()") else src
 judge = {"__name__": "judge"}
@@ -1006,7 +1031,7 @@ def verdict(c):
                sorted(j["verify_files"](c)))
     return repr(answers)
 digest = hashlib.sha256("\n".join(verdict(c) for c in CORPUS).encode()).hexdigest()
-check(digest == "dbdba28f55456678dad68ba9a83ba792f1bd371e919f2c8d5c04f33514d888ed",
+check(digest == "8984109f67e41a2c2ab8cdc68737d6b2a885db7f7f26d380457a2b1f80b11a8f",
       "owner rule 6: the judge answers the same on %d commands (form_error, all_jq, jq_files, verify_files)"
       % len(CORPUS), digest)
 t, rc, so, se = pva([PBF, "jq -e '.ok \u00e9' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
@@ -1019,7 +1044,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "435"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "448"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

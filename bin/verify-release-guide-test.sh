@@ -45,7 +45,7 @@ lines = text.replace("\r", "").split("\n")
 
 PLACEHOLDERS = {"IMAGE_REF", "IMAGE_REF_FIPS", "TAG", "RELEASE_KEY"}
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
-NO_FLAGS = ("--insecure-ignore-tlog", "--private-infrastructure")   # skip the public log / send cosign to another log
+ALLOWED_FLAGS = ("--key", "--bundle", "--type", "--check-claims")   # the only flags a verify form carries
 # Build-chain tool names that may not appear on the page (AC6). "witness" is allowed on ONE prose line, the pointer.
 CHAIN_TOOLS = ["melange", "apko", "wolfi", "bubblewrap", "bwrap", "docker", "podman", "buildah", "buildkit", "buildx",
                "kaniko", "crane", "oras", "skopeo", "syft", "grype", "trivy", "goreleaser", "ko", "in-toto",
@@ -112,6 +112,8 @@ def segments(c):
         if q == "'": q = None if ch == "'" else q
         elif ch == "$": return None, "a $ expansion outside single quotes"
         elif q == '"': q = None if ch == '"' else q
+        elif ch in "{}*?[]~":
+            return None, "a brace, glob or tilde outside quotes: bash would expand it after this check"
         elif ch in "'\"": q = ch
     for bad_ in ("$(", "${"):
         if bad_ in c: return None, "a command or variable substitution"
@@ -150,9 +152,9 @@ for c, ln, bo in cmds:
         keys = []
         for i, t in enumerate(s):
             flag, eq, val = t.partition("=")
-            if flag in NO_FLAGS: err("AC7",
-                    "line %d: `%s` carries %s, which skips the public log or sends cosign to another "
-                            "log" % (ln+1, c, flag)); okc = False
+            if t.startswith("-") and flag not in ALLOWED_FLAGS:
+                err("AC7", "line %d: `%s` carries %s, which is outside the closed set "
+                    "(--key, --bundle, --type, --check-claims)" % (ln+1, c, flag)); okc = False
             if flag == "--key": keys.append(val if eq else (s[i+1] if i + 1 < len(s) else ""))
         if len(keys) != 1: err("AC7",
                 "line %d: `%s` needs exactly one key flag whose value is <RELEASE_KEY> (found "
@@ -508,13 +510,25 @@ mutant "the identity form is back"      "is the keyless form" \
 mutant "the log is skipped in a command" "is never inside a code block" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-tlog", 1)'
 mutant "the offline sentence loses its mark" "carries a TO-VERIFY"    's.replace(" TO-VERIFY: offline.", "")'
-mutant "the offline flag is spelled with quotes in a command" "which skips the public log" \
+mutant "the offline flag is spelled with quotes in a command" "outside the closed set" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-tlo\x27\x27g", 1)'
 mutant "the offline sentence moves into a code comment" "never inside a code block" \
     '(s.replace("--insecure-ignore-tlog` to each", "--no-log` to each")
      .replace("```sh\n# Not", "```sh\n# --insecure-ignore-tlog\n# Not"))'
-mutant "the other log flag is in a command" "which skips the public log or sends cosign" \
+mutant "the other log flag is in a command" "outside the closed set" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --private-infrastructure=true", 1)'
+mutant "a brace builds the offline flag twice" "a brace, glob or tilde outside quotes" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --insecure-ignore-{tlog,tlog}", 1)'
+mutant "a brace builds a second key flag" "a brace, glob or tilde outside quotes" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> {--key,awskms:///alias/x}", 1)'
+mutant "a glob in a file operand" "a brace, glob or tilde outside quotes" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --bundle a.bun*", 1)'
+mutant "a ? glob" "a brace, glob or tilde outside quotes" 's.replace("sbom.json\n", "sb?m.json\n", 1)'
+mutant "a tilde" "a brace, glob or tilde outside quotes" 's.replace("sbom.json\n", "~/sbom.json\n", 1)'
+mutant "a log URL flag in a command" "outside the closed set" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --rekor-url https://example.org", 1)'
+mutant "a trusted root flag in a command" "outside the closed set" \
+    's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --trusted-root x.json", 1)'
 mutant "a literal key file" "names the key 'cosign.pub', not <RELEASE_KEY>" \
     's.replace("--key <RELEASE_KEY>", "--key cosign.pub", 1)'
 mutant "a KMS key reference" "names the key 'awskms:///alias/x', not <RELEASE_KEY>" \

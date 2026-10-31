@@ -9,8 +9,9 @@ verified release public key file (verified_key below; nothing else can fill it).
 
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
 verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify form, no other shell
-syntax ($ only inside single quotes), and no placeholder left unfilled. Every verify form carries exactly one key
-flag whose value is <RELEASE_KEY>, and none skips the public log or points cosign at another log. A command that fails
+syntax (no $ outside single quotes, no unquoted brace, glob or tilde), and no placeholder left unfilled. Every verify
+form carries exactly one key flag whose value is <RELEASE_KEY> and no flag but --key, --bundle, --type and
+--check-claims. A command that fails
 fails the run (exit 1) after all have run. The step holds the job's GITHUB_TOKEN (the Release job's own
 contents/packages/id-token grant) and no registry credential.
 
@@ -36,9 +37,10 @@ SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 HOST = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/")   # ghcr.io/x yes, x/y no: a registry host written out
 FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "verify-blob"),
          ("cosign", "verify-blob-attestation"))
-# flags no listed command may carry: the first skips the public log entry, the second sends cosign to another log
-# (--insecure-ignore-tlog yes, --insecure-ignore-sct no: it is another check)
-NO_FLAGS = ("--insecure-ignore-tlog", "--private-infrastructure")
+# the only flags a verify form carries; any other (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes
+# which log or
+# which trust root the default check reads, or skips it
+ALLOWED_FLAGS = ("--key", "--bundle", "--type", "--check-claims")
 # exactly one PEM public key and nothing else: BEGIN, base64 lines, END (a second block or any other line fails)
 PEM = re.compile(r"^-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+\n-----END PUBLIC KEY-----\n?$")
 SYNTAX = "();<>|&"   # a shell word made only of these is an operator; "|" alone is the one we allow
@@ -78,9 +80,11 @@ def split_pipe(words):
     return segs
 
 
-def quote_error(c):
-    """Why bash would run something else than the words we judge (a backquote, an expansion, a comment, a newline),
-    or None. We walk the quotes ourselves because shlex does not know bash's expansions."""
+def quote_error(c, bash=True):
+    """Why bash would run something else than the words we judge (a backquote, an expansion, a comment, a newline,
+    and, when the command goes to bash, an unquoted brace, glob or tilde), or None. A jq-only command never goes to
+    bash (run_jq), so it passes bash=False. We walk the quotes ourselves because shlex does not know bash's
+    expansions."""
     if "`" in c:
         return "a backquote"
     quote, i = None, 0
@@ -103,6 +107,8 @@ def quote_error(c):
             return "a # outside quotes (a shell comment would hide what follows from this check and not from bash)"
         elif ch in "\n\r":
             return "a newline outside quotes (bash runs what follows as another command)"
+        elif bash and ch in "{}*?[]~":
+            return "a brace, glob or tilde outside quotes: bash would expand it after this check"
         i += 1
     return None
 
@@ -120,7 +126,7 @@ def form_error(c, jq_only=False):
     """None when the command is a pipe of verify forms and jq with at least one verify form, else why not.
     With jq_only the command is a pure jq pipe (judged by jq_files after this): only the character-level refusals
     apply, because jq opens no network and no repository."""
-    why = quote_error(c)
+    why = quote_error(c, bash=not jq_only)
     if why:
         return why
     try:
@@ -148,7 +154,7 @@ def form_error(c, jq_only=False):
 
 def key_error(c):
     """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
-    whose value is <RELEASE_KEY>, and none carries a flag of NO_FLAGS; else why not. The words are the shell's
+    whose value is <RELEASE_KEY> and no flag outside ALLOWED_FLAGS; else why not. The words are the shell's
     (a quoted spelling like --insecure-ignore-tlo''g is the flag); the placeholder is a marker no file name equals."""
     for seg in split_pipe(words_of(c, PHM)):
         if seg[0] == "jq":
@@ -156,14 +162,16 @@ def key_error(c):
         keys = []
         for i, w in enumerate(seg):
             flag, eq, value = w.partition("=")
-            if flag in NO_FLAGS:
-                return "the flag %s skips the public log or sends cosign to another log" % flag
             if flag == "--key":
                 keys.append(value if eq else (seg[i + 1] if i + 1 < len(seg) else ""))
         if len(keys) != 1:
             return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
         if keys[0] != "\u2039RELEASE_KEY\u203a":
             return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
+        for w in seg:
+            flag = w.partition("=")[0]
+            if w.startswith("-") and flag not in ALLOWED_FLAGS:
+                return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % flag
     return None
 
 
@@ -188,8 +196,7 @@ JQ_BUILTINS = {
 JQ_FORMATS = {"@base64d", "@base64", "@json", "@text"}
 # The flags of the verify forms whose value is a file. The value of any other flag (an identity, an issuer, a type)
 # never counts as a file the command verified.
-FILE_FLAGS = {"--bundle", "--signature", "--certificate", "--certificate-chain", "--trusted-root",
-              "--custom-trusted-root"}
+FILE_FLAGS = {"--bundle", "--signature", "--certificate", "--certificate-chain"}
 
 
 def jq_filter_why(f, names):

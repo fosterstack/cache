@@ -49,8 +49,10 @@ if len(cmds) > 10:
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
 # the forms as tuples of words: a command word that holds a space ("cosign verify") is one word and is not a form
 FORM_WORDS2 = tuple(tuple(f.split()) for f in FORMS2)
-# flags no command may carry: the first skips the public log entry, the second sends cosign to another log
-NO_FLAGS = ("--insecure-ignore-tlog", "--private-infrastructure")
+# the only flags a listed verify carries; any other (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes
+# which log or trust
+# root the default check reads, or skips it
+ALLOWED_FLAGS = ("--key", "--bundle", "--type", "--check-claims")
 # The flags of the verify forms that take a value (an unknown flag is taken as taking none, so its next word is judged as an operand:
 # the safe direction, a command the check cannot place is not run).
 VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp",
@@ -60,7 +62,7 @@ VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--cer
                "--template", "-t", "--hostname", "--custom-trusted-root", "--signer-digest", "--cert", "--sig", "--rekor-url"}
 # The value of these flags names a file the command reads: a file operand unless it is a URL (a value with ://), so a command whose only file operand is
 # such a value, not local to Check, is not runnable at Check (it may be listed; Release's post-publish verification runs it with the downloaded files).
-FILE_FLAGS = {"--bundle", "--certificate", "--cert", "--signature", "--sig", "--key", "--certificate-chain", "--rekor-url"}
+FILE_FLAGS = {"--bundle", "--certificate", "--cert", "--signature", "--sig", "--key", "--certificate-chain"}
 JQ_TWO = {"--arg", "--argjson", "--slurpfile", "--rawfile"}
 LOCAL = {"TAG"}     # the placeholder Check fills with a local value
 IMAGE = {"IMAGE_REF", "IMAGE_REF_FIPS"}
@@ -108,11 +110,12 @@ def split_pipes(c):
     return segs
 
 
-def classify(c):
-    """("run", "") | ("registry", why) | ("no", why) | ("syntax", why): the command runs, needs a registry, cannot run on a candidate, or has shell syntax no
-    command of the guide may have (judged before the cannot-run list is consulted, so a listed command is never excused for its syntax)."""
+def syntax_why(c):
+    """Why the command has shell syntax no command of the guide may have (a backquote, an expansion, an unquoted brace, glob
+    or tilde), or None. bash expands these after any check of the words, so they are judged on the text, before the
+    cannot-run list is consulted."""
     if "`" in c:
-        return "syntax", "shell syntax: a backquote"
+        return "shell syntax: a backquote"
     quote, i = None, 0
     while i < len(c):
         ch = c[i]
@@ -125,12 +128,23 @@ def classify(c):
             if ch == quote:
                 quote = None
             elif ch == "$" and quote == '"':
-                return "syntax", "shell syntax: an expansion ($) inside double quotes"
+                return "shell syntax: an expansion ($) inside double quotes"
         elif ch in "'\"":
             quote = ch
         elif ch == "$":
-            return "syntax", "shell syntax: an expansion ($) outside single quotes"
+            return "shell syntax: an expansion ($) outside single quotes"
+        elif ch in "{}*?[]~":
+            return "shell syntax: a brace, glob or tilde outside quotes: bash would expand it after this check"
         i += 1
+    return None
+
+
+def classify(c):
+    """("run", "") | ("registry", why) | ("no", why) | ("syntax", why): the command runs, needs a registry, cannot run on a candidate, or has shell syntax no
+    command of the guide may have (judged before the cannot-run list is consulted, so a listed command is never excused for its syntax)."""
+    why = syntax_why(c)
+    if why:
+        return "syntax", why
     lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
     lx.whitespace_split = True
     try:
@@ -205,24 +219,16 @@ def shell_segments(c):
     except ValueError:
         return []
     segs = [[]]
-    for w in words:
-        segs.append([]) if w == "|" else segs[-1].append(w)
+    for w in words:   # a pipe or any other shell operator starts a new segment (classify refuses the operators)
+        segs.append([]) if w and all(ch in "();<>|&" for ch in w) else segs[-1].append(w)
     return segs
-
-
-def no_flag(c):
-    """The first flag of NO_FLAGS the command carries (with or without =value), or None."""
-    flags = (w.partition("=")[0] for seg in shell_segments(c) for w in seg)
-    return next((f for f in flags if f in NO_FLAGS), None)
 
 
 def key_error(c):
     """None when every verify segment of the command has exactly one key flag (--key X or --key=X) whose value is
-    <RELEASE_KEY>, and the command carries no flag of NO_FLAGS; else why not."""
-    if no_flag(c):
-        return "the flag %s skips the public log or sends cosign to another log" % no_flag(c)
+    <RELEASE_KEY> and no flag outside ALLOWED_FLAGS; else why not."""
     for seg in shell_segments(c):
-        if not seg or seg[0] == "jq":
+        if tuple(seg[:2]) not in FORM_WORDS2:   # jq, or a word verify_form and classify refuse by name
             continue
         keys = []
         for i, w in enumerate(seg):
@@ -233,6 +239,10 @@ def key_error(c):
             return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
         if keys[0] != "\u2039RELEASE_KEY\u203a":
             return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
+        for w in seg:
+            flag = w.partition("=")[0]
+            if w.startswith("-") and flag not in ALLOWED_FLAGS:
+                return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % flag
     return None
 
 
@@ -267,6 +277,10 @@ def verify_form(c):
 for c in excused:
     if not verify_form(c):
         fail("the cannot-run entry `%s` is not a verify form (Release runs only the verify forms from this list)" % c)
+    why = syntax_why(c)
+    if why:
+        fail("the cannot-run entry `%s` has %s: no command of the guide may, listed or not (Release runs the listed "
+                "commands unattended)" % (c, why))
     why = key_error(c)
     if why:
         fail("the cannot-run entry `%s` is refused: %s (Release runs it with the verified key)" % (c, why))
@@ -289,9 +303,6 @@ for c in cmds:
         if u not in defined:
             fail("the command `%s` uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
     kind, why = classify(c)
-    if no_flag(c):
-        fail("the command `%s` carries %s: it skips the public log or sends cosign to another log, so no command "
-             "of the guide may (listed or not)" % (c, no_flag(c)))
     if kind == "syntax":
         fail("the command `%s` has %s: no command of the guide may, listed as not-run or not (Release runs the listed commands unattended)" % (c, why))
     for u in sorted(set(PH.findall(c))):
