@@ -312,6 +312,20 @@ elif sg[0] != SCAN_STEP:
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
 # a suite cannot be deleted, edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR
 # cannot change for itself (the gate runs main's copy), being changed first. Adding a suite to a split job means adding its step here.
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by
+    check-action-pins --verify-tags, pin-age and the daily audit (a Dependabot bump moves it), not by these lists. The
+    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
+    scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str) and u.count("@") == 1:
+        name, _, ref = u.partition("@")
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
 SPLIT_STEPS = json.loads(r'''{
  "allowlist-chain": [
   {
@@ -743,11 +757,21 @@ for jid, want_steps in SPLIT_STEPS.items():
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
     accepted = [want_steps]
-    if got not in accepted:
+    if [_by_shape(st) for st in got] not in [[_by_shape(st) for st in a] for a in accepted]:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
-        bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why) or 'a step differs in its command, env, uses, with or order'})")
+        if not why:      # the same names: say which step differs and in which keys
+            for _i, (_g, _w) in enumerate(zip(got, want_steps)):
+                _keys = sorted(k for k in set(_g) | set(_w) if _by_shape(_g).get(k) != _by_shape(_w).get(k))
+                if _keys:
+                    _nm = _g.get("name") or _g.get("uses")
+                    bad.append(f"the {jid} step {_i + 1} ({_nm}) differs in: {', '.join(_keys)}")
+                    break
+            else:
+                bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
+        else:
+            bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
 # and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
@@ -881,6 +905,22 @@ PY
   if out=$(judge "$f"); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
+}
+
+# case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
+case_msg() {
+  local f="$work/$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$f" "$2" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ] && grep -qF -- "$3" <<<"$out"; then pass=$((pass+1)); echo "PASS $1 → bad, names: $3"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want bad naming: $3 ($out)"; fi
 }
 
 steps='d["jobs"]["allowlist"]["steps"]'
@@ -1222,7 +1262,23 @@ case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.s
 case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
 case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+case_ g6-removed                bad "${PA}del ps[ix('bash bin/audit-record-test.sh')]"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+# a bump of an action that the judged jobs use (cache#790: setup-python 7.0.0 to 7.1.0) moves the digest in every judged
+# step; the digest value is judged by check-action-pins --verify-tags, pin-age and the daily audit, not by this list.
+# The action name and the full 40-hex shape of the ref stay exact.
+BUMP="for j in ('allowlist', 'allowlist-chain', 'allowlist-persona', 'allowlist-pins-auditor'): "
+BUMP+="[s.__setitem__('uses', '%s') for s in d['jobs'][j]['steps'] "
+BUMP+="if s.get('uses', '').startswith('actions/setup-python@')]"
+case_ uses-digest-bumped       ok  "${BUMP//%s/actions/setup-python@abababababababababababababababababababab}"
+case_ uses-tag-ref             bad "${BUMP//%s/actions/setup-python@v7}"
+case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababababababababababababababababa}"
+case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
+case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
+case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
+RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
+case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
+case_msg run-changed-names-key  "$RUNX" "differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
