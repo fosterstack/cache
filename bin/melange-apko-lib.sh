@@ -61,7 +61,7 @@
 #     101 (ENETUNREACH: the namespace has no route, so the attempt was real). bin/net-probe.py connects to 192.0.2.1:9 and exits
 #     with the connect errno (0 = connected). Probe not 101 -> the namespace is not sealed: non-zero, not 4. Other failures: 1.
 #     Also new: bin/oci-digest.py and bin/net-probe.py (allowlist).
-#  I5 bin/apko-lock.sh   compare BASE FULL --apk NAME   arch-check LOCK
+#  I5 bin/apko-lock.sh   compare BASE FULL --apk NAME[,NAME...]   arch-check LOCK
 #                        verify-archive --lock L --archive DIR [--melange-repo DIR]   evidence --lock L --archive DIR --out DIR
 #                        (evidence writes OUT/archive-checksums.txt in sha256sum format, relative to ARCHIVE, plus OUT/*.lock.json)
 #  I6 bin/apk-tool.py    digest APK | same A B | signer APK | cat APK MEMBER | binary-check APK FILE
@@ -129,7 +129,7 @@ cat >"$work/lib.py" <<'PY'
 import base64, gzip, hashlib, io, json, os, re, shutil, subprocess, sys, tarfile, zlib
 import yaml
 ARCHS = ["x86_64", "aarch64"]
-BASE = [("wolfi-baselayout", "20230201-r5"), ("ca-certificates-bundle", "20260101-r0"), ("tzdata", "2026a-r0")]
+BASE = [("tzdata", "2026a-r0")]   # the archive packages the images keep: no CA bundle and no Wolfi base layout (0710)
 ENVPK = [("busybox", "1.37.0-r5"), ("git", "2.50.1-r0"), ("wget", "1.25.0-r0"), ("ca-certificates-bundle", "20260102-r0")]
 def tarb(members):
     b = io.BytesIO()
@@ -192,8 +192,7 @@ CFG = """contents:
     - /work/keyring/wolfi-signing.rsa.pub
     - /work/keyring/assembly.rsa.pub
   packages:
-    - wolfi-baselayout
-    - ca-certificates-bundle
+    - fscache-baselayout=@FSCACHE_VERSION@-r0
     - tzdata
     - %(fs)s=@FSCACHE_VERSION@-r0
 accounts:
@@ -276,6 +275,7 @@ def fixtures(fx):
         open("%s/envrepo/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"envrepo-index-" + a.encode())
         for n, mel in (("fscache", "melrepo"), ("fscache-fips", "melrepo-fips")):
             P[(n, "0.3.0-r0", a)] = mkapk("%s/%s/%s/%s-0.3.0-r0.apk" % (fx, mel, a, n), n, "0.3.0-r0", {"usr/bin/fscache": ("bin-%s-%s" % (n, a)).encode()})
+            P[("fscache-baselayout", "0.3.0-r0", a, mel)] = mkapk("%s/%s/%s/fscache-baselayout-0.3.0-r0.apk" % (fx, mel, a), "fscache-baselayout", "0.3.0-r0", {"etc/passwd": b"nonroot"})
             open("%s/%s/%s/APKINDEX.tar.gz" % (fx, mel, a), "wb").write(b"index-" + a.encode())
     os.makedirs(fx + "/archive/keys", exist_ok=True)
     open(fx + "/archive/keys/wolfi-signing.rsa.pub", "w").write("-----BEGIN PUBLIC KEY-----\nwolfi-fixture\n-----END PUBLIC KEY-----\n")
@@ -288,11 +288,12 @@ def fixtures(fx):
         p = "%s/archive/go/go1.27.2.linux-%s.tar.gz" % (fx, g)
         open(p, "wb").write(("fake-go-" + g).encode()); sums.append(hashlib.sha256(open(p, "rb").read()).hexdigest())
     def ent(n, v, a, pre): return entry(n, v, a, "%s/%s/%s-%s.apk" % (pre, a, n, v), P[(n, v, a)])
+    def own_ent(a, fs): return entry("fscache-baselayout", "0.3.0-r0", a, "/work/melange-repo/%s/fscache-baselayout-0.3.0-r0.apk" % a, P[("fscache-baselayout", "0.3.0-r0", a, "melrepo-fips" if fs == "fscache-fips" else "melrepo")])
     base = [ent(n, v, a, "/work/archive") for a in ARCHS for n, v in BASE]
     wj(fx + "/base.lock.json", lockdoc(base, "cfg-base", ["/work/archive"]))
     wj(fx + "/base-fips.lock.json", lockdoc(base, "cfg-base-fips", ["/work/archive"]))
     for fs, out in (("fscache", "full"), ("fscache-fips", "full-fips")):
-        ents = [ent(n, v, a, "/mnt/other/archive") for a in ARCHS for n, v in reversed(BASE)] + [ent(fs, "0.3.0-r0", a, "/work/melange-repo") for a in ARCHS]
+        ents = [ent(n, v, a, "/mnt/other/archive") for a in ARCHS for n, v in reversed(BASE)] + [ent(fs, "0.3.0-r0", a, "/work/melange-repo") for a in ARCHS] + [own_ent(a, fs) for a in ARCHS]
         wj("%s/%s.lock.json" % (fx, out), lockdoc(ents, "cfg-full-" + fs, ["/work/archive", "/work/melange-repo"]))
     live = [ent(n, v, a, "https://packages.wolfi.dev/os") for a in ARCHS for n, v in BASE]
     wj(fx + "/live-same.lock.json", lockdoc(live, "live", ["https://packages.wolfi.dev/os"]))
@@ -451,7 +452,7 @@ def lockshape(path, variant):
     d = json.load(open(path)); assert d["version"] == "v1"
     pk = d["contents"]["packages"]; assert pk, "no packages"
     names = {e["name"] for e in pk}
-    assert {"wolfi-baselayout", "ca-certificates-bundle", "tzdata"} <= names, sorted(names)
+    assert "tzdata" in names and not names & {"wolfi-baselayout", "ca-certificates-bundle"}, sorted(names)
     assert not any(n.startswith("fscache") for n in names), "base lock holds our apk"
     for a in ARCHS: assert any(e["architecture"] == a for e in pk), a
     seen = {}
@@ -567,9 +568,9 @@ elif mode == "mel-buildinfo":
     p = pipe(load()); assert "usr/share/fscache/buildinfo.txt" in p and "go version -m" in p
 elif mode == "apko-pkgs":
     d = load(); fs = "fscache-fips" if arg == "fips" else "fscache"
-    assert names(d) == {"wolfi-baselayout", "ca-certificates-bundle", "tzdata", fs}, sorted(names(d))
-    assert f"{fs}=@FSCACHE_VERSION@-r0" in pk(d)
-    for p in pk(d): assert re.fullmatch(PINNED, p) or p == f"{fs}=@FSCACHE_VERSION@-r0" or "=" not in p, p
+    assert names(d) == {"fscache-baselayout", "tzdata", fs}, sorted(names(d))
+    assert f"{fs}=@FSCACHE_VERSION@-r0" in pk(d) and "fscache-baselayout=@FSCACHE_VERSION@-r0" in pk(d)
+    for p in pk(d): assert re.fullmatch(PINNED, p) or p in (f"{fs}=@FSCACHE_VERSION@-r0", "fscache-baselayout=@FSCACHE_VERSION@-r0") or "=" not in p, p
     assert "baseimage" not in text().lower() and "include" not in d and "debug" not in text().lower()
 elif mode == "apko-repos":
     c = load()["contents"]; assert c["repositories"] == ["/work/archive", "/work/melange-repo"], c["repositories"]

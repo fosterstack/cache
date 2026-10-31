@@ -20,11 +20,11 @@
 #
 # In this order (the tests fix it):
 #   1. refusals, before any apko call: bad arguments, a live repository in the config, a package or an APKINDEX missing
-#      from the archive or a package whose bytes do not match the base lock (bin/apko-lock.sh verify-archive), our apk
+#      from the archive or a package whose bytes do not match the base lock (bin/apko-lock.sh verify-archive), our apks
 #      missing from the melange repository, a keyring dir without the two keys;
 #   2. render the config (@FSCACHE_VERSION@ replaced);
 #   3. make the FULL lock: sudo unshare -n apko lock (apko lock has no offline flag, so the namespace has no network);
-#   4. compare it with the committed base lock: the full lock must be the base lock plus our apk and nothing else, and
+#   4. compare it with the committed base lock: the full lock must be the base lock plus our two apks and nothing else, and
 #      every package must resolve to the same version on both architectures (bin/apko-lock.sh compare, arch-check);
 #      verify the full lock against the archive and the melange repository;
 #   5. ONE apko build for both architectures: sudo unshare -n apko build --offline --lockfile FULL --sbom-path SBOM
@@ -112,7 +112,7 @@ idxrec=build/locks/archive-index.sha256
 "$PY3" -I -B bin/oci-digest.py check-index "$idxrec" "$archive" >/dev/null || exit 2
 "$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" --index-record "$idxrec" \
   || { echo "assemble-image.sh: the archive does not satisfy the base lock $baselock (see above)" >&2; exit 2; }
-"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" "$pkg" "$apkver"
+for own in "$pkg" fscache-baselayout; do "$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" "$own" "$apkver"; done
 workdir=$WORKDIR
 lock=$workdir/.assemble.lock
 [ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" \
@@ -171,7 +171,7 @@ cat "$tmp/apko.err" >&2
 "$PY3" -I -B bin/oci-digest.py apko-verdict lock "$rc" "$probe"
 
 # ---- 4. the full lock must be the base lock plus our apk ----
-"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" \
+"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg,fscache-baselayout" \
   || { echo "assemble-image.sh: the full lock's package entries differ from the base lock (see above);" \
     "not building" >&2; exit 2; }
 "$BASHBIN" bin/apko-lock.sh arch-check "$full" \

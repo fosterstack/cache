@@ -458,7 +458,7 @@ def die(msg, code=1):
     sys.exit(code)
 
 
-def load(path, allow_dup=None):
+def load(path, allow_dup=()):
     try:
         d = json.load(open(path))
         pk = d["contents"]["packages"]
@@ -477,7 +477,7 @@ def load(path, allow_dup=None):
     seen = {}
     for e in pk:   # a set comparison would silently merge a repeated entry: a lock names each (package, version, architecture) once
         k = (e["name"], e["version"], e["architecture"])
-        if k in seen and e["name"] != allow_dup:   # allow_dup: compare counts the entries of OUR apk itself and names "exactly one" (the checks that follow)
+        if k in seen and e["name"] not in allow_dup:   # allow_dup: compare counts the entries of OUR apks itself and names "exactly one" (the checks that follow)
             die("the lock file %s lists %s %s (%s) more than once" % (path, k[0], k[1], k[2]), 2)
         seen[k] = True
     return d, pk
@@ -503,17 +503,32 @@ def opts(argv, names):
 
 def compare(argv):
     if len(argv) < 2:
-        die("usage: compare BASE FULL --apk NAME", 2)
+        die("usage: compare BASE FULL --apk NAME[,NAME...]", 2)
     base_p, full_p, o = argv[0], argv[1], opts(argv[2:], ("--apk",))
-    apk = o.get("--apk") or die("--apk NAME is required", 2)
+    names = (o.get("--apk") or die("--apk NAME is required", 2)).split(",")
     _, bpk = load(base_p)
-    _, fpk = load(full_p, allow_dup=apk)
+    _, fpk = load(full_p, allow_dup=names)
+    archs = sorted({e["architecture"] for e in bpk})
+    for apk in names:
+        check_our_apk(apk, base_p, bpk, fpk, archs)
+    rest = {key(e) for e in fpk if e["name"] not in names}
+    base = {key(e) for e in bpk}
+    msgs = []
+    for k in sorted(base - rest):
+        msgs.append("%s %s (%s) is in the base lock but not, or not identically, in the full lock" % (k[0], k[1], k[2]))
+    for k in sorted(rest - base):
+        msgs.append("%s %s (%s) is in the full lock but not, or not identically, in the base lock" % (k[0], k[1], k[2]))
+    if msgs:
+        die("the full lock is not the base lock plus %s:\n  %s" % (", ".join(names), "\n  ".join(msgs)))
+
+
+def check_our_apk(apk, base_p, bpk, fpk, archs):
+    """One of our apks: absent from the base lock, and in the full lock once per architecture, at one version."""
     if any(e["name"] == apk for e in bpk):
         die("the base lock %s already holds %s; the base lock must not hold our apk" % (base_p, apk), 2)
     ours = [e for e in fpk if e["name"] == apk]
     if not ours:
         die("the full lock has no entry for our apk %s" % apk)
-    archs = sorted({e["architecture"] for e in bpk})
     for a in archs:
         n = sum(1 for e in ours if e["architecture"] == a)
         if n == 0:
@@ -525,15 +540,6 @@ def compare(argv):
         die("the full lock holds our apk %s for architecture(s) %s that the base lock does not have" % (apk, ", ".join(extra)))
     if len({e["version"] for e in ours}) != 1:
         die("the full lock holds our apk %s at more than one version" % apk)
-    rest = {key(e) for e in fpk if e["name"] != apk}
-    base = {key(e) for e in bpk}
-    msgs = []
-    for k in sorted(base - rest):
-        msgs.append("%s %s (%s) is in the base lock but not, or not identically, in the full lock" % (k[0], k[1], k[2]))
-    for k in sorted(rest - base):
-        msgs.append("%s %s (%s) is in the full lock but not, or not identically, in the base lock" % (k[0], k[1], k[2]))
-    if msgs:
-        die("the full lock is not the base lock plus %s:\n  %s" % (apk, "\n  ".join(msgs)))
 
 
 def arch_check(argv):
