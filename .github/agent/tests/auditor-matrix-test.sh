@@ -3538,7 +3538,7 @@ try:
     sh("git", "clone", "-q", src, fx)
     for rel, body in {
         ".github/agent/bin/check-action-pins.py": "",
-        "bin/check-file-allowlist.sh": "cat >/dev/null\n",
+        "bin/check-file-allowlist.sh": "cat >/dev/null\ntouch \"$FLAG\"\n",   # judging ran: the flag exists
         ".github/agent/tests/pin-wiring-test.sh": "",
         "bin/scan-no-workflow-call-test.sh": "",
         "bin/audit-record-judge.sh": "",
@@ -3547,12 +3547,17 @@ try:
     os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
     stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
     real_git = shutil.which("git")
+    # ls-remote: the tip (first), then STUB_PAD other queue refs; the tip only once the flag exists when
+    # STUB_TIP_AFTER is set (it goes live while the head is judged); unreadable when STUB_LSREMOTE_FAIL is 1
     open(os.path.join(stubbin, "git"), "w").write('#!/bin/sh\n'
         'if [ "$1" = ls-remote ]; then\n'
         '  echo "$*" >> "$CALLS"\n'
         '  [ "$STUB_LSREMOTE_FAIL" = 1 ] && exit 128\n'
+        '  [ -n "$STUB_TIP_AFTER" ] && [ ! -e "$FLAG" ] && exit 0\n'
         '  [ -n "$STUB_QUEUE_TIP" ] &&'
         ' printf \'%%s\\trefs/heads/gh-readonly-queue/main/pr-9-%%s\\n\' "$STUB_QUEUE_TIP" "$STUB_QUEUE_TIP"\n'
+        '  i=0; while [ "$i" -lt "${STUB_PAD:-0}" ]; do\n'
+        '    printf \'%%040d\\trefs/heads/gh-readonly-queue/main/pr-%%d-x\\n\' "$i" "$i"; i=$((i+1)); done\n'
         '  exit 0\n'
         'fi\n'
         'exec %s "$@"\n' % real_git)
@@ -3566,23 +3571,34 @@ try:
         'esac\n' % (sha, sha))
     for n in ("git", "gh"): os.chmod(os.path.join(stubbin, n), 0o755)
     bad = []
+    def run(run_text, tip="", fail=0, pad=0, after=""):
+        calls = os.path.join(root, "calls"); tmp = os.path.join(root, "tmp"); flag = os.path.join(root, "flag")
+        open(calls, "w").close(); os.makedirs(tmp, exist_ok=True)
+        if os.path.exists(flag): os.remove(flag)
+        env = dict(os.environ, CALLS=calls, FLAG=flag, RUNNER_TEMP=tmp, HEAD_SHA=sha, VERDICT="success", RUN_URL="u",
+                   GH_TOKEN="t", GITHUB_REPOSITORY="o/r", GITHUB_BASE_REF="main", LIST_TOKEN="t", APP_TOKEN="t",
+                   APP_SLUG="app", DEFAULT="main", STUB_QUEUE_TIP=tip, STUB_LSREMOTE_FAIL=str(fail), STUB_PAD=str(pad),
+                   STUB_TIP_AFTER=after, PATH=stubbin + ":" + os.environ["PATH"])
+        r = subprocess.run(["bash", "-c", run_text], cwd=fx, env=env, capture_output=True, text=True)
+        c = open(calls).read().split("\n")
+        return r.returncode, [x for x in c if x.startswith("conclusion=")], c
     # (queue tip, ls-remote fails, must it post?)
-    for tip, fail, posts in ((None, 0, True), (sha, 0, False), (None, 1, False), (other, 0, True)):
-        for which, run in (("publish", publish_run), ("sweep", sweep_run)):
-            calls = os.path.join(root, "calls"); tmp = os.path.join(root, "tmp")
-            open(calls, "w").close(); os.makedirs(tmp, exist_ok=True)
-            env = dict(os.environ, CALLS=calls, RUNNER_TEMP=tmp, HEAD_SHA=sha, VERDICT="success", RUN_URL="u",
-                       GH_TOKEN="t", GITHUB_REPOSITORY="o/r", GITHUB_BASE_REF="main", LIST_TOKEN="t", APP_TOKEN="t",
-                       APP_SLUG="app", DEFAULT="main", STUB_QUEUE_TIP=tip or "", STUB_LSREMOTE_FAIL=str(fail),
-                       PATH=stubbin + ":" + os.environ["PATH"])
-            subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
-            c = open(calls).read().split("\n")
-            posted = [x for x in c if x.startswith("conclusion=")]
+    for tip, fail, posts in (("", 0, True), (sha, 0, False), ("", 1, False), (other, 0, True)):
+        for which, text in (("publish", publish_run), ("sweep", sweep_run)):
+            rc, posted, c = run(text, tip, fail)
             tag = "%s tip=%s fail=%d" % (which, "none" if not tip else ("this head" if tip == sha else "another"), fail)
             if bool(posted) != posts: bad.append(tag + " posted=%s" % posted)
+            if which == "sweep" and fail and rc != 1: bad.append(tag + " exit=%d, want 1" % rc)
             if not any(x.startswith("ls-remote https://github.com/o/r refs/heads/gh-readonly-queue/") for x in c):
                 bad.append(tag + " no ls-remote of this repository's queue branches")
             if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
+    # a long list with the head first (grep -q would stop at once): under pipefail it must still never post
+    for which, text in (("publish", publish_run), ("sweep", sweep_run)):
+        n_posted = sum(1 for _ in range(20) if run(text, sha, 0, 1200)[1])
+        if n_posted: bad.append("%s long list: posted in %d of 20 runs" % (which, n_posted))
+    # the head becomes a queue tip while it is judged: the sweep reads the list after judging, so it posts nothing
+    rc, posted, c = run(sweep_run, sha, 0, 0, "1")
+    if posted: bad.append("sweep: posted %s although the head went live while it was judged" % posted)
     print("OK" if not bad else "BAD " + "; ".join(bad[:5]))
 finally:
     shutil.rmtree(root, ignore_errors=True)
@@ -3702,7 +3718,9 @@ ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch
     and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and "auditor-review-gate.py" not in wr
     and 'check-action-pins.py --verify-tags --git "$sha"' in wr and "PIN_WIRING_JUDGE_GIT=\"$sha\"" in wr
     and "checkout" not in wr and "statuses" not in src and "gh-readonly-queue" not in wr.replace(LS, "")
-    and wr.count(LS) == 1)
+    # the sweep reads the queue branches once, in the loop, after judging and right before the post
+    and wr.count(LS) == 1 and wr.index("while read") < wr.index("bin/audit-record-judge.sh") < wr.index(LS)
+    and wr.index(LS) < wr.index("-f name=auditor-review-gate"))
 # the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]

@@ -44,6 +44,20 @@ check "unreadable ruleset response = exit 2"      2 "not the expected JSON"     
 check "missing ruleset file = exit 2"             2 "cannot read"                              "$w/absent.json"  "$list"
 check "list without required_checks = exit 2"     2 "no required_checks array"                 "$w/match.json"   "$w/nolist.json"
 
+# REQ-DEP-005: when main has a merge_queue rule, its method must be MERGE and its grouping ALLGREEN (each entry's checks
+# must pass, so each entry is judged by its own run); with no merge_queue rule the queue is off and nothing is checked
+queue_rule() { # method grouping
+  jq --arg m "$1" --arg g "$2" '. + [{"type":"merge_queue","parameters":{"merge_method":$m,"grouping_strategy":$g,
+       "check_response_timeout_minutes":60}}]' "$w/match.json"
+}
+queue_rule MERGE  ALLGREEN > "$w/queue-ok.json"
+queue_rule MERGE  HEADGREEN > "$w/queue-headgreen.json"
+queue_rule SQUASH ALLGREEN > "$w/queue-squash.json"
+check "no merge_queue rule: the queue is off, nothing to check" 0 "match \([0-9]+ checks" "$w/match.json" "$list"
+check "merge_queue rule: MERGE and ALLGREEN pass" 0 "match \([0-9]+ checks" "$w/queue-ok.json" "$list"
+check "merge_queue rule: HEADGREEN is drift" 1 "merge queue.*HEADGREEN" "$w/queue-headgreen.json" "$list"
+check "merge_queue rule: SQUASH is drift" 1 "merge queue.*SQUASH" "$w/queue-squash.json" "$list"
+
 # The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
 # committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
 # -e ended the step at the guard's refusal, before any issue call).
@@ -184,14 +198,18 @@ def audit(wf):
     jobs = set()
     for c in req:
         if c in TABLE and c not in EXCEPT: closure(*TABLE[c], jobs)
-    found = {}
+    found, twice = {}, []
     for f, j in jobs:
         jb = wf[f]["jobs"][j]
         if "if" in jb: found[(f, j, None)] = jb["if"]
         for st in jb.get("steps") or []:
-            if "if" in st: found[(f, j, st.get("name") or st.get("uses") or st.get("run", "")[:30])] = st["if"]
+            key = (f, j, st.get("name") or st.get("uses") or st.get("run", "")[:30])
+            if "if" in st:
+                if key in found: twice.append(key)      # a second step of one name would hide behind the first
+                found[key] = st["if"]
     odd = sorted(str(k) + " = " + repr(v) for k, v in found.items() if ALLOWED_IF.get(k) != v)
     res(not odd, "every condition on a required job, its steps and its prerequisites is an allowed one (%s)" % odd[:2])
+    res(not twice, "no two steps with a condition share a job and a name (%s)" % [str(k) for k in twice[:2]])
     res(set(ALLOWED_IF) <= set(found), "every allowed condition still exists (the table is not stale): %s"
         % sorted(str(k) for k in set(ALLOWED_IF) - set(found))[:2])
     for c in req:
@@ -404,6 +422,9 @@ run_mutant("a required job with if: false", lambda: set_if("codeql.yml", "analyz
 run_mutant("a merge_group branch filter in a workflow other than ci.yml", lambda: add_filter("acceptance.yml"))
 run_mutant("a step condition on the pull request's head repository", lambda: add_step_if(
     "scan.yml", "reproducibility", "github.event.pull_request.head.repo.full_name == github.repository"))
+run_mutant("a second step named like an allowed one, before it, with a pull-request-only condition", lambda: (
+    wf_["acceptance.yml"]["jobs"]["acceptance-gradle"]["steps"].insert(
+        0, {"name": "stop fscache", "if": "github.event_name == 'pull_request'", "run": "true"})))
 run_mutant("a required job that runs on the main branch only", lambda: set_if(
     "codeql.yml", "analyze", "github.ref == 'refs/heads/main'"))
 run_mutant("a required job skipped by a false term", lambda: set_if(

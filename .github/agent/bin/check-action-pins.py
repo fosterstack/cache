@@ -242,7 +242,7 @@ GATE_WORKFLOW_SHA256 = frozenset({
     # main's gate workflow (the passed-audit record judge and writer)
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",
     # the gate workflow with the merge queue judge (REQ-DEP-005-AC3, cache#542)
-    "bbd7e3512a0dbabe4a2b5185c7c7bc2fa8068849cc44051e6a833e92a89a9f3a",
+    "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc",
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2305,8 +2305,8 @@ def _drop_foreign_heredocs(text):
 GENERATED_OK = {}
 
 
-# main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha,
-# which is main as the queue found it; the queue's HEAD is never main's copy
+# main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, the group's parent
+# commit: main, or the entry ahead of this one in the queue; the queue's HEAD is never main's copy
 BASE_SHA_REFS = (
     "${{ github.event.pull_request.base.sha }}",
     "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
