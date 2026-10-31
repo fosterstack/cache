@@ -66,6 +66,9 @@ jobs:
       - name: snapshot-apk under Witness
         if: ${{ inputs.mode == 'snapshot' }}
         run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh
+      - name: sandbox wall probe (dry run only)
+        if: ${{ inputs.hostile }}
+        run: bash bin/chain-sandbox-probe.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: apk-${{ matrix.runner }}

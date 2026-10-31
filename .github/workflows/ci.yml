@@ -683,6 +683,9 @@ jobs:
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
 
+      - name: "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json build-sandbox-hostile-test.sh bin/build-sandbox-hostile-test.sh
+
       - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-records-test.sh bin/chain-records-test.sh
 

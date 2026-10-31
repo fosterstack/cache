@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 58 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 66 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -108,8 +108,11 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 bin/layout-archive.sh bin/layout-archive-test.sh
+bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
+build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
+build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
 """.split())
-if len(DECLARED) != 58: errs.append("declared list is not 58 paths: %d" % len(DECLARED))
+if len(DECLARED) != 66: errs.append("declared list is not 66 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -120,8 +123,9 @@ ALLOWED_MENTIONS = {
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
 # 204 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
-# plus the two outbound-check patterns (0710) and the recorded publisher signatures (REQ-SUP-001)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 204, 6
+# plus the two outbound-check patterns (0710) and the recorded publisher signatures (REQ-SUP-001),
+# plus the sandbox wall probe's three patterns (the probe, its test, its six recipe templates)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 207, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -769,6 +773,8 @@ runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "b
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
 passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
+passfam "feature/x" "REQ-CHAIN-001-AC5: the sandbox wall probe, its offline test and its six recipe templates" "bin/chain-sandbox-probe.sh" "bin/build-sandbox-hostile-test.sh" "build/probe/control.yaml.tmpl" "build/probe/read-record.yaml.tmpl" "build/probe/write-record.yaml.tmpl" "build/probe/read-keydir.yaml.tmpl" "build/probe/read-token.yaml.tmpl" "build/probe/network.yaml.tmpl"
+runeach fail "feature/x" "REQ-CHAIN-001-AC5: sandbox probe near-miss siblings refused" "bin/chain-sandbox-probe.py" "bin/chain-sandbox-probes.sh" "bin/build-sandbox-hostile-test.py" "bin/build-sandbox-hostile-tests.sh" "build/probe/other.yaml.tmpl" "build/probe/control.yaml" "build/probe/control.yaml.tmpl.bak" "build/probe/sub/control.yaml.tmpl"
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"

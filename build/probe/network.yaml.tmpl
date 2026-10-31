@@ -1,0 +1,16 @@
+# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: network. It is never published or signed. The probe renders
+# it into a temporary folder (@BUSYBOX@, @RECORD@ and @KEYDIR@ are replaced there) and runs it through the sealed melange call.
+package:
+  name: probe-network
+  version: 0.0.1
+  epoch: 0
+  description: test-only recipe of the sandbox wall probe, wall network
+  copyright:
+    - license: MIT
+environment:
+  contents:
+    packages:
+      - @BUSYBOX@
+pipeline:
+  - runs: |
+      wget -T 3 -q -O /dev/null http://192.0.2.1:9/
