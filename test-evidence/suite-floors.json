@@ -16,7 +16,7 @@
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 98,
  "chain-release-metadata-test.sh": 100,
- "chain-release-scripts-test.sh": 385,
+ "chain-release-scripts-test.sh": 401,
  "chain-release-wiring-test.sh": 244,
  "chain-sign-wiring-test.sh": 2082,
  "chain-snapshot-test.sh": 160,
