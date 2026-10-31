@@ -14,10 +14,15 @@
 # mutations a reviewer asked about, and the sweeps try every deletion, swap, suffix and insertion on every line; then the judge runs on the real tree.
 #
 # THE SHAPE (ratified Oct 9, owner, rule 50 wording: one stage = one workflow file = one identity; Build's two-machine matrix plus its assemble job fit):
-#   stage-build.yml: job `apk` (matrix over ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage-apk.sh), job `assemble` (the VM, needs apk:
-#   bin/build-stage-assemble.sh); stage-reproducibility.yml: the same two jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four scripts,
+# stage-build.yml: job `freeze` (contents read, no token, no Witness step: bin/build-freeze.sh, release mode only), job
+# `apk` (matrix over
+# ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage-apk.sh), job `assemble` (the VM, needs apk:
+# bin/build-stage-assemble.sh);
+# stage-reproducibility.yml: the same two Witness jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four
+# Witness scripts,
 #   so there is no dispatch to analyse, each a row of .github/policy/chain-scripts.json with its sha256 (PR 1's design).
-#   Each job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a fresh directory) -> ONE Witness
+# Each Witness job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a
+# fresh directory) -> ONE Witness
 #   step, one line through bin/witnessed-local.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
 #   names product subjects relative to it.
 # THE ARTIFACT LAYOUT (fix round 2): actions/upload-artifact roots an artifact at the common ancestor of its paths, so every upload names ONE path.

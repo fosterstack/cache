@@ -2,11 +2,13 @@
 # workflows scan.yml and main-candidate-rescan.yml. Three jobs: `freeze` runs the requirements tool's freeze check (no
 # token, no Witness step), `apk` builds the apks on a
 # native runner of each architecture, `assemble` builds the images and archives on an ubuntu-24.04 VM from them. Every
-# command runs through bin/witnessed-local.sh, which records the step under a throwaway key (no job here holds an
+# command of apk and assemble runs through bin/witnessed-local.sh, which records the step under a throwaway key (no job
+# here holds an
 # id-token; Sign checks the record and signs it keyless); the
 # scripts it runs are listed with their sha256 in .github/policy/chain-scripts.json. Nothing here is published: Sign gets the digests.json text (the stage
 # output `digests`), Rebuild and Check get the artifacts.
-# `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the guard step (no if: GitHub compares case-insensitively) refuses any other value, and each job has one Witness step per mode,
+# `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the guard step (no if: GitHub compares
+# case-insensitively) refuses any other value, and apk and assemble each have one Witness step per mode,
 # gated by `if`. A snapshot has no tag, no admission and no Sign; its records carry a snapshot- step name that every verifier refuses (AC13).
 # `hostile` is true only on a push of a release-candidate tag (a tag with -rc, release.yml; PR 1's REQ-CHAIN-001-AC5): the hostile step tries to defeat Sign and
 # writes the raw material of its attempts; it never runs for a final tag or a branch.
