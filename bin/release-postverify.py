@@ -89,6 +89,11 @@ def quote_error(c, bash=True):
     quote, i = None, 0
     while i < len(c):
         ch = c[i]
+        # A backslash before a newline or CR is refused first: shlex keeps that newline in the next word, bash removes
+        # both, so
+        # a flag after it would reach cosign unseen by the judge.
+        if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] in "\n\r":
+            return "a newline outside quotes (bash runs what follows as another command)"
         # A backslash outside single quotes turns the next character into a literal: it never opens or closes a quote.
         if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] != "$":
             i += 2

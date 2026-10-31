@@ -1202,6 +1202,21 @@ kfail "an identity instead of a key" \
   "cosign verify-blob --certificate-identity x --certificate-oidc-issuer $ISS $CB" "exactly one key flag"
 kfail "no key flag in the second segment of a pipe" \
   "cosign verify-blob --key <RELEASE_KEY> $CB | cosign verify-blob $CB" "exactly one key flag"
+# J1 (round 6): shlex keeps the newline of a backslash-newline in the next word, bash removes both, so a flag after one
+# reaches cosign unseen:
+# a listed entry holding a backslash before a newline or CR is refused by name (the guide's own line join never leaves
+# one in a page command)
+NLM="a newline outside quotes"
+for nl in $'\n' $'\r'; do
+  c="cosign verify-blob --key <RELEASE_KEY> $CB \\${nl}--insecure-ignore-tlog"
+  g "$(blk "cosign verify-blob --key <RELEASE_KEY> $CB")";
+  lst "$c";
+  gwant_fail "AC7 J1 a listed entry with a backslash and a newline or CR before a flag is refused" "$NLM"
+  c="cosign verify-blob --key <RELEASE_KEY> $CB \\${nl}--key awskms:///x"
+  g "$(blk "cosign verify-blob --key <RELEASE_KEY> $CB")";
+  lst "$c";
+  gwant_fail "AC7 J1 a listed entry with a backslash and a newline or CR before a second key is refused" "$NLM"
+done
 # H1 (round 5): cosign reads --key, --bundle and --type WITH their value; a key-looking word after a value-taking flag
 # is that value
 NV="has no value: the next word is a flag"
@@ -1750,7 +1765,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=585
+EXPECT=589
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

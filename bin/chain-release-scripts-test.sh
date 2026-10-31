@@ -22,6 +22,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
+export REPO_ROOT="$root"
 python3 - "$@" <<'PY'
 import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
@@ -939,6 +940,21 @@ for label, row in (("--key as the value of --bundle",
                    ("a trailing --bundle", "cosign verify-blob --key <RELEASE_KEY> provenance.bundle.json --bundle"),
                    ("a trailing --type", "cosign verify-blob --key <RELEASE_KEY> provenance.bundle.json --type")):
     refused(label, NOVAL, rows=[row])
+# J1 (round 6): shlex keeps the newline of a backslash-newline in the next word, bash removes both; so a flag or a
+# second key after one is
+# invisible to the judge but reaches cosign. A backslash before a newline or CR is refused by name.
+NLM = "a newline outside quotes"
+for label, row in (("the offline flag after a backslash-newline",
+                    "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json provenance.bundle.json "
+                            "\\\n--insecure-ignore-tlog"),
+                   ("a second key after a backslash-newline",
+                    "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json provenance.bundle.json "
+                            "\\\n--key awskms:///alias/x"),
+                   ("a value after a backslash-newline", "cosign verify-blob --key <RELEASE_KEY> --bundle "
+                           "\\\nprovenance.bundle.json x"),
+                   ("a backslash-CR", "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json x "
+                           "\\\r--insecure-ignore-tlog")):
+    refused(label, NLM, rows=[row])
 # G2 (round 4): a verify form carries only --key, --bundle, --type and --check-claims (with or without =value); every
 # other flag is refused by name.
 CLOSED = "outside the closed set"
@@ -996,9 +1012,28 @@ VU = "cosign verify-blob " + IDQ + " --check-claims provenance.bundle.json x.txt
 t, rc, so, se = pva([VU, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t), "AC20 round 1: the word after an unknown flag is taken as its value and licenses nothing (fail closed)", "rc=%s %s" % (rc, first(se)))
 # the page's own two jq commands (docs/verify-release.md section 3, cache#360) are in the grammar
 J1 = "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json"
-J2 = "jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json"
-PROV = json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}}, {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}]}).encode()).decode()}})
-t, rc, so, se = pva([PBF, J1, J2], assets={"provenance.bundle.json": PROV}); check(rc == 0 and len(calls(t)) == 1, "AC20 round 1: the guide's two real jq commands are accepted and PASS on a provenance of the right shape (the image commands' placeholder is filled per registry)", "rc=%s %s" % (rc, se[:300]))
+# the judge corpus below keeps the OLD second jq (its digest must not move); the test of the page's commands reads the
+# REAL one
+J2OLD = ("jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | "
+         ".name + \" sha256:\" + .digest.sha256' provenance.bundle.json")
+LIST = json.load(open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.cannot-run.json")))
+# the page's second jq, read from the list, not retyped
+J2 = next(r_["command"] for r_ in LIST if "runDetails.byproducts" in r_["command"])
+check(J2 in open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.md")).read(),
+      "AC20 round 6 J2: the list's second jq is byte for byte on the page", J2[:80])
+SBOMD = "5b" * 32
+def prov_of(subjects, byproducts=None):
+    st = {"predicateType": "https://slsa.dev/provenance/v1", "subject": subjects}
+    if byproducts is not None: st["predicate"] = {"runDetails": {"byproducts": byproducts}}
+    return json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps(st).encode()).decode()}})
+PROV = prov_of([{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}},
+                {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}],
+               [{"name": "sbom-production", "digest": {"sha256": SBOMD}}])
+t, rc, so, se = pva([PBF, J1, J2], assets={"provenance.bundle.json": PROV})
+check(rc == 0 and len(calls(t)) == 1 and ("sbom-production sha256:" + SBOMD) in so,
+      "AC20 round 1: the guide's two real jq commands are accepted and PASS on a provenance of the right shape, and "
+              "the second prints the SBOM line (the image commands' placeholder is filled per "
+              "registry)", "rc=%s %s" % (rc, se[:300]))
 FIPSONLY = json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-fips", "digest": {"sha256": DIG["image-production"].split(":")[1]}}]}).encode()).decode()}})
 t, rc, so, se = pva([PBF, J1], assets={"provenance.bundle.json": FIPSONLY}); check(rc != 0 and "post-publish verification failed" in se, "AC20 round 1: the production digest check fails when the matching digest sits under another subject name", "rc=%s %s" % (rc, se[:200]))
 # round 2 (seat B): the shell never sees a jq-only command, and a placeholder is never a file name
@@ -1024,7 +1059,7 @@ src = open(os.path.join(BIN, "release-postverify.py")).read().rstrip()
 src = src[:-len("main()")] if src.endswith("\nmain()") else src
 judge = {"__name__": "judge"}
 exec(compile(src, "release-postverify.py", "exec"), judge)
-BASES = [PV1, PV2, PV3, PV4, PBF, PJ, J1, J2, VID, VT, VP, VB, VU, "jq -r --arg ref 'a b' '.a | .b' f.json",
+BASES = [PV1, PV2, PV3, PV4, PBF, PJ, J1, J2OLD, VID, VT, VP, VB, VU, "jq -r --arg ref 'a b' '.a | .b' f.json",
          "jq -c '.ok' f.json | jq -e '. == true'", PBF + " | jq -e '.ok' x.json",
          "cosign verify-attestation --key k.pub <IMAGE_REF_FIPS>"]
 SNIPS = ["`", "$", "$(id)", "${X}", "#", "\n", "\r", "\\", "\\$", "'", '"', ";", "&", "&&", ">", "<", "(", ")", "|",
@@ -1056,7 +1091,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "453"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "458"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

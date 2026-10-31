@@ -118,6 +118,10 @@ def syntax_why(c):
     quote, i = None, 0
     while i < len(c):
         ch = c[i]
+        # a backslash before a newline or CR is refused first: shlex keeps that newline in the next word, the shell
+        # removes both
+        if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] in "\n\r":
+            return "shell syntax: a newline outside quotes (the shell runs what follows as another command)"
         if ch == "\\" and quote != "'":
             # a backslash outside single quotes makes the next character literal: it never opens or closes a quoted region (a $ stays refused)
             if i + 1 < len(c) and c[i + 1] != "$":

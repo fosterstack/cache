@@ -134,6 +134,10 @@ def segments(c):
     q, k = None, 0
     while k < len(c):
         ch = c[k]
+        # a backslash before a newline or CR is refused first (shlex keeps the newline in the next word, bash removes
+        # both)
+        if ch == "\\" and q != "'" and k + 1 < len(c) and c[k+1] in "\n\r":
+            return None, "a newline outside quotes (bash runs what follows as another command)"
         # a backslash makes the next character literal (not a $)
         if ch == "\\" and q != "'" and k + 1 < len(c) and c[k+1] != "$":
             k += 2; continue
@@ -555,6 +559,9 @@ mutant "a glob in a file operand" "a brace, glob or tilde outside quotes" \
     's.replace("--key <RELEASE_KEY>", "--key <RELEASE_KEY> --bundle a.bun*", 1)'
 mutant "a ? glob" "a brace, glob or tilde outside quotes" 's.replace("sbom.json\n", "sb?m.json\n", 1)'
 mutant "a tilde" "a brace, glob or tilde outside quotes" 's.replace("sbom.json\n", "~/sbom.json\n", 1)'
+mutant "a flag after a backslash-newline (the page's line join removes the backslash)" "outside the closed set" \
+    's.replace("--key <RELEASE_KEY>\n```\n\n## 2.", \
+      "--key <RELEASE_KEY> \\\n  --insecure-ignore-tlog\n```\n\n## 2.", 1)'
 mutant "--key is the value of --bundle" "has no value: the next word is a flag" \
     's.replace("--key <RELEASE_KEY>", "--bundle --key <RELEASE_KEY>", 1)'
 mutant "--key is the value of --type" "has no value: the next word is a flag" \
