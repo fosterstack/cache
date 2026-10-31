@@ -9,7 +9,7 @@ set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 root=$(cd "$(dirname "$0")/.." && pwd)
 export PANEL_ROOT="$root"
-work=$(mktemp -d); trap 'rm -rf "$work" "$TMPDIR"' EXIT
+work=$(mktemp -d); mkdir "$work/memo"; export PANEL_MEMO="$work/memo"; trap 'rm -rf "$work" "$TMPDIR"' EXIT
 pass=0 failn=0
 judge() { python3 - "$1" <<'PY'
 import re, sys, yaml
@@ -86,7 +86,20 @@ fi
 exit 0
 """
 author = json.load(open(os.path.join(ROOT, ".vex/fosterstack-cache.openvex.json")))["author"]
+def memo(key, compute):
+    """One shell run of a run: block is the slow part, and many mutants leave a block as it was: the answer (status, log
+    lines) is kept for the rest of this test run, under the hash of everything the run reads."""
+    import hashlib
+    path = os.path.join(os.environ["PANEL_MEMO"], hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest())
+    if os.path.exists(path):
+        rc, log = json.load(open(path))
+        return rc, log
+    rc, log = compute()
+    json.dump([rc, log], open(path + ".tmp", "w")); os.replace(path + ".tmp", path)
+    return rc, log
 def run_block(block, mode, failing=None):
+    return memo(["run_block", block, mode, failing, STUB, DIG], lambda: _run_block(block, mode, failing))
+def _run_block(block, mode, failing=None):
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
         json.dump(DIG, open(os.path.join(t, "attach", "digests.json"), "w"))
@@ -149,6 +162,8 @@ esac
 exit 0
 """
         def run_prune(mode):
+            return memo(["run_prune", prn[0].get("run", ""), mode, GHSTUB], lambda: _run_prune(mode))
+        def _run_prune(mode):
             with tempfile.TemporaryDirectory() as t:
                 os.makedirs(os.path.join(t, "stub"))
                 with open(os.path.join(t, "stub", "gh"), "w") as fh:
