@@ -387,7 +387,8 @@ def _gh_bytes(path):
 
 def observed():
     """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and cannot be read.
-    Only runs that are event=schedule, branch main, success, of this workflow's path are read, so a pull request can never forge them."""
+    Only runs of this workflow's path with event=schedule, branch main and conclusion success or failure are read
+    (tag_observer.accept_run: a failed daily run still wrote its state), so a pull request can never forge them."""
     if "state" in _OBS:
         return _OBS["state"]
     repo = os.environ.get("GITHUB_REPOSITORY")

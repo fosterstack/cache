@@ -55,7 +55,7 @@
  "rescan-statement-test.sh": 198,
  "scout-root-cause-test.sh": 33,
  "suite-guard-test.sh": 91,
- "supply-chain-wiring-test.sh": 109,
+ "supply-chain-wiring-test.sh": 135,
  "verify-release-guide-test.sh": 69,
  "vex-both-scanners-test.sh": 47,
  "vex-forms-test.sh": 64,
