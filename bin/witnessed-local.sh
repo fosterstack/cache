@@ -12,7 +12,7 @@
 #  - The key is key hygiene, not the trust boundary: it is made in a directory of mode 0700 under the runner temp folder (umask 077), handed to Witness by path only, never
 #    printed, never copied, never written into a record or an upload directory, and removed when Witness returns or the shell gets EXIT, HUP, INT or TERM; the helper then
 #    checks that the directory is gone. The wrapped build runs on the same runner as the same user, so nothing here claims it cannot read the key: the key carries no trust.
-#  - The build runs under `timeout -k 20 540`: a bound on a hung command, as REQ-CHAIN-004-AC2 says (a program that ignores the TERM is killed 20 seconds
+#  - The build runs under `timeout -k 20 540`: a bound on a hung build, as REQ-CHAIN-004-AC2 says (a program that ignores the TERM is killed 20 seconds
 #    later). It is not a certificate lifetime: no certificate is involved any more.
 #  - Attestors: environment, git, material and product only (never github, whose record embeds the raw token, and never slsa: Sign's alone). The sensitive-key list keeps the
 #    token and credential variable names out of the record.

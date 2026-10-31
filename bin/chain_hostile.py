@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
-from chain_common import b64d, refuse, ssl, strict_json
+from chain_common import OPENSSL, b64d, refuse, ssl_done, strict_json
 
 
 # exactly five runtime cases (REQ-CHAIN-001-AC5, G2): the sixth case of rule 52a/0334, a second workflow calling stage-sign.yml, would need a throwaway workflow
@@ -134,7 +135,8 @@ def sign_key_hash(policy_path):
             kp = os.path.join(d, "pub.pem")
             with open(kp, "w") as f:
                 f.write(pem)
-            return hashlib.sha256(ssl("pkey", "-pubin", "-in", kp, "-outform", "DER").stdout).hexdigest()
+            return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"],
+                capture_output=True)).stdout).hexdigest()
     except Exception:
         print("error: cannot read the release key from the policy %s" % policy_path, file=sys.stderr)
         sys.exit(2)
