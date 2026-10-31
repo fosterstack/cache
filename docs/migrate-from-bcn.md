@@ -148,4 +148,5 @@ security questionnaires.
 
 FosterStack Cache is not "FedRAMP compliant" or "CMMC compliant". Those attach
 to your service and your organization, never to a component you deploy. This is
-validated crypto and publishable evidence **for** your compliance program.
+Go's CMVP-validated FIPS 140-3 module (certificate #5247) inside our build, and
+publishable evidence **for** your compliance program.
