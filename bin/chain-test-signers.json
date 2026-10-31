@@ -1,0 +1,114 @@
+{
+ "_note": "ONE table of the signing tools and actions, read by bin/chain-sign-wiring-test.sh (who signs provenance: REQ-CHAIN-001-AC1) and bin/chain-records-test.sh (every produced record type has a row: REQ-CHAIN-003-AC3), so the two judges cannot disagree about what a signer is. `regex` finds the call in comment-stripped text (a shell comment or YAML comment exempts nothing: it is removed first). `prov` says whether the call signs SLSA provenance: always | never | if:<regex tested on the command context> | unless:<regex> | fn:<resolver> (witness_run, actions_attest, cosign_attest, sign_blob: bin/chain-test-signers.py reads the whole command, or for a YAML step the whole step block, and FAILS CLOSED when the attestor list or the type cannot be read literally). `kind: step` means the context is the YAML step block, not one command. `pseudo` is the record type the records judge requires a row for when it has no finer resolver. Unknown signers fail closed: add the tool here, with a reason, before a workflow may use it. Modelled on: in-toto-witness docs/commands.md and options/run.go:64 (the attestations flag is -a/--attestations, a string slice, so -a slsa, -a=slsa, -a product,slsa and --attestations slsa are all the same request) and docs/attestors/slsa.md. Round 4: global flags may sit before the subcommand (witness --log-level debug run, cosign --verbose attest); -aslsa, -a=slsa, --attestations=slsa and a -c/--config file with no explicit -a all count as a provenance request (the config can list attestors); a cosign attest whose --type is not a literal non-provenance URI/short name is provenance (fail closed); testifysec/witness-run-action cannot be resolved statically so it counts as provenance. The engine is bin/chain-test-signers.py. Round 5: multi-line and folded commands, repeated --type, variable attestor lists, `-c` config files, `actions/attest` with `predicate-type:` on a later line, cosign sign-blob of a provenance blob, the python sigstore CLI, notation sign and in-toto-run are all in the table. Advisor decision, Oct 9: the table finds DIRECT signing calls only; which scripts a stage file may run is the allowlist grammar of bin/chain-test-signers.py (chain-scripts.json), not a search.",
+ "signers": [
+  {
+   "name": "cosign sign",
+   "regex": "\\bcosign\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+sign(?![-\\w])",
+   "prov": "never",
+   "pseudo": "urn:cosign:signature"
+  },
+  {
+   "name": "cosign sign-blob",
+   "regex": "\\bcosign\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+sign-blob\\b",
+   "prov": "fn:sign_blob",
+   "pseudo": "urn:cosign:signature"
+  },
+  {
+   "name": "cosign attest",
+   "regex": "\\bcosign\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+(attest|attest-blob)\\b",
+   "prov": "fn:cosign_attest",
+   "pseudo": null
+  },
+  {
+   "name": "witness run",
+   "regex": "\\bwitness\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+run\\b",
+   "prov": "fn:witness_run",
+   "pseudo": null
+  },
+  {
+   "name": "witness sign",
+   "regex": "\\bwitness\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+sign\\b",
+   "prov": "never",
+   "pseudo": null
+  },
+  {
+   "name": "attest-build-provenance",
+   "regex": "actions/attest-build-provenance@",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "actions/attest",
+   "regex": "actions/attest@",
+   "kind": "step",
+   "prov": "fn:actions_attest",
+   "pseudo": null
+  },
+  {
+   "name": "actions/attest-sbom",
+   "regex": "actions/attest-sbom@",
+   "prov": "never",
+   "pseudo": "urn:action:attest-sbom"
+  },
+  {
+   "name": "slsa-github-generator",
+   "regex": "slsa-framework/slsa-github-generator|slsa-framework/",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "gitsign",
+   "regex": "\\bgitsign\\b",
+   "prov": "never",
+   "pseudo": "urn:gitsign:tag-signature"
+  },
+  {
+   "name": "sigstore actions",
+   "regex": "\\bsigstore/[A-Za-z0-9._-]+@",
+   "prov": "never",
+   "pseudo": "urn:action:sigstore"
+  },
+  {
+   "name": "sigstore python attest",
+   "regex": "\\bsigstore\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+attest\\b",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "sigstore python sign",
+   "regex": "\\bsigstore\\b(?:\\s+--?[\\w-]+(?:[ =]\\S+)?)*?\\s+sign\\b",
+   "prov": "fn:sign_blob",
+   "pseudo": "urn:sigstore:signature"
+  },
+  {
+   "name": "notation sign",
+   "regex": "\\bnotation\\s+(?:--?[\\w-]+(?:[ =]\\S+)?\\s+)*sign\\b",
+   "prov": "never",
+   "pseudo": "urn:notation:signature"
+  },
+  {
+   "name": "in-toto-run",
+   "regex": "\\bin-toto-run\\b",
+   "prov": "never",
+   "pseudo": "https://in-toto.io/Link/v1"
+  },
+  {
+   "name": "chain-verify sign",
+   "regex": "chain-verify\\.py\\s+sign\\b",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "witness-run-action",
+   "regex": "testifysec/witness-run-action@",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "@actions/attest",
+   "regex": "@actions/attest\\b|\\battestProvenance\\b",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  }
+ ]
+}

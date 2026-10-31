@@ -39,7 +39,7 @@ var tmpLeafKeys = []struct{ key, rel string }{
 // no part of any key's path equals it (case-insensitively, so a
 // case-insensitive filesystem cannot fold a key onto it either).
 func TestTempDirNameIsNoPartOfAnyKeyPath(t *testing.T) {
-	if segmentRE.MatchString(storeTempDir) || ValidateKey(storeTempDir) == nil {
+	if segmentOK(storeTempDir) || ValidateKey(storeTempDir) == nil {
 		t.Fatalf("%q is a valid key segment; a key could produce it", storeTempDir)
 	}
 	if ValidateKey(storeTempDir+"/x") == nil || ValidateKey("x/"+storeTempDir) == nil {

@@ -932,6 +932,7 @@ class GateWorkflowDigestSet(unittest.TestCase):
         for d in s:
             self.assertRegex(d, r"\A[0-9a-f]{64}\Z")
         self.assertEqual(s, frozenset({GATE_A, GATE_B}))
+        self.assertNotIn("adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d", s)   # the pre-#316 bootstrap digest stays gone (rc-5b B1)
 
     def test_both_variants_are_taken_by_gate_digest(self):
         a, b = gate_variants()
@@ -975,6 +976,136 @@ class GateWorkflowDigestSet(unittest.TestCase):
         code, out = run([d])
         self.assertEqual(code, 1, out)
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
+
+
+class UsesWriters(unittest.TestCase):
+    """rc-5b item 2 in Python (the coverage gate counts these tests, not the shell ones): a committed script the job runs after a `uses:` step that writes
+    the tree is a finding, and the shapes the 618 fix round added to the lines nothing else reached."""
+    TOOL = "#!/usr/bin/env bash\necho hi\n"
+    BASE = "${{ github.event.pull_request.base.sha }}"
+
+    def job(self, steps, tool="bin/tool.sh", run="bash bin/tool.sh"):
+        body = HEAD + "    steps:\n" + steps + f"      - run: {run}\n"
+        d = gate_tree(gate_variants()[1])           # the accepted gate and its stub scripts, then this workflow beside them
+        self.addCleanup(shutil.rmtree, d)
+        for rel, text in ((".github/workflows/w.yml", body), (tool, self.TOOL)):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write(text)
+        return d
+
+    def uses(self, action, **with_):
+        w = "".join(f"          {k}: {v}\n" for k, v in with_.items())
+        return f"      - uses: {action}@{SHA} # v7.0.1\n" + (f"        with:\n{w}" if w else "")
+
+    def test_an_empty_path_writes_everywhere(self):
+        d = self.job(self.uses("actions/download-artifact", name="x", path='""'))
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_into_the_scripts_directory_is_a_finding(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="bin"))])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_elsewhere_is_not(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="out"))])
+        self.assertEqual(code, 0, out)
+
+    def test_a_later_writer_over_the_base_sha_fence_directory_drops_it(self):
+        # a writer whose path does not name the fence directory (here the whole workspace) is the case only the drop loop catches: with the loop the script is a plain
+        # path again ("not a committed file"); without it, it would still resolve as main's copy
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/download-artifact", name="x", path=".")
+        d = self.job(steps, run="bash trusted/bin/tool.sh")
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("runs trusted/bin/tool.sh, which is not a committed file", out)
+        self.assertNotIn("bin/tool.sh is changed by the job before it runs", out)
+
+    def test_a_later_default_checkout_drops_the_fence_directory(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/checkout")   # a default checkout fills the workspace itself
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 1, out)
+
+    def test_the_fence_alone_is_main_s_copy(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted")
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 0, out)
+
+
+class NonUtf8Names(unittest.TestCase):
+    """rc-5b R10c: `git ls-tree` output was decoded with "replace", so two workflow names that are not valid UTF-8 became the
+    same entry and one workflow went unread. A name under .github/ that is not valid UTF-8 is refused, each one named, and no
+    file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
+
+    def commit_with(self, extra, content=b"x\n"):
+        d = gate_tree(gate_variants()[1])
+        self.addCleanup(shutil.rmtree, d)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}
+        idx = {**env, "GIT_INDEX_FILE": os.path.join(d, ".git", "composed-index")}
+
+        def git(*a, inp=None, e=env):
+            return subprocess.run(["git", *a], cwd=d, env=e, input=inp, capture_output=True, check=True).stdout
+        git("init", "-q")
+        git("add", "-A")
+        info = _index_info(git("ls-files", "-z", "-s"))          # the whole valid tree, then the extra entries as raw bytes
+        blob = git("hash-object", "-w", "--stdin", inp=content).decode().strip().encode()
+        for name in extra:
+            info += b"100644 " + blob + b"\t" + name + b"\0"
+        git("update-index", "-z", "--add", "--index-info", inp=info, e=idx)
+        tree = git("write-tree", e=idx).decode().strip()
+        return d, git("commit-tree", tree, "-m", "t").decode().strip()
+
+    def test_a_tree_without_odd_names_passes(self):
+        d, c = self.commit_with([])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+    def test_two_non_utf8_workflow_names_are_refused_and_both_named(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml", b".github/workflows/\xfe.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        lines = [ln for ln in out.splitlines() if "not valid UTF-8" in ln]
+        self.assertEqual(len(lines), 2, out)             # not collapsed into one entry
+        self.assertTrue(any("\\xff" in ln for ln in lines) and any("\\xfe" in ln for ln in lines), out)
+
+    def test_one_non_utf8_name_beside_a_valid_one_is_refused(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_non_utf8_directory_name_under_github_is_refused(self):
+        d, c = self.commit_with([b".github/\xff/x.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_finding_that_names_a_non_utf8_path_is_printed_escaped_not_a_traceback(self):
+        # rc-5b 618 fix: a name outside .github/ is read (action.yml), and a finding that holds it must print under a strict stdout
+        d, c = self.commit_with([b"x/\xff/action.yml"], b"runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
+        p = subprocess.run([sys.executable, SRC, "--git", c], cwd=d, capture_output=True,
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        self.assertNotIn(b"Traceback", p.stderr, p.stderr)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn(b"\\xff", p.stdout)
+
+    def test_a_non_utf8_name_outside_github_is_not_this_checkers_business(self):
+        d, c = self.commit_with([b"docs/\xff.md"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+
+def _index_info(listing):
+    """`git ls-files -s -z` records ("mode sha stage\tpath\0") as `--index-info` input ("mode sha\tpath\0")."""
+    out = b""
+    for rec in filter(None, listing.split(b"\0")):
+        meta, path = rec.split(b"\t", 1)
+        mode, sha, _stage = meta.split()
+        out += mode + b" " + sha + b"\t" + path + b"\0"
+    return out
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)

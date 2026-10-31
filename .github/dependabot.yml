@@ -27,21 +27,15 @@ updates:
     schedule:
       interval: "weekly"
 
-  # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
-  # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and
-  # .ko.yaml where no ecosystem looks. The FROM lines are written
-  # image:tag@sha256 because Dependabot's docker ecosystem does not update
-  # a bare image@sha256 line; with a tag to track it bumps the digest. A
-  # base bump is patch/minor for the auto-merge lane; the reproducibility
-  # check and release-artifact acceptance are the gates that catch a bad
-  # base. The debug image's busybox comes from static:debug-nonroot and
-  # moves with it — no separate tracking.
-  - package-ecosystem: "docker"
-    directory: "/build/docker"
+  # The pinned Go source scanner of the release chain's Check stage (advisor Oct 12, ruling G): tools/govulncheck is its own module (go.mod and go.sum are the pin), so a
+  # new version reaches it through this reviewed path, with the same 7-day wait as the actions and the pip pins. Dependabot moves go.mod and go.sum; ci.yml's `go install
+  # golang.org/x/vuln/cmd/govulncheck@vX` is by hand, and bin/chain-install-witness-test.sh is red until the two agree (so a bump cannot merge half done).
+  - package-ecosystem: "gomod"
+    directory: "/tools/govulncheck"
     schedule:
-      # daily so a base-image CVE fix waits a day, not a week (auditor defers base
-      # rebuilds to Dependabot per REQ-AUD-2 AC3; the auditor never edits a base digest).
-      interval: "daily"
+      interval: "weekly"
+    cooldown:
+      default-days: 7
 
   # The hash-pinned adjudicator SDK (anthropic) the auditor's real model client imports.
   # Dependabot bumps the pin + regenerates hashes; the workflow installs it with
@@ -50,7 +44,7 @@ updates:
     directory: "/.github/agent"
     schedule:
       interval: "weekly"
-    # REQ-SUP-001-AC1: the same 7-day wait as github-actions; gomod and docker keep their CVE-fix targets.
+    # REQ-SUP-001-AC1: the same 7-day wait as github-actions; gomod keeps its CVE-fix target.
     cooldown:
       default-days: 7
     # pydantic pins pydantic-core EXACTLY. The group bundles them when both update; it does NOT

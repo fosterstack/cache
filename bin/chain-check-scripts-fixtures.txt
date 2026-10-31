@@ -1,0 +1,1 @@
+a quoted Go setting after declare	      declare -x GOFL''AGS=-mod=mod

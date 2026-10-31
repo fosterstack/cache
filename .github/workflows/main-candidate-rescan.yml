@@ -3,8 +3,8 @@ name: Daily main-candidate rescan
 # The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
 # published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
-# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
-# images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
+# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
+# images (production and fips, each on both architectures), Google Artifact Analysis on the two variants on linux/amd64, tallied together by bin/panel.py —
 # package counts and quorum, the published VEX as the only exception, "seen by N of M", a tracking issue for
 # findings seen by two or more scanners; unique findings are listed for the daily auditor, whose run audits them
 # right after this one (REQ-REL-004-AC3, amended Oct 2; rule 9, owner Oct 3). Trivy and Snyk are no longer run by the panel, and the auditor reads the panel's verdict instead of scanning (handoff 0600).
@@ -26,28 +26,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (read only: the building jobs hold no identity token).
   build:
     uses: ./.github/workflows/stage-build.yml
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      checks: read
+      statuses: read
+      pull-requests: read
     with:
       mode: snapshot
-
-  assemble:
-    needs: build
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      upload-oci: true
 
   # ---------------------------------------------------------------------------------------------------------------
   # Our OpenVEX as the attestation children of each candidate's index (REQ-REL-010 on the rescan; handoff 0521, owner Oct 20: "this is
@@ -55,10 +43,10 @@ jobs:
   # only this way (probe 0221, run 37555367665: by tag and by exact index digest); every local-file and daemon-loaded form failed.
   # An attestation survives only in a registry, so the attested candidates go to the SCRATCH package ghcr.io/fosterstack/cache-scout-probe
   # (the one package bin/scout-root-cause.sh already writes; never the release package, never any other tag than the attested candidates
-  # and the self-check fixtures), and the same run prunes it to the newest 14 days. Releases are unchanged: stage-image.yml is not touched.
+  # and the self-check fixtures), and the same run prunes it to the newest 14 days. Releases are unchanged.
   vex-attach:
     name: attach our OpenVEX to each candidate index and push the attested candidates (scratch package)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -69,10 +57,10 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: skopeo is on the runner image
-        run: command -v skopeo >/dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
+        run: command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
       - name: log in to GHCR (the scratch package)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,32 +95,29 @@ jobs:
           done
           echo "pruned ${n} scratch version(s) older than 14 days; ${kept} kept (public, over 5000 downloads, GitHub will not delete them); ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "${failed}" -eq 0 ] || { echo "::error::${failed} scratch version(s) older than 14 days could not be deleted"; exit 1; }
-      # Each candidate (a buildx OCI archive of one index, provenance and SBOM off) is unpacked to a layout, gets one attestation child per
-      # platform carrying .vex/fosterstack-cache.openvex.json (bin/vex-index.py, REQ-REL-010-AC1/AC3: verify-layout checks the children
-      # and that removing them gives back the built index), is checked as a whole layout and pushed by skopeo with its digests kept: the digest
-      # skopeo reports for the pushed index must be the final index's, or the job fails.
-      - name: attach our OpenVEX to each candidate index and push it
+      # Build's assemble has already given each candidate layout its attestation children (our OpenVEX, one per platform: REQ-REL-010-AC1) and
+      # moved the layout's digest file to the final index. Each candidate is therefore copied, checked against Build's own digest file and as a whole
+      # layout, and pushed AS BUILT by skopeo with its digests kept; the digest skopeo reports for the pushed index must be the final index's, or the job
+      # fails. The attestation tool is not run on these layouts again (it refuses a second run); it runs only on the unattested self-check fixture below.
+      - name: push each candidate index as Build attested it
         run: |
           set -euo pipefail
-          vex=.vex/fosterstack-cache.openvex.json
           mkdir -p /tmp/layout /tmp/attach
           jq -n '{}' > /tmp/attach/digests.json
-          for v in production debug fips; do
-            d="/tmp/layout/${v}"; mkdir -p "${d}"
-            tar -xf "/tmp/oci/${v}.oci" -C "${d}"
+          for v in production fips; do
+            d="/tmp/layout/${v}"; rm -rf "${d}"; mkdir -p /tmp/layout
+            cp -R "/tmp/oci/${v}" "${d}"
             chmod -R go-w "${d}"
-            base=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the archive does not hold exactly one index") end' "${d}/index.json")
-            python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"
             final=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the layout does not hold exactly one index") end' "${d}/index.json")
-            python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"
+            [ "$(cat "/tmp/oci/${v}.digest")" = "${final}" ] || { echo "::error::the ${v} layout names ${final}, not the digest Build recorded"; exit 1; }
             python3 bin/release-layout.py "${d}" "${final}"
             tag="cand-${GITHUB_RUN_ID}-${v}"
             skopeo copy --all --digestfile "/tmp/attach/${v}.pushed" "oci:${d}" "docker://ghcr.io/fosterstack/cache-scout-probe:${tag}"
             pushed=$(cat "/tmp/attach/${v}.pushed")
             [ "${pushed}" = "${final}" ] || { echo "::error::the registry took ${pushed} for ${v}, not the final index ${final}"; exit 1; }
-            jq --arg v "${v}" --arg d "${final}" --arg b "${base}" '. + {($v): $d, ($v + "-built"): $b}' /tmp/attach/digests.json > /tmp/attach/next.json
+            jq --arg v "${v}" --arg d "${final}" '. + {($v): $d}' /tmp/attach/digests.json > /tmp/attach/next.json
             mv /tmp/attach/next.json /tmp/attach/digests.json
-            echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
+            echo "${v}: final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
       # The Scout self-check fixtures (rule 4): the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
       # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (every statement Scout applied in the Oct 23 root-cause round
@@ -142,7 +127,7 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/layout/fixture /tmp/layout/fixture-image; mkdir -p /tmp/layout
           # the pinned digest is debian 12.0's linux/amd64 image manifest, not its index: skopeo's layout of it holds one IMAGE descriptor, so it is wrapped
-          # into a one-child OCI index here (the shape of the candidate layouts), and vex-index.py's check of the layout is not loosened
+          # into a one-child OCI index here (the shape of the candidate layouts), and the attestation tool's check of the layout is not loosened
           skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture-image
           cp -R /tmp/layout/fixture-image /tmp/layout/fixture
           child=$(jq -ec '.manifests | if length == 1 then .[0] | {mediaType, digest, size} + {platform: {architecture: "amd64", os: "linux"}} else error("the fixture image layout is not one manifest") end' /tmp/layout/fixture-image/index.json)
@@ -174,13 +159,15 @@ jobs:
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
   # leaving its raw output per image for the tally; the set of images is written here, never computed:
-  # Grype, Docker Scout and Amazon Inspector scan all six images; Google scans the three variants on
+  # Grype, Docker Scout and Amazon Inspector scan all four images (production and fips on both architectures); Google scans the two variants on
   # linux/amd64 only. Trivy and Snyk are not in the panel (rule 1). A scanner job that fails leaves fewer
   # outputs, which the tally counts as "did not run" (rule 3) — never as clean.
   panel-grype:
-    name: panel — Grype (six images)
-    needs: [build, assemble]
+    name: panel — Grype (four images)
+    needs: [build]
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     permissions:
       contents: read
     steps:
@@ -189,24 +176,36 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install grype (pinned by checksum)
         run: ./bin/install-scanner.sh grype
       - name: Grype every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          grype db update >/dev/null 2>&1 || true
-          for v in production debug fips; do
+          ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
+          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
+          # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > "$RUNNER_TEMP/empty-grype.yaml"
+          grype db update -c "$RUNNER_TEMP/empty-grype.yaml" >/dev/null 2>&1 || true
+          mkdir -p /tmp/arc   # the tars stay out of /tmp/panel, which is uploaded
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
-              grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
-                || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "${ref}" > /dev/null \
+                || continue
+              grype "docker-archive:/tmp/arc/${v}-${arch}.tar" -c "$RUNNER_TEMP/empty-grype.yaml" \
+                --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
+                || { rm -rf "${d}"; echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: panel-grype
@@ -214,9 +213,11 @@ jobs:
           if-no-files-found: warn
 
   panel-scout:
-    name: panel — Docker Scout (six images)
-    needs: [build, assemble, vex-attach]
+    name: panel — Docker Scout (four images)
+    needs: [build, vex-attach]
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
     permissions:
       contents: read
@@ -260,13 +261,13 @@ jobs:
       - name: Docker Scout every image, given our VEX as the index's attestation (rule 4)
         run: |
           set -uo pipefail
-          for v in production debug fips; do
+          for v in production fips; do
             dig=$(jq -er --arg v "${v}" '.[$v]' "$RUNNER_TEMP/attach/digests.json") || { echo "::warning::no attested digest for ${v} (the tally counts both its images as did not run)"; continue; }
             for arch in amd64 arm64; do
               d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
               docker scout sbom --format json --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/sbom.json" \
                 && docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/cves.json" \
-                || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
+                || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
       # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
@@ -301,7 +302,8 @@ jobs:
           mkdir -p /tmp/panel && cp -r "$RUNNER_TEMP/diag" /tmp/panel/scout-diag 2>/dev/null || true   # the raw reports, in the job's artifact
           [ "$rc" = 0 ] || echo "::warning::the Scout attestation diagnostics could not finish (exit ${rc}); the self-check above decides the job"
           exit 0
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: panel-scout
@@ -332,7 +334,7 @@ jobs:
           sudo systemctl restart docker
           docker info -f '{{ .DriverStatus }}'
 
-      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 (each pinned by checksum) and skopeo
+      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 and crane (each pinned by checksum); skopeo is the runner image's, checked
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
@@ -343,7 +345,9 @@ jobs:
           mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"
           mv "$RUNNER_TEMP/docker-scout-1.25.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.25.0"
           mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          # the chain's own copy tool appends the attestation manifest to the scratch index (bin/scout-root-cause.sh: crane index append), by digest
+          ./bin/install-scanner.sh crane
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
 
       - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
         env:
@@ -417,9 +421,11 @@ jobs:
           retention-days: 30
 
   panel-inspector:
-    name: panel — Amazon Inspector (six images)
-    needs: [build, assemble]
+    name: panel — Amazon Inspector (four images)
+    needs: [build]
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     permissions:
       contents: read
       id-token: write   # the ScanSbom-only role, by OIDC (no stored secret)
@@ -432,30 +438,90 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install inspector-sbomgen (pinned by checksum)
         run: ./bin/install-scanner.sh inspector-sbomgen
+      # the tars come before the cache restore below: the pin checker will not read a committed script run after a
+      # step that writes into the workspace
+      - name: make a tar of every variant/platform child
+        run: |
+          mkdir -p /tmp/arc
+          for v in production fips; do
+            for arch in amd64 arm64; do
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" \
+                "ghcr.io/fosterstack/cache:cand-${v}-${arch}" > /dev/null \
+                || echo "::warning::no tar for ${v}-${arch} (the tally counts it as did not run)"
+            done
+          done
       - name: assume the ScanSbom-only role (OIDC; no stored secret)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.INSPECTOR_ROLE }}
           aws-region: ${{ env.INSPECTOR_REGION }}
           role-session-name: cache-panel-${{ github.run_id }}
+      # Same-day reuse of Amazon Inspector results (REQ-REL-004-AC8): keyed by the SBOM's package inventory (bin/inspector-reuse.py),
+      # stored in the Actions cache, one entry per UTC day per run. The restore key never matches exactly, so restore-keys
+      # picks the newest same-day entry; a run that only reused saves nothing. Same-repo runs only (no fork reads or writes).
+      - name: Amazon Inspector - today's date (UTC) for the same-day reuse
+        id: insp-date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - restore today's results (same-repo runs only)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/inspector-cache
+          key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}-miss
+          restore-keys: inspector-${{ steps.insp-date.outputs.date }}-
       - name: Amazon Inspector every image (our pipeline applies the VEX, rule 4)
+        id: insp-scan
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          for v in production debug fips; do
+          # Same-day reuse (REQ-REL-004-AC8): an inventory Inspector already scanned today is copied from the cache
+          # to scan.json; anything else calls ScanSbom once and stores the answer. The tally reads scan.json either way.
+          cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
+          for v in production fips; do
             for arch in amd64 arm64; do
-              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
-              inspector-sbomgen container --image "${ref}" --outfile "${d}/sbom.cdx.json" --disable-progress-bar \
-                && aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json" \
-                || echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"
+              d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
+              [ -s "/tmp/arc/${v}-${arch}.tar" ] || continue
+              if ! inspector-sbomgen container --image "/tmp/arc/${v}-${arch}.tar" --outfile "${d}/sbom.cdx.json" \
+                   --disable-progress-bar; then
+                echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue
+              fi
+              key=$(python3 bin/inspector-reuse.py key "${d}/sbom.cdx.json") \
+                || { echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue; }
+              day=$(date -u +%F)
+              verdict=$(python3 bin/inspector-reuse.py decide "$cdir" "${day}" "${d}/sbom.cdx.json") || verdict=call
+              if [ "${verdict%%$'\n'*}" = reuse ] && cp "${verdict#*$'\n'}" "${d}/scan.json"; then
+                :
+              elif aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json"; then
+                if ! python3 bin/inspector-reuse.py validate "${d}/sbom.cdx.json" "${d}/scan.json"; then
+                  echo "::warning::the ScanSbom answer for ${v}-${arch} is not the response for this inventory (the tally counts it as did not run)"; rm -f "${d}/scan.json"
+                elif [ "$(date -u +%F)" != "${day}" ]; then
+                  echo "::notice::UTC midnight passed during the ScanSbom call for ${v}-${arch}: used this run, not cached"
+                elif python3 bin/inspector-reuse.py store "$cdir" "${day}" "${d}/sbom.cdx.json" "${d}/scan.json"; then
+                  fresh=$((fresh+1))
+                else
+                  echo "::warning::the validated ScanSbom answer for ${v}-${arch} could not be cached"
+                fi
+              else
+                echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; rm -f "${d}/scan.json"
+              fi
             done
           done
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          echo "fresh=${fresh}" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - the UTC day at save time
+        id: insp-save-day
+        if: always()
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)
+        if: always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/inspector-cache
+          key: inspector-${{ steps.insp-save-day.outputs.date }}-${{ github.run_id }}
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: panel-inspector
@@ -463,9 +529,11 @@ jobs:
           if-no-files-found: warn
 
   panel-google:
-    name: panel — Google Artifact Analysis (three variants, linux/amd64)
-    needs: [build, assemble]
+    name: panel — Google Artifact Analysis (two variants, linux/amd64)
+    needs: [build]
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     # The scanner identity admits main only as `push` or through the main-only `agent` environment; this
     # job runs on `schedule`, so it takes the environment (ops/terraform/gcp; no secret is read here).
     environment: agent
@@ -478,7 +546,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: federated identity (rule 2; the identifiers are repository variables)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -491,13 +559,14 @@ jobs:
         with:
           version: '587.0.0'
           install_components: local-extract
-      - name: Google on-demand scan of the three variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
+      - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          for v in production debug fips; do
+          mkdir -p /tmp/arc
+          for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            skopeo copy --override-arch amd64 --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+            ./bin/layout-archive.sh "/tmp/oci/${v}" amd64 "/tmp/arc/${v}-amd64.tar" "${ref}" > /dev/null \
+              && docker load -i "/tmp/arc/${v}-amd64.tar" > /dev/null || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"
@@ -507,7 +576,8 @@ jobs:
             rm -f "${d}/http.log"   # the request log holds tokens; never uploaded
             [ -s "${d}/packages.json" ] || echo "::warning::google could not scan ${v} (the tally counts it as did not run)"
           done
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: panel-google
@@ -526,13 +596,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: the four scanners' outputs (a missing one is "did not run")
+      - name: the grype scanner's output, by its artifact id into its own folder (no id = it did not run)
+        if: ${{ needs.panel-grype.outputs.artifact-id != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          pattern: panel-*
-          path: /tmp/panel/
-          merge-multiple: true
+          artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}
+          path: /tmp/panel/panel-grype
+      - name: the scout scanner's output, by its artifact id into its own folder (no id = it did not run)
+        if: ${{ needs.panel-scout.outputs.artifact-id != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.panel-scout.outputs.artifact-id }}
+          path: /tmp/panel/panel-scout
+      - name: the inspector scanner's output, by its artifact id into its own folder (no id = it did not run)
+        if: ${{ needs.panel-inspector.outputs.artifact-id != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.panel-inspector.outputs.artifact-id }}
+          path: /tmp/panel/panel-inspector
+      - name: the google scanner's output, by its artifact id into its own folder (no id = it did not run)
+        if: ${{ needs.panel-google.outputs.artifact-id != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.panel-google.outputs.artifact-id }}
+          path: /tmp/panel/panel-google
       - name: tally the day's findings — counts, quorum, seen by N of M (rules 3-6; unique findings go to the auditor)
         id: judge
         run: |
@@ -712,21 +803,25 @@ jobs:
 
       # Enumerate the platform CHILDREN of the index so both
       # architectures are scanned by EVERY scanner, not just the runner's
-      # default (B04a: the ongoing rescan must cover each child for Trivy,
-      # Grype AND Snyk, like the release scanner). children.txt: one
+      # default (B04a: the ongoing rescan must cover each child for every
+      # scanner it runs, like the release scanner). children.txt: one
       # "os/arch<TAB>childref" per line; a recognized single-image
       # manifest falls back to the index itself.
       - name: enumerate platform children
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || true
+          # the chain's own copy tool reads the candidate index, by digest (pinned by checksum; it uses the docker login above)
+          ./bin/install-scanner.sh crane
           ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
           : > /tmp/children.txt
           # A FAILED or MALFORMED enumeration must REJECT the run (B04): a
           # lost platform inventory must never be silently downgraded to a
           # single-arch index scan. Only a VALID manifest that genuinely has
           # no platform children falls back to "scan the index as itself".
-          if ! docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
+          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
             echo "::error::could not inspect ${ref} to enumerate platform children — refusing to rescan on an unknown platform inventory" >&2
             cat /tmp/inspect.err >&2 || true
             exit 1
@@ -749,44 +844,6 @@ jobs:
             --out /tmp/children.txt
           echo "children to scan:"; cat /tmp/children.txt
 
-      # ---- trivy (CLI: reliable version/db, by digest) -------------------
-      - name: Trivy rescan (by digest, JSON findings)
-        if: matrix.target.scanner == 'trivy'
-        id: trivy
-        continue-on-error: true
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        run: |
-          set -euo pipefail
-          ./bin/install-scanner.sh trivy
-          rc=0
-          child_no=0
-          : > /tmp/children-scanned.jsonl
-          # B04: a FINDING makes trivy exit nonzero (--exit-code 1). Capture
-          # that with `|| code=$?` so errexit does NOT abort the loop before
-          # the exit code is recorded, the platform is captured, or the next
-          # child is scanned. Every child is scanned, its OWN exit code and
-          # report path recorded per child; the merge, shape validation and
-          # exit-code classification happen once, in the unit-tested
-          # bin/rescan-statement.py, so no finding is dropped (deterministic,
-          # explicit per-child inputs — no glob).
-          while IFS=$'\t' read -r platform ref; do
-            [ -n "$platform" ] || continue
-            child_no=$((child_no + 1))
-            out="/tmp/findings-child-${child_no}.json"
-            echo "trivy: ${platform} ${ref}"
-            code=0
-            trivy image --quiet --exit-code 1 \
-              --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-              --vex "${TRIVY_VEX}" \
-              --format json --output "$out" \
-              "${ref}" || code=$?
-            [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
-          done < /tmp/children.txt
-          exit $rc
-
       # ---- grype (CLI: reliable version/db, by digest) -------------------
       - name: Grype rescan (by digest, JSON findings)
         if: matrix.target.scanner == 'grype'
@@ -794,6 +851,14 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config (never the repository's), and a GRYPE_* variable stops the step,
+          # as in bin/grype-scan.sh and bin/check-scan.sh (names only are printed). Zero packages = did not run (row 53): the inventory is written too.
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > /tmp/empty-grype.yaml
           ./bin/install-scanner.sh grype
           rc=0
           child_no=0
@@ -809,19 +874,22 @@ jobs:
           while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
-            out="/tmp/grype-child-${child_no}.json"
+            out="/tmp/grype-child-${child_no}.json"; sbom="/tmp/grype-child-${child_no}.cdx.json"
             echo "grype: ${platform} ${ref}"
             plat_arg=""
             case "$platform" in */*) plat_arg="--platform ${platform}";; esac
             code=0
             # shellcheck disable=SC2086
-            grype "registry:${ref}" $plat_arg \
+            grype "registry:${ref}" $plat_arg -c /tmp/empty-grype.yaml \
               --fail-on negligible \
               --vex .vex/fosterstack-cache.openvex.json \
-              -o json --file "$out" || code=$?
+              -o "json=${out}" -o "cyclonedx-json=${sbom}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+            # packages = components that carry a package URL, pkg:<type>/<name> (grype also lists files); unreadable = 0, which bin/rescan-statement.py refuses
+            pk=$(jq '[.components[]? | select((.purl | type) == "string" and (.purl | startswith("pkg:") and (.[4:] | index("/") as $i | $i != null and $i > 0 and $i < length - 1)))] | length' "${sbom}" 2>/dev/null) || pk=0
+            [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0                  # an empty or odd result must not stop the loop before this child's record is written
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
+              '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
 
@@ -832,6 +900,13 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # An empty config, every package and every vulnerability listed, and an OSV_SCANNER_* variable stops the step (as in bin/check-scan.sh).
+          bad_env=$(compgen -e | grep '^OSV_SCANNER_' | tr '\n' ' ' || true)
+          if [ -n "${bad_env}" ]; then
+            echo "::error::osv-scanner: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
+            exit 2
+          fi
+          : > /tmp/empty-osv.toml
           ./bin/install-scanner.sh osv-scanner
           rc=0
           child_no=0
@@ -846,10 +921,12 @@ jobs:
             out="/tmp/osv-child-${child_no}.json"
             echo "osv-scanner: ${platform} ${ref}"
             code=0
-            osv-scanner scan image --format json --output "$out" "${ref}" || code=$?
+            osv-scanner scan image --config /tmp/empty-osv.toml --all-packages --all-vulns --format json --output "$out" "${ref}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
-              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+            pk=$(jq '[.results[]?.packages[]?] | length' "${out}" 2>/dev/null) || pk=0
+            [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
+              '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
 
@@ -859,9 +936,6 @@ jobs:
           set -euo pipefail
           : > /tmp/scanner-meta
           case "$TARGET_SCANNER" in
-            trivy)
-              echo "version=$(trivy --version 2>/dev/null | awk 'NR==1{print $2}')" >> /tmp/scanner-meta
-              echo "db=$(trivy version --format json 2>/dev/null | jq -r '.VulnerabilityDB.UpdatedAt // "unknown"')" >> /tmp/scanner-meta ;;
             grype)
               echo "version=$(grype version 2>/dev/null | awk '/^Version:/{print $2}')" >> /tmp/scanner-meta
               echo "db=$(grype db status 2>/dev/null | awk '/Built|built/{print $NF; exit}')" >> /tmp/scanner-meta ;;
@@ -889,6 +963,7 @@ jobs:
           python3 bin/rescan-statement.py statement \
             --scanner "$TARGET_SCANNER" \
             --children /tmp/children-scanned.jsonl \
+            --expect-children "$(grep -c . /tmp/children.txt)" \
             --meta /tmp/scanner-meta \
             --vex .vex/fosterstack-cache.openvex.json \
             --scope-file /tmp/scan-scope.json \

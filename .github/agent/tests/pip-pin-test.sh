@@ -80,6 +80,13 @@ def logical_lines(run):
 SEP = {";", "&&", "||", "|", "&", "(", ")"}
 def commands(line):
     """-> [(tokens, previous separator, next separator)]"""
+    # every mutant re-reads the same run scripts and shlex is the slow part: split each line once, hand out copies
+    if line not in split_cache:
+        split_cache[line] = split_commands(line)
+    return [(list(c), p, n) for c, p, n in split_cache[line]]
+
+split_cache = {}
+def split_commands(line):
     try:
         lx = shlex.shlex(line, posix=True, punctuation_chars=True); lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
@@ -334,7 +341,7 @@ def judge(t):
     # case 6: the CI wiring
     ci = t["docs"].get(".github/workflows/ci.yml") or {}
     job = (ci.get("jobs") or {}).get("allowlist")
-    me = [s for s in ((job or {}).get("steps") or []) if str((s or {}).get("run", "")).strip() == "bash .github/agent/tests/pip-pin-test.sh"]
+    me = [s for s in ((job or {}).get("steps") or []) if str((s or {}).get("run", "")).strip() in ("bash .github/agent/tests/pip-pin-test.sh", "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pip-pin-test.sh .github/agent/tests/pip-pin-test.sh")]
     if len(me) != 1:
         r.append(("C6", f"ci.yml's required allowlist job runs this test {len(me)} times, not once"))
     elif any(k in me[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
@@ -392,7 +399,7 @@ def pin_sites(t):
 
 def site_key(s): return (s[0], s[1])
 SITE_KEYS = [site_key(s) for s in pin_sites(tree)]
-EXPECT_SITES = 11   # ci coverage + allowlist (system, venv) + the three allowlist-split jobs (allowlist-persona, allowlist-chain, allowlist-pins-auditor: system), auditor audit + panel-probe, dependabot-reviewer review, release + go-freshness persona-uat (system)
+EXPECT_SITES = 14   # ci coverage + allowlist (system, venv) + the allowlist-split jobs (allowlist-persona, allowlist-pins-auditor and the four shards of allowlist-chain: system), auditor audit + panel-probe, dependabot-reviewer review, release + go-freshness persona-uat (system)
 def prog_for(env): return "python3" if env == "system" else f"{env}/bin/python"
 
 def edit_run(st, fn):

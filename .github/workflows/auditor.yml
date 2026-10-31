@@ -3,17 +3,17 @@ name: Daily CVE auditor
 # The sealed daily CVE auditor. It consumes the day's main-candidate-rescan artifacts
 # (selected by TODAY'S main head, regardless of the rescan's conclusion — a red rescan is
 # exactly the day that needs adjudication), installs the pinned scanners, scans the
-# candidate image and the checked-out source ON THE RUNNER, builds a validated run
+# candidate image and the source of the rescan's scanned head ON THE RUNNER, builds a validated run
 # manifest, audits the findings and (when not dry) opens the PRs and owner-decision issues.
 #
 # Two dispatch knobs (workflow_dispatch only): dry_run (default true) does everything except
 # gh pr create / gh issue create; adjudicator (real|stub, default real) chooses the model
 # client. adjudicator=stub uses the checked-in test double and SKIPS the OIDC mint, so the
 # workflow can be dispatched green on a feature branch where the federation rule refuses a
-# token. Schedule runs are always real and never dry.
+# token. A scheduled run is always the real adjudicator; it is dry unless the repo variable AUDITOR_SCHEDULE_MODE is exactly 'live'.
 #
-# The federated identity is minted AFTER installs and scans, immediately before the driver,
-# and refreshed in the background for long runs. The six model/workspace identifiers are
+# The federated identity is minted AFTER installs and scans, immediately before the driver; the
+# driver exchanges it once per run, so that one exchange serves the whole run. The six model/workspace identifiers are
 # GitHub environment SECRETS (masked in logs); no vars.* and no ANTHROPIC_API_KEY anywhere.
 on:
   schedule:
@@ -153,11 +153,53 @@ jobs:
           echo "rescan_head=$(printf '%s' "$meta" | jq -r .headSha)" >> "$GITHUB_OUTPUT"
           echo "rescan_conclusion=$(printf '%s' "$meta" | jq -r '.conclusion // ""')" >> "$GITHUB_OUTPUT"
           mkdir -p "${RUNNER_TEMP}/rescan"
-          gh run download "$rid" -n oci-candidate -D "${RUNNER_TEMP}/rescan" \
+          gh run download "$rid" -n images -D "${RUNNER_TEMP}/rescan" \
             || gh run download "$rid" -D "${RUNNER_TEMP}/rescan"
           # the scanner panel's tally (scanner-panel rules 3-6): its unique findings are judged below (rules 7-9)
           gh run download "$rid" -n panel-evidence -D "${RUNNER_TEMP}/panel" \
             || echo "::warning::selected run has no panel-evidence artifact; the scanner panel's audits cannot run"
+          # REQ-AUD-3 AC3 (no-change day, zero model calls): yesterday's verdicts and narrative ride in a small artifact, `auditor-state`,
+          # uploaded by a real run of THIS workflow on main. Only a COMPLETED scheduled or dispatch run of main is a candidate (success or failure: the five-run counter must see a run that failed
+          # after writing its state; an incomplete run's reusable verdicts are already emptied by the driver; never a pull request or another branch); the driver (AUDITOR_PREV_STATE) validates the file and uses it only when its finding-set
+          # hash equals today's, so a missing or unusable file just means today's behaviour (model calls). Never fails the step.
+          mkdir -p "${RUNNER_TEMP}/prev-state"
+          prev_ids=$( { gh run list --workflow auditor.yml --branch main --event schedule --status completed --limit 5 --json databaseId,createdAt
+                        gh run list --workflow auditor.yml --branch main --event workflow_dispatch --status completed --limit 5 --json databaseId,createdAt
+                      } | jq -s -r 'add | sort_by(.createdAt) | reverse | .[].databaseId' ) || prev_ids=""
+          for prid in $prev_ids; do
+            if gh run download "$prid" -n auditor-state -D "${RUNNER_TEMP}/prev-state"; then
+              echo "using the no-change state of run ${prid}"; break
+            fi
+          done
+
+      # The source scan reads the tree the scanned image was built from: the selected rescan's head, not this run's own checkout. The head
+      # comes only from the selected run, must be 40 lowercase hex and an ancestor of (or equal to) main; anything else leaves source_head
+      # empty, the tree is not checked out and the manifest records the source scan "did not run" (rc-5b fix 4, ruling A2).
+      - name: Validate the selected rescan's head for the source scan
+        id: source-head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESCAN_HEAD: ${{ steps.rescan.outputs.rescan_head }}
+        run: |
+          set -uo pipefail
+          head=''
+          if printf '%s' "${RESCAN_HEAD}" | grep -Eq '^[0-9a-f]{40}$'; then
+            st=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RESCAN_HEAD}" --jq .status 2>/dev/null || true)
+            # compare main...head: "behind" = head is an ancestor of main, "identical" = head is main
+            case "${st}" in behind|identical) head="${RESCAN_HEAD}" ;; *) echo "::warning::rescan head is not an ancestor of main (compare: '${st}'); the source scan will be recorded 'did not run'" ;; esac
+          else
+            echo "::warning::no valid rescan head; the source scan will be recorded 'did not run'"
+          fi
+          echo "source_head=${head}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the scanned head (read as data, never executed)
+        id: source-tree
+        if: ${{ steps.source-head.outputs.source_head != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source-head.outputs.source_head }}
+          path: scanned-source
+          persist-credentials: false
 
       - name: Set up Go for govulncheck and the source scan
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -172,11 +214,12 @@ jobs:
           GOVULNCHECK_SHA256: ${{ needs.govulncheck-build.outputs.sha256 }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_SHA: ${{ github.sha }}
+          SOURCE_HEAD: ${{ steps.source-head.outputs.source_head }}
           TEST_IMAGE: ${{ inputs.test_image }}
           KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
         run: |
           set -uo pipefail
-          command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           # govulncheck is built by the govulncheck-build job (no credential, module pinned there) and used only when its sha256 equals
           # that job's output; syft a pinned, checksummed release binary (below). Both best-effort: syft catalogues the image's
           # carriers and base OS (it reads distroless status.d)
@@ -194,13 +237,25 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/gobin"
           ./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \
             || echo "::warning::could not install syft; the package inventory falls back to matched packages"
+          # the build's pinned Go toolchain at its fixed install path (/usr/local/bin/fscache-go/bin/go): the provenance records step of a
+          # dependency bump runs it (REQ-VEND-001-AC15). Installed here, in this existing step, and never fatal: without it a bump PR simply
+          # does not regenerate its dependency provenance.
+          ./bin/install-scanner.sh go \
+            || echo "::warning::could not install the pinned Go toolchain; a bump PR will not regenerate its dependency provenance"
           export PATH="${RUNNER_TEMP}/gobin:${PATH}"
           # No scanner runs here: the manifest takes the four panel scanners' results from the rescan's verdict.json
           # (the panel directory option), and a scanner that did not run is recorded 'did not run', never clean.
+          # the source scan is bound to the scanned head: with a valid head the manifest reads that checkout and stamps that head; with
+          # none it gets neither a source dir nor a commit, so the scan is recorded 'did not run'
+          if [ -n "${SOURCE_HEAD}" ]; then
+            src=(--source-dir "${GITHUB_WORKSPACE}/scanned-source" --commit "${SOURCE_HEAD}")
+          else
+            src=()   # no head to stamp, so the manifest says "unknown" (never this run's own sha) and records the source scan 'did not run'
+          fi
           python3 .github/agent/bin/auditor-manifest.py \
             --rescan-dir "${RUNNER_TEMP}/rescan" \
             --panel-dir "${RUNNER_TEMP}/panel" \
-            --source-dir "${GITHUB_WORKSPACE}" \
+            "${src[@]}" \
             --reports "${RUNNER_TEMP}/reports" \
             --test-image "${TEST_IMAGE}" \
             --known-defect-log "${KNOWN_DEFECT_LOG:-.github/agent/known-defect-log.json}" \
@@ -231,22 +286,6 @@ jobs:
             } catch (e) {
               core.warning('could not decode OIDC claims for logging: ' + e)
             }
-
-      - name: Refresh the identity token in the background (runs longer than four minutes)
-        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const fs = require('fs')
-            const p = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
-            const refresh = async () => {
-              try {
-                const t = await core.getIDToken('https://api.anthropic.com')
-                core.setSecret(t); fs.writeFileSync(p, t)
-              } catch (e) { core.warning(`identity refresh failed: ${e}`) }
-            }
-            // re-mint every 4 minutes; the step returns immediately, the timer lives with the job
-            setInterval(refresh, 4 * 60 * 1000).unref?.()
 
       # Mint a GitHub App installation token (fosterstack-auditor, cache only, Contents +
       # Pull requests write) ONLY for delivery runs. The job's own GITHUB_TOKEN stays
@@ -300,6 +339,7 @@ jobs:
           AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
           AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
           AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
+          AUDITOR_PREV_STATE: ${{ runner.temp }}/prev-state/auditor-state.json   # yesterday's no-change state, if the fetch found one (REQ-AUD-3 AC3)
           # the App installation token (delivery) for THIS step only — git push + gh pr create;
           # falls back to the read-only job token on a dry run where no delivery happens.
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
@@ -431,6 +471,18 @@ jobs:
             ${{ runner.temp }}/panel-out
             ${{ runner.temp }}/manifest.json
             ${{ runner.temp }}/reports
+
+      # The no-change state (REQ-AUD-3 AC3): only a run that used the real adjudicator on the day's candidate and the committed defect log writes one, so a stub or
+      # proving run can never become tomorrow's verdicts. Its own short retention; the audit trail above keeps its default.
+      - name: Upload the no-change state
+        if: ${{ always() && (github.event_name == 'schedule' || (inputs.adjudicator == 'real' && inputs.test_image == '' && inputs.known_defect_log == '.github/agent/known-defect-log.json')) }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: auditor-state
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/auditor-out/.auditor/auditor-state.json
 
   # The scanner panel's seat probe (REQ-SCAN-008-AC3, live proof; advisor 0051): on request, from main only, in its own
   # job so nothing else of the auditor runs. It installs the pinned SDKs and sends each seat ONE fixed audit over a

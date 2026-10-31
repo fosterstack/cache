@@ -14,6 +14,7 @@ Fixtures (offline tests): {"now": ISO, "times": {ITEM: {"time": ISO, "source": S
 import argparse
 import base64
 import hashlib
+import http.client
 import datetime as dt
 import importlib.util
 import json
@@ -21,11 +22,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.parse
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push", "observer", "pr-clock")
+SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push", "signed-timestamp", "observer", "pr-clock")
 MIN_DAYS = 7.0
 
 
@@ -71,17 +74,46 @@ def is_pin(version):
     return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
 
 
+FILE_PIN_SOURCE = "file-pin-ruling"
+
+
+def is_file_item(item):
+    """A checksum or version FILE item (its identity is the file's content), the only kind a file_pins row can date."""
+    path = getattr(item, "raw", None) or ""
+    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:") \
+        and bool(re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])) and path.rsplit("/", 1)[-1] not in inv.VERSION_FILES   # a checksum file only: never a version file (.python-version ...)
+
+
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
-            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
+    ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    if ruled_file:
+        proofs = [p for p in proofs if p[1] == FILE_PIN_SOURCE]    # the row's published time decides, never an earlier clock of the pull request
+    if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
+    bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
+    if bad is not None:
+        return False, f"age not provable: the label '# {bad}' does not name the pinned commit (the label is wrong; this is not a missing clock)", None
+    if item.kind == "image":
+        host = _image_registry(item.name)
+        if host not in ("ghcr.io", "docker.io"):
+            unproven = next((t for t, src in proofs if src == "publisher-unproven"), None)
+            proofs = [p for p in proofs if p[1] == "signed-timestamp"]
+            if not proofs:
+                reason = f" ({unproven})" if unproven else ""
+                what = "is not ghcr.io or Docker Hub and the image has no publisher-signed time"
+                return False, f"age not provable: {host} {what}{reason}", None
+        else:
+            proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
+    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
+        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
-        if src not in SERVER_SIDE and src != "first-seen":
+        if src not in SERVER_SIDE and src != "first-seen" and not (src == FILE_PIN_SOURCE and ruled_file):
             continue
         if src == "github-release" and item.kind == "action":
             continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
@@ -122,35 +154,106 @@ def _gh_failed(r):
     return True
 
 
-def _gh_pages(path):
-    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line)."""
+_NULL = type(None)
+
+
+def _shaped(value, need, what):
+    """The one way to read a JSON object answer: `need` is ((key, type or tuple of types), ...), given by every caller (no default). An answer that is not an object,
+    or lacks a needed key, or holds it as another type, is an answer we cannot read (CouldNotLook): never 'nothing there'. Keys a caller reads with .get are the
+    optional ones; each of those is type-checked where it is used."""
+    if not isinstance(value, dict):
+        raise CouldNotLook(f"{what} is not a JSON object")
+    for key, typ in need:
+        types = typ if isinstance(typ, tuple) else (typ,)
+        got = value.get(key, _FAILED)
+        if got is _FAILED or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
+            raise CouldNotLook(f"{what} lacks {key!r} of the expected type")
+    return value
+
+
+def _dicts(value, what, need):
+    """A list of JSON objects each holding every key of `need` (CouldNotLook otherwise): an element of another shape is an answer we cannot read."""
+    if not isinstance(value, list):
+        raise CouldNotLook(f"{what} is not a list of JSON objects")
+    for x in value:
+        _shaped(x, need, what)
+    return value
+
+
+def _gh_pages(path, rows):
+    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line); every row must hold the keys of `rows`."""
     r = _gh_run(["gh", "api", "--paginate", path, "--jq", ".[]"], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
     try:
-        return [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
+        got = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
     except ValueError:
-        return None
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _gh_api(path):
+def _gh_api(path, need):
+    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
     r = _gh_run(["gh", "api", path], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
     try:
-        return json.loads(r.stdout)
+        got = json.loads(r.stdout)
     except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _shaped(got, need, f"GitHub API {path.split('?')[0]}")
+
+
+def _gh_list(path, rows):
+    """One page of a GitHub list answer, every row holding the keys of `rows`; None only for a plain miss (404)."""
+    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
+    if r.returncode:
+        _gh_failed(r)
         return None
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
+    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _http_json(url, timeout=30):
+_FAILED = object()      # the server could not be asked (lenient mode)
+_GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
+
+
+def _fetch_json(url, timeout=30, strict=False):
+    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
+    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
+    or a body that is not JSON means we could not look (CouldNotLook)."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
-    except (OSError, ValueError):
+    except urllib.error.HTTPError as e:
+        if not strict:
+            return _FAILED
+        if e.code in (404, 410):
+            return _GONE
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        if not strict:
+            return _FAILED
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
+
+
+def _http_dict(url, need, timeout=30, strict=False):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked
+    (strict: when it said 404/410); valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+    d = _fetch_json(url, timeout, strict)
+    if d is _FAILED or d is _GONE:
         return None
+    return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
+
+
+def _http_json_strict(url, need, timeout=30):
+    """_http_dict where only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
+    return _http_dict(url, need, timeout, strict=True)
 
 
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
@@ -160,10 +263,13 @@ TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version
 }
 
 
+_RELEASE = (("published_at", (str, _NULL)), ("draft", bool))      # a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
+
+
 def _release_time(repo, tags):
     for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE)
+        if rel and rel["published_at"] and not rel["draft"]:
             return rel["published_at"]
     return None
 
@@ -206,32 +312,61 @@ def _tag_for_commit(repo, sha):
 
 
 def _commit_date(repo, sha):
-    c = _gh_api(f"repos/{repo}/commits/{sha}")
-    return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
+    c = _gh_api(f"repos/{repo}/commits/{sha}", (("commit", dict),))
+    if c is None:
+        return None
+    committer = c["commit"].get("committer")      # optional: a commit without a committer has no date
+    if committer is None:
+        return None
+    date = _shaped(committer, (), "the commit's committer").get("date")
+    if date is not None and not isinstance(date, str):
+        raise CouldNotLook("GitHub API commit answered with a committer date that is not text")
+    return date
 
 
-def _go_module(path, version):
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
+_MODINFO = (("Version", str),)      # a module info answer holds its version
+
+
+def _go_module(path, version, strict=False):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
-        if info and info.get("Version"):
-            return mod, info
+        url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
+        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+        if info is None:
+            continue      # not there (strict) or the proxy could not be asked (lenient): try the shorter module path
+        if not info["Version"]:
+            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
+        return mod, info
     return None, None
 
 
 def _go_index_time(mod, version, vcs_time):
-    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it)."""
+    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it).
+    Every row of a page is validated before any is used: an unreadable row is CouldNotLook, never 'not this module'."""
     since = vcs_time
     for _ in range(40):
-        rows = []
         try:
             with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
-                rows = [json.loads(line) for line in r.read().decode().splitlines() if line.strip()]
-        except (OSError, ValueError):
+                lines = [ln for ln in r.read().decode().splitlines() if ln.strip()]
+        except (OSError, ValueError, http.client.HTTPException):
             return None
+        rows = []
+        for ln in lines:
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                raise CouldNotLook("index.golang.org answered with a line that is not JSON")
+            if not (isinstance(row, dict) and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
+                raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")
+            rows.append(row)
         for row in rows:
-            if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
+            if row["Path"] == mod and row["Version"] == version:      # exact (the module path is case-sensitive); every row was validated above
                 return row["Timestamp"]
         if len(rows) < 2000:
             return None
@@ -252,17 +387,20 @@ def _gh_bytes(path):
 
 def observed():
     """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and cannot be read.
-    Only runs that are event=schedule, branch main, success, of this workflow's path are read, so a pull request can never forge them."""
+    Only runs of this workflow's path with event=schedule, branch main and conclusion success or failure are read
+    (tag_observer.accept_run: a failed daily run still wrote its state), so a pull request can never forge them."""
     if "state" in _OBS:
         return _OBS["state"]
     repo = os.environ.get("GITHUB_REPOSITORY")
     state = None
     if repo:
-        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100") or {}
-        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
+        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+        wruns = _dicts(data["workflow_runs"], "the scheduled workflow runs", (("id", int),))
+        runs = sorted((r for r in wruns if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
         for run in runs[:30]:
-            arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
-            art = next((x for x in arts if x.get("name") == tobs.STATE_NAME and not x.get("expired")), None)
+            adata = _gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts", (("artifacts", list),)) or {"artifacts": []}
+            arts = _dicts(adata["artifacts"], "the artifacts of a scheduled run", (("id", int), ("name", str)))
+            art = next((x for x in arts if x["name"] == tobs.STATE_NAME and not x.get("expired")), None)
             if art:
                 raw = _gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")
                 try:
@@ -284,38 +422,54 @@ def _pr_clock(item, root, base, head="HEAD"):
     if not repo or not base or not item.version:
         return None
     r = _gh_run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
+    commits = r.stdout.split()
     first = None
-    for c in r.stdout.split():
+    for i, c in enumerate(commits):
         try:
             if (root, c) not in _INV_CACHE:
                 _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
-            if item.key in _INV_CACHE[(root, c)]:
-                first = c
+            got = _INV_CACHE[(root, c)].get(item.key)
+            if got is not None and got.sum == item.sum:
+                first = i
                 break
         except RuntimeError:
             continue
-    if not first:
+    if first is None:
         return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
-    times = [x["created_at"] for x in runs if x.get("created_at")]
-    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    intro = commits[first]
+    for c in commits[first:]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own (base..head bounds the walk)
+        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c], capture_output=True).returncode != 0:
+            continue      # a sibling in a merge does not contain the introducing commit: its runs lend no clock
+        times = _run_times(repo, c)
+        if times:
+            return min(times)
+    return None
+
+
+def _run_times(repo, commit):
+    rdata = _gh_api(f"repos/{repo}/actions/runs?head_sha={commit}&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+    runs = _dicts(rdata["workflow_runs"], "the workflow runs of a commit", (("created_at", (str, _NULL)),))
+    times = [x["created_at"] for x in runs if x["created_at"]]
+    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:
         for line in r2.stdout.splitlines():
             try:
-                c = json.loads(line).get("created_at")
+                row = json.loads(line)
             except ValueError:
-                continue
+                raise CouldNotLook("GitHub API check-suites answered with a line that is not JSON")
+            c = _shaped(row, (("created_at", (str, _NULL)),), "a check suite of the first commit")["created_at"]
             if c:
                 times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
-    return min(times) if times else None
+    return times
 
 
 def _release_with_assets(repo, tags):
     for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE + (("assets", list),))
+        if rel and rel["published_at"] and not rel["draft"]:
+            _dicts(rel["assets"], "the assets of a release", ())      # name, created_at and updated_at are optional: an asset without a name matches no download, so the release lends no proof (the pin then fails as unprovable)
             return rel
     return None
 
@@ -330,12 +484,13 @@ def live_proofs(item, root, base=None, head="HEAD"):
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
         tags = _tags_for_commit(item.name, item.version)
         want = [item.label] if item.label else tags
-        if not item.label or item.label in tags:
-            state = observed()
-            for tag in want:
-                t = tobs.first_seen(state, item.name, tag, item.version)
-                if t:
-                    out.append((t, "observer"))
+        if item.label and item.label not in tags:
+            return [(None, "bad-label:" + item.label)]    # the label Dependabot bumps does not resolve to this commit: age not provable, with no PR clock to lean on
+        state = observed()
+        for tag in want:
+            t = tobs.first_seen(state, item.name, tag, item.version)
+            if t:
+                out.append((t, "observer"))
     elif item.kind == "tool":
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
         if repo:
@@ -351,52 +506,469 @@ def live_proofs(item, root, base=None, head="HEAD"):
     elif item.kind == "gotool":
         mod, info = _go_module(item.name, item.version)
         if mod:
-            t = _go_index_time(mod, info["Version"], info["Time"])
+            t = _go_index_time(mod, info["Version"], info["Time"]) if isinstance(info.get("Time"), str) else None      # no readable version-control time: no go-index proof (the pin then fails as unprovable)
             if t:
                 out.append((t, "go-index"))
     elif item.kind == "package":
         name = item.name.split("/", 1)[1]
-        d = _http_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
-        ups = [u.get("upload_time_iso_8601") for u in (d or {}).get("urls", []) if u.get("upload_time_iso_8601")]
+        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json", (("urls", list),))
+        ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {"urls": []})["urls"], "pypi urls", ()) if u.get("upload_time_iso_8601")]      # the upload time is optional, text when there
+        if not all(isinstance(x, str) for x in ups):
+            raise CouldNotLook("pypi.org answered with an upload time that is not text")
         if ups:
             out.append((max(ups), "pypi"))  # the newest file: a wheel added later to an old release is young
     elif item.kind == "image" and item.version:
-        t = _registry_push(item)
-        if t:
-            out.append((t, "registry-push"))
+        if _image_registry(item.name) in ("ghcr.io", "docker.io"):
+            t, src = _registry_push(item), "registry-push"
+        else:
+            t, why = _publisher_proof(item)
+            return [(t, "signed-timestamp")] if t else [(why, "publisher-unproven")]
+        return [(t, src)] if t else []
     pc = _pr_clock(item, root, base, head)
     if pc:
         out.append((pc, "pr-clock"))
     return out
 
 
+def _image_registry(name):
+    """The registry of an image name: a first part with a dot, a colon or localhost is a host; else Docker Hub."""
+    first, _, rest = name.partition("/")
+    if first == "docker.io":
+        name = rest
+    elif rest and ("." in first or ":" in first or first == "localhost"):
+        return first
+    return "docker.io" if name.count("/") <= 1 else name.split("/")[0]
+
+
+class CouldNotProve(Exception):
+    """A publisher-signed time that does not stand up; the text is one line saying which part failed."""
+
+
+OPENSSL_SECONDS, DOCKER_SECONDS = 30, 600
+
+
+def _openssl(args, data=None):
+    """Run openssl with `data` on stdin. If it cannot run or hangs the check stops (CouldNotLook); that says nothing about the image."""
+    try:
+        return subprocess.run(["openssl", *args], input=data, capture_output=True, timeout=OPENSSL_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise CouldNotLook("openssl timed out") from None
+    except OSError as e:
+        raise CouldNotLook(f"openssl could not be run ({type(e).__name__})") from None
+
+
+def _openssl_verify(key_pem, data, sig):
+    """True when the ECDSA/SHA-256 signature `sig` over `data` verifies under the PEM public key."""
+    with tempfile.TemporaryDirectory() as d:
+        for name, blob in (("key.pem", key_pem.encode()), ("data", data), ("sig", sig)):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(blob)
+        path = lambda name: os.path.join(d, name)
+        r = _openssl(["dgst", "-sha256", "-verify", path("key.pem"), "-signature", path("sig"), path("data")])
+    return r.returncode == 0
+
+
+def _key_der(pem):
+    r = _openssl(["pkey", "-pubin", "-outform", "DER"], pem.encode())
+    if r.returncode != 0:
+        raise CouldNotProve("a public key is not readable")
+    return r.stdout
+
+
+def rekor_log_id(key_pem):
+    """The log id Rekor names an entry by: the hex SHA-256 of the log key's DER form."""
+    return hashlib.sha256(_key_der(key_pem)).hexdigest()
+
+
+def _merkle_root_from_inclusion(index, size, leaf_hash, proof):
+    """RFC 9162 section 2.1.3.2: the tree root the proof leads to, or None when it does not fit the tree."""
+    if index < 0 or size < 1 or index >= size:
+        return None
+    fn, sn, r = index, size - 1, leaf_hash
+    for p in proof:
+        if sn == 0:
+            return None
+        if fn & 1 or fn == sn:
+            r = hashlib.sha256(b"\x01" + p + r).digest()
+            while not fn & 1 and fn != 0:
+                fn >>= 1
+                sn >>= 1
+        else:
+            r = hashlib.sha256(b"\x01" + r + p).digest()
+        fn >>= 1
+        sn >>= 1
+    return r if sn == 0 else None
+
+
+def _check_log_entry(body_b64, tree_index, tree_size, hashes, root, checkpoint, rekor_pem):
+    """The proof leads to `root`, and the log's signed checkpoint names that tree size and root."""
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(body_b64)).digest()
+    if _merkle_root_from_inclusion(tree_index, tree_size, leaf, hashes) != root:
+        raise CouldNotProve("the inclusion proof does not lead to the tree root it names")
+    note, _, signed = checkpoint.partition("\n\n")
+    lines = note.split("\n")
+    if int(lines[1]) != tree_size or base64.b64decode(lines[2]) != root:
+        raise CouldNotProve("the checkpoint is for another tree than the inclusion proof's")
+    sigs = [base64.b64decode(l.split(" ")[2])[4:] for l in signed.split("\n") if l.startswith("\u2014 ")]
+    if not any(_openssl_verify(rekor_pem, (note + "\n").encode(), x) for x in sigs):
+        raise CouldNotProve("the checkpoint is not signed by the log key")
+
+
+def _json_object(data, need=()):
+    """A JSON object that is not empty and has the keys in `need`; anything else is an answer we cannot read."""
+    try:
+        value = json.loads(data)
+    except ValueError:
+        raise CouldNotLook("an answer is not JSON") from None
+    if not isinstance(value, dict) or not value or any(k not in value for k in need):
+        raise CouldNotLook("an answer is not the JSON object we asked for")
+    return value
+
+
+def _json_file(path):
+    """The JSON in a local file (OSError or ValueError if it cannot be read)."""
+    with open(path) as f:
+        return json.load(f)
+
+
+def _utc(seconds):
+    """A time the log has signed, as a UTC datetime; a number no clock can hold is not a time."""
+    try:
+        return dt.datetime.fromtimestamp(seconds, dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        raise CouldNotProve("the integrated time is not a time (time not proven)") from None
+
+
+def _check_entry_time(body_b64, integrated, log_index, log_id_hex, set_b64, rekor_pem):
+    """The log's signed entry timestamp covers this integrated time. Raises CouldNotProve."""
+    signed = {"body": body_b64, "integratedTime": integrated, "logID": log_id_hex, "logIndex": log_index}
+    canon = json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
+    if not _openssl_verify(rekor_pem, canon, base64.b64decode(set_b64)):
+        raise CouldNotProve("the log's signature does not cover this integrated time (time not proven)")
+
+
+_ISSUER_OID_DER = bytes.fromhex("2b0601040183bf300101")        # 1.3.6.1.4.1.57264.1.1, Fulcio's OIDC issuer extension
+
+
+def _der_children(der, start, end):
+    """The (tag, value start, value end) of each TLV between start and end of a DER string."""
+    out = []
+    while start < end:
+        tag, n, start = der[start], der[start + 1], start + 2
+        if n & 0x80:
+            width = n & 0x7F
+            n, start = int.from_bytes(der[start:start + width], "big"), start + width
+        if start + n > end:
+            raise ValueError("a length runs past its parent")
+        out.append((tag, start, start + n))
+        start += n
+    return out
+
+
+def _fulcio_issuers(cert_der):
+    """The value of each Fulcio issuer extension of a DER certificate, found by walking its structure."""
+    _, cs, ce = _der_children(cert_der, 0, len(cert_der))[0]                      # Certificate
+    _, ts, te = _der_children(cert_der, cs, ce)[0]                                # tbsCertificate
+    out = []
+    for tag, xs, xe in _der_children(cert_der, ts, te):
+        if tag == 0xA3:                                                           # [3] extensions
+            _, es, ee = _der_children(cert_der, xs, xe)[0]
+            for _, s0, e0 in _der_children(cert_der, es, ee):
+                fields = _der_children(cert_der, s0, e0)
+                if cert_der[fields[0][1]:fields[0][2]] == _ISSUER_OID_DER:
+                    out.append(cert_der[fields[-1][1]:fields[-1][2]])             # the extension value, last field
+    return out
+
+
+def _cert_identity(cert_pem):
+    """(issuer, subject, not_before, not_after) of a Fulcio certificate.
+    The subject is the one name in the subjectAltName extension, which openssl prints alone, so no other field can pose as it."""
+    pem = cert_pem.encode()
+    san = _openssl(["x509", "-noout", "-ext", "subjectAltName"], pem)
+    der = _openssl(["x509", "-outform", "DER"], pem)
+    dates = _openssl(["x509", "-noout", "-startdate", "-enddate"], pem)
+    if san.returncode or der.returncode or dates.returncode:
+        raise CouldNotProve("a certificate is not readable (wrong identity)")
+    san_lines = [l.strip() for l in san.stdout.decode(errors="replace").split("\n")[1:] if l.strip()]
+    names = [n for n in ", ".join(san_lines).split(", ") if n]
+    if len(names) != 1 or not re.fullmatch(r"(?:email|URI):\S+", names[0]):
+        raise CouldNotProve("the certificate has no single subject name (wrong identity)")
+    try:
+        values = _fulcio_issuers(der.stdout)
+    except (ValueError, IndexError):
+        raise CouldNotProve("a certificate is not readable (wrong identity)") from None
+    if len(values) != 1 or not values[0]:
+        raise CouldNotProve("the certificate carries no single OIDC issuer (wrong identity)")
+    stamp = dict(l.split("=", 1) for l in dates.stdout.decode().split("\n") if "=" in l)
+    def when(key):
+        parsed = dt.datetime.strptime(" ".join(stamp[key].split()), "%b %d %H:%M:%S %Y GMT")
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return values[0].decode("utf-8", "replace"), names[0].split(":", 1)[1], when("notBefore"), when("notAfter")
+
+
+def _chains_to_root(cert_pem, fulcio_chain_pem, at):
+    """True when the certificate chains to the pinned chain's first certificate, through the others, as of `at`."""
+    certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----\n?", fulcio_chain_pem, re.S)
+    with tempfile.TemporaryDirectory() as d:
+        for name, pem in (("root.pem", certs[0]), ("inter.pem", "".join(certs[1:])), ("leaf.pem", cert_pem)):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(pem)
+        path = lambda name: os.path.join(d, name)
+        # -no-CApath -no-CAstore: the pinned root is the only trust anchor, not the machine's CAs
+        when = str(int(at.timestamp()))
+        r = _openssl(["verify", "-no-CApath", "-no-CAstore", "-attime", when,
+                      "-CAfile", path("root.pem"), "-untrusted", path("inter.pem"), path("leaf.pem")])
+    return r.returncode == 0
+
+
+def _cert_public_key(cert_pem):
+    return _openssl(["x509", "-noout", "-pubkey"], cert_pem.encode()).stdout.decode()
+
+
+def _keyless_layer_time(name, digest, layer, idents, rekor_pem, fulcio_pem):
+    """The integrated time of one cosign signature (payload, certificate, Rekor entry) that verifies fully."""
+    payload, entry = base64.b64decode(layer["payload"], validate=True), layer["rekor_entry"]
+    if _json_object(payload, ("critical",))["critical"]["image"]["docker-manifest-digest"] != digest:
+        raise CouldNotProve(f"the signed payload is not about {digest} (wrong digest)")
+    cert = layer["certificate"]
+    issuer, subject, not_before, not_after = _cert_identity(cert)
+    if not any(i.get("issuer") == issuer and i.get("subject") == subject for i in idents):
+        raise CouldNotProve(f"{subject} from {issuer} is not a pinned identity of {name} (wrong identity)")
+    integrated = int(entry["integratedTime"])
+    body = _json_object(base64.b64decode(entry["body"], validate=True), ("kind", "spec"))
+    spec = body["spec"]
+    payload_hash = {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()}
+    same_signature = spec["signature"]["content"] == layer["signature"]
+    if body.get("kind") != "hashedrekord" or spec["data"]["hash"] != payload_hash or not same_signature:
+        raise CouldNotProve("the log entry is for another signature or payload than this one's (wrong identity)")
+    if base64.b64decode(spec["signature"]["publicKey"]["content"]).decode().strip() != cert.strip():
+        raise CouldNotProve("the log entry names another certificate than this one's (wrong identity)")
+    proof = entry["verification"].get("inclusionProof")
+    if not isinstance(proof, dict):
+        raise CouldNotProve("the log entry has no inclusion proof")
+    hashes = [bytes.fromhex(h) for h in proof["hashes"]]
+    root = bytes.fromhex(proof["rootHash"])
+    tree_index, tree_size = int(proof["logIndex"]), int(proof["treeSize"])
+    _check_log_entry(entry["body"], tree_index, tree_size, hashes, root, proof["checkpoint"], rekor_pem)
+    if entry["logID"] != rekor_log_id(rekor_pem):
+        raise CouldNotProve("the log entry names another log than the pinned Rekor key (time not proven)")
+    entry_time = entry["verification"]["signedEntryTimestamp"]
+    _check_entry_time(entry["body"], integrated, int(entry["logIndex"]), entry["logID"], entry_time, rekor_pem)
+    when = _utc(integrated)
+    if not (not_before <= when <= not_after):
+        raise CouldNotProve("the integrated time is outside the certificate's validity window (time not proven)")
+    if not _chains_to_root(cert, fulcio_pem, when):
+        raise CouldNotProve("the certificate does not chain to the pinned Fulcio root (wrong identity)")
+    if not _openssl_verify(_cert_public_key(cert), payload, base64.b64decode(layer["signature"], validate=True)):
+        raise CouldNotProve("the signature does not verify under the certificate (wrong identity)")
+    return when
+
+
+def keyless_signed_time(name, digest, evidence, pins, rekor_pem, fulcio_pem):
+    """The earliest time a pinned keyless identity of `name` signed `digest`, or CouldNotProve.
+    Any one pinned identity that verifies fully is enough; a signature by one that is not pinned counts for nothing."""
+    pin = pins.get(name) if isinstance(pins, dict) else None
+    idents = pin.get("keyless") if isinstance(pin, dict) else None
+    if not isinstance(idents, list) or not idents:
+        raise CouldNotProve(f"{name} is not pinned: image-publishers.json names no publisher identity for it")
+    good, first = [], None
+    for layer in evidence.get("layers", []) if isinstance(evidence, dict) else []:
+        try:
+            good.append(_keyless_layer_time(name, digest, layer, idents, rekor_pem, fulcio_pem))
+        except CouldNotProve as ex:
+            first = first or ex
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
+            first = first or CouldNotProve(f"a signature layer is malformed ({type(ex).__name__})")
+    if good:
+        return min(good)
+    raise first or CouldNotProve(f"no signature of {name} was recorded")
+
+
+def publisher_signed_time(name, digest, bundle, pins, rekor_pem):
+    """The time the publisher signed `digest`, from a Sigstore bundle, or CouldNotProve. No network.
+    The signature must verify under the key pinned for `name`, the log entry must carry that signature and key,
+    its inclusion proof must lead to a checkpoint the log signed, and the log must have signed the entry's time."""
+    pin = pins.get(name) if isinstance(pins, dict) else None
+    if not isinstance(pin, dict) or not isinstance(pin.get("key"), str):
+        raise CouldNotProve(f"{name} is not pinned: image-publishers.json names no publisher identity for it")
+    try:
+        env, tlog = bundle["dsseEnvelope"], bundle["verificationMaterial"]["tlogEntries"][0]
+        payload = base64.b64decode(env["payload"], validate=True)
+        sig = base64.b64decode(env["signatures"][0]["sig"], validate=True)
+        statement = _json_object(payload, ("subject",))
+        want = digest.removeprefix("sha256:")
+        if not any(sub.get("digest", {}).get("sha256") == want for sub in statement["subject"]):
+            raise CouldNotProve(f"the signed statement is not about {digest} (wrong digest)")
+        pae = b"DSSEv1 %d %s %d " % (len(env["payloadType"]), env["payloadType"].encode(), len(payload)) + payload
+        if not _openssl_verify(pin["key"], pae, sig):
+            raise CouldNotProve(f"the signature does not verify under the identity pinned for {name} (wrong identity)")
+        body = _json_object(base64.b64decode(tlog["canonicalizedBody"], validate=True), ("kind", "spec"))
+        entry_sig = body["spec"]["signatures"][0]
+        payload_hash = body["spec"]["payloadHash"]["value"]
+        same_payload = hashlib.sha256(payload).hexdigest() == payload_hash
+        if entry_sig["signature"] != env["signatures"][0]["sig"] or not same_payload:
+            raise CouldNotProve("the log entry is for another signature or payload than the bundle's (wrong identity)")
+        if _key_der(base64.b64decode(entry_sig["verifier"]).decode()) != _key_der(pin["key"]):
+            raise CouldNotProve("the log entry names another key than the pinned one (wrong identity)")
+        proof = tlog.get("inclusionProof")
+        if not isinstance(proof, dict):
+            raise CouldNotProve("the log entry has no inclusion proof")
+        body_b64, hashes = tlog["canonicalizedBody"], [base64.b64decode(h) for h in proof["hashes"]]
+        root = base64.b64decode(proof["rootHash"])
+        tree_index, tree_size = int(proof["logIndex"]), int(proof["treeSize"])
+        _check_log_entry(body_b64, tree_index, tree_size, hashes, root, proof["checkpoint"]["envelope"], rekor_pem)
+        log_id = base64.b64decode(tlog["logId"]["keyId"]).hex()
+        entry_time = tlog["inclusionPromise"]["signedEntryTimestamp"]
+        _check_entry_time(body_b64, int(tlog["integratedTime"]), int(tlog["logIndex"]), log_id, entry_time, rekor_pem)
+        return _utc(int(tlog["integratedTime"]))
+    except CouldNotProve:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
+        raise CouldNotProve(f"the bundle is malformed ({type(ex).__name__})") from None
+
+
+POLICY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "policy")
+PUBLISHER_PINS_FILE = os.path.join(POLICY_DIR, "image-publishers.json")     # pinned by hand, never discovered
+REKOR_KEY_FILE = os.path.join(POLICY_DIR, "rekor.pub")
+FULCIO_CHAIN_FILE = os.path.join(POLICY_DIR, "fulcio-chain.pem")
+REKOR_ENTRY_URL = "https://rekor.sigstore.dev/api/v1/log/entries?logIndex="
+OCI_INDEX = "application/vnd.oci.image.index.v1+json"
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+MAX_EVIDENCE_PARTS = 8        # signatures or referrers read per image
+MAX_EVIDENCE_BYTES = 4 << 20
+
+
+def _get_bytes(url, accept="*/*", timeout=30):
+    """GET a registry or log answer: its bytes, None for 404/410, CouldNotLook for any other failure."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": accept}), timeout=timeout) as r:
+            data = r.read(MAX_EVIDENCE_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return None
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
+    except (OSError, http.client.HTTPException) as e:
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
+    if len(data) > MAX_EVIDENCE_BYTES:
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with more than {MAX_EVIDENCE_BYTES} bytes")
+    return data
+
+
+def _blob(base, digest):
+    """The blob `digest` of a registry, or None; its bytes must hash to the digest it was asked by."""
+    data = _get_bytes(f"{base}blobs/{digest}")
+    if data is not None and "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+        raise CouldNotLook("a registry answered with a blob that is not the one asked for")
+    return data
+
+
+def _keyed_bundles(base, digest):
+    """The Sigstore bundles published as referrers of the image that say they are cosign signatures."""
+    idx = _get_bytes(f"{base}referrers/{digest}", OCI_INDEX)
+    out = []
+    for m in (_json_object(idx, ("schemaVersion",)).get("manifests") or [])[:MAX_EVIDENCE_PARTS] if idx else []:
+        if str(m.get("annotations", {}).get("dev.sigstore.bundle.predicateType", "")).endswith("sign/v1"):
+            man = _get_bytes(f"{base}manifests/{m['digest']}", OCI_MANIFEST)
+            blob = _blob(base, _json_object(man, ("layers",))["layers"][0]["digest"]) if man else None
+            if blob:
+                out.append(_json_object(blob, ("dsseEnvelope",)))
+    return out
+
+
+def _keyless_evidence(base, digest):
+    """The older cosign signature (the sha256-<hex>.sig tag): each layer with its Rekor entry and inclusion proof."""
+    man = _get_bytes(f"{base}manifests/sha256-{digest[len('sha256:'):]}.sig", OCI_MANIFEST)
+    layers = []
+    for l in (_json_object(man, ("layers",)).get("layers") or [])[:MAX_EVIDENCE_PARTS] if man else []:
+        a = l["annotations"]
+        payload = _blob(base, l["digest"])
+        bundle = _json_object(a["dev.sigstore.cosign/bundle"], ("Payload",))
+        raw = _get_bytes(REKOR_ENTRY_URL + str(int(bundle["Payload"]["logIndex"])))
+        if payload is None or raw is None:
+            continue
+        (uuid, entry), = _json_object(raw).items()
+        layers.append({"payload": base64.b64encode(payload).decode(),
+                       "signature": a["dev.cosignproject.cosign/signature"],
+                       "certificate": a["dev.sigstore.cosign/certificate"],
+                       "chain": a.get("dev.sigstore.cosign/chain", ""),
+                       "bundle": bundle, "rekor_entry": {"uuid": uuid, **entry}})
+    return {"layers": layers}
+
+
+def _publisher_proof(item):
+    """(the publisher-signed time of an image outside ghcr.io and Docker Hub, None), or (None, why there is none).
+    Only a publisher pinned in image-publishers.json counts. The evidence is read (GET) from the image's registry and Rekor."""
+    try:
+        pins = _json_file(PUBLISHER_PINS_FILE)
+        with open(REKOR_KEY_FILE) as f:
+            rekor_pem = f.read()
+        with open(FULCIO_CHAIN_FILE) as f:
+            fulcio_pem = f.read()
+    except (OSError, ValueError):
+        return None, "the publisher pins could not be read"
+    pin = pins.get(item.name) if isinstance(pins, dict) else None
+    host, _, repo = item.name.partition("/")
+    if not isinstance(pin, dict) or not repo or not (item.version or "").startswith("sha256:"):
+        return None, f"{item.name} is not pinned: image-publishers.json names no publisher identity for it"
+    base = f"https://{host}/v2/{repo}/"
+    times, why = [], None
+    try:
+        if "key" in pin:
+            for bundle in _keyed_bundles(base, item.version):
+                try:
+                    times.append(publisher_signed_time(item.name, item.version, bundle, pins, rekor_pem))
+                except CouldNotProve as ex:
+                    why = why or str(ex)
+            why = why or f"no signature of {item.name} was recorded"
+        elif "keyless" in pin:
+            evidence = _keyless_evidence(base, item.version)
+            times.append(keyless_signed_time(item.name, item.version, evidence, pins, rekor_pem, fulcio_pem))
+    except CouldNotProve as ex:
+        return None, " ".join(str(ex).split())
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
+        return None, "the signature evidence is malformed"
+    if not times:
+        return None, " ".join((why or "no publisher signature").split())
+    return min(times).strftime("%Y-%m-%dT%H:%M:%SZ"), None
+
+
+def _signed_timestamp(item):
+    """The publisher-signed time of an image as text, or None (so the judge refuses it)."""
+    return _publisher_proof(item)[0]
+
+
 def _registry_push(item):
-    name = item.name
-    if name.startswith("ghcr.io/"):
-        owner, _, pkg = name[len("ghcr.io/"):].partition("/")
+    host = _image_registry(item.name)
+    if host == "ghcr.io":
+        owner, _, pkg = item.name[len("ghcr.io/"):].partition("/")
         for scope in ("orgs", "users"):
             for page in (1, 2, 3):
-                vs = _gh_api(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}")
+                vs = _gh_list(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}", (("name", str), ("created_at", (str, _NULL))))
                 if not vs:
                     break
                 for v in vs:
                     if v.get("name") == item.version:
                         return v.get("created_at")
         return None
-    parts = name.split("/")
-    if len(parts) == 2 or (len(parts) == 3 and parts[0] == "docker.io"):
-        ns, repo = parts[-2], parts[-1]
+    if host == "docker.io":
+        path = item.name.removeprefix("docker.io/").split("/")
+        ns, repo = ("library", path[0]) if len(path) == 1 else path
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
-            d = _http_json(url)
-            if not d:
+            d = _http_dict(url, (("results", list),))
+            if d is None:
                 return None
-            for tag in d.get("results", []):
-                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in tag.get("images", [])):
-                    return tag.get("tag_last_pushed")
+            for tag in _dicts(d["results"], "hub.docker.com results", ()):
+                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images", ())):      # digest, images and tag_last_pushed are optional
+                    pushed = tag.get("tag_last_pushed")
+                    if pushed is not None and not isinstance(pushed, str):
+                        raise CouldNotLook("hub.docker.com answered with a push time that is not text")
+                    return pushed
             url = d.get("next")
             if not url:
                 break
+            if not (isinstance(url, str) and url.startswith("https://hub.docker.com/")):
+                raise CouldNotLook("hub.docker.com answered with a next link that is not a hub.docker.com URL")
     return None
 
 
@@ -427,11 +999,121 @@ def check(moved_items, source, now, min_days):
     rows = []
     for it in moved_items:
         ok, reason, proof = judge_item(it, source.proofs(it), now, min_days)
+        note = getattr(source, "notes", {}).get(it.key)
+        if note:
+            reason += f" ({note})"
         rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason, "proof": proof})
     return rows
 
 
+PIN_FIELDS = ("key", "keyless", "source", "key_source")
+
+
+def _is_identity(i):
+    return isinstance(i, dict) and all(isinstance(i.get(k), str) and i[k] for k in ("issuer", "subject"))
+
+
+def _checked_pins(pins):
+    """The publisher entries of the pins file (names starting with _ are notes). ValueError unless each entry has a key or
+    keyless identities and every field it has is well formed."""
+    entries = {k: v for k, v in pins.items() if not k.startswith("_")} if isinstance(pins, dict) else None
+    if not entries:
+        raise ValueError("image-publishers.json pins no image")
+    for name, pin in entries.items():
+        if not isinstance(pin, dict) or not ({"key", "keyless"} & set(pin)) or set(pin) - set(PIN_FIELDS):
+            raise ValueError(f"image-publishers.json: {name} has no key or keyless identity, or a field that is not known")
+        if "key" in pin and not (isinstance(pin["key"], str) and pin["key"].strip()):
+            raise ValueError(f"image-publishers.json: {name} has a key that is not text")
+        for note in ("source", "key_source"):
+            if note in pin and not (isinstance(pin[note], str) and pin[note].strip()):
+                raise ValueError(f"image-publishers.json: {name} has a {note} that is not text")
+        idents = pin.get("keyless", [])
+        if "keyless" in pin and not (isinstance(idents, list) and idents and all(_is_identity(i) for i in idents)):
+            raise ValueError(f"image-publishers.json: {name} has keyless identities that are not a list of issuer and subject")
+    return entries
+
+
+def cosign_verify_images(root, rev, cosign_image, run):
+    """For each pinned image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
+    An image passes when any run succeeds. `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
+    pins = _checked_pins(_json_file(PUBLISHER_PINS_FILE))
+    results, seen = [], set()
+    with tempfile.TemporaryDirectory() as d:
+        for it in inv.load_at(root, rev).values():
+            by_digest = (it.version or "").startswith("sha256:")
+            if it.kind != "image" or it.name not in pins or not by_digest or (it.name, it.version) in seen:
+                continue
+            seen.add((it.name, it.version))
+            pin, ref, cmds = pins[it.name], f"{it.name}@{it.version}", []
+            if "key" in pin:
+                key_file = os.path.join(d, f"key{len(seen)}.pub")
+                with open(key_file, "w") as f:
+                    f.write(pin["key"])
+                mount = f"{key_file}:/pin/key.pub:ro"
+                cmds.append(["docker", "run", "--rm", "-v", mount, cosign_image, "verify",
+                             "--key", "/pin/key.pub", ref])
+            for ident in pin.get("keyless", []):
+                cmds.append(["docker", "run", "--rm", cosign_image, "verify",
+                             "--certificate-identity", ident["subject"], "--certificate-oidc-issuer", ident["issuer"], ref])
+            codes = [run(c) for c in cmds]                      # every pinned identity is tried, so the log shows each
+            ok = any(c == 0 for c in codes)
+            reason = "" if ok else f"cosign verify found no pinned identity that signed it ({len(cmds)} tried)"
+            results.append({"name": it.name, "digest": it.version, "ok": ok, "reason": reason})
+    return results
+
+
+def _run_docker(cmd):
+    """The exit code of one `docker run ... cosign verify` command."""
+    try:
+        return subprocess.run(cmd, stdout=subprocess.DEVNULL, timeout=DOCKER_SECONDS).returncode
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("docker timed out") from None
+
+
+def _one_line(error):
+    """An error as one line. Its text can hold a pull request's file path, and a path may contain newlines;
+    a log line that starts with :: is an Actions command, and the runner reads ##[command] anywhere in a line."""
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(error)).split())
+    return text.replace("##[", "## [")
+
+
+def _cosign_verify_main(argv):
+    ap = argparse.ArgumentParser(prog="pin-age-check.py cosign-verify")
+    ap.add_argument("--root", default=".")
+    ap.add_argument("--head", required=True)
+    ap.add_argument("--cosign-image", help="the pinned cosign image, by digest")
+    ap.add_argument("--tools-file", help="the file whose \"cosign\" entry pins it (bin/persona-uat-tools.json)")
+    a = ap.parse_args(argv)
+    try:
+        if bool(a.cosign_image) == bool(a.tools_file):
+            raise ValueError("give exactly one of --cosign-image and --tools-file")
+        if a.tools_file:
+            tools = _json_file(a.tools_file)
+            if not isinstance(tools, dict):
+                raise ValueError("the tools file is not an object")
+            a.cosign_image = tools["cosign"]
+        by_digest = r"[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}"
+        if not isinstance(a.cosign_image, str) or not re.fullmatch(by_digest, a.cosign_image):
+            raise ValueError("the cosign image must be named by digest")
+    except (OSError, ValueError, KeyError) as e:
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
+        return 2
+    try:
+        results = cosign_verify_images(a.root, a.head, a.cosign_image, _run_docker)
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
+        return 2
+    if not results:
+        print("pin-age: no pinned image in the tree, nothing to verify")
+    for r in results:
+        status = "ok   " if r["ok"] else "FAIL "
+        print(f"{status}{r['name']}@{r['digest']}" + ("" if r["ok"] else f": {r['reason']}"))
+    return 0 if all(r["ok"] for r in results) else 1
+
+
 def main(argv=None):
+    if (argv if argv is not None else sys.argv[1:])[:1] == ["cosign-verify"]:
+        return _cosign_verify_main((argv if argv is not None else sys.argv[1:])[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base", required=True)
@@ -451,16 +1133,19 @@ def main(argv=None):
         base_items = inv.load_at(a.root, a.base)
         head_items = inv.load_at(a.root, a.head)
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {e}", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)}", file=sys.stderr)
         return 2
     moved = inv.moved(base_items, head_items)
     try:
         return _run(a, moved, fx, now)
     except RuntimeError as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
+        return 2
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
+        print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
         return 2
     except CouldNotLook as e:
-        print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass: re-run the check)", file=sys.stderr)
         return 2
 
 
@@ -1294,6 +1979,58 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
+_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?")   # a time with a real zone or none (UTC, as parse_time reads it); nothing parse_time would bend (a +99:99 offset)
+
+
+def load_file_pins(path, required=False):
+    """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins list (the BASE branch's copy: rows a pull request brings
+    do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time that is not a time rules nothing. Two rows for
+    one (file, content), a list that is not a list or an unreadable file stop the check (RuntimeError, exit 2): never 'nothing ruled' by guesswork and never the older of two."""
+    if not os.path.exists(path):
+        if required:
+            raise RuntimeError(f"the exceptions file {path} (file_pins) does not exist")
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the exceptions file {path} (file_pins) is unreadable: {e}")
+    rows = d.get("file_pins", []) if isinstance(d, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path}: file_pins is not a list")
+    out, seen = {}, set()
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            raise RuntimeError(f"{path}: file_pins row {i} is not an object")
+        f_, c_ = r.get("file"), r.get("content")
+        if isinstance(f_, str) and isinstance(c_, str):
+            if (f_, c_) in seen:
+                raise RuntimeError(f"{path}: file_pins repeats the row for {f_} with content {c_}")
+            seen.add((f_, c_))
+        fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
+        if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
+                or not _STRICT_TIME.fullmatch(r["published"]) or parse_time(r["published"]) is None:
+            continue
+        out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
+    return out
+
+
+class FilePinSource:
+    """Wraps a proof source: a file item the base branch's file_pins names (same file AND same content) gets the row's published time as its proof."""
+
+    def __init__(self, inner, pins):
+        self.inner, self.pins, self.notes = inner, pins, {}
+
+    def proofs(self, item, *args):
+        out = list(self.inner.proofs(item, *args))
+        if is_file_item(item):
+            row = self.pins.get((item.raw, item.step[len("content:"):]))
+            if row:
+                out.append((row[0], FILE_PIN_SOURCE))
+                self.notes[item.key] = f"file pin ruled by the base branch: {row[1]} version {row[2]}"
+        return out
+
+
 def load_base_inputs(path, required=False):
     """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside this script, never the pull request's tree).
     A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and never 'everything'."""
@@ -1509,23 +2246,23 @@ def _run(a, moved, fx, now):
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), now, a.min_days)
+        rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
-            print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
+            print(f"  {'ok  ' if r['ok'] else 'FAIL'} {_one_line(r['item'])}: {_one_line(r['reason'])}")
         for it in go_free:
             rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_EXEMPT_REASON, "proof": None})
             print(f"  ok   {it.key}: {GO_EXEMPT_REASON}")
     for path, what, line in added:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
-        print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+        print(f"  FAIL unmeasured:{_one_line(path)}: {what} added: not measurable, refused")
     for it in base_files:
         rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
         print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
     for it, ruling in ruled_calls:
         rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
-        print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
+        print(f"  ok   {_one_line(it.key)}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})

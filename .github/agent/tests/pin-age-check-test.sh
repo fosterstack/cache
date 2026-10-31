@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -71,6 +71,9 @@ cat >"$base/bin/install-scanner.sh" <<'EOF'
 TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
 GITSIGN_VER=0.17.1
+case "${TOOL}:${arch}" in
+  trivy:x86_64|trivy:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+esac
 EOF
 cat >"$base/.github/pins/adjudicator-requirements.txt" <<'EOF'
 # hash-pinned
@@ -291,8 +294,8 @@ out=$(liveproof "$MOVED" schedule)
 CASE="observer: the tag was seen on 2026-01-01 at a DIFFERENT commit; its move to the pinned commit was never observed: no proof (the tj-actions pattern)"
 case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
 out=$(liveproof "$GOODSTATE" schedule v9.9.9)
-CASE="observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no proof"
-case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
+CASE="observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)"
+case "$out" in "[(None, 'bad-label:v9.9.9')]") ok "$CASE";; *) bad "$CASE ($out)";; esac
 out=$(liveproof - schedule)
 CASE="observer: no scheduled run has produced state yet: nothing observed, no proof, and no error (ages only get younger)"
 case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
@@ -330,8 +333,8 @@ PY
 ) 2>&1 | tail -1; }
 CASE="PR clock: the earliest workflow run on the first commit whose INVENTORY holds the item (not on an earlier commit that merely mentions 21 in a comment, nor the later head)"
 check test "$(pcclock '[{"created_at":"2026-09-20T00:00:00Z"},{"created_at":"2026-09-25T00:00:00Z"}]')" = 2026-09-20T00:00:00Z
-CASE="PR clock: no run on the introducing commit means no clock (the later commit's runs do not count)"
-check test "$(pcclock -)" = None
+CASE="PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)"
+check test "$(pcclock -)" = 2026-10-04T00:00:00Z
 CASE="PR clock: outside a PR (no base) there is no clock"
 check test "$(cd "$work" && GITHUB_REPOSITORY=o/r python3 - "$chk" "$work/pc" <<'PY'
 import importlib.util, sys
@@ -345,7 +348,7 @@ CASE="a tool's release proof is the newest asset time: an asset replaced yesterd
 check python3 - "$chk" "$stubpy" "$work" <<'PY'
 import importlib.util, json, os, subprocess, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-json.dump({"repos/aquasecurity/trivy/releases/tags/0.75.0": {"message": "x"}, "repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
+json.dump({"repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
            "assets": [{"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-10-04T00:00:00Z"}]}}, open(sys.argv[3] + "/map.json", "w"))
 os.environ["GH_MAP"] = sys.argv[3] + "/map.json"
 orig = subprocess.run
@@ -378,7 +381,7 @@ CASE="inventory: a run line of 200 repeated expressions (a pattern-backtracking 
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
 try:
@@ -387,7 +390,7 @@ except RuntimeError as e:
     assert "refusing to read it partially" in str(e)
 else:
     raise AssertionError("an over-long command line was read as its prefix")
-assert time.time() - t < 3, time.time() - t
+assert time.process_time() - t < 3, time.process_time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -525,13 +528,13 @@ CASE="an unclosed run of expression openers in a huge script is read in linear t
 check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
     try:
         fn()
     except RuntimeError as e:
         assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
-assert time.time() - t < 3, time.time() - t
+assert time.process_time() - t < 3, time.process_time() - t
 # a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
 pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
 try:
@@ -756,10 +759,10 @@ CASE="an option chain of a thousand tokens before pip/docker is read in millisec
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("pip" + " -a" * 1000 + " x", "docker" + " -a" * 1000 + " x", "python3 -m pip" + " -q" * 1000 + " install evilpkg==9.9.9"):
     inv.inventory({"bin/x.sh": body + "\n"})
-assert time.time() - t < 2, time.time() - t
+assert time.process_time() - t < 2, time.process_time() - t
 assert inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker --context x run evil/x:latest\n"})
 PY
 
@@ -767,7 +770,7 @@ CASE="a hostile many-line file or a step that repeats one command hundreds of ti
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
               {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n" + "".join("          " + "pip install " * 320 + "\n" for _ in range(100))},
               {"bin/y.sh": "echo\n" * 30000}):
@@ -777,7 +780,7 @@ for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
         pass
     else:
         raise AssertionError("a hostile file was read")
-assert time.time() - t < 5, time.time() - t
+assert time.process_time() - t < 5, time.process_time() - t
 got = inv.inventory({"bin/x.sh": "cd x&&pip install foo==1.0\necho hi;pip install bar==2.0\n"})
 assert "package:pypi/foo@1.0" in got and "package:pypi/bar@2.0" in got
 PY
@@ -2452,8 +2455,8 @@ done
 PTP="registry.example:5000/team/ptool-p@$DIG1"
 newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
 runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
-CASE="AC2 persona tools: an image on a registry with a port, 10 days old via registry-push, is inventoried (named) and accepted (exit 0)"
-check test "$rc" -eq 0; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
+CASE="AC2 persona tools: an image on a registry with a port is inventoried (named) and refused (exit 1) even with a 10 day old registry-push time: only ghcr.io and Docker Hub give one"
+check test "$rc" -eq 1; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
 rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
 ( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
 runck pmove2 '{"times": {}}'
@@ -3293,10 +3296,13 @@ import pathlib
 p = pathlib.Path('build/locks'); p.mkdir(parents=True, exist_ok=True)
 (p / 'archive-keys.sha256').write_text('wolfi-signing.rsa.pub sha256:' + 'a' * 64 + '\\n')
 (p / 'archive-index.sha256').write_text('x86_64 sha256:' + 'b' * 64 + '\\n')"
+# the checker's default list is the copy beside the script: a copy of the agent directory with an EMPTY policy list stands for "no list" (the tree itself may carry a real one)
+mkdir -p "$work/sc/.github/policy" && cp -R "$here/.." "$work/sc/.github/agent" && printf '%s' '{"base_inputs": []}' >"$work/sc/.github/policy/base-inputs.json"
+chk_nolist="$work/sc/.github/agent/supply-chain/pin-age-check.py"
 bick() { # LISTFILE-or-empty [extra] -> rc, $work/bi.out
   local lf=$1; shift; rc=0
   if [ -n "$lf" ]; then python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --base-inputs "$lf" "$@" >"$work/bi.out" 2>&1 || rc=$?
-  else python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
+  else python3 "$chk_nolist" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
 }
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256"]}' >"$work/bi-ok.json"
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-one.json"
@@ -3767,6 +3773,24 @@ check test "$rc" -eq 1
 vfile listed-file bin/vendor-check.sh 'ls vendor/'
 CASE="a file on the exact list may name the vendored folder (exit 0)"
 check test "$rc" -eq 0
+vfile outbound-check bin/check-no-outbound.py 'dirs[:] = sorted(x for x in dirs if x != "vendor")'
+CASE="the outbound check may name the vendored folder: it skips vendor/ by name (exit 0)"
+check test "$rc" -eq 0
+vfile outbound-test bin/check-no-outbound-test.sh 'mkdir -p "$root/internal/vendor/z"'
+CASE="the outbound check's test may name the vendored folder: it builds a vendor/ fixture (exit 0)"
+check test "$rc" -eq 0
+vfile helper-listed bin/build-apk-helper.py '    if not os.path.isdir(src + "/vendor"):'
+CASE="the build-apk helper may name the vendored folder: its vendor/ refusal moved out of build-apk.sh (exit 0)"
+check test "$rc" -eq 0
+vfile shape-listed bin/chain-test-shape.py '        "--modules $src/vendor/modules.txt",'
+CASE="the shape file may name the vendored folder: it holds the build-apk.sh sbom line as exact text (exit 0)"
+check test "$rc" -eq 0
+vfile sibling-py bin/build-apk-helper2.py '    if not os.path.isdir(src + "/vendor"):'
+CASE="an unlisted .py beside the listed helper (build-apk-helper2.py) naming the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
+vfile other-shape-py bin/chain-check-shape.py '        "--modules $src/vendor/modules.txt",'
+CASE="an unlisted .py shape file (bin/chain-check-shape.py) that names the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
 python3 - "$root" <<'PY'
 import importlib.util, sys
 sys.path.insert(0, ".")
@@ -3779,13 +3803,20 @@ naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "ve
           and any(m._names_vendor(l) for l in t.split("\n"))}
 extra = m.vendor_list_extras(root, files)
 import tempfile
+# listed ahead of the chain landing: the govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain
+# branch and not yet on main
+ahead = ("bin/install-scanner.sh",)
 _t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
-_names = ("bin/install-scanner.sh", "bin/check-govulncheck.py", "bin/release-metadata.py")
+# not built from ahead: a change of ahead must fail the assert below
+_names = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py",
+          "bin/check-govulncheck.py", "bin/release-metadata.py")
 for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
 _quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
-assert _quiet == ["bin/check-govulncheck.py", "bin/install-scanner.sh", "bin/release-metadata.py"], _quiet     # the rule itself still reports every quiet listed file
-assert [p for p in _quiet if p != "bin/install-scanner.sh"] == ["bin/check-govulncheck.py", "bin/release-metadata.py"]   # the one skip below removes that one path and no other
-extra = [p for p in extra if p != "bin/install-scanner.sh"]   # listed ahead of the chain landing: its govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain branch and not yet on main
+assert _quiet == sorted(_names), _quiet      # the rule itself still reports every quiet listed file
+# ahead drops exactly one path and no other
+assert [p for p in _quiet if p not in ahead] == [
+    "bin/build-apk-helper.py", "bin/chain-test-shape.py", "bin/check-govulncheck.py", "bin/release-metadata.py"]
+extra = [p for p in extra if p not in ahead]
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
 assert not missing, "names vendor but not listed: %s" % sorted(missing)
@@ -4229,5 +4260,985 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
+CASE="owner rule 1: a changed trigger MOVES a variable placeholder; a changed paths filter does not"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1])
+inv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inv)
+def wf(on, run='docker run --rm "$IMAGE" true', env="alpine:3.20", jobenv="", top=""):
+    steps = "    steps:\n      - env:\n          IMAGE: " + env + "\n        run: " + run + "\n"
+    return {".github/workflows/a.yml": top + "on:\n" + on + "jobs:\n  j:\n" + jobenv + steps}
+base = "  push:\n    branches: [main]\n  pull_request:\n"
+def moved(a, b):
+    """the placeholder (variable image) itself is among the items the head adds"""
+    return [i.key for i in inv.moved(inv.inventory(a), inv.inventory(b)) if "(variable)" in i.key]
+def moves(label, a, b): assert moved(a, b), label + ": must move the placeholder"
+def still(label, a, b): assert not moved(a, b), label + ": must move nothing"
+# a changed paths filter chooses whether a run happens, never what it fetches
+still("paths filter added", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    paths: [bin/**]\n")))
+still("paths-ignore changed", wf(base + "    paths-ignore: [a]\n"), wf(base + "    paths-ignore: [b]\n"))
+# every other trigger change moves it
+moves("merge_group added", wf(base), wf(base + "  merge_group:\n"))
+moves("branch filter", wf(base), wf("  push:\n    branches: [main, dev]\n  pull_request:\n"))
+moves("types filter", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    types: [opened]\n")))
+moves("event removed", wf(base), wf("  push:\n    branches: [main]\n"))
+moves("cron-only change", wf("  schedule:\n    - cron: '0 1 * * *'\n"), wf("  schedule:\n    - cron: '*/5 * * * *'\n"))
+ref_run = 'docker run --rm "${{ github.ref_name }}" true'
+moves("tags filter read via ref_name",
+      wf("  push:\n    tags: ['v1.*']\n", run=ref_run), wf("  push:\n    tags: ['*']\n", run=ref_run))
+moves("repository_dispatch added", wf(base), wf(base + "  repository_dispatch:\n    types: [scan]\n"))
+call = lambda v, out="a": ("  workflow_call:\n    inputs:\n      image-ref:\n        default: " + v
+                           + "\n    outputs:\n      image:\n        value: ${{ jobs.j.outputs." + out + " }}\n")
+disp = lambda v: "  workflow_dispatch:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
+moves("workflow_call input default", wf(call("a")), wf(call("b")))
+moves("workflow_dispatch input default", wf(disp("a")), wf(disp("b")))
+moves("workflow_call output mapping", wf(call("a", "a")), wf(call("a", "b")))
+# the step's own text, its env value (two tag-only values: the placeholder itself moves), the job env and the
+# workflow env still move it
+moves("env value", wf(base, env="alpine:3.20"), wf(base, env="alpine:3.21"))
+moves("step text", wf(base), wf(base, run='docker run --rm "$IMAGE" false'))
+moves("job env", wf(base), wf(base, jobenv="    env:\n      X: y\n"))
+moves("workflow env", wf(base, top="env:\n  X: y\n"), wf(base, top="env:\n  X: z\n"))
+# a scalar or list `on` is unchanged, and nothing changed moves nothing
+still("nothing changed", wf(base), wf(base))
+PY2
+
+
+# --- REQ-SUP-001-AC34: a file pin (a checksum file for an upstream artifact) is dated by a ruling row of the BASE branch's exceptions file: {file, content, upstream, version, published} ---
+FPFILE=.github/policy/gradle-wrapper-jar-sha256.txt
+FPTEXT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
+newcase fp "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+FPSUM=$(python3 -c "import hashlib,sys;print(hashlib.sha256(('$FPFILE' + chr(0) + '$FPTEXT\n').encode()).hexdigest())")
+fprow() { # FILE CONTENT UPSTREAM VERSION PUBLISHED -> one row (a field given as - is left out)
+  python3 - "$@" <<'PY'
+import json, sys
+keys = ("file", "content", "upstream", "version", "published")
+print(json.dumps({k: v for k, v in zip(keys, sys.argv[1:6]) if v != "-"}))
+PY
+}
+fpck() { # NAME ROWS-JSON-ARRAY-OR-RAW -> rc, $work/fp.out ; the exceptions file is the base branch's copy
+  printf '{"exceptions": [], "unmeasured_text": [], "file_pins": %s}' "$2" >"$work/fp-$1.json"; rc=0
+  python3 "$chk" --root "$work/fp" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/fp-$1.json" >"$work/fp.out" 2>&1 || rc=$?
+}
+GRADLE=https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256
+fpck ok "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")]"
+CASE="AC34: a file pin with a base-branch row for the same file and content, published 10 days ago, passes (exit 0) and the check names the file and the version"
+check test "$rc" -eq 0; check grep -q 'gradle-wrapper-jar-sha256.txt' "$work/fp.out"; check grep -q '9.7.1' "$work/fp.out"
+fpck young "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 3)")]"
+CASE="AC34: the same row published 3 days ago is too young: the 7 days still apply (exit 1)"
+check test "$rc" -eq 1; check grep -q 'too young' "$work/fp.out"
+fpck content "[$(fprow "$FPFILE" "$(printf 'a%.0s' $(seq 64))" "$GRADLE" 9.7.1 "$(d 10)")]"
+CASE="AC34: a row for other content of the file (the file changed after the ruling) rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck file "[$(fprow ".github/policy/other-sha256.txt" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")]"
+CASE="AC34: a row for another file rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck noup "[$(fprow "$FPFILE" "$FPSUM" - 9.7.1 "$(d 10)")]"
+CASE="AC34: a row without upstream rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck nover "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" - "$(d 10)")]"
+CASE="AC34: a row without version rules nothing (exit 1)"
+check test "$rc" -eq 1
+fpck future "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2099-01-01T00:00:00Z")]"
+CASE="AC34: a row published in the future lends no age (exit 1)"
+check test "$rc" -eq 1
+fpck garbage "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "last tuesday")]"
+CASE="AC34: a row whose published time is not a time lends no age (exit 1)"
+check test "$rc" -eq 1
+fpck dup "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)"), $(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 2)")]"
+CASE="AC34: two rows for the same file and content: the check stops, it never picks the older (exit 2)"
+check test "$rc" -eq 2
+fpck naive "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10 | sed 's/Z$//')")]"
+CASE="AC34: a published time without a zone is read as UTC, as the checker reads every time: an old row passes (exit 0)"
+check test "$rc" -eq 0
+fpck offset "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2026-10-02T12:00:00+99:99")]"
+CASE="AC34: a published time with an impossible zone offset (+99:99, which would count as over 7 days) lends no age (exit 1)"
+check test "$rc" -eq 1
+for vf in .python-version .nvmrc; do
+  newcase fpv "
+import pathlib
+pathlib.Path('$vf').write_text('3.12\\n')"
+  VSUM=$(python3 -c "import hashlib;print(hashlib.sha256(('$vf' + chr(0) + '3.12\n').encode()).hexdigest())")
+  printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [%s]}' "$(fprow "$vf" "$VSUM" "$GRADLE" 3.12 "$(d 30)")" >"$work/fp-vf.json"; rc=0
+  python3 "$chk" --root "$work/fpv" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/fp-vf.json" >"$work/fp.out" 2>&1 || rc=$?
+  CASE="AC34: a version file ($vf) with an old, otherwise valid row is still not a pin: the rows date checksum files only (exit 1)"
+  check test "$rc" -eq 1
+done
+fpck notlist '"x"'
+CASE="AC34: a file_pins that is not a list stops the check (exit 2)"
+check test "$rc" -eq 2
+rm -rf "$work/fp-tree"; cp -R "$work/fp" "$work/fp-tree"; printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [%s]}' "$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)")" >"$work/fp-tree/.github/supply-chain-exceptions.json"
+( cd "$work/fp-tree" && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )   # the row is in the head commit of the tree under test
+rc=0; python3 "$chk_nolist" --root "$work/fp-tree" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/fp.out" 2>&1 || rc=$?
+CASE="AC34: a row that only the pull request's own tree carries rules nothing: the default list is the one beside the checker, never the tree under test (exit 1)"
+check test "$rc" -eq 1
+
+# --- rc-5b item 6 (A4, R7, R8, R12): the checksum is part of an item's identity; a server proof beats the PR clock for tools and packages; a label that does not resolve is "age not provable"; the Go proxy's case escaping ---
+A64=$(printf 'a%.0s' $(seq 64)); B64=$(printf 'b%.0s' $(seq 64))
+newcase sum-scanner "$(sub bin/install-scanner.sh "SUM=$A64" "SUM=$B64")"
+runck sum-scanner '{"times": {}}'
+CASE="sum: a checksum change under the SAME tool version is a moved item (no age data: fails and names it)"
+check test "$rc" -eq 1; check grep -qF 'tool:trivy@0.74.0' "$work/sum-scanner.out"
+runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$YOUNG\", \"source\": \"github-release\"}}}"
+CASE="sum: the same sum-only change with a release asset 3 days old fails"; check test "$rc" -eq 1
+runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$OLD\", \"source\": \"github-release\"}}}"
+CASE="sum: the same sum-only change with a release asset 10 days old passes"; check test "$rc" -eq 0
+newcase sum-req "$(sub .github/pins/adjudicator-requirements.txt '--hash=sha256:aaaa' '--hash=sha256:cccc')"
+runck sum-req '{"times": {}}'
+CASE="sum: a --hash change under the SAME package version is a moved item"
+check test "$rc" -eq 1; check grep -qF 'package:pypi/anthropic@1.9.0' "$work/sum-req.out"
+newcase sum-comment "pathlib=__import__('pathlib'); p=pathlib.Path('bin/install-scanner.sh'); p.write_text(p.read_text()+'# a note\n')"
+runck sum-comment '{"times": {}}'
+CASE="sum: a comment added to the installer script moves nothing"; check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/sum-comment.out"
+CASE="item 6: a server proof beats the PR clock for tools and packages; the clock stands in only when there is none"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+    it = inv.Item(kind, name, ver)
+    ok, why, pr = ac.judge_item(it, [("2026-10-04T00:00:00Z", src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert not ok and pr["source"] == src, (kind, why)          # a replaced asset (young server proof) is not out-aged by the version's old PR clock
+    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert ok and pr["source"] == "pr-clock", (kind, why)        # the PR clock stands in only when no server proof exists
+    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", src), ("2026-10-04T00:00:00Z", "pr-clock")], now)
+    assert ok and pr["source"] == src, (kind, why)               # an old server proof decides; a young PR clock does not undo it
+act = inv.Item("action", "o/act", "a" * 40, "v4")
+ok, why, pr = ac.judge_item(act, [("2020-01-01T00:00:00Z", "pr-clock"), ("2026-10-04T00:00:00Z", "observer")], now)
+assert ok, why   # actions keep the oldest-proof rule (their age is the observer or the PR clock)
+PY
+CASE="item 6: a # vX label that does not resolve to the pinned commit is 'age not provable' and names the label, even with an old PR clock"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+SHA = "a" * 40
+ac._tag_refs = lambda repo: {"v4": SHA}
+ac.observed = lambda: None
+ac._pr_clock = lambda *a, **k: "2020-01-01T00:00:00Z"
+bad = inv.Item("action", "o/act", SHA, "v9.9.9")
+ok, why, _ = ac.judge_item(bad, ac.live_proofs(bad, ".", "base"), now)
+assert not ok and "v9.9.9" in why and "label" in why and "does not" in why, why   # the label is wrong; it is not read as a missing clock
+good = inv.Item("action", "o/act", SHA, "v4")
+ok, why, _ = ac.judge_item(good, ac.live_proofs(good, ".", "base"), now)
+assert ok, why
+PY
+CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+check python3 - "$chk" <<'PY'
+import contextlib, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert ac._go_escape("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+assert ac._go_escape("golang.org/x/tools") == "golang.org/x/tools"
+seen = []
+def fake(u):
+    seen.append(u)
+    return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+ac._http_dict = lambda url, *a, **k: fake(url)   # _go_module calls _http_dict; keeps the case offline
+mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+urllib.request.urlopen = lambda *a, **k: R(rows.encode())
+assert ac._go_index_time("github.com/BurntSushi/toml", "v1.0.0", "2020-01-01T00:00:00Z") == "2026-02-02T00:00:00Z"   # an exact Path match: another module's case-twin lends no time
+PY
+
+# --- rc-5b item 6, round 1 rulings on #639 (ancestry, unusable server proof, no cap, literal-download sums, sums across files) -----------------------------------------------------------------
+CASE="PR clock: a later commit that does NOT contain the introducing commit (a sibling in a merge) lends no clock; the merge that contains it does"
+check python3 - "$chk" "$stubpy" "$work" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+work = sys.argv[3]; repo = work + "/anc"; os.makedirs(repo + "/.github/workflows")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+def g(*a, date=None):
+    e = dict(env, **({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date} if date else {}))
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=e, check=True).stdout.strip()
+wf = repo + "/.github/workflows/a.yml"
+g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base", date="2026-09-01T00:00:00Z")
+base = g("rev-parse", "HEAD")
+g("checkout", "-q", "-b", "side"); open(repo + "/other.txt", "w").write("x"); g("add", "-A"); g("commit", "-q", "-m", "sibling", date="2026-09-05T00:00:00Z")
+sib = g("rev-parse", "HEAD")
+g("checkout", "-q", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro", date="2026-09-04T00:00:00Z")
+intro = g("rev-parse", "HEAD")
+subprocess.run(["git", "-C", repo, "merge", "-q", "--no-ff", "-m", "merge", "side"], env=dict(env, GIT_COMMITTER_DATE="2026-09-06T00:00:00Z"), check=True, capture_output=True)
+head = g("rev-parse", "HEAD")
+m = {f"repos/o/r/actions/runs?head_sha={sib}&per_page=100": {"workflow_runs": [{"created_at": "2026-01-01T00:00:00Z"}]},
+     f"repos/o/r/actions/runs?head_sha={head}&per_page=100": {"workflow_runs": [{"created_at": "2026-10-04T00:00:00Z"}]}}
+json.dump(m, open(work + "/anc.json", "w")); os.environ.update(GITHUB_REPOSITORY="o/r", GH_MAP=work + "/anc.json")
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = [sys.argv[2], *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+got = ac._pr_clock(ac.inv.Item("tool", "java", "21"), repo, base, "HEAD")
+assert got == "2026-10-04T00:00:00Z", got
+PY
+CASE="judge: a server proof that is in the future or unreadable still removes the PR-clock fallback for a tool or package (age not provable, the reason names the source)"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+    for t in ("2026-10-06T00:00:00Z", "garbage"):
+        ok, why, _ = ac.judge_item(ac.inv.Item(kind, name, ver), [(t, src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+        assert not ok and src in why, (kind, t, why)
+PY
+CASE="PR clock: no cap on the walk: a 70-commit push whose only containing run is on its head still gets that clock"
+check python3 - "$chk" "$stubpy" "$work" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+work = sys.argv[3]; repo = work + "/nocap"; os.makedirs(repo + "/.github/workflows")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+g = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env, check=True).stdout.strip()
+wf = repo + "/.github/workflows/a.yml"
+g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base")
+base = g("rev-parse", "HEAD")
+open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro")
+for i in range(69): g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+head = g("rev-parse", "HEAD")
+json.dump({f"repos/o/r/actions/runs?head_sha={head}&per_page=100": {"workflow_runs": [{"created_at": "2026-09-20T00:00:00Z"}]}}, open(work + "/nocap.json", "w"))
+os.environ.update(GITHUB_REPOSITORY="o/r", GH_MAP=work + "/nocap.json")
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = [sys.argv[2], *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+got = ac._pr_clock(ac.inv.Item("tool", "java", "21"), repo, base, "HEAD")
+assert got == "2026-09-20T00:00:00Z", got
+PY
+CASE="sum: a literal release download inside an installer arm (crane) carries its arm's sums; changing only that sum is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+a, b = inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))
+assert any("go-containerregistry" in k for k in a), list(a)
+assert inv.moved(a, b) and not inv.moved(a, inv.inventory(files("a" * 64)))
+PY
+CASE="sum: the same package pinned in two requirements files: a hash change in the SECOND file is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+r = lambda h: "demo==1.2.3 \\\n    --hash=sha256:" + h + "\n"
+a = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")})
+b = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("cc")})
+assert inv.moved(a, b), "a hash change in the second file was hidden by the first"
+assert not inv.moved(a, inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")}))
+PY
+CASE="sum: a decoy arm label inside a heredoc (xq) cannot hide the crane arm's sums: with no sums found for a literal download the identity is the whole script, so a sum-only edit is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm, decoy=True):
+    d = "    : <<'EOF'\n  xq)\nEOF\n" if decoy else ""
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + d + '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+assert inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))), "a sum-only edit behind a decoy arm label was not seen"
+assert not inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("a" * 64)))
+PY
+CASE="sum: a download in a multi-label arm (a|b)) or after esac is in no single tool's arm: no foreign sums attach and a sum-only edit of its own row is a moved item (Fable ruling on #639)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+HEAD = '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  foo:amd64) SUM=' + "f" * 64 + ' ;;\n  crane:amd64) SUM=%s ;;\nesac\ncase "$TOOL" in\n  foo)\n    echo foo\n    ;;\n'
+def multi(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "  crane|other)\n" + DL + "    ;;\nesac\n"}
+def after(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "esac\n" + DL}
+for name, mk in (("a|b) arm", multi), ("after esac", after)):
+    a, b = inv.inventory(mk("a" * 64)), inv.inventory(mk("b" * 64))
+    dl = [it for it in a.values() if "go-containerregistry" in it.name]
+    assert dl, (name, list(a))
+    assert not any("f" * 64 in it.sums for it in dl), (name, "foreign sums attached", [it.sums for it in dl])
+    assert inv.moved(a, b), (name, "a sum-only edit was not a moved item")
+    assert not inv.moved(a, inv.inventory(mk("a" * 64))), name
+PY
+CASE="sum: the same download line in two single-label arms (crane, cosign) with different SUM rows: neither gets the other's sum, and a sum-only edit of the SECOND arm's row is a moved item (round 4 finding)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+def files(second):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:amd64) SUM=' + "a" * 64 + ' ;;\n  cosign:amd64) SUM=' + second + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + DL + '    ;;\n  cosign)\n' + DL + '    ;;\nesac\n'}
+a, b = inv.inventory(files("b" * 64)), inv.inventory(files("c" * 64))
+dl = [it for it in a.values() if "go-containerregistry" in it.name]
+assert dl, list(a)
+assert not any(it.sums == ["a" * 64] for it in dl), [it.sums for it in dl]      # the first arm's sum is not attached to the second arm's identical line
+assert inv.moved(a, b), "a sum-only edit of the second arm was not a moved item"
+assert not inv.moved(a, inv.inventory(files("b" * 64)))
+PY
+CASE="structural closure: an unexpected KeyError/AttributeError/TypeError/IndexError/ValueError while reading an answer ends the age check with exit 2 (cannot run, not a pass)"
+newcase struct-guard "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
+check python3 - "$chk" "$work/struct-guard" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx = sys.argv[2] + ".fx.json"; json.dump({"times": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    ac.Fixture.proofs = boom
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(["--root", sys.argv[2], "--base", "HEAD~1", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])
+    assert rc == 2 and "cannot run" in err.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+# --- REQ-SUP-001-AC34: the committed file_pins row dates the committed Gradle wrapper jar sum (the repository's own exceptions file, read as the base branch's) ---
+newcase gjar "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+rc=0; python3 "$chk" --root "$work/gjar" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$root/.github/supply-chain-exceptions.json" >"$work/gjar.out" 2>&1 || rc=$?
+CASE="AC34: the committed row dates a checksum file holding the Gradle 9.7.1 wrapper jar sum (the file itself arrives with the wrapper-jar guard, cache#610): exit 0, names the file and the version"
+check test "$rc" -eq 0; check grep -q '9.7.1' "$work/gjar.out"; check grep -q 'gradle-wrapper-jar-sha256.txt' "$work/gjar.out"
+CASE="AC34: the committed row is exactly the Gradle 9.7.1 ruling: the canonical upstream URL alone, version 9.7.1, published 2026-08-19T15:30:28Z (the GitHub release v9.7.1 of gradle/gradle), the sum 44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42 (a wrong version, date or URL here is a failing case, not a silent pass)"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PYROW'
+import json, sys
+rows = json.load(open(sys.argv[1]))["file_pins"]
+assert len(rows) == 1, rows
+r = rows[0]
+assert r == {"file": ".github/policy/gradle-wrapper-jar-sha256.txt", "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+             "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "2026-08-19T15:30:28Z"}, r
+PYROW
+CASE="pin age of images: ghcr.io and Docker Hub keep the registry time; every other registry is refused with its name; the PR clock never dates an image"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+Item = ac.inv.Item
+D = "sha256:" + "a" * 64
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+OLD, YOUNG = "2020-01-01T00:00:00Z", "2026-10-04T00:00:00Z"
+judge = lambda name, proofs: ac.judge_item(Item("image", name, D), proofs, now)
+for name in ("ghcr.io/o/p", "alpine", "library/alpine", "ns/x", "docker.io/library/alpine", "docker.io/ns/x"):
+    assert judge(name, [(OLD, "registry-push")])[0], name
+    ok, why, _ = judge(name, [(OLD, "pr-clock")])
+    assert not ok and "no server-side publish time" in why, (name, why)         # the PR clock is no proof for an image
+    assert not judge(name, [(OLD, "pr-clock"), (YOUNG, "registry-push")])[0], name
+for name, host in (("gcr.io/distroless/static-debian12", "gcr.io"), ("registry.k8s.io/kubectl", "registry.k8s.io"), ("registry.example:5000/team/p", "registry.example:5000"),
+                   ("localhost/x", "localhost"), ("localhost:5000/x", "localhost:5000"), ("GHCR.IO/o/p", "GHCR.IO"), ("quay.io/o/p", "quay.io")):
+    for src in ("registry-push", "pr-clock", "first-seen", "image-config"):
+        ok, why, _ = judge(name, [(OLD, src)])
+        assert not ok and host in why and "publisher-signed" in why and "\n" not in why, (name, src, why)      # one plain line naming the registry
+assert judge("a/b/c", [(OLD, "registry-push")])[0] is False        # three parts and no host: not a Docker Hub name
+assert ac._signed_timestamp(Item("image", "gcr.io/x/y", D)) is None  # the signed-timestamp branch exists and reads nothing yet
+PY
+CASE="pin age of images: the live lookup asks only the registry the name has (registry.k8s.io/kubectl is never asked of Docker Hub) and starts no PR clock for an image"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+Item = ac.inv.Item
+D = "sha256:" + "b" * 64
+calls, gets = [], []
+ac._get_bytes = lambda url, accept="*/*", timeout=30: (gets.append(url), None)[1]       # no registry or log is ever really asked here: a pinned name's own registry answers "not there"
+def gh(path, rows):
+    calls.append(("ghcr", path)); return [{"name": D, "created_at": "2020-01-01T00:00:00Z"}] if "/versions?per_page=100&page=1" in path else []
+def http(url, need, *a, **k):
+    calls.append(("hub", url)); return {"results": [{"digest": D, "tag_last_pushed": "2020-01-01T00:00:00Z"}], "next": None}
+ac._gh_list, ac._http_dict = gh, http
+ac._pr_clock = lambda *a, **k: calls.append(("pr-clock", a)) or "2020-01-01T00:00:00Z"
+def asked(name):
+    del calls[:]
+    got = ac.live_proofs(Item("image", name, D), ".", "base", "HEAD")
+    return [c[0] for c in calls], got
+assert asked("ghcr.io/o/p") == (["ghcr"], [("2020-01-01T00:00:00Z", "registry-push")]), asked("ghcr.io/o/p")
+for name, url in (("alpine", "library/alpine"), ("library/alpine", "library/alpine"), ("ns/x", "ns/x"), ("docker.io/library/alpine", "library/alpine"), ("docker.io/ns/x", "ns/x")):
+    who, got = asked(name)
+    assert who == ["hub"] and got == [("2020-01-01T00:00:00Z", "registry-push")] and "/repositories/" + url + "/tags" in calls[0][1], (name, who, calls)
+OWN = {"registry.k8s.io/kubectl": "https://registry.k8s.io/v2/kubectl/", "gcr.io/distroless/static-debian12": "https://gcr.io/v2/distroless/static-debian12/",
+       "gcr.io/projectsigstore/cosign": "https://gcr.io/v2/projectsigstore/cosign/"}
+for name in ("registry.k8s.io/kubectl", "gcr.io/distroless/static-debian12", "gcr.io/projectsigstore/cosign", "localhost:5000/x", "registry.example:5000/team/p", "a/b/c"):
+    del gets[:]
+    who, got = asked(name)
+    assert who == [] and all(src != "signed-timestamp" for _, src in got), (name, who, got)      # no Docker Hub or GitHub call, no PR clock, no proof
+    assert (gets and all(u.startswith(OWN[name]) for u in gets)) if name in OWN else gets == [], (name, gets)      # a pinned name asks only its own registry; an unpinned one asks nobody
+PY
+CASE="pin age of images (publisher-signed time): a recorded bundle with its inclusion proof, signed by the pinned publisher key, gives its Rekor integrated time; wrong identity, wrong digest, no inclusion proof and a forged time are each refused"
+check python3 - "$chk" "$here/fixtures/image-publishers/cosign.bundle.json" "$here/../../policy/image-publishers.json" "$here/../../policy/rekor.pub" <<'PY'
+import copy, datetime, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+bundle, pins, rekor_pem = json.load(open(sys.argv[2])), json.load(open(sys.argv[3])), open(sys.argv[4]).read()
+NAME = "gcr.io/projectsigstore/cosign"
+DIGEST = "sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
+verify = lambda b=bundle, d=DIGEST, p=pins: ac.publisher_signed_time(NAME, d, b, p, rekor_pem)
+t = verify()
+assert t == datetime.datetime.fromtimestamp(int(bundle["verificationMaterial"]["tlogEntries"][0]["integratedTime"]), datetime.timezone.utc), t
+def refused(why, **kw):
+    try:
+        verify(**kw)
+    except ac.CouldNotProve as e:
+        assert why in str(e) and "\n" not in str(e), (why, str(e))
+        return
+    raise AssertionError("accepted: " + why)
+other = copy.deepcopy(pins); other[NAME]["key"] = open(sys.argv[4]).read()                       # a key that is not the publisher's
+refused("identity", p=other)
+refused("digest", d="sha256:" + "0" * 64)
+noproof = copy.deepcopy(bundle); del noproof["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]
+refused("inclusion proof", b=noproof)
+forged = copy.deepcopy(bundle); forged["verificationMaterial"]["tlogEntries"][0]["integratedTime"] = str(int(bundle["verificationMaterial"]["tlogEntries"][0]["integratedTime"]) - 86400 * 30)
+refused("time", b=forged)
+bent = copy.deepcopy(bundle); h = bent["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]["hashes"]; h[0] = h[1]            # a proof that no longer leads to the tree root
+refused("inclusion proof", b=bent)
+unpinned = {k: v for k, v in pins.items() if k != NAME}
+refused("not pinned", p=unpinned)
+PY
+CASE="pin age of images (keyless .sig signatures): the recorded distroless and kubectl signatures verify (certificate chain to the pinned Fulcio root, pinned issuer and subject, inclusion proof, integrated time inside the certificate window); any one pinned kubectl identity is enough; an identity that is not pinned, a wrong digest, no inclusion proof, a bent proof and a forged time are each refused"
+check python3 - "$chk" "$here/fixtures/image-publishers" "$here/../../policy/image-publishers.json" "$here/../../policy/rekor.pub" "$here/../../policy/fulcio-chain.pem" <<'PY'
+import copy, datetime, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx, pins, rekor_pem, fulcio_pem = sys.argv[2], json.load(open(sys.argv[3])), open(sys.argv[4]).read(), open(sys.argv[5]).read()
+load = lambda n: json.load(open(f"{fx}/{n}.sig.json"))
+IMAGES = (("gcr.io/distroless/static-debian12", "distroless"), ("registry.k8s.io/kubectl", "kubectl"))
+def verify(name, ev, digest=None, p=pins):
+    return ac.keyless_signed_time(name, digest or ev["digest"], ev, p, rekor_pem, fulcio_pem)
+def refused(why, name, ev, **kw):
+    try:
+        verify(name, ev, **kw)
+    except ac.CouldNotProve as e:
+        assert why in str(e) and "\n" not in str(e), (why, str(e))
+        return
+    raise AssertionError("accepted: " + why)
+for name, n in IMAGES:
+    ev = load(n)
+    t = verify(name, ev)                                      # the earliest time of a signature that verifies fully
+    assert isinstance(t, datetime.datetime) and t.tzinfo is not None, t
+    assert t == min(datetime.datetime.fromtimestamp(int(l["rekor_entry"]["integratedTime"]), datetime.timezone.utc) for l in ev["layers"]), t
+    refused("digest", name, ev, digest="sha256:" + "0" * 64)
+    other = copy.deepcopy(pins); other[name]["keyless"] = [{"issuer": "https://accounts.google.com", "subject": "someone-else@example.org"}]
+    refused("identity", name, ev, p=other)
+    wrong_issuer = copy.deepcopy(pins); wrong_issuer[name]["keyless"] = [{"issuer": "https://token.actions.githubusercontent.com", "subject": s["subject"]} for s in pins[name]["keyless"]]
+    refused("identity", name, ev, p=wrong_issuer)
+    noproof = copy.deepcopy(ev)
+    for l in noproof["layers"]:
+        l["rekor_entry"]["verification"].pop("inclusionProof", None)
+    refused("inclusion proof", name, noproof)
+    bent = copy.deepcopy(ev)
+    for l in bent["layers"]:
+        h = l["rekor_entry"]["verification"]["inclusionProof"]["hashes"]; h[0] = h[1]
+    refused("inclusion proof", name, bent)
+    forged = copy.deepcopy(ev)
+    for l in forged["layers"]:
+        l["rekor_entry"]["integratedTime"] = int(l["rekor_entry"]["integratedTime"]) - 86400 * 30; l["bundle"]["Payload"]["integratedTime"] = l["rekor_entry"]["integratedTime"]
+    refused("time", name, forged)
+    unpinned = {k: v for k, v in pins.items() if k != name}
+    refused("not pinned", name, ev, p=unpinned)
+ev = load("kubectl")
+for keep in (0, 1):                                           # the image is accepted when ANY ONE pinned identity verifies fully
+    one = copy.deepcopy(ev); one["layers"] = [ev["layers"][keep]]
+    assert verify("registry.k8s.io/kubectl", one) == datetime.datetime.fromtimestamp(int(ev["layers"][keep]["rekor_entry"]["integratedTime"]), datetime.timezone.utc)
+only_staging = copy.deepcopy(pins); only_staging["registry.k8s.io/kubectl"]["keyless"] = only_staging["registry.k8s.io/kubectl"]["keyless"][:1]
+trust_only = copy.deepcopy(ev); trust_only["layers"] = [ev["layers"][1]]                      # valid in every field, signed by krel-trust, which is NOT pinned here
+refused("identity", "registry.k8s.io/kubectl", trust_only, p=only_staging)
+PY
+CASE="pin age of images (wired): live_proofs asks only the image's own registry and the Rekor log (reads), turns a recorded signature that verifies into a signed-timestamp proof the judge accepts, and gives no proof (so the judge refuses) when the signature is missing, forged or from an identity that is not pinned"
+check python3 - "$chk" "$here/fixtures/image-publishers" <<'PY'
+import base64, copy, datetime, hashlib, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx = sys.argv[2]
+sha = lambda b: "sha256:" + hashlib.sha256(b).hexdigest()
+BUNDLE = open(f"{fx}/cosign.bundle.json", "rb").read()
+EV = {n: json.load(open(f"{fx}/{n}.sig.json")) for n in ("distroless", "kubectl")}
+IMAGES = {"gcr.io/projectsigstore/cosign": ("gcr.io", "projectsigstore/cosign", "sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8", None),
+          "gcr.io/distroless/static-debian12": ("gcr.io", "distroless/static-debian12", EV["distroless"]["digest"], "distroless"),
+          "registry.k8s.io/kubectl": ("registry.k8s.io", "kubectl", EV["kubectl"]["digest"], "kubectl")}
+asked = []
+def registry(ev_by_name, missing=()):
+    def get(url, accept="*/*", timeout=30):
+        asked.append(url)
+        for name, (host, repo, digest, key) in IMAGES.items():
+            base = f"https://{host}/v2/{repo}/"
+            if not url.startswith(base) or name in missing:
+                continue
+            if key is None:                                              # the keyed image: a signature bundle published as a referrer
+                if url == base + "referrers/" + digest:
+                    return json.dumps({"schemaVersion": 2, "manifests": [{"digest": "sha256:" + "1" * 64, "annotations": {"dev.sigstore.bundle.predicateType": "https://sigstore.dev/cosign/sign/v1"}}]}).encode()
+                if url == base + "manifests/sha256:" + "1" * 64:
+                    return json.dumps({"layers": [{"digest": sha(BUNDLE)}]}).encode()
+                if url == base + "blobs/" + sha(BUNDLE):
+                    return BUNDLE
+                continue
+            ev = ev_by_name[key]
+            if url == base + "manifests/sha256-" + digest[7:] + ".sig":    # the keyless images: the older .sig tag
+                return json.dumps({"layers": [{"digest": sha(base64.b64decode(l["payload"])), "annotations": {
+                    "dev.cosignproject.cosign/signature": l["signature"], "dev.sigstore.cosign/certificate": l["certificate"], "dev.sigstore.cosign/chain": l["chain"],
+                    "dev.sigstore.cosign/bundle": json.dumps(l["bundle"])}} for l in ev["layers"]]}).encode()
+            for l in ev["layers"]:
+                if url == base + "blobs/" + sha(base64.b64decode(l["payload"])):
+                    return base64.b64decode(l["payload"])
+        if url.startswith("https://rekor.sigstore.dev/api/v1/log/entries?logIndex="):
+            idx = int(url.rsplit("=", 1)[1])
+            for ev in ev_by_name.values():
+                for l in ev["layers"]:
+                    if int(l["bundle"]["Payload"]["logIndex"]) == idx:
+                        e = dict(l["rekor_entry"]); return json.dumps({e.pop("uuid"): e}).encode()
+        if any(url.startswith(f"https://{h}/v2/") for h in ("gcr.io", "registry.k8s.io")):
+            return None                                                  # not there: 404
+        raise AssertionError("unexpected request: " + url)
+    return get
+Item = ac.inv.Item
+NOW = datetime.datetime(2026, 10, 30, tzinfo=datetime.timezone.utc)
+def proofs(name, ev=EV, missing=()):
+    ac._get_bytes = registry(ev, missing); del asked[:]
+    host, repo, digest, key = IMAGES[name]
+    return ac.live_proofs(Item("image", name, digest), ".", "base", "HEAD")
+for name in IMAGES:
+    got = proofs(name)
+    assert len(got) == 1 and got[0][1] == "signed-timestamp", (name, got)
+    ok, why, _ = ac.judge_item(Item("image", name, IMAGES[name][2]), got, NOW)
+    assert ok, (name, why)                                              # signed in August: older than the minimum age
+    assert all(u.startswith((f"https://{IMAGES[name][0]}/v2/", "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=")) for u in asked), (name, asked)
+    assert not any("hub.docker.com" in u or "api.github.com" in u for u in asked), asked
+    got = proofs(name, missing=(name,))
+    ok, why, _ = ac.judge_item(Item("image", name, IMAGES[name][2]), got, NOW)
+    assert not ok and "publisher-signed" in why and "\n" not in why and f"no signature of {name} was recorded" in why, (name, why)      # no signature published: refused, with its reason
+    ok, why, _ = ac.judge_item(Item("image", name, IMAGES[name][2]), [], NOW)
+    assert not ok and "publisher-signed" in why, (name, why)
+forged = copy.deepcopy(EV)
+for l in forged["distroless"]["layers"]:
+    l["rekor_entry"]["integratedTime"] = int(l["rekor_entry"]["integratedTime"]) - 86400 * 30; l["bundle"]["Payload"]["integratedTime"] = l["rekor_entry"]["integratedTime"]
+got = proofs("gcr.io/distroless/static-debian12", forged)                 # a forged time gives no proof, never a traceback, and the refusal says which part failed
+ok, why, _ = ac.judge_item(Item("image", "gcr.io/distroless/static-debian12", IMAGES["gcr.io/distroless/static-debian12"][2]), got, NOW)
+assert not ok and "time not proven" in why and "\n" not in why, why
+ac.PUBLISHER_PINS_FILE = "/nonexistent"
+got = proofs("registry.k8s.io/kubectl")                                  # no pins file: nothing is pinned, nothing is proven
+ok, why, _ = ac.judge_item(Item("image", "registry.k8s.io/kubectl", IMAGES["registry.k8s.io/kubectl"][2]), got, NOW)
+assert not ok and "publisher pins could not be read" in why, why
+PY
+CASE="pin age of images (CI cosign job): cosign-verify runs only 'cosign verify' (never sign or attest) from the pinned cosign image, once per pinned identity of each pinned image in the tree, passes an image when any one pinned identity verifies and fails it when none does"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root = sys.argv[2]
+COSIGN = "gcr.io/projectsigstore/cosign@sha256:" + "9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
+ran = []
+def runner(fail=()):
+    def run(cmd):
+        ran.append(cmd); return 1 if any(f in " ".join(cmd) for f in fail) else 0
+    return run
+def go(fail=()):
+    del ran[:]
+    return ac.cosign_verify_images(root, "HEAD", COSIGN, runner(fail))
+res = go()
+assert {r["name"] for r in res} == {"gcr.io/projectsigstore/cosign", "gcr.io/distroless/static-debian12", "registry.k8s.io/kubectl"}, res
+assert all(r["ok"] for r in res), res
+for cmd in ran:
+    assert cmd[:3] == ["docker", "run", "--rm"] and COSIGN in cmd, cmd
+    after = cmd[cmd.index(COSIGN) + 1:]
+    assert after[0] == "verify" and not {"sign", "attest", "sign-blob", "upload", "attach", "copy", "clean"} & set(after), cmd      # a read of the signature, never a write
+    assert "--certificate-oidc-issuer" in after or "--key" in after, cmd
+kube = [c for c in ran if "registry.k8s.io/kubectl@sha256:" in " ".join(c)]
+assert len(kube) == 2 and {"krel-staging@k8s-releng-prod.iam.gserviceaccount.com", "krel-trust@k8s-releng-prod.iam.gserviceaccount.com"} == {a for c in kube for a in c if a.startswith("krel-")}, kube
+res = go(fail=("krel-staging",))                                  # one of kubectl's two pinned identities fails: the image still passes
+assert all(r["ok"] for r in res), res
+res = go(fail=("krel-staging", "krel-trust"))                     # none does: the image fails, the others pass
+bad = [r for r in res if not r["ok"]]
+assert [r["name"] for r in bad] == ["registry.k8s.io/kubectl"] and "no pinned identity" in bad[0]["reason"], res
+res = go(fail=("distroless",))
+assert [r["name"] for r in res if not r["ok"]] == ["gcr.io/distroless/static-debian12"], res
+PY
+CASE="pin age of images (CI cosign job): the cosign-verify command reads the cosign image from the tools file, and without exactly one image source, with a missing file or with an image not named by digest it exits 2 with one plain line and no traceback"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root = sys.argv[2]
+def run(*args):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", *args])
+    return rc, err.getvalue()
+for args in ((), ("--tools-file", "/nonexistent"), ("--cosign-image", "gcr.io/x/y:latest"), ("--cosign-image", "gcr.io/x/y@sha256:" + "0" * 64, "--tools-file", "/nonexistent")):
+    rc, err = run(*args)
+    assert rc == 2 and err.count("\n") == 1 and "Traceback" not in err and "not a pass" in err, (args, rc, err)
+with tempfile.TemporaryDirectory() as d:
+    f = os.path.join(d, "tools.json"); json.dump({"cosign": "latest"}, open(f, "w"))
+    rc, err = run("--tools-file", f)
+    assert rc == 2 and "digest" in err, (rc, err)
+PY
+CASE="pin age of images (CI cosign job): an empty or malformed pins file or tools file never passes and never ends in a traceback (exit 2, one line); a tree that names no pinned image says so in one line and exits 0 without running cosign"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root, ran = sys.argv[2], []
+ac._run_docker = lambda cmd: (ran.append(cmd), 0)[1]
+G = "https://accounts.google.com"
+def go(pins, tools):
+    d = tempfile.mkdtemp(); p, t = os.path.join(d, "pins.json"), os.path.join(d, "tools.json")
+    json.dump(pins, open(p, "w")); json.dump(tools, open(t, "w")); ac.PUBLISHER_PINS_FILE = p
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", "--tools-file", t])
+    return rc, out.getvalue(), err.getvalue()
+TOOLS = {"cosign": "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64}
+GOOD = {"gcr.io/none/none": {"keyless": [{"issuer": G, "subject": "s@example.org"}]}}
+committed = ac._checked_pins(json.load(open(os.path.join(root, ".github/policy/image-publishers.json"))))      # the file in the tree passes its own validation
+assert set(committed) == {"gcr.io/projectsigstore/cosign", "gcr.io/distroless/static-debian12", "registry.k8s.io/kubectl"}, sorted(committed)
+K, ID = "-----BEGIN PUBLIC KEY-----\nx\n-----END PUBLIC KEY-----", {"issuer": G, "subject": "s@example.org"}
+for pins in ([], {}, "x", {"gcr.io/a/b": "x"}, {"gcr.io/a/b": {}}, {"gcr.io/a/b": {"keyless": []}}, {"gcr.io/a/b": {"keyless": [{"issuer": G}]}}, {"gcr.io/a/b": {"keyless": "x"}},
+             {"gcr.io/a/b": {"key": K, "keyless": None}}, {"gcr.io/a/b": {"key": K, "keyless": "x"}}, {"gcr.io/a/b": {"key": K, "keyless": [{"issuer": ""}]}},
+             {"gcr.io/a/b": {"key": 5, "keyless": [ID]}}, {"gcr.io/a/b": {"key": "", "keyless": [ID]}}, {"gcr.io/a/b": {"keyless": [ID], "extra": 1}}):
+    del ran[:]; rc, out, err = go(pins, TOOLS)
+    assert rc == 2 and not ran and err.count("\n") == 1 and "Traceback" not in err and "not a pass" in err, (pins, rc, out, err)
+for tools in ([], {}, "x", {"cosign": 7}, {"cosign": "latest"}):
+    del ran[:]; rc, out, err = go(GOOD, tools)
+    assert rc == 2 and not ran and err.count("\n") == 1 and "Traceback" not in err and "not a pass" in err, (tools, rc, out, err)
+del ran[:]; rc, out, err = go(GOOD, TOOLS)                                  # valid, but nothing in the tree is pinned
+assert rc == 0 and not ran and out.count("\n") == 1 and "no pinned image" in out and err == "", (rc, out, err)
+PY
+CASE="pin age of images (controls): each check of the offline proof has its own case with the exact refusal text (the certificate chain, also against a CA installed on the machine; the certificate window; the payload and the publisher signatures; the signed entry time, also one second off and too large to convert; the checkpoint signature of both paths; the log id; the key named by the log entry), a negative inclusion index is refused, the subject is read from the subjectAltName block only and exactly one name is accepted, and a missing openssl stops the run"
+check python3 - "$chk" "$here/fixtures/image-publishers" "$here/../../policy/image-publishers.json" "$here/../../policy/rekor.pub" "$here/../../policy/fulcio-chain.pem" <<'PY'
+import base64, contextlib, copy, datetime, hashlib, importlib.util, json, os, subprocess, sys, tempfile, time
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx, pins, rekor_pem, fulcio_pem = sys.argv[2], json.load(open(sys.argv[3])), open(sys.argv[4]).read(), open(sys.argv[5]).read()
+load = lambda n: json.load(open(f"{fx}/{n}.sig.json"))
+BUNDLE = json.load(open(f"{fx}/cosign.bundle.json"))
+COSIGN, DISTROLESS = "gcr.io/projectsigstore/cosign", "gcr.io/distroless/static-debian12"
+COSIGN_DIGEST = "sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
+TMP = tempfile.mkdtemp()
+GOOGLE = "https://accounts.google.com"
+b64 = lambda b: base64.b64encode(b).decode()
+
+def sh(*cmd, data=None):
+    return subprocess.run(cmd, input=data, capture_output=True, check=True, cwd=TMP).stdout
+
+def make_cert(tag, ca, san, extra_before=(), issuer=GOOGLE):
+    """A certificate for a fresh key under the test CA `ca` (or self-signed when ca is None): the Fulcio issuer extension and the given subjectAltName."""
+    ext = [f"{oid}=DER:{raw.encode().hex()}" for oid, raw in extra_before] + [f"subjectAltName={san}", f"1.3.6.1.4.1.57264.1.1=DER:{issuer.encode().hex()}"]
+    with open(f"{TMP}/{tag}.cnf", "w") as f:
+        f.write("\n".join(ext) + "\n")
+    sh("openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", f"{tag}.key", "-out", f"{tag}.csr", "-subj", f"/CN={tag}")
+    if ca is None:
+        adds = [a for e in ext for a in ("-addext", e)]
+        sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", f"{tag}.key", "-out", f"{tag}.pem", "-subj", f"/CN={tag}", "-days", "3", *adds)
+    else:
+        sh("openssl", "x509", "-req", "-in", f"{tag}.csr", "-CA", f"{ca}.pem", "-CAkey", f"{ca}.key", "-CAcreateserial", "-out", f"{tag}.pem", "-days", "3", "-extfile", f"{tag}.cnf")
+    return open(f"{TMP}/{tag}.pem").read()
+
+sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-subj", "/CN=test-ca", "-days", "30")
+SUBJECT = "someone@pinned.example"
+LEAF = make_cert("leaf", "ca", f"email:{SUBJECT}")
+FORGED_PINS = {DISTROLESS: {"keyless": [{"issuer": GOOGLE, "subject": SUBJECT}]}}
+DIGEST = "sha256:" + "c" * 64
+
+def forged_layer(integrated=None, sign_with="leaf.key", digest=DIGEST):
+    """A signature layer that is consistent in every field (payload hash, signature, certificate in the log entry) and signed under the test CA's leaf."""
+    payload = json.dumps({"critical": {"identity": {"docker-reference": DISTROLESS}, "image": {"docker-manifest-digest": digest}, "type": "cosign container image signature"}, "optional": None}).encode()
+    open(f"{TMP}/payload", "wb").write(payload)
+    sig = b64(sh("openssl", "dgst", "-sha256", "-sign", sign_with, "payload"))
+    integrated = int(time.time()) + 60 if integrated is None else integrated
+    body = {"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": {"data": {"hash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()}},
+            "signature": {"content": sig, "publicKey": {"content": b64(LEAF.encode())}}}}
+    entry = {"uuid": "u", "body": b64(json.dumps(body).encode()), "integratedTime": integrated, "logID": ac.rekor_log_id(rekor_pem), "logIndex": 1,
+             "verification": {"inclusionProof": {"logIndex": 0, "treeSize": 1, "hashes": [], "rootHash": "00", "checkpoint": "x"}, "signedEntryTimestamp": "AA=="}}
+    return {"payload": b64(payload), "signature": sig, "certificate": LEAF, "chain": "", "bundle": {}, "rekor_entry": entry}
+
+@contextlib.contextmanager
+def patched(**attrs):
+    old = {k: getattr(ac, k) for k in attrs}
+    for k, v in attrs.items():
+        setattr(ac, k, v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            setattr(ac, k, v)
+
+NOOP = lambda *a, **k: None
+def keyless(name, ev, p=pins, digest=None):
+    return ac.keyless_signed_time(name, digest or ev["digest"], ev, p, rekor_pem, fulcio_pem)
+def expect(exc, text, fn):
+    try:
+        fn()
+    except exc as e:
+        assert str(e) == text, f"wrong refusal text:\n  got : {e}\n  want: {text}"
+        return
+    raise AssertionError("accepted (wanted: " + text + ")")
+CHAIN = "the certificate does not chain to the pinned Fulcio root (wrong identity)"
+WINDOW = "the integrated time is outside the certificate's validity window (time not proven)"
+SET_T = "the log's signature does not cover this integrated time (time not proven)"
+CKPT = "the checkpoint is not signed by the log key"
+SIGN = "the signature does not verify under the certificate (wrong identity)"
+LOGID = "the log entry names another log than the pinned Rekor key (time not proven)"
+
+def flip_checkpoint(checkpoint):
+    note, _, sigs = checkpoint.partition("\n\n")
+    out = []
+    for line in sigs.split("\n"):
+        if line.startswith("— "):
+            name, b = line[2:].rsplit(" ", 1); raw = bytearray(base64.b64decode(b)); raw[8] ^= 1
+            line = "— " + name + " " + b64(bytes(raw))
+        out.append(line)
+    return note + "\n\n" + "\n".join(out)
+
+CASES = []
+def case(label):
+    def deco(fn):
+        CASES.append((label, fn)); return fn
+    return deco
+
+@case("chain: a certificate from a CA that is not the pinned Fulcio root")
+def _():
+    with patched(_check_log_entry=NOOP, _check_entry_time=NOOP):
+        expect(ac.CouldNotProve, CHAIN, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer()]}, FORGED_PINS))
+
+@case("chain: a CA installed on the machine (SSL_CERT_DIR) is not the pinned root either")
+def _():
+    d = f"{TMP}/ambient"; os.makedirs(d); open(f"{d}/ca.pem", "w").write(open(f"{TMP}/ca.pem").read()); sh("openssl", "rehash", d)
+    old = os.environ.get("SSL_CERT_DIR"); os.environ["SSL_CERT_DIR"] = d
+    try:
+        assert ac._chains_to_root(LEAF, fulcio_pem, datetime.datetime.now(datetime.timezone.utc)) is False
+        with patched(_check_log_entry=NOOP, _check_entry_time=NOOP):
+            expect(ac.CouldNotProve, CHAIN, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer()]}, FORGED_PINS))
+    finally:
+        os.environ.pop("SSL_CERT_DIR") if old is None else os.environ.__setitem__("SSL_CERT_DIR", old)
+
+@case("window: an integrated time after the certificate expired")
+def _():
+    with patched(_check_log_entry=NOOP, _check_entry_time=NOOP):
+        expect(ac.CouldNotProve, WINDOW, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer(integrated=int(time.time()) + 10 * 86400)]}, FORGED_PINS))
+
+@case("payload signature (keyless): a signature made by another key")
+def _():
+    sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "other.key")
+    with patched(_check_log_entry=NOOP, _check_entry_time=NOOP, _chains_to_root=lambda *a: True):
+        expect(ac.CouldNotProve, SIGN, lambda: keyless(DISTROLESS, {"digest": DIGEST, "layers": [forged_layer(sign_with="other.key")]}, FORGED_PINS))
+
+@case("signed entry time (keyless): a time one second later, still inside the certificate window")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        l["rekor_entry"]["integratedTime"] = int(l["rekor_entry"]["integratedTime"]) + 1
+    expect(ac.CouldNotProve, SET_T, lambda: keyless(DISTROLESS, ev))
+
+@case("signed entry time: a time too large to convert is refused as unproven, never a traceback")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        l["rekor_entry"]["integratedTime"] = 2 ** 100
+    expect(ac.CouldNotProve, SET_T, lambda: keyless(DISTROLESS, ev))
+
+@case("checkpoint signature (keyless): a checkpoint the log did not sign")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        p = l["rekor_entry"]["verification"]["inclusionProof"]; p["checkpoint"] = flip_checkpoint(p["checkpoint"])
+    expect(ac.CouldNotProve, CKPT, lambda: keyless(DISTROLESS, ev))
+
+@case("log id (keyless): an entry that names another log")
+def _():
+    ev = copy.deepcopy(load("distroless"))
+    for l in ev["layers"]:
+        l["rekor_entry"]["logID"] = "0" * 64
+    expect(ac.CouldNotProve, LOGID, lambda: keyless(DISTROLESS, ev))
+
+@case("publisher signature (keyed): a signature that does not verify under the pinned key")
+def _():
+    b = copy.deepcopy(BUNDLE); s = b["dsseEnvelope"]["signatures"][0]; raw = bytearray(base64.b64decode(s["sig"])); raw[-1] ^= 1; s["sig"] = b64(bytes(raw))
+    expect(ac.CouldNotProve, f"the signature does not verify under the identity pinned for {COSIGN} (wrong identity)",
+           lambda: ac.publisher_signed_time(COSIGN, COSIGN_DIGEST, b, pins, rekor_pem))
+
+@case("entry key (keyed): a log entry that names another key than the pinned one")
+def _():
+    b = copy.deepcopy(BUNDLE); e = b["verificationMaterial"]["tlogEntries"][0]
+    body = json.loads(base64.b64decode(e["canonicalizedBody"])); body["spec"]["signatures"][0]["verifier"] = b64(rekor_pem.encode())
+    e["canonicalizedBody"] = b64(json.dumps(body).encode())
+    expect(ac.CouldNotProve, "the log entry names another key than the pinned one (wrong identity)", lambda: ac.publisher_signed_time(COSIGN, COSIGN_DIGEST, b, pins, rekor_pem))
+
+@case("checkpoint signature (keyed): a checkpoint the log did not sign")
+def _():
+    b = copy.deepcopy(BUNDLE); p = b["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]; p["checkpoint"]["envelope"] = flip_checkpoint(p["checkpoint"]["envelope"])
+    expect(ac.CouldNotProve, CKPT, lambda: ac.publisher_signed_time(COSIGN, COSIGN_DIGEST, b, pins, rekor_pem))
+
+@case("inclusion proof: a negative index or an empty tree is refused")
+def _():
+    leaf = hashlib.sha256(b"\x00x").digest()
+    assert ac._merkle_root_from_inclusion(-1, 1, leaf, []) is None
+    assert ac._merkle_root_from_inclusion(0, 0, leaf, []) is None
+    assert ac._merkle_root_from_inclusion(0, 1, leaf, []) == leaf
+
+@case("subject: the name is read from the subjectAltName block only, and exactly one name is accepted")
+def _():
+    trap = make_cert("trap", None, "email:real@pinned.example", extra_before=[("1.2.3.4.5", "email:evil@trap.example")])
+    issuer, subject, _nb, _na = ac._cert_identity(trap)
+    assert (issuer, subject) == (GOOGLE, "real@pinned.example"), (issuer, subject)
+    two = make_cert("two", None, "email:a@pinned.example,email:b@pinned.example")
+    expect(ac.CouldNotProve, "the certificate has no single subject name (wrong identity)", lambda: ac._cert_identity(two))
+    uri = make_cert("uri", None, "URI:https://github.com/o/r/.github/workflows/w.yml@refs/heads/main")
+    assert ac._cert_identity(uri)[1] == "https://github.com/o/r/.github/workflows/w.yml@refs/heads/main"
+
+@case("openssl missing: the check cannot run (CouldNotLook), it is never a refusal of the image or a traceback")
+def _():
+    def boom(*a, **k):
+        raise FileNotFoundError("openssl")
+    old = ac.subprocess.run; ac.subprocess.run = boom
+    try:
+        try:
+            keyless(DISTROLESS, load("distroless"))
+        except ac.CouldNotLook as e:
+            assert "openssl" in str(e) and "\n" not in str(e), str(e)
+        else:
+            raise AssertionError("did not stop")
+    finally:
+        ac.subprocess.run = old
+
+results = []
+for label, fn in CASES:
+    try:
+        fn(); results.append((label, "ok"))
+    except Exception as e:
+        results.append((label, "RED: " + " ".join(str(e).split())[:230]))
+for label, r in results:
+    print(f"CASE {r[:3] if r == 'ok' else 'RED'}  {label}" + ("" if r == "ok" else "\n      " + r))
+sys.exit(0 if all(r == "ok" for _, r in results) else 1)
+PY
+CASE="pin age of images (timeouts): every openssl and docker call has a timeout, and a call that hangs stops the run (CouldNotLook for openssl, exit 2 'cannot run' for docker), never a refusal of the image or a traceback"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+seen = []
+def hang(cmd, **kw):
+    seen.append(kw.get("timeout")); raise subprocess.TimeoutExpired(cmd, kw.get("timeout") or 0)
+old = ac.subprocess.run; ac.subprocess.run = hang
+try:
+    try:
+        ac._openssl(["version"])
+    except ac.CouldNotLook as e:
+        assert str(e) == "openssl timed out", str(e)
+    else:
+        raise AssertionError("openssl hang did not stop the run")
+    try:
+        ac._run_docker(["docker", "run"])
+    except RuntimeError as e:
+        assert str(e) == "docker timed out", str(e)
+    else:
+        raise AssertionError("docker hang did not stop the run")
+finally:
+    ac.subprocess.run = old
+assert len(seen) == 2 and all(isinstance(t, (int, float)) and t > 0 for t in seen), seen
+ac.inv.load_at = lambda root, rev: {"i": ac.inv.Item("image", "gcr.io/projectsigstore/cosign", "sha256:" + "9" * 64)}      # no git here: only the docker call may hang
+ac.subprocess.run = hang
+err = io.StringIO()
+try:
+    with contextlib.redirect_stderr(err):
+        rc = ac.main(["cosign-verify", "--root", sys.argv[2], "--head", "HEAD", "--cosign-image", "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64])
+finally:
+    ac.subprocess.run = old
+assert rc == 2 and err.getvalue() == "pin-age: cannot run: docker timed out (not a pass)\n", (rc, err.getvalue())
+PY
+CASE="pin age of images (pin notes): a present source or key_source that is not non-empty text is refused with one line and exit 2, and the committed pins file still passes"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+root = sys.argv[2]
+G, K = "https://accounts.google.com", "-----BEGIN PUBLIC KEY-----\nx\n-----END PUBLIC KEY-----"
+ID = {"issuer": G, "subject": "s@example.org"}
+ac._checked_pins(json.load(open(os.path.join(root, ".github/policy/image-publishers.json"))))
+bad = [{"keyless": [ID], "source": None}, {"keyless": [ID], "source": 5}, {"keyless": [ID], "source": ""}, {"keyless": [ID], "source": "  "},
+       {"key": K, "key_source": None}, {"key": K, "key_source": 5}, {"key": K, "key_source": ""}]
+for pin in bad:
+    try:
+        ac._checked_pins({"gcr.io/a/b": pin})
+    except ValueError as e:
+        assert "\n" not in str(e) and ("source" in str(e)), (pin, str(e))
+    else:
+        raise AssertionError(("accepted", pin))
+d = tempfile.mkdtemp(); p, t = os.path.join(d, "pins.json"), os.path.join(d, "tools.json")
+json.dump({"gcr.io/a/b": {"keyless": [ID], "source": None}}, open(p, "w")); json.dump({"cosign": "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64}, open(t, "w"))
+ac.PUBLISHER_PINS_FILE = p
+out, err = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    rc = ac.main(["cosign-verify", "--root", root, "--head", "HEAD", "--tools-file", t])
+assert rc == 2 and err.getvalue().count("\n") == 1 and "not a pass" in err.getvalue() and "Traceback" not in err.getvalue(), (rc, err.getvalue())
+assert ac._checked_pins({"gcr.io/a/b": {"keyless": [ID], "source": "a note", "key_source": "a note"}})
+PY
+CASE="pin age (error lines): an error that carries a path with newlines is one line at every print site"
+check python3 - "$chk" "$here/../../.." <<'PY'
+import contextlib, importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ac)
+root = sys.argv[2]
+EVIL = "a\n::warning::x\n\x1b[31m##[warning]y/requirements.txt is too large to read safely"
+def run(argv):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(argv)
+    return rc, err.getvalue()
+def one_line(label, rc, text):
+    lines = text.split("\n")
+    ok = rc == 2 and len(lines) == 2 and lines[1] == "" and not any(l.startswith("::") for l in lines)
+    assert ok, (label, rc, text)
+    assert "::warning::x" in lines[0] and "too large to read safely" in lines[0], (label, text)
+    assert "\x1b" not in lines[0] and "##[" not in lines[0], (label, text)
+def raising(error):
+    def boom(*a, **k):
+        raise error
+    return boom
+SCAN = ["--root", root, "--base", "HEAD", "--head", "HEAD"]
+VERIFY = ["cosign-verify", "--root", root, "--head", "HEAD"]
+ac.inv.load_at = raising(RuntimeError(EVIL))      # the tree read: its error carries a path of the pull request
+one_line("cosign-verify, a tree read error", *run(VERIFY + ["--cosign-image", "gcr.io/x/y@sha256:" + "0" * 64]))
+one_line("the age check, a tree read error", *run(SCAN))
+ac._json_file = raising(OSError(EVIL))
+one_line("cosign-verify, a tools file error", *run(VERIFY + ["--tools-file", "x"]))
+ac.inv.load_at = lambda *a, **k: {}
+ac._run = raising(RuntimeError(EVIL))
+one_line("the age check, a RuntimeError while it runs", *run(SCAN))
+ac._run = raising(ac.CouldNotLook(EVIL))
+one_line("the age check, a CouldNotLook", *run(SCAN))
+PY
+CASE="pin age (report lines): pull request text in a report line is one line, at each report line that prints it"
+check python3 - "$chk" "$work" <<'PY'
+import argparse, contextlib, hashlib, importlib.util, io, json, sys, types
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ac)
+out_json = sys.argv[2] + "/report-lines.json"
+def evil(tag):
+    return tag + "\n::warning::x\n\x1b[31m##[warning]y"
+ITEM, REASON, KEY, PATH = (evil(t) for t in ("item", "reason", "key", "path"))
+LINE = hashlib.sha256(b"curl x").hexdigest() + ":curl x"      # every unmeasured line is a hash, a colon, the text
+def item(key):
+    return types.SimpleNamespace(key=key, label="", name="base:b.json", src=("w.yml",))
+a = argparse.Namespace(root=".", base="b", head="h", exceptions=None, base_inputs=None, json=out_json, min_days=3.0)
+ac._unmeasured_counts = lambda *x: {(PATH, "a thing", "L"): {"h0": 1}, ("scripts/run.sh", "a thing", LINE): {"h1": 1}}
+ac._context_regressions = lambda *x: {}
+ac._context_proved = lambda *x: True
+ac.ruled_unpinned_lines = lambda *x: []
+ac.drop_ruled_unpinned = lambda moved, ruled: moved
+ac.load_base_inputs = lambda *x, **k: {}
+ac.split_base_inputs = lambda moved, paths: (moved, [item("tool:file:bin/tools.json@(file)")])
+ac.split_ruled_local_calls = lambda moved, rulings: (moved, [(item(KEY), "ruled")])
+ac.split_go_exempt = lambda moved, root, head: ([], [item("tool:go@1.23.4")])
+ac.load_file_pins = lambda *x, **k: {}
+ac.FilePinSource = lambda *x: None
+ac.Live = lambda *x: None
+ac.check = lambda *x: [{"item": ITEM, "label": "", "ok": False, "proof": None, "reason": REASON}]
+ac.load_ruled_text = lambda *x, **k: {("scripts/run.sh", "a thing", LINE.split(":", 1)[0], "h1"): ("ruled", 1)}
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = ac._run(a, [item("moved")], None, 0)
+text = out.getvalue()
+lines = text.split("\n")
+# 8 lines: the header, one for each of the six report lines (the first holds two fields), then the verdict
+assert rc == 1 and len(lines) == 9 and lines[-1] == "", (rc, text)
+assert not any(l.lstrip().startswith("::") for l in lines), text
+assert "##[" not in text and "\x1b" not in text, text
+for word in ("item", "reason", "key", "path"):
+    assert word + " ::warning::x" in text, (word, text)      # the text stays, made inert
+rows = json.load(open(out_json))["moved"]
+items = [r["item"] for r in rows]
+# the data file keeps the raw text
+assert ITEM in items and "unmeasured:" + PATH in items and KEY in items, items
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

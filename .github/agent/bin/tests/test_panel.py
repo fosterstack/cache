@@ -87,6 +87,13 @@ class Profiles(unittest.TestCase):
             e = dict(ok, **broken)
             self.assertTrue(P.validate_profiles({"entries": [e]}), broken)
 
+    def test_the_validator_names_wrong_types_instead_of_raising(self):          # cache#707 round 2: a damaged profiles document is a named error, never an AttributeError
+        ok = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}
+        for doc in ({"entries": [3]}, {"entries": ["x"]}, {"entries": [dict(ok, match=["x"])]}, {"entries": [dict(ok, match={"package": 5})]}, {"entries": "x"}, {"entries": {"a": 1}}):      # (an empty {} is the reader's container rule, tested there)
+            self.assertTrue(P.validate_profiles(doc), doc)
+        self.assertEqual(P.validate_profiles({"entries": None}), [])
+        self.assertEqual(P.validate_profiles({}), [])
+
     def test_committed_profiles_validate(self):
         path = os.path.join(BIN, "..", "..", "policy", "scanner-profiles.json")
         self.assertEqual(P.validate_profiles(json.load(open(path))), [])
@@ -153,11 +160,14 @@ class Evidence(unittest.TestCase):
         # Codex r2 B1: absence from ONE source is not absence when the package database records it at that version
         self.assertIsNone(P.vote(false(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
         self.assertIsNone(P.vote(real(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
-        gone = ("h\n%s\npackage database: no record names busybox\nfiles: no path in the image mentions busybox\n"
+        gone = ("h\n%s\npackage databases read: dpkg\npackage database: no record names busybox\n"
+                "files: no path in the image mentions busybox\n"
                 "go build info: no Go binary in the image records busybox\n" % P.EVIDENCE_MARK)
         bb = finding(pkg="busybox", ver="1.37.0")
         self.assertEqual(P.vote(false(ev="package database: no record names busybox"), gone, bb), "false")
         self.assertIsNone(P.vote(real(ev="package database: no record names busybox"), gone, bb))
+        unread = gone.replace("package databases read: dpkg", "package databases read: none")      # rc-5b fix 3
+        self.assertIsNone(P.vote(false(ev="package database: no record names busybox"), unread, bb))
 
     def test_a_file_name_or_another_packages_constraint_is_not_a_version(self):    # Codex r2 B1
         b = ("h\n%s\npackage database /var/lib/dpkg/status.d/tzdata:\nPackage: tzdata\nVersion: 2026c-0+deb13u1\n"
@@ -340,9 +350,11 @@ class Day(unittest.TestCase):
                     "go build info: no Go binary in the image records busybox"])
         self.assertIsNone(P.vote(false(ev="package database: no record names busybox"), static, bb))
         deb = finding(pkg="libssl3", ver="3.0", purls=("pkg:deb/debian/libssl3@3.0",))
-        clean = b(["package database: no record names libssl3", "files: no path in the image mentions libssl3"])
+        clean = b(["package databases read: dpkg", "package database: no record names libssl3",
+                   "files: no path in the image mentions libssl3"])
         self.assertEqual(P.vote(false(ev="package database: no record names libssl3"), clean, deb), "false")
-        named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])
+        named = b(["package databases read: dpkg", "package database: no record names libssl3",
+                   "file: /usr/lib/libssl3.so"])
         self.assertIsNone(P.vote(false(ev="package database: no record names libssl3"), named, deb))
         mod = finding(pkg="golang.org/x/net", ver="v0.1.0", purls=("pkg:golang/golang.org/x/net@v0.1.0",))
         gob = b(["go build info /cache: /cache: go1.26.6", "go build info: no Go binary in the image records golang.org/x/net"])
@@ -477,6 +489,24 @@ class Reversals(unittest.TestCase):                                         # RE
         self.assertIn("hidden by our statement", out["misses"][0]["by"])
         self.assertIn("audit miss", out["issue"])
         self.assertEqual((st["false"], [x["id"] for x in st["real"]]), ([], ["CVE-2099-0002"]))
+
+    def test_a_rejected_then_accepted_identity_is_remembered_as_proposed_and_the_reversal_finds_its_statement(self):   # S3 ruling (2)
+        bad = ("pkg:deb/tzdata@2025b-0%2Bdeb13u1",)                      # no distro namespace: not representable, so no statement
+        good = ("pkg:deb/debian/tzdata@2025b-0%2Bdeb13u1?arch=all",)
+        two = {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}
+        st, out = P.apply_day(verdict(finding(ver=OLD, purls=bad)), P.new_state(), bundles, {"entries": []}, two, "2026-10-03", SCORING)
+        self.assertEqual(out["vex"], [])
+        self.assertEqual(st["false"][0]["purls"], list(bad))
+        two = {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}
+        st, out = P.apply_day(verdict(finding(ver=OLD, purls=good)), st, bundles, {"entries": []}, two, "2026-10-04", SCORING)
+        self.assertEqual([x["purls"] for x in out["vex"]], [list(good)])
+        self.assertEqual(st["false"][0]["purls"], list(good))            # the proposed purls replace the rejected ones
+        written = P.statement_id(out["vex"][0])
+        v = verdict(images=["fips-arm64"])
+        v["vex_covered"] = [{"image": "fips-arm64", "scanner": "inspector", "id": "CVE-2099-0002", "package": "tzdata", "version": OLD}]
+        st2 = copy.deepcopy(st); st2["false"][0]["vex"] = True              # the day-2 statement was published
+        _, out = P.apply_day(v, st2, bundles, {"entries": []}, {"A": Seat({}), "B": Seat({})}, "2026-10-05", SCORING)
+        self.assertEqual([(x["status"], P.statement_id(x)) for x in out["vex"]], [("affected", written)])
 
     def test_an_advisory_for_a_version_we_now_ship_reverses(self):
         now = BUNDLE.replace("2026c-0+deb13u1", OLD)

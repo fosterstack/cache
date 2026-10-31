@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """The daily rescan's scanner panel tally (scanner-panel rules 3-6, ratified by the owner Oct 2; REQ-SCAN-003..006).
-Each scanner job leaves its raw output per image under <in>/<scanner>/<image>/:
+Each scanner job leaves its raw output per image under <scanner>/<image>/ in its own artifact panel-<scanner>; the download lays them out as <in>/panel-<scanner>/<scanner>/<image>/ (one folder per artifact, never merged):
 
   grype      result.cdx.json   CycloneDX from `grype --vex <our VEX> -o cyclonedx-json` (VEX applied by Grype)
   scout      sbom.json         `docker scout sbom --format json`
-             cves.json         `docker scout cves --format gitlab --vex-location <our VEX>` (VEX applied by Scout)
+             cves.json         `docker scout cves --format gitlab --vex-author '^FosterStack LLC$' registry://<image>`
+                               (Scout applies our VEX through the attestation in the image index, REQ-REL-010;
+                               there is no --vex-location)
   inspector  sbom.cdx.json     inspector-sbomgen's CycloneDX
              scan.json         inspector-scan:ScanSbom's answer ({"sbom": CycloneDX with vulnerabilities})
   google     packages.json     the package list gcloud sent to on-demand scanning
@@ -32,8 +34,8 @@ _gate_spec = importlib.util.spec_from_file_location(
 _gate = importlib.util.module_from_spec(_gate_spec)
 _gate_spec.loader.exec_module(_gate)
 
-VARIANTS = ("production", "debug", "fips")
-# rule 1, fixed here as in the workflow: Grype, Scout and Inspector on all six images; Google on linux/amd64 only
+VARIANTS = ("production", "fips")
+# rule 1, fixed here as in the workflow: Grype, Scout and Inspector on all four images (production and fips); Google on linux/amd64 only
 EXPECTED = {
     "grype": ["%s-%s" % (v, a) for v in VARIANTS for a in ("amd64", "arm64")],
     "scout": ["%s-%s" % (v, a) for v in VARIANTS for a in ("amd64", "arm64")],
@@ -52,12 +54,24 @@ def _load(path):
     return json.loads(text)
 
 
+def _product_id(p):
+    """A product's identifier as the PR gate's vex_index reads it: @id when the key is present, else identifiers.purl."""
+    ids = p.get("identifiers")
+    return p.get("@id") if p.get("@id") is not None else ((ids.get("purl") if isinstance(ids, dict) else None) or "")   # an @id that is present (even "") is the id, as the rescan reads it
+
+
 def _covers(product, image):
     """Does a statement's product cover this image? The repository-wide product covers every image; a product scoped
-    with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names."""
-    q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(str(product)).query))
+    with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names. The product is
+    read by the PR gate's own grammar (inspector-gate.py::scope_of, the rescan's _parse_product): a product it does not
+    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image, and an
+    OCI product must be this image's own repository (pkg:oci/cache, never cache-candidates), as rescan-statement.py::_vex_match requires."""
+    pid = str(product)
+    scope = _gate.scope_of(pid)
+    if scope is None or (pid.startswith("pkg:oci/") and pid.split("?", 1)[0] != "pkg:oci/cache"):
+        return False
     variant, _, arch = image.rpartition("-")
-    return q.get("variant", variant) == variant and q.get("arch", arch) == arch
+    return scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
 
 
 def load_vex(path):
@@ -68,7 +82,7 @@ def load_vex(path):
     for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
         stmts = []
         for st in doc.get("statements") or []:
-            prods = [p for p in st.get("products") or [] if _covers(p.get("@id", ""), img)]
+            prods = [p for p in st.get("products") or [] if _covers(_product_id(p), img)]
             if not prods:
                 continue
             for p in prods:
@@ -83,10 +97,17 @@ def load_vex(path):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
+def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
+    if not isinstance(purl, str) or not purl.startswith("pkg:"):
+        return False
+    slash = purl.find("/", 4)
+    return 4 < slash < len(purl) - 1
+
+
 def _cdx_packages(doc):
-    """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
+    """Rule 3's package count: components that are packages (carry a package URL, pkg:<type>/<name>). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("purl")]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and _is_package_url(c.get("purl"))]
 
 
 def _purl_name_version(purl):
@@ -161,11 +182,18 @@ def _cdx_findings(doc, comps, inspector=False):
               if c.get("bom-ref")}
     out = []
     for v in doc.get("vulnerabilities") or []:
-        for a in v.get("affects") or []:
-            c = by_ref.get(a.get("ref"), {})
+        affects = v.get("affects") or []
+        if not affects or not all(isinstance(a, dict) for a in affects):   # a vulnerability nobody can attribute (none, or an entry that is not an object) is an incomplete report: did not run, never silence
+            raise ValueError("vulnerability %s has no usable affects list: the report is incomplete" % (v.get("id") or "?"))
+        for a in affects:
+            c = by_ref.get(a.get("ref"))
+            if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
+                raise ValueError("vulnerability %s affects %r, which is not a component of the report: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
+            if name == "?":   # the component has neither a package URL nor a name: still a finding nobody can attribute
+                raise ValueError("vulnerability %s affects the component %r, which has neither a package URL nor a name: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             # Grype writes its CISA KEV listing as a rating (source 'CISA KEV Catalog', method other, justification 'Listed in CISA KEV'): that is the known-exploited
             # marker, not a severity; its 'Negligible' is CycloneDX 'none'
             rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
@@ -197,7 +225,8 @@ def read_grype(d):
 def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
-    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and (a.get("purl") or a.get("version"))]
+    arts = [a for a in sbom.get("artifacts") or []
+            if isinstance(a, dict) and a.get("name") and _is_package_url(a.get("purl"))]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
@@ -205,7 +234,12 @@ def read_scout(d):
         ids = [i.get("value") for i in v.get("identifiers") or [] if i.get("value")]
         dep = (v.get("location") or {}).get("dependency") or {}
         name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
-        purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
+        purl = None
+        if name.startswith("pkg:"):   # Scout's GitLab report puts the package URL in name (scout-selfcheck.py:124): name it as the other scanners do
+            purl = name
+            name, pver = _purl_name_version(purl)
+            ver = ver or pver
+        purl = purl or next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
         out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
     return len(arts), out
 
@@ -270,12 +304,49 @@ def render_issue(reported):
     return "\n".join(lines) + "\n"
 
 
-def tally(root, vexidx):
+# a scanner's diagnostics the producing job writes beside its results (Scout's raw attestation reports); read by nobody here, allowed so the real artifact is not refused
+DIAG = {"scout": {"scout-diag"}}
+
+
+class LayoutError(Exception):
+    pass
+
+
+def scanner_dirs(inp):
+    """The downloaded artifacts laid out as <inp>/panel-<scanner>/<scanner>/<image>/ (one folder per artifact, never merged): {scanner: the folder holding its images}.
+    A folder that is not panel-<one of the panel's scanners>, a plain file or a link there, an artifact folder holding anything but its own scanner's folder (another scanner's
+    output, a stray file) is refused: one scanner's job can never write another scanner's result. A scanner with no artifact is simply absent (the tally calls it did-not-run)."""
+    dirs = {}
+    try:
+        names = sorted(os.listdir(inp))
+    except OSError as ex:
+        raise LayoutError("the panel artifacts folder %s cannot be read (%s)" % (inp, type(ex).__name__))
+    for n in names:
+        path = os.path.join(inp, n)
+        scanner = n[len("panel-"):] if n.startswith("panel-") else None
+        if scanner not in EXPECTED or os.path.islink(path) or not os.path.isdir(path):
+            raise LayoutError("%s is not the artifact of a panel scanner (expected a plain folder panel-%s)" % (n, "|".join(sorted(EXPECTED))))
+        inner = sorted(os.listdir(path))
+        if inner and scanner not in inner and all(x in DIAG.get(scanner, set()) and not os.path.islink(os.path.join(path, x)) and os.path.isdir(os.path.join(path, x)) for x in inner):
+            continue    # only its diagnostics (every image failed and its step removed the partial output): a scanner with no results, which the tally calls did-not-run
+        if [x for x in inner if x not in ({scanner} | DIAG.get(scanner, set()))] or scanner not in inner:
+            raise LayoutError("%s holds %s, not only %s%s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner, (" and " + " ".join(sorted(DIAG[scanner]))) if scanner in DIAG else ""))
+        for x in inner:
+            if x != scanner and (os.path.islink(os.path.join(path, x)) or not os.path.isdir(os.path.join(path, x))):
+                raise LayoutError("%s/%s is not a plain folder" % (n, x))
+        sub = os.path.join(path, scanner)
+        if os.path.islink(sub) or not os.path.isdir(sub):
+            raise LayoutError("%s/%s is not a plain folder" % (n, scanner))
+        dirs[scanner] = sub
+    return dirs
+
+
+def tally(root, vexidx, dirs=None):
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
         for img in imgs:
             st = images.setdefault(img, {"counts": {}, "did_not_run": [], "ran": []})
-            d = os.path.join(root, s, img)
+            d = os.path.join(root, s, img) if dirs is None else os.path.join(dirs[s], img) if s in dirs else None     # no artifact for the scanner: it did not run
             try:
                 n, found = READ[s](d)
             except (OSError, ValueError, AttributeError, TypeError):
@@ -356,7 +427,12 @@ def main(argv=None):
         with open(a.log, errors="replace") as f:
             json.dump(google_packages(f.read()), sys.stdout)
         return 0
-    v = tally(a.inp, load_vex(a.vex))
+    try:
+        dirs = scanner_dirs(a.inp)
+    except LayoutError as ex:
+        print("::error::scanner panel: %s — a pipeline failure, never a clean result" % ex)
+        return 2
+    v = tally(a.inp, load_vex(a.vex), dirs)
     os.makedirs(a.out, exist_ok=True)
     json.dump(v, open(os.path.join(a.out, "verdict.json"), "w"), indent=1)
     open(os.path.join(a.out, "summary.md"), "w").write(summary(v))

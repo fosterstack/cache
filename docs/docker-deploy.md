@@ -114,9 +114,9 @@ latency; a colocated 1 vCPU box beats a cross-region 8 vCPU one. Put the
 server in the same region — ideally the same VPC — as the runners that
 hammer it.
 
-**It runs as nonroot (uid 65532) by default**, inherited from the
-`gcr.io/distroless/static:nonroot` base — there is no root process in the
-container and no shell to become one with. Whatever storage you attach has
+**It runs as nonroot (uid 65532) by default**, set in the
+image — there is no root process in the container and no shell to become one
+with. Whatever storage you attach has
 to be writable by uid 65532; see the mount note above, and
 [`securityContext`](kubernetes.md#securitycontext) on Kubernetes.
 
@@ -146,14 +146,14 @@ volumes:
 ```
 
 **No Docker-native `HEALTHCHECK` in the compose file above, on purpose:**
-the image is `FROM scratch`-class distroless — no shell, no `curl`/`wget`,
+the image has no shell, no `curl`/`wget`,
 no second binary inside the container to run a healthcheck command with.
 A container-internal `HEALTHCHECK: [...]` directive would have nothing
 valid to execute. Probe `/healthz` from *outside* the container instead —
 your orchestrator's own HTTP healthcheck (Kubernetes `livenessProbe` with
 `httpGet`, an external monitoring check, or `curl -f
 http://localhost:8080/healthz` from the host/CI runner). This is a direct
-consequence of the zero-CVE-surface design — see
+consequence of the minimal-image design — see
 [Scanning FosterStack in your compliance pipeline](scanning.md) for why
 there's no shell in the image in the first place.
 
@@ -315,66 +315,54 @@ You can confirm that rather than take our word for it:
 
 ```sh
 docker manifest inspect ghcr.io/fosterstack/cache:latest \
-  | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"'
+  | jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"'
 # linux/amd64
 # linux/arm64
 ```
 
-Exactly two entries, both real platforms. Signatures and SBOM/provenance are
-stored as separate artifacts against each digest rather than as extra
-entries in this index, so nothing else should appear here — see
-[Verify our images](verify-images.md).
+Exactly two runnable platforms. The index also holds one VEX attestation child
+per platform; it lists as `unknown/unknown`, which the filter above leaves out.
+The image signature and the release-manifest attestation are stored against
+each digest rather than as entries in this index. The SBOMs and provenance are
+files on the GitHub release — see [Verify our images](verify-images.md).
 
 There are no darwin or windows images: containers on those platforms run a
-Linux VM, and it pulls `linux/*` like any other Linux host. For a native
-macOS binary, see [Install FosterStack Cache](install.md).
+Linux VM, and it pulls `linux/*` like any other Linux host. There is no native
+macOS binary from v0.3.0 either; on a Mac, run the image. <!-- pinned: historical -->
 
-## Troubleshooting with the `:debug` image
+## Troubleshooting without a shell in the image
 
 The production image has no shell, so `docker exec ... sh` into it fails.
 That is deliberate — see [Platforms and multi-arch images](#platforms-and-multi-arch-images)
-above and the [variant docs](verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect).
-When you need a shell, run the `:debug` tag, which is the same binary on a
-base that adds busybox.
-
-**The shell is at `/busybox/sh`, not `/bin/sh`.** Distroless keeps busybox
-under `/busybox/` and ships no `/bin/sh`, no bash, and no package manager.
-If you have used Debian, RHEL, Amazon Linux, Alpine or Wolfi images, this
-is the one thing that will trip you up.
+above and the [variant docs](verify-images.md#the-images-have-no-shell).
+From v0.3.0 there is no `:debug` image (it is only on earlier releases, see <!-- pinned: historical -->
+[verify-images.md](verify-images.md#releases-before-v030)): you bring the
+tools in a separate container that shares the server's namespaces.
 
 ```sh
-# a throwaway shell in the debug image
-docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+# a throwaway toolbox that sees the server's network and processes
+docker run --rm -it --pid=container:<name> --network=container:<name> \
+  busybox:stable sh
 
-# same, with your cache volume attached, to inspect what the server sees
-docker run -it --entrypoint /busybox/sh \
-  -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:debug
+# the blob volume, read-only, to inspect what the server sees
+docker run --rm -it -v fscache-data:/data:ro busybox:stable \
+  sh -c 'du -sh /data; ls -la /data/data/blobs'
 ```
 
-Inside, useful things to check:
+Inside the first one, the server is `localhost:8080`:
 
 ```sh
-ls -la /home/nonroot/data/blobs     # is the blob store where you think it is?
-du -sh /home/nonroot/data           # how big has the cache grown?
-wget -qO- http://localhost:8080/healthz   # only if you exec into a RUNNING container
+wget -qO- http://localhost:8080/healthz
 ```
 
-To get a shell in a container that is already running, swap the deployment
-to the `:debug` tag first — you cannot exec a shell into the production
-image, because there is not one to exec. On Kubernetes, with a pod running
-the `:debug` tag:
+On Kubernetes, attach an ephemeral container to the running pod:
 
 ```sh
-kubectl exec -it <pod> -- /busybox/sh
+kubectl debug -it <pod> --image=busybox:stable --target=<container>
 ```
 
-`/busybox` is on the image `PATH`, so bare `sh` also resolves. The full
-path is shown first because it works regardless of how the container was
-invoked.
-
-These run as the image's default user, uid 65532 (`nonroot`). Do not add
-`--user=root`: clusters that enforce `runAsNonRoot` reject it, and root
-would not show you what the server process sees.
+The toolbox image is yours to choose and pin; it is not part of the release
+and is not covered by its signatures.
 
 ## Not a container shop? Bare binary + systemd
 

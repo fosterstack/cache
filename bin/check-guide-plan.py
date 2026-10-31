@@ -1,0 +1,285 @@
+"""bin/check-guide-plan.py GUIDE CANNOT_RUN_LIST DIGEST PLAN DIGEST_FIPS: the planner of bin/check-guide.sh (REQ-CHAIN-006-AC7). Reads the customer guide and its cannot-run
+list, judges every command, substitutes the candidate's values and writes one plan row per command, in order, to PLAN; any fault exits 1."""
+import json, os, re, shlex, sys
+guide, listpath, digest, planpath, digest_fips = sys.argv[1:6]
+def fail(m):
+    print("check-guide: " + m, file=sys.stderr); sys.exit(1)
+lines = open(guide).read().replace("\r", "").split("\n")
+PH = re.compile(r"<([A-Z][A-Z0-9_]*)>")
+DEF = re.compile(r"^\s*[-*]\s+`?<([A-Z][A-Z0-9_]*)>`?\s*:")
+first = next((i for i, l in enumerate(lines) if l.strip().startswith("```")), len(lines))
+defined = set()
+for l in lines[:first]:
+    m = DEF.match(l)
+    if m:
+        if m.group(1) in defined:
+            fail("the placeholder <%s> is defined twice" % m.group(1))
+        defined.add(m.group(1))
+cmds, state, pending = [], None, None
+for l in lines:
+    s = l.strip()
+    if state is None:
+        if s == "```sh":
+            state = "sh"
+        elif s.startswith("```"):
+            state = "other"
+        continue
+    if s == "```":
+        if pending is not None:
+            fail("a command ends in a line continuation")
+        state = None
+        continue
+    if state == "other":
+        continue
+    if pending is not None:
+        s, pending = pending + " " + s, None
+    elif not s or s.startswith("#"):
+        continue
+    if s.endswith("\\"):
+        pending = s[:-1].rstrip()
+        continue
+    cmds.append(s)
+if state is not None:
+    fail("the guide ends inside a fenced block")
+if not cmds:
+    fail("no command was extracted from the guide %s (a vacuous pass is not a pass)" % guide)
+if len(cmds) > 10:
+    fail("the guide has %d commands; at most ten are allowed" % len(cmds))
+
+FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
+FORMS3 = ("gh attestation verify",)
+# the forms as tuples of words: a command word that holds a space ("cosign verify") is one word and is not a form
+FORM_WORDS2 = tuple(tuple(f.split()) for f in FORMS2)
+FORM_WORDS3 = tuple(tuple(f.split()) for f in FORMS3)
+# The flags of the verify forms that take a value (an unknown flag is taken as taking none, so its next word is judged as an operand:
+# the safe direction, a command the check cannot place is not run).
+VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp",
+               "--type", "--key", "--bundle", "--signature", "--certificate", "--certificate-chain", "--trusted-root", "--output", "-o",
+               "--owner", "--repo", "-R", "--predicate-type", "--signer-workflow", "--signer-repo", "--cert-identity",
+               "--cert-identity-regex", "--cert-oidc-issuer", "--source-ref", "--source-digest", "--digest-alg", "--format", "--jq", "-q",
+               "--template", "-t", "--hostname", "--custom-trusted-root", "--signer-digest", "--cert", "--sig", "--rekor-url"}
+# The value of these flags names a file the command reads: a file operand unless it is a URL (a value with ://), so a command whose only file operand is
+# such a value, not local to Check, is not runnable at Check (it may be listed; Release's post-publish verification runs it with the downloaded files).
+FILE_FLAGS = {"--bundle", "--certificate", "--cert", "--signature", "--sig", "--key", "--certificate-chain", "--rekor-url"}
+JQ_TWO = {"--arg", "--argjson", "--slurpfile", "--rawfile"}
+LOCAL = {"TAG", "IDENTITY"}     # placeholders Check fills with a local value
+IMAGE = {"IMAGE_REF", "IMAGE_REF_FIPS"}
+
+
+def image_ref(word):
+    """An image reference: an image placeholder, oci://..., or a literal with a path and a tag or digest (no URL scheme)."""
+    if any(p in IMAGE for p in PH.findall(word)) or word.startswith("oci://"):
+        return True
+    w = PH.sub("X", word)
+    return "://" not in w and "/" in w and (":" in w or "@" in w)
+
+
+def file_value(v, nonlocal_):
+    """The value of a file-valued flag: a URL is not a file operand; anything else is a local-file operand (judged as the file it names in Check)."""
+    if v and "://" not in v and not os.path.isfile(fill(v)):
+        nonlocal_.append(v)
+
+
+def split_pipes(c):
+    """The pipe segments of a command: split on | outside single and double quotes only (a backslash escapes the next character outside single quotes);
+    None when a quote is left open (the command cannot be placed)."""
+    segs, cur, quote, i = [], "", None, 0
+    while i < len(c):
+        ch = c[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif quote == '"':
+            if ch == "\\" and i + 1 < len(c):
+                cur += ch; i += 1; ch = c[i]
+            elif ch == '"':
+                quote = None
+        elif ch == "\\" and i + 1 < len(c):
+            cur += ch; i += 1; ch = c[i]
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "|":
+            segs.append(cur); cur = ""; i += 1
+            continue
+        cur += ch; i += 1
+    if quote:
+        return None
+    segs.append(cur)
+    return segs
+
+
+def classify(c):
+    """("run", "") | ("registry", why) | ("no", why) | ("syntax", why): the command runs, needs a registry, cannot run on a candidate, or has shell syntax no
+    command of the guide may have (judged before the cannot-run list is consulted, so a listed command is never excused for its syntax)."""
+    if "`" in c:
+        return "syntax", "shell syntax: a backquote"
+    quote, i = None, 0
+    while i < len(c):
+        ch = c[i]
+        if ch == "\\" and quote != "'":
+            # a backslash outside single quotes makes the next character literal: it never opens or closes a quoted region (a $ stays refused)
+            if i + 1 < len(c) and c[i + 1] != "$":
+                i += 2
+                continue
+        if quote:
+            if ch == quote:
+                quote = None
+            elif ch == "$" and quote == '"':
+                return "syntax", "shell syntax: an expansion ($) inside double quotes"
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "$":
+            return "syntax", "shell syntax: an expansion ($) outside single quotes"
+        i += 1
+    lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
+    lx.whitespace_split = True
+    try:
+        toks = [PH_BACK.sub(lambda m: "<%s>" % m.group(1), w) for w in lx]
+    except ValueError as e:
+        return "syntax", "shell syntax: unparseable (%s)" % e
+    segs = [[]]
+    for w in toks:
+        if w == "|":
+            segs.append([])
+        elif w and all(ch in "();<>|&" for ch in w):
+            return "syntax", "shell syntax other than a pipe: %s" % w
+        else:
+            segs[-1].append(w)
+    registry, nonlocal_ = [], []
+    for s in segs:
+        if not s:
+            return "syntax", "shell syntax: an empty pipe segment"
+        if s[0] == "jq":
+            words, i, filt = s[1:], 0, False
+            while i < len(words):
+                w = words[i]
+                if w in JQ_TWO:
+                    i += 3; continue
+                if w.startswith("-"):
+                    i += 1; continue
+                if not filt:
+                    filt = True
+                elif not os.path.isfile(fill(w)):
+                    nonlocal_.append(w)
+                i += 1
+            continue
+        if tuple(s[:2]) in FORM_WORDS2:
+            words = s[2:]
+        elif tuple(s[:3]) in FORM_WORDS3:
+            words = s[3:]
+        else:
+            return "no", "`%s` is not one of the verify forms or jq" % " ".join(s[:3])
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if w.startswith("-"):
+                flag, eq, val = w.partition("=")
+                if eq:
+                    if flag in FILE_FLAGS:
+                        file_value(val, nonlocal_)
+                    i += 1
+                elif w in VALUE_FLAGS:
+                    if w in FILE_FLAGS and i + 1 < len(words):
+                        file_value(words[i + 1], nonlocal_)
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if image_ref(w):
+                registry.append(w)
+            elif not os.path.isfile(fill(w)):
+                nonlocal_.append(w)
+            i += 1
+    if registry:
+        return "registry", "it verifies the image reference %s" % ", ".join(registry)
+    if nonlocal_:
+        return "no", "its operand %s is not a local file" % ", ".join(nonlocal_)
+    return "run", ""
+
+
+excused = {}
+if os.path.exists(listpath):
+    try:
+        rows = json.load(open(listpath))
+    except ValueError as e:
+        fail("the cannot-run list %s is not JSON: %s" % (listpath, e))
+    if not isinstance(rows, list):
+        fail("the cannot-run list %s is not a list" % listpath)
+    for r in rows:
+        if not (isinstance(r, dict) and set(r) == {"command", "reason"} and isinstance(r["command"], str) and isinstance(r["reason"], str)
+                and r["command"].strip() and r["reason"].strip()):
+            fail("a cannot-run entry must be exactly {command, reason}, both non-empty: %r" % (r,))
+        if r["command"] in excused:
+            fail("the cannot-run list names `%s` twice" % r["command"])
+        excused[r["command"]] = r["reason"]
+def verify_form(c):
+    """Every pipe segment is a verify form or jq (what Release's post-publish step runs from this list)."""
+    segs = split_pipes(c)
+    if segs is None:
+        return False
+    for seg in segs:
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            return False
+        if not (w[:1] == ["jq"] or tuple(w[:2]) in FORM_WORDS2 or tuple(w[:3]) in FORM_WORDS3):
+            return False
+    return True
+for c in excused:
+    if not verify_form(c):
+        fail("the cannot-run entry `%s` is not a verify form (Release runs only the verify forms from this list)" % c)
+    if c not in cmds:
+        fail("the cannot-run entry `%s` is not in the guide (a stale list)" % c)
+
+PH_BACK = re.compile(r"PH_([A-Z][A-Z0-9_]*)")
+repo = os.environ.get("CANDIDATE_REPOSITORY", "")
+gh_repo, gh_ref = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_REF", "")
+values = {"IMAGE_REF": repo + "@" + digest if repo else "", "IMAGE_REF_FIPS": repo + "@" + digest_fips if repo else "",
+          "TAG": os.environ.get("GITHUB_REF_NAME", ""),
+          "IDENTITY": "https://github.com/%s/.github/workflows/stage-sign.yml@%s" % (gh_repo, gh_ref) if gh_repo and gh_ref else ""}
+SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
+
+
+def fill(word):
+    """The word with the local placeholders filled (an operand is judged as the file it names in Check)."""
+    return PH.sub(lambda m: values.get(m.group(1), m.group(0)) if m.group(1) in LOCAL else m.group(0), word)
+plan = []
+for c in cmds:
+    for u in PH.findall(c):
+        if u not in defined:
+            fail("the command `%s` uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
+    kind, why = classify(c)
+    if kind == "syntax":
+        fail("the command `%s` has %s: no command of the guide may, listed as not-run or not (Release runs the listed commands unattended)" % (c, why))
+    for u in sorted(set(PH.findall(c))):
+        if u not in LOCAL and u not in IMAGE:
+            fail("the command `%s` uses <%s>, a defined placeholder that neither Check nor Release can substitute (unsupported placeholder; "
+                 "unsubstituted placeholder): listed as not-run or not, it is refused" % (c, u))
+    if c in excused:
+        if kind == "run":
+            fail("the cannot-run entry `%s` is runnable: a runnable command is run, never excused" % c)
+        plan.append({"command": c, "run": None, "reason": excused[c]})
+        continue
+    if kind == "registry":
+        fail("unlisted command needs a registry: `%s` (%s); Check holds the candidate as a file, so it is never run: list it exactly, "
+             "with its reason, in %s" % (c, why, listpath))
+    if kind != "run":
+        fail("the command `%s` is not runnable on a candidate (%s) and the cannot-run list does not name it" % (c, why))
+    run = c
+    for u in sorted(set(PH.findall(c))):
+        if u not in values:
+            fail("the command `%s` keeps <%s>: Check has no candidate value for it (unsubstituted placeholder)" % (c, u))
+        v = values[u]
+        if not v:
+            if u == "IMAGE_REF":
+                fail("Check has no registry reference for the candidate (CANDIDATE_REPOSITORY is not set): <IMAGE_REF> in `%s` cannot be substituted" % c)
+            fail("Check has no value for <%s> in this run: `%s` cannot be substituted" % (u, c))
+        if not SAFE.match(v):
+            fail("the candidate value for <%s> is not a plain reference: %r" % (u, v))
+        run = run.replace("<%s>" % u, v)
+    if PH.search(run):
+        fail("the command `%s` keeps a placeholder after substitution (unsubstituted placeholder)" % c)
+    plan.append({"command": c, "run": run, "reason": None})
+with open(planpath, "w") as f:
+    for p in plan:
+        f.write(json.dumps(p) + "\n")

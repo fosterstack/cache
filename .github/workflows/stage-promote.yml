@@ -1,455 +1,263 @@
-name: 'Stage: promotion'
-
-# Release-chain promotion stage (release-chain-design.md §2 Stage 7).
-# No build step of any kind. Verifies the release-authorization
-# predicate for D, then copies each candidate BY DIGEST into the public
-# registries — ghcr.io (canonical) and docker.io/fosterstack/cache (the
-# mirror, owner decision Sep 12) — applying the version tags in the same
-# operation and asserting the public digest equals D after every copy.
-# Candidates never touch Docker Hub. cosign signs the public digests in
-# BOTH registries (signatures are per-registry artifacts). The release
-# is files: the draft GitHub Release gets the archives, checksums and
-# their cosign bundle, SBOMs, VEX document, and release-manifest.json —
-# then the customer-facing verify and anonymous-pull checks run against
-# the public digests, and only then is the release undrafted.
-#
-# OWNER SETUP (TODO, required before the first tag run):
-#   - Create a deployment environment named `release`
-#     (Settings → Environments → New environment: release).
-#   - On that environment, add two secrets:
-#       DOCKERHUB_USERNAME — fosterstackadmin
-#       DOCKERHUB_TOKEN    — a Docker Hub access token scoped
-#                            read/write to the fosterstack/cache
-#                            repository only.
-#   Until the environment and secrets exist, this stage fails at the
-#   Docker Hub login — the correct failure mode (no silent GHCR-only
-#   promotion that docs would then misdescribe).
-
+# The Release stage of the v0.3.0 release chain (rules 5, 17, 29, 50, 52, 53, 56, 57, 60, 61, 63, 64, 65, 69, 70, 71, 79; REQ-CHAIN-007). Called only from release.yml, after Check,
+# Sign and Sign-rebuild (it needs exactly those three; it reaches Build and Rebuild through them). This is the ONLY file of the repository that holds a registry credential,
+# the apk signing key or packages: write, and the release job binds the secrets only in the Witness steps that need them (the environment named release holds them; the job's write permissions exist from its start, which is why it needs the verify job).
+# It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68) and the pinned melange (for the apk re-signing, REQ-CHAIN-007-AC1), the earlier stages' artifacts, then six Witness steps through the one helper,
+# each a committed script: release-verify (no credential is bound to this step: the tag, the release policy, every earlier stage's record in rule 69's order),
+# release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
+# release-sign (keyless signatures with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
+# commands that need a registry, run against what was just published, in both registries; rule 79 as amended by the owner on Oct 10). Release creates no tag.
+# A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after the verify job: the release job carries the job-level condition below and is skipped (and every
+# witnessed step after release-verify carries it too), so no secret or key is bound to any step, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
+# The shape of this file is judged by bin/chain-release-wiring-test.sh and the closed grammar of bin/chain-sign-wiring-test.sh.
+name: 'Stage: release'
 on:
   workflow_call:
-    inputs:
-      baseline-version:
-        description: 'the approved ACs baseline admission used (REQ-REL-009-AC13); empty = the tag''s own'
-        required: false
-        type: string
-        default: ''
-      digests:
-        description: 'JSON {production, debug, fips} candidate index digests'
-        required: true
-        type: string
-      dist-artifact:
-        description: 'the dist artifact (archives, checksums, SBOMs)'
-        required: true
-        type: string
-      expected-checksums:
-        description: 'checksums.txt content from the build stage'
-        required: true
-        type: string
-
 permissions:
   contents: read
-
 jobs:
-  promote:
-    name: promotion
-    runs-on: ubuntu-latest
-    environment: release
+  # The compare job (the owner's rule of Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: "the signer and the builder need hardware isolation ... the best github
+  # actions can do ... is to use separate jobs"): it receives Build's apks and Rebuild's apks, compares them with bin/release-compare.sh (control and data sections; signatures are checked against the committed key, not compared), and hands on one small result
+  # file. It holds contents read ONLY: no environment, no secret, no write token and no identity token (an identity token can mint a signing certificate), so it is a plain step and
+  # not a Witness step. The verify job reads the result file and checks it against Build's attested apk digests; Rebuild's apks never reach a job that holds a credential.
+  compare:
+    runs-on: ubuntu-24.04
     permissions:
-      contents: write       # create the draft release and upload assets
-      packages: write       # push public images, signatures, referrers
-      id-token: write       # cosign keyless signing
-      attestations: write   # actions/attest signs the publication-outcomes predicate (B01)
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: log in to GHCR
-        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
-
-      - name: verify the release-authorization predicate for D on entry
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            gh attestation verify "oci://${repo}@${d}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://fosterstack.com/attestations/release-authorization/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml" \
-              --source-digest "${GITHUB_SHA}" \
-              --source-ref "${GITHUB_REF}" \
-              --format json > "/tmp/auth-${v}.json"
-            auth_tag=$(jq -r '.[0].verificationResult.statement.predicate.tag' "/tmp/auth-${v}.json")
-            auth_sha=$(jq -r '.[0].verificationResult.statement.predicate.sha' "/tmp/auth-${v}.json")
-            auth_digest=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' "/tmp/auth-${v}.json")
-            [ "$auth_tag" = "${GITHUB_REF_NAME}" ] \
-              || { echo "::error::authorization is for ${auth_tag}, this run promotes ${GITHUB_REF_NAME}" >&2; exit 1; }
-            # R08: bind tag, SOURCE SHA, and the exact authorized digest -
-            # a validly signed authorization for the same tag but a foreign
-            # commit or a different digest must not promote.
-            [ "$auth_sha" = "${GITHUB_SHA}" ] \
-              || { echo "::error::authorization source ${auth_sha} != this run's ${GITHUB_SHA}" >&2; exit 1; }
-            [ "$auth_digest" = "$d" ] \
-              || { echo "::error::authorization ${v} digest ${auth_digest} != promoting ${d}" >&2; exit 1; }
-            echo "authorization verified for ${v} (tag, source, digest bound)"
-          done
-
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ${{ inputs.dist-artifact }}
-          path: dist/
-
-      - name: verify the archives one last time before they become release assets
-        env:
-          EXPECTED: ${{ inputs.expected-checksums }}
-        run: |
-          set -euo pipefail
-          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
-          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          go-version-file: go.mod
-          check-latest: false
-
-      - name: install crane (pinned; module proxy is checksum-verified)
-        run: GOTOOLCHAIN=local go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
-
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-
-      - name: log in to Docker Hub (mirror)
-        run: echo '${{ secrets.DOCKERHUB_TOKEN }}' | docker login docker.io -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
-
-      - name: promote by digest to both registries, tags applied in the same operation
-        id: promote
-        run: |
-          set -euo pipefail
-          src="ghcr.io/${{ github.repository_owner }}/cache-candidates"
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          hub="docker.io/fosterstack/cache"
-          # F11: image tags are UNPREFIXED (0.2.0), matching v0.1.0's
-          # published tags and the docs' latest-release resolver which
-          # strips the leading v. The git/release tag stays vX.Y.Z.
-          ver="${GITHUB_REF_NAME#v}"
-          tag_for() { case "$1" in production) echo "$ver";; debug) echo "$ver-debug";; fips) echo "$ver-fips";; esac; }
-          float_for() { case "$1" in production) echo "latest";; debug) echo "debug";; fips) echo "fips";; esac; }
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            t=$(tag_for "$v"); f=$(float_for "$v")
-            for dst in "$ghcr" "$hub"; do
-              crane copy "${src}@${d}" "${dst}:${t}"
-              crane tag "${dst}:${t}" "${f}"
-              for check in "$t" "$f"; do
-                got=$(crane digest "${dst}:${check}")
-                [ "$got" = "$d" ] \
-                  || { echo "::error::post-copy digest mismatch at ${dst}:${check}: ${got} != ${d}" >&2; exit 1; }
-              done
-              echo "${v} -> ${dst}:${t} (+${f}) at ${d} — digest equality asserted"
-            done
-          done
-
-      - name: cosign-sign the public digests in BOTH registries (keyless)
-        run: |
-          set -euo pipefail
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          hub="docker.io/fosterstack/cache"
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            cosign sign --yes "${ghcr}@${d}"
-            cosign sign --yes "${hub}@${d}"
-          done
-
-      # Scanner-panel rule 10 (owner RATIFIED Oct 2; REQ-SCAN-010): our VEX in three forms, generated from the ONE OpenVEX
-      # file and this release's image digests (each variant's index and its linux children), BEFORE the manifest is
-      # assembled, so the manifest records all three files' sha256 and the release's existing signing covers them.
-      - name: generate the VEX in three forms (OpenVEX, Inspector suppression rules, CSAF 2.0)
-        env:
-          DIGESTS: ${{ inputs.digests }}
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME}"
-          src="ghcr.io/${{ github.repository_owner }}/cache-candidates"
-          echo '{}' > /tmp/vex-images.json
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<"${DIGESTS}")
-            kids=$(crane manifest "${src}@${d}" | jq -c '[.manifests[] | select(.platform.os == "linux") | {key: ("linux/" + .platform.architecture), value: .digest}] | from_entries')
-            [ "$(jq 'length' <<<"$kids")" = 2 ] || { echo "::error::${v} index ${d} does not name exactly the two linux children" >&2; exit 1; }
-            jq --arg v "$v" --arg d "$d" --argjson k "$kids" '. + {($v): {index: $d, children: $k}}' /tmp/vex-images.json > /tmp/vex-images.tmp
-            mv /tmp/vex-images.tmp /tmp/vex-images.json
-          done
-          mkdir -p /tmp/vex
-          cp .vex/fosterstack-cache.openvex.json /tmp/vex/
-          python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images /tmp/vex-images.json \
-            --version "$ver" --out-dir /tmp/vex
-
-      - name: assemble release-manifest.json (the release evidence bundle, design §3)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASELINE: ${{ inputs.baseline-version }}
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME}"
-          base="${BASELINE:-$ver}"   # admission's baseline (REQ-REL-009-AC13); the tag's own for owner-signed tags
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          hub="docker.io/fosterstack/cache"
-          # per-AC results, copied from the verified acceptance predicate
-          gh attestation verify "oci://ghcr.io/${{ github.repository_owner }}/cache-candidates@$(jq -r '.production' <<<'${{ inputs.digests }}')" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --predicate-type https://fosterstack.com/attestations/acceptance/v1 \
-            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-acceptance-predicate.yml" \
-            --source-digest "${GITHUB_SHA}" \
-            --source-ref "${GITHUB_REF}" \
-            --format json | jq '.[0].verificationResult.statement.predicate.ac_results' > /tmp/ac-results.json
-          jq -c '.[0].verificationResult.statement.predicate.verified_statements' /tmp/auth-production.json > /tmp/verified.json
-          jq -R -s '[split("\n")[] | select(length > 0) | split("  ") | {sha256: .[0], name: .[1]}]' \
-            /tmp/expected-checksums.txt > /tmp/archives.json
-          jq -n \
-            --arg version "$ver" \
-            --arg sha "${GITHUB_SHA}" \
-            --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
-            --arg workflow "${GITHUB_WORKFLOW_REF}" \
-            --arg ghcr "$ghcr" --arg hub "$hub" \
-            --arg repofull "${GITHUB_REPOSITORY}" \
-            --arg ref "${GITHUB_REF}" \
-            --arg baseline "requirements/releases/${base}.yaml" \
-            --arg baseline_sha "$(sha256sum "requirements/releases/${base}.yaml" | cut -d' ' -f1)" \
-            --arg evidence_sha "$(sha256sum test-evidence/mappings.yaml | cut -d' ' -f1)" \
-            --arg vex_openvex_sha "$(sha256sum /tmp/vex/fosterstack-cache.openvex.json | cut -d' ' -f1)" \
-            --arg vex_inspector_sha "$(sha256sum "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" | cut -d' ' -f1)" \
-            --arg vex_csaf_sha "$(sha256sum "/tmp/vex/fosterstack-cache-${ver}.csaf.json" | cut -d' ' -f1)" \
-            --argjson digests '${{ inputs.digests }}' \
-            --slurpfile archives /tmp/archives.json \
-            --slurpfile acs /tmp/ac-results.json \
-            --slurpfile statements /tmp/verified.json \
-            '{
-              version: $version, commit: $sha, generated_at: $generated,
-              run: {url: $run, workflow: $workflow},
-              images: ($digests | to_entries | map({variant: .key, digest: .value,
-                refs: [($ghcr + "@" + .value), ($hub + "@" + .value)]})),
-              archives: $archives[0],
-              requirements_baseline: {path: $baseline, sha256: $baseline_sha},
-              test_evidence: {path: "test-evidence/mappings.yaml", sha256: $evidence_sha},
-              vex: [{file: "fosterstack-cache.openvex.json", form: "openvex", sha256: $vex_openvex_sha},
-                    {file: ("fosterstack-cache-" + $version + ".inspector-filters.json"), form: "inspector-suppression-rules", sha256: $vex_inspector_sha},
-                    {file: ("fosterstack-cache-" + $version + ".csaf.json"), form: "csaf-2.0-vex", sha256: $vex_csaf_sha}],
-              verified_statements: $statements[0],
-              ac_results: $acs[0],
-              publication_evidence: {
-                note: "Publication-phase ACs (REQ-REL-001-AC1, REQ-REL-002-AC1) are recorded in a SEPARATE signed publication attestation (predicate_type below) over these same image digests, tag, and commit, produced after the anonymous customer-verification and every-tag anonymous-pull checks pass. This manifest is assembled and signed BEFORE those checks, so its ac_results shows them deferred; the durable pass record is the publication attestation. This manifest is not mutated after signing.",
-                predicate_type: "https://fosterstack.com/attestations/publication/v1",
-                repo: $repofull,
-                tag: $version,
-                commit: $sha,
-                signer_workflow: ".github/workflows/stage-promote.yml",
-                signer_ref: $ref,
-                verify: ("gh attestation verify oci://<image>@<digest> --repo " + $repofull + " --predicate-type https://fosterstack.com/attestations/publication/v1 --signer-workflow " + $repofull + "/.github/workflows/stage-promote.yml --source-digest " + $sha + " --source-ref " + $ref)
-              }
-            }' > /tmp/release-manifest.json
-          jq . /tmp/release-manifest.json >/dev/null
-          cat /tmp/release-manifest.json
-
-      - name: attach the manifest as an OCI referrer on the public digests
-        run: |
-          set -euo pipefail
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          hub="docker.io/fosterstack/cache"
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            cosign attest --yes \
-              --predicate /tmp/release-manifest.json \
-              --type https://fosterstack.com/attestations/release-manifest/v1 \
-              "${ghcr}@${d}"
-            # Docker Hub referrer support varies; the mirror referrer is
-            # best-effort with a loud warning, never a silent skip.
-            cosign attest --yes \
-              --predicate /tmp/release-manifest.json \
-              --type https://fosterstack.com/attestations/release-manifest/v1 \
-              "${hub}@${d}" \
-              || echo "::warning::could not attach the manifest referrer on ${hub}@${d} — GHCR referrer is authoritative"
-          done
-
-      - name: sign the checksums file (customer-verifiable bundle)
-        run: |
-          set -euo pipefail
-          cosign sign-blob --yes dist/checksums.txt \
-            --bundle /tmp/checksums.txt.bundle
-
-      - name: create the draft release and upload every file
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME}"
-          # AC8: a generated patch tag carries its notes (bin/patch-decide.py tag-notes); any other tag has none
-          git fetch --no-tags origin "+refs/tags/${ver}:refs/tags/${ver}"
-          git cat-file tag "$ver" | python3 bin/patch-decide.py tag-notes > /tmp/notes.md || : > /tmp/notes.md
-          [ ! -s /tmp/notes.md ] || printf '\n' >> /tmp/notes.md
-          echo "See release-manifest.json for the full evidence bundle: image digests (GHCR canonical, Docker Hub mirror — identical digests), archive checksums, requirements baseline, per-AC acceptance results, and the Rekor log index of every verified statement in the release chain." >> /tmp/notes.md
-          gh release create "$ver" --draft --verify-tag \
-            --title "fscache ${ver}" \
-            --notes-file /tmp/notes.md
-          gh release upload "$ver" \
-            dist/*.tar.gz dist/checksums.txt /tmp/checksums.txt.bundle \
-            /tmp/release-manifest.json \
-            /tmp/vex/fosterstack-cache.openvex.json \
-            "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" "/tmp/vex/fosterstack-cache-${ver}.csaf.json"
-          if compgen -G 'dist/*.sbom.json' >/dev/null; then
-            gh release upload "$ver" dist/*.sbom.json
-          else
-            echo "::error::no SBOM files in dist — the build stage should have produced them" >&2; exit 1
-          fi
-
-      # R09: the GH-attestation chain check (needs a token) is retained
-      # as an internal gate, but the CUSTOMER-facing evidence must be the
-      # ACTUAL documented ANONYMOUS commands - cosign image verification
-      # and the checksums-bundle blob verification - run with NO GitHub or
-      # registry credentials, plus wrong-signer/corrupt-bundle negative
-      # controls that MUST fail.
-      - name: internal chain check (authenticated) against the public digests
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            gh attestation verify "oci://${ghcr}@${d}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://fosterstack.com/attestations/release-authorization/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml" \
-              --source-digest "${GITHUB_SHA}" \
-              --source-ref "${GITHUB_REF}" >/dev/null
-          done
-
-      - name: documented ANONYMOUS customer verification (cosign, no credentials)
-        env:
-          # Strip every credential a customer would not have: no GH token,
-          # empty docker config. cosign keyless verification uses Fulcio/
-          # Rekor public infrastructure, not the registry credential.
-          GH_TOKEN: ""
-          COSIGN_EXPERIMENTAL: "0"
-        run: |
-          set -euo pipefail
-          DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG   # anonymous registry access
-          # B05: pin the RELEASE signer to the exact promotion workflow that
-          # cosign-signs the public digests (stage-promote.yml), not "any
-          # workflow in this repo". The SAN is
-          # https://github.com/<repo>/.github/workflows/stage-promote.yml@<ref>.
-          # Pin the exact promotion workflow AND the release ref (this tag),
-          # anchored end-to-end so stage-promote.yml @ another ref is rejected.
-          # A tag ref (refs/tags/vX.Y.Z) contains only dots as regex
-          # metacharacters; escape those so the identity regexp is literal.
-          refescaped=$(printf '%s' "${GITHUB_REF}" | sed 's/\./\\./g')
-          signer="^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-promote\.yml@${refescaped}$"
-          idflags=( --certificate-identity-regexp "$signer"
-                    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          hub="docker.io/fosterstack/cache"
-          for reg in "$ghcr" "$hub"; do
-            for v in production debug fips; do
-              d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-              cosign verify "${reg}@${d}" "${idflags[@]}" >/dev/null \
-                || { echo "::error::anonymous cosign verify failed for ${reg}@${d}" >&2; exit 1; }
-            done
-          done
-          d0=$(jq -r '.production' <<<'${{ inputs.digests }}')
-          # NEGATIVE CONTROL 1: a different REPOSITORY must be rejected.
-          if cosign verify "${ghcr}@${d0}" \
-               --certificate-identity-regexp '^https://github\.com/attacker/' \
-               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
-            echo "::error::cosign verify accepted a WRONG repository identity" >&2; exit 1
-          fi
-          # NEGATIVE CONTROL 2: a same-repo WRONG WORKFLOW must be rejected -
-          # the signature identifies the release (promotion) workflow, not
-          # merely "something in this repo".
-          if cosign verify "${ghcr}@${d0}" \
-               --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-image\.yml@" \
-               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
-            echo "::error::cosign verify accepted a same-repo WRONG workflow identity (stage-image.yml) - the signer pin is too loose" >&2; exit 1
-          fi
-          # NEGATIVE CONTROL 3: the right workflow at a WRONG REF must be
-          # rejected - the signature identifies the release tag, not the
-          # workflow file at any branch/ref.
-          if cosign verify "${ghcr}@${d0}" \
-               --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-promote\.yml@refs/heads/" \
-               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
-            echo "::error::cosign verify accepted stage-promote.yml at a branch ref - the release-ref pin is too loose" >&2; exit 1
-          fi
-          # Checksums bundle, verified anonymously (cosign verify-blob).
-          cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" \
-            || { echo "::error::anonymous checksums-bundle verification failed" >&2; exit 1; }
-          # NEGATIVE CONTROL: a corrupted checksums file MUST fail the bundle.
-          cp dist/checksums.txt /tmp/checksums.corrupt && printf 'tamper\n' >> /tmp/checksums.corrupt
-          if cosign verify-blob /tmp/checksums.corrupt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" >/dev/null 2>&1; then
-            echo "::error::verify-blob accepted a TAMPERED checksums file - the bundle check is not sound" >&2; exit 1
-          fi
-          echo "anonymous cosign image + checksums verification passed; negative controls rejected"
-
-      - name: anonymous-pull check, EVERY promised tag, both registries
-        run: |
-          set -euo pipefail
-          DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG
-          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
-          hub="docker.io/fosterstack/cache"
-          ver="${GITHUB_REF_NAME#v}"
-          # versioned AND floating tags - the floating ones are what most
-          # consumers pull, so they must resolve to the promoted digests too.
-          for pair in "production:${ver}" "debug:${ver}-debug" "fips:${ver}-fips" \
-                      "production:latest" "debug:debug" "fips:fips"; do
-            v="${pair%%:*}"; t="${pair#*:}"
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            for reg in "$ghcr" "$hub"; do
-              got=$(crane digest "${reg}:${t}")
-              [ "$got" = "$d" ] || { echo "::error::anonymous pull of ${reg}:${t} resolves ${got}, want ${d}" >&2; exit 1; }
-            done
-          done
-          echo "anonymous pulls resolve the promoted digests for every versioned and floating tag at both registries"
-
-      # R09: close the publication-phase ACs in the FINAL signed evidence.
-      # The manifest was assembled before these checks; now that the
-      # anonymous customer verification and the every-tag anonymous pull
-      # have passed, record REL-001/REL-002 as passed and sign a
-      # publication predicate over the public digests so the deferral is
-      # resolved in the durable record, not left dangling at undraft.
-      - name: sign the publication-outcomes predicate (closes REL-001/REL-002)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          jq -n \
-            --arg tag "${GITHUB_REF_NAME}" \
-            --arg sha "${GITHUB_SHA}" \
-            --argjson digests '${{ inputs.digests }}' \
-            '{
-              tag: $tag, sha: $sha, index_digests: $digests,
-              publication_ac_results: [
-                {ac: "REQ-REL-001-AC1", result: "pass", evidence: "anonymous cosign image verification + checksums-bundle verify-blob, wrong-signer and corrupt-bundle negatives rejected"},
-                {ac: "REQ-REL-002-AC1", result: "pass", evidence: "anonymous crane digest of every versioned and floating tag at ghcr.io and docker.io resolves the promoted digest"}
-              ]
-            }' > /tmp/publication-predicate.json
-          for v in production debug fips; do
-            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            echo "${d#sha256:}  cache-${v}"
-          done > /tmp/publication-subjects.txt
-          cat /tmp/publication-predicate.json
-
-      - name: attest the publication-outcomes predicate
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          subject-checksums: /tmp/publication-subjects.txt
-          predicate-type: https://fosterstack.com/attestations/publication/v1
-          predicate-path: /tmp/publication-predicate.json
-
-      # B05: the manifest is NOT mutated after it was signed and attached
-      # as a registry referrer. The publication outcomes live only in the
-      # separate signed publication attestation over the same digests; the
-      # manifest already points a customer to it (publication_evidence).
-      # This keeps the signed asset, the registry referrer, and the
-      # published release asset byte-identical.
-
-      - name: undraft — the release is public
+          name: rapk-ubuntu-24.04
+          path: rapks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04-arm
+          path: rapks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
+      - name: compare Build's and Rebuild's apks
+        run: bash bin/release-compare.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apk-compare
+          path: apk-compare
+          if-no-files-found: error
+  # The verify job (REQ-CHAIN-007-AC1, Astra R6): contents read and the identity token Witness needs, and nothing else: no environment, no secret, no write token.
+  # It verifies every earlier stage's record (release-verify under Witness). The release job below needs it, so no job that holds a write token or a secret starts
+  # unless the records were verified by an earlier job; it also repeats release-verify on its own downloads before any credential step.
+  verify:
+    needs: compare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check
+          path: witness-check
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check-arm64
+          path: witness-check/witness-arm64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results
+          path: check-results
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-compare
+          path: apk-compare
+      - name: release-verify under Witness
+        run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-release-verify
+          path: witness-release-verify
+          if-no-files-found: error
+  release:
+    needs: [compare, verify]
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: install melange (pinned by checksum; release-apks signs through bin/release-sign-apks.sh, which needs it)
+        run: bash bin/install-build-tools.sh melange
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check
+          path: witness-check
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check-arm64
+          path: witness-check/witness-arm64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results
+          path: check-results
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-compare
+          path: apk-compare
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - name: release-verify under Witness
+        run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - name: release-apks under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}
+        run: bash bin/witnessed.sh release-apks bin/release-apks.sh
+      - name: release-publish under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh release-publish bin/release-publish.sh
+      - name: release-sign under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh release-sign bin/release-sign.sh
+      - name: release-assets under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
+        run: bash bin/witnessed.sh release-assets bin/release-assets.sh
+      - name: release-postverify under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
+      - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+      - name: release-apks record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-apks/release-apks-collection.json
+      - name: release-publish record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.json
+      - name: release-sign record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-sign/release-sign-collection.json
+      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.json
+      - name: release-postverify record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-evidence
+          path: release-evidence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-release
+          path: |
+            witness-release-verify
+            witness-release-apks
+            witness-release-publish
+            witness-release-sign
+            witness-release-assets
+            witness-release-postverify

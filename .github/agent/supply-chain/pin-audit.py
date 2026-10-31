@@ -50,6 +50,9 @@ class Fail(Exception):
     """The audit could not do its job (exit 2)."""
 
 
+_ADVISORY = (("vulnerabilities", list),)      # a GitHub advisory answer holds its vulnerabilities list; the package, range and updated_at inside are read fail closed
+
+
 # ---------- versions and ranges (OSV events, GitHub's comma-separated comparators) ----------
 _PRE = re.compile(r"(?i)^(a|b|c|rc|alpha|beta|pre|preview|dev)")
 _POST = re.compile(r"(?i)^(post|p|rev|r)(?=\d|\.|-|_|$)")
@@ -341,8 +344,23 @@ class LiveNet:
         self.incomplete_prs = []
         self.ignored_entries, self._reported = [], 0   # AC14: every OSV entry the rule did not use, {"id", "path", "reason"}, each once
 
-    def _gh_json(self, path, strict=False):
-        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
+    def _gh_json(self, path, *, need=None, rows=None, strict=False):
+        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent').
+        The caller says what it reads: `need` ((key, type), ...) for an object answer, `rows` for a list whose every row is an object holding those keys
+        (exactly one of the two, no default): an answer of another shape, or without a needed key, is Fail, never 'nothing there'."""
+        if (need is None) == (rows is None):
+            raise TypeError("_gh_json needs exactly one of need= (an object answer) and rows= (a list answer)")
+        val = self._gh_json_raw(path, strict)
+        if val is None:
+            return None
+        try:
+            if need is not None:
+                return age._shaped(val, need, f"gh api {path.split('?')[0]}")
+            return age._dicts(val, f"gh api {path.split('?')[0]}", rows)
+        except age.CouldNotLook as e:
+            raise Fail(str(e))
+
+    def _gh_json_raw(self, path, strict=False):
         with self._lock:
             if (path, strict) in self._memo:
                 return self._memo[(path, strict)]
@@ -355,9 +373,9 @@ class LiveNet:
         try:
             val = None if r.returncode else json.loads(r.stdout)
         except ValueError:
-            val = None
-            if strict:
-                raise Fail(f"gh api {path.split('?')[0]} did not return JSON")
+            raise Fail(f"gh api {path.split('?')[0]} did not return JSON")      # in either mode: a body that is not JSON is not 'absent'
+        if val is None and not r.returncode:
+            raise Fail(f"gh api {path.split('?')[0]} returned null")      # a decoded null is not 'absent' either; only a 404 is
         if strict and r.returncode and not re.search(r"\b404\b", r.stderr + r.stdout):
             raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
         if strict and val is None and r.returncode:
@@ -378,7 +396,12 @@ class LiveNet:
                     d = json.load(r)
             except (OSError, ValueError) as e:
                 raise Fail(f"the OSV query failed: {e}")
-            vulns += d.get("vulns", [])
+            age._shaped(d, (), "the OSV query answer")      # "vulns" and "next_page_token" are optional: OSV answers {} for no vulnerabilities
+            page = d.get("vulns", [])
+            if not isinstance(page, list) or not isinstance(d.get("next_page_token", ""), str):
+                raise Fail("the OSV query answered with vulns that are not a list or a page token that is not text")
+            age._dicts(page, "the OSV vulns", (("id", str),))
+            vulns += page
             token = d.get("next_page_token")
             if not token:
                 return vulns
@@ -387,7 +410,7 @@ class LiveNet:
     def _osv_get(self, advisory_id):
         try:
             with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(advisory_id)}", timeout=30) as r:
-                return json.load(r)
+                return age._shaped(json.load(r), (("id", str),), "the OSV record")
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None  # OSV does not hold this incident
@@ -400,13 +423,24 @@ class LiveNet:
 
     def resolve_ref(self, repo, tag):
         """The commit a (moving) tag points at right now, annotated tags peeled; None when it cannot be resolved."""
-        ref = self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(tag)}")
-        obj = (ref or {}).get("object") or {}
+        obj_need = (("object", dict),)
+        ref = self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(tag)}", need=obj_need)
+        obj = self._object_of(ref)
         for _ in range(3):
-            if obj.get("type") != "tag":
+            if obj is None or obj["type"] != "tag":
                 break
-            obj = (self._gh_json(f"repos/{repo}/git/tags/{obj['sha']}") or {}).get("object") or {}
-        return obj.get("sha") if obj.get("type") == "commit" else None
+            obj = self._object_of(self._gh_json(f"repos/{repo}/git/tags/{obj['sha']}", need=obj_need))
+        return obj["sha"] if obj is not None and obj["type"] == "commit" else None
+
+    @staticmethod
+    def _object_of(answer):
+        """The {type, sha} object of a git ref or tag answer (None for a miss); an object without a text type and sha is unreadable."""
+        if answer is None:
+            return None
+        try:
+            return age._shaped(answer["object"], (("type", str), ("sha", str)), "a git ref's object")
+        except age.CouldNotLook as e:
+            raise Fail(str(e))
 
     @staticmethod
     def _bounded(tags):
@@ -439,23 +473,36 @@ class LiveNet:
         mod = None
         if item.kind == "gotool":
             # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
-            mod = age._go_module(item.name, item.version)[0]
+            mod = age._go_module(item.name, item.version, strict=True)[0]   # a proxy outage is CouldNotLook (exit 2), never "not covered"
         elif item.kind == "tool":
             mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
+
+    @staticmethod
+    def _ranges_of(adv, names):
+        """(readable ranges, unreadable?) of an advisory's entries for our package: an entry with a null, empty or missing range cannot be evaluated, so it counts as a hit (fail closed)."""
+        rngs, unreadable = [], False
+        for x in age._dicts((adv or {"vulnerabilities": []})["vulnerabilities"], "an advisory's vulnerabilities", ()):
+            if _norm_name((x.get("package") or {}).get("name", "")) not in names:
+                continue
+            r = x.get("vulnerable_version_range")
+            if isinstance(r, str) and r.strip():
+                rngs.append(r)
+            else:
+                unreadable = True
+        return rngs, unreadable
 
     def live_ranges(self, item, source, advisory_id):
         """The authoritative advisory's affected ranges for this package, read live (GitHub only: the rulings so far name GitHub)."""
         if str(source).lower() != "github":
             return None
-        adv = self._gh_json(f"advisories/{advisory_id}", strict=True)
+        adv = self._gh_json(f"advisories/{advisory_id}", need=_ADVISORY, strict=True)
         q = self._query(item, self._version_of(item) or "")
         names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
         rule = _go_rule(item, self._version_of(item) or "")
         names |= {_norm_name(p) for p in (rule.paths if rule else [])}   # AC14: GitHub files some Go ranges under the bare path
-        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities",
-            []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
-        return rngs or None
+        rngs, unreadable = self._ranges_of(adv, names)
+        return None if unreadable else (rngs or None)   # an entry of ours with no readable range: the ranges are not known, never a narrower list
 
     def covered(self, item):
         """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked, never as clean.)"""
@@ -500,12 +547,11 @@ class LiveNet:
             osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
             for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
-                    adv = self._gh_json(f"advisories/{alias}", strict=True)
+                    adv = self._gh_json(f"advisories/{alias}", need=_ADVISORY, strict=True)
                     names = {_norm_name(q["package"]["name"]), _norm_name(item.name)} | {_norm_name(p) for p in paths}
-                    rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
-                            if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
-                    if adv and rngs:
-                        ghs.append({"id": alias, "incident": v["id"], "affected": in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
+                    rngs, unreadable = self._ranges_of(adv, names)
+                    if adv and (rngs or unreadable):
+                        ghs.append({"id": alias, "incident": v["id"], "affected": unreadable or in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
         eco = {"actions": "actions", "PyPI": "pip", "Go": "go", "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
         pkg = q["package"]["name"]
         if eco:
@@ -513,14 +559,16 @@ class LiveNet:
             page = []
             asked = list(dict.fromkeys([pkg, *paths]))
             if q["package"]["ecosystem"] == "PyPI":
-                info = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
-                published = (info.get("info") or {}).get("name")
+                info = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json", (("info", dict),)) or {"info": {}}
+                published = info["info"].get("name")      # optional, text when there
+                if published is not None and not isinstance(published, str):
+                    raise age.CouldNotLook("pypi.org answered with a published name that is not text")
                 if published and published != pkg:
                     asked.append(published)            # jaraco.context vs jaraco-context: GitHub matches the exact published name
             for typ in ("", "&type=malware"):
               for nm in asked:
                 for n in range(1, 11):
-                    got = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(nm)}{typ}&per_page=100&page={n}", strict=True)
+                    got = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(nm)}{typ}&per_page=100&page={n}", rows=(("ghsa_id", str),), strict=True)
                     if not isinstance(got, list):
                         raise Fail("GitHub's advisory list was not a list: refusing to read it as 'no advisories'")
                     page += got
@@ -531,9 +579,8 @@ class LiveNet:
             for adv in page:  # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to a filter
                 if adv.get("ghsa_id") in seen:
                     continue
-                rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
-                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in {_norm_name(a) for a in asked}]
-                if rngs and in_range(version, "|".join(rngs)):
+                rngs, unreadable = self._ranges_of(adv, {_norm_name(a) for a in asked})
+                if unreadable or (rngs and in_range(version, "|".join(rngs))):
                     ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"),
                         "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])
@@ -632,7 +679,7 @@ class LiveNet:
             return True
         if age._tag_for_commit(item.name, item.version) is not None:
             return True
-        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100") or []):  # a release branch of the same repository
+        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100", rows=(("name", str),)) or []):  # a release branch of the same repository
             if br.get("name") != branch:
                 c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
                 self._api_ok(c, item)
@@ -652,8 +699,8 @@ class LiveNet:
         out = []
         for name in ("action.yml", "action.yaml"):
             sub = f"{item.path}/" if getattr(item, "path", "") else ""
-            c = self._gh_json(f"repos/{item.name}/contents/{sub}{name}?ref={item.version}")
-            if c and c.get("content"):
+            c = self._gh_json(f"repos/{item.name}/contents/{sub}{name}?ref={item.version}", need=(("content", str),))
+            if c and c["content"]:
                 try:
                     doc = inv.yaml.load(base64.b64decode(c["content"]).decode(), Loader=inv.yaml.BaseLoader) or {}
                 except inv.yaml.YAMLError:
@@ -670,12 +717,12 @@ class LiveNet:
     def versions(self, item):
         """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody searched, and it is a decision)."""
         if item.kind == "package":
-            d = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json")
-            if not d:
+            d = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json", (("info", dict), ("releases", dict)))
+            if d is None:
                 return None
             out = []
-            for ver, files in (d.get("releases") or {}).items():
-                ups = [f.get("upload_time_iso_8601") for f in files if f.get("upload_time_iso_8601") and not f.get("yanked")]
+            for ver, files in d["releases"].items():
+                ups = [f.get("upload_time_iso_8601") for f in age._dicts(files, "pypi release files", ()) if f.get("upload_time_iso_8601") and not f.get("yanked")]      # upload time and yanked are optional
                 if ups:
                     out.append({"version": ver, "sha": None, "published": min(ups), "_item": inv.Item("package", item.name, ver, ver)})
             return out
@@ -684,7 +731,7 @@ class LiveNet:
             return None
         rels = []
         for pg in range(1, 11):
-            chunk = self._gh_json(f"repos/{repo}/releases?per_page=100&page={pg}")
+            chunk = self._gh_json(f"repos/{repo}/releases?per_page=100&page={pg}", rows=(("tag_name", str), ("draft", bool), ("prerelease", bool), ("published_at", (str, type(None)))))
             if chunk is None:
                 if pg == 1:
                     return None
@@ -698,12 +745,13 @@ class LiveNet:
                 continue
             sha = None
             if item.kind == "action":
-                ref = self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(r['tag_name'])}")
-                if ref and ref.get("object", {}).get("type") == "commit":
-                    sha = ref["object"]["sha"]
-                elif ref and ref.get("object", {}).get("type") == "tag":
-                    t = self._gh_json(f"repos/{repo}/git/tags/{ref['object']['sha']}")
-                    sha = (t or {}).get("object", {}).get("sha")
+                obj_need = (("object", dict),)
+                ref = self._object_of(self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(r['tag_name'])}", need=obj_need))
+                if ref and ref["type"] == "commit":
+                    sha = ref["sha"]
+                elif ref and ref["type"] == "tag":
+                    t = self._object_of(self._gh_json(f"repos/{repo}/git/tags/{ref['sha']}", need=obj_need))
+                    sha = t["sha"] if t else None
             cand = inv.Item(item.kind, item.name, sha, r["tag_name"]) if (item.kind == "action" and sha) else inv.Item(item.kind, item.name, r["tag_name"],
                 r["tag_name"])
             out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "_item": cand})
@@ -715,10 +763,15 @@ class LiveNet:
         if not repo:
             return []
         out = []
-        pulls = age._gh_pages(f"repos/{repo}/pulls?state=open&per_page=100")
+        pulls = age._gh_pages(f"repos/{repo}/pulls?state=open&per_page=100", (("number", int), ("base", dict), ("head", dict)))
         if pulls is None:
             raise Fail("could not list the open pull requests")
         for p in pulls:
+            try:
+                age._shaped(p["base"], (("ref", str),), "a pull request's base")
+                age._shaped(p["head"], (("sha", str),), "a pull request's head")
+            except age.CouldNotLook as e:
+                raise Fail(str(e))
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
@@ -749,7 +802,11 @@ class LiveNet:
         if r.returncode:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
-        for p in json.loads(r.stdout or "[]"):
+        try:
+            listed = age._dicts(json.loads(r.stdout or "[]"), "gh pr list", (("number", int), ("title", str), ("headRefOid", str), ("baseRefName", str)))
+        except (ValueError, age.CouldNotLook) as e:
+            raise Fail(f"gh pr list did not return a list of pull requests ({type(e).__name__})")
+        for p in listed:
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
@@ -763,8 +820,9 @@ class LiveNet:
             except (RuntimeError, ValueError):
                 continue
             try:
-                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
-            except Fail as e:
+                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100", need=(("workflow_runs", list),)) or {"workflow_runs": []}
+                age._dicts(runs["workflow_runs"], "the workflow runs of a pull request", (("id", int),))
+            except (Fail, age.CouldNotLook) as e:
                 print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
                 continue
             mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
@@ -785,8 +843,8 @@ class LiveNet:
         """{"owner/repo@tag": commit} for the latest tags of every action we use plus the tags we pin: what today's run observed."""
         out = {}
         for repo in sorted({i.name for i in items if i.kind == "action"}):
-            for t in age._gh_pages(f"repos/{repo}/tags?per_page=100") or []:
-                out[f"{repo}@{t['name']}"] = t["commit"]["sha"]
+            for t in age._gh_pages(f"repos/{repo}/tags?per_page=100", (("name", str), ("commit", dict))) or []:
+                out[f"{repo}@{t['name']}"] = age._shaped(t["commit"], (("sha", str),), "a tag's commit")["sha"]
         for i in items:
             if i.kind == "action" and inv.SHA40.match(i.version):
                 for tag in age._tags_for_commit(i.name, i.version):
@@ -795,12 +853,12 @@ class LiveNet:
 
     def modified(self, advisory_id):
         if advisory_id.startswith("GHSA-"):
-            adv = self._gh_json(f"advisories/{advisory_id}")
+            adv = self._gh_json(f"advisories/{advisory_id}", need=(("updated_at", (str, type(None))),))
             if adv:
-                return adv.get("updated_at")
+                return adv["updated_at"]
         try:
             with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(advisory_id)}", timeout=30) as r:
-                return json.load(r).get("modified")
+                return age._shaped(json.load(r), (("modified", (str, type(None))),), "the OSV record")["modified"]
         except (OSError, ValueError):
             return None
 
@@ -1059,7 +1117,10 @@ def rollback(item, net, now):
 
 def clean(text):
     """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
-    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
+    # control characters out, and an expression (a secret's name) never printed
+    text = re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))
+    # the runner reads ##[command] anywhere in a line; last, so a removed character cannot join the two
+    return text.replace("##[", "## [")
 
 
 def _safe(text, limit=64):
@@ -1116,6 +1177,7 @@ SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
 }
 
 
@@ -1128,14 +1190,18 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
+    memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     for r in revs:
-        try:
-            items.update(inv.load_at(root, r))
-        except RuntimeError as e:
-            # only the named revisions, and only for the cap's own refusal; every other error, and every unlisted revision, still ends the audit
-            if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
-                continue
-            raise
+        key = inv.tree_key(root, r)
+        if key not in memo:
+            try:
+                memo[key] = inv.load_at(root, r)
+            except RuntimeError as e:
+                # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
+                if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
+                    continue
+                raise
+        items.update(memo[key])
     return items
 
 
@@ -1157,9 +1223,9 @@ def file_issues(gh, plan, today):
         gh.run("label", "create", OWNER_LABEL, "--description", "Needs the owner's decision", ok_fail=True)
     r = gh.run("issue", "list", "--label", HIT_LABEL, "--state", "all", "--json", "number,title,state", "--limit", "1000")
     try:
-        open_issues = json.loads(r.stdout or "[]")
-    except ValueError:
-        raise Fail("gh issue list did not return JSON")
+        open_issues = age._dicts(json.loads(r.stdout or "[]"), "gh issue list", (("number", int), ("title", str)))      # state is optional
+    except (ValueError, age.CouldNotLook):
+        raise Fail("gh issue list did not return a list of issues")
     done = set()
     consumed = set()
     for p in plan:
@@ -1195,17 +1261,18 @@ def file_issues(gh, plan, today):
 
 
 # ---------- held pull requests ----------
-def rerun_held(gh, net, now):
+def rerun_held(gh, net, now, exceptions=None):
     n = 0
     base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
+    src = age.FilePinSource(net, age.load_file_pins(exceptions or age.DEFAULT_EXCEPTIONS, required=bool(exceptions)))   # REQ-SUP-001-AC34: the same trusted file-pin proof the age check takes, or a held update never turns green on day seven
     for pr in net.prs():
         try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
-            items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
+            items = pr.get("_items") or [_item_from_key(k) for k in pr["moved"]]
             for it in items:     # a key-built item (fixtures): its repository path is the part after file:
                 if it.raw is None and it.kind == "tool" and it.version == "(file)" and it.name.startswith("file:"):
                     it.raw = it.name[5:]
             items, _ = age.split_base_inputs(items, base_inputs)   # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
-            rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
+            rows = [age.judge_item(it, src.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
         except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
             print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
             continue
@@ -1219,6 +1286,14 @@ def rerun_held(gh, net, now):
             n += 1
     if not n:
         print("audit: no held pull request is ready to re-run")
+
+
+def _item_from_key(k):
+    """The item a key names; a file item's key ends in #content:<hex> (its identity), which is its step and not part of the version."""
+    it = inv.Item(*_split_key(k.split("#", 1)[0]))
+    if "#" in k:
+        it.step = k.split("#", 1)[1]
+    return it
 
 
 def _split_key(k):
@@ -1253,7 +1328,7 @@ def main(argv=None):
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
         if a.rerun_held:
-            rerun_held(gh, net, now)
+            rerun_held(gh, net, now, a.exceptions)
             return 0
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
@@ -1464,7 +1539,10 @@ def main(argv=None):
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
-        print(f"audit: cannot do its job: {e}", file=sys.stderr)
+        print(f"audit: cannot do its job: {clean(e)}", file=sys.stderr)
+        return 2
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the audit cannot do its job, it never says 'as of' and never ends in a traceback
+        print(f"audit: cannot do its job: an answer could not be read ({type(e).__name__})", file=sys.stderr)
         return 2
 
 

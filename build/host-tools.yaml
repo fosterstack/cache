@@ -1,5 +1,9 @@
-# The packages the Build and Rebuild apk jobs run ON the runner itself (REQ-REFRESH-001-AC35): bubblewrap, the sandbox melange's bubblewrap runner needs and the
-# hosted images do not ship. bin/refresh-inputs.sh resolves this list against live Wolfi (apko lock, with the dependency closure), archives every package by
-# digest and writes build/locks/host-tools.lock; the apk jobs unpack them from the archive (REQ-CHAIN-004-AC17), never from a package manager.
+# The packages the Build and Rebuild apk jobs run ON the runner itself
+# (REQ-REFRESH-001-AC35): bubblewrap, the sandbox melange's bubblewrap runner
+# needs and the hosted images do not ship. bin/refresh-inputs.sh resolves this
+# list against live Wolfi (apko lock, with the dependency closure), archives
+# every package by digest and writes build/locks/host-tools.lock; the apk jobs
+# unpack them from the archive (REQ-CHAIN-004-AC17), never from a package
+# manager.
 packages:
   - bubblewrap

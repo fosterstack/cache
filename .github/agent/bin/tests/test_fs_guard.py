@@ -877,6 +877,7 @@ class Rules(unittest.TestCase):
     def test_bytes_and_pathlike_paths_in_the_generic_branch_are_judged(self):
         import pathlib
         T = self.T
+        pathlib.Path(T.p1("x"))      # warm-up outside the guard: coverage's first trace of a new file stats sys.path, which a guarded window refuses
         with T.active():
             for a in (os.fsencode(T.p2("x")), pathlib.Path(T.p2("x")), T.p2("x")):
                 self.refused(G._hook, "os.some_future_event", (a,))

@@ -1,0 +1,30 @@
+{
+ "_note": "The build configuration outside bin/ and .github/ that the build tooling reads (the file allowlist's config files), pinned by the sha256 of its bytes. bin/chain-sign-wiring-test.sh fails on a changed, missing or unlisted one (REQ-CHAIN-001-AC1): a change is made visible by updating its row in the same pull request.",
+ "files": [
+  {
+   "path": ".githooks/pre-commit",
+   "sha256": "e747eb18100bf2036826cd84b1595861a70967a278678f97d3e1340a5e614c2a",
+   "reason": "a local developer hook (never run in CI)"
+  },
+  {
+   "path": ".gitignore",
+   "sha256": "236f50858ea84e2ff3d5db0ba427fdf328cee1c4a43c3c583a544955bd111a4a",
+   "reason": "git's ignore list"
+  },
+  {
+   "path": ".golangci.yml",
+   "sha256": "0fbb62e3ae91c5b67cdd754be4d1afbf906e10c4dfd5363171d7443046a3cd01",
+   "reason": "the Go linter configuration (lint job)"
+  },
+  {
+   "path": ".gremlins.yaml",
+   "sha256": "3df64cf8a28c95dc03fbe143cf3dcab82ed1ce199b3d8f284ae884acb0702919",
+   "reason": "the mutation-test configuration"
+  },
+  {
+   "path": ".grype.yaml",
+   "sha256": "bcf4bd305be8bb2f00c913923ddc1c78e0c4d933b7fec43db45a281574159c7a",
+   "reason": "the grype scanner configuration"
+  }
+ ]
+}

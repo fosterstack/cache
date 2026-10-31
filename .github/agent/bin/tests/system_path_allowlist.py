@@ -29,7 +29,7 @@ LINK_ROWS = [
 # so the WHOLE FILE is pinned: (sha256 of the file's raw bytes, the literal-bearing lines it may contain, reason). Any edit to one of these files
 # needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
 PINS = {
-    '.github/agent/bin/tests/test_check_action_pins.py': ('c6613641a8a3eb4a6b05ad1def3af7bcc1bab8079bb7bf96f606c784632c6463',
+    '.github/agent/bin/tests/test_check_action_pins.py': ('d464fdcefb16706cdabf4073a5e19a54d401d8da20b52d90713f962a66ce50df',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',
@@ -41,16 +41,16 @@ PINS = {
                  'self.assertEqual(M._made_executable("curl -o /usr/local/bin/t https://e/t", "/usr/local/bin/t"), "downloads")',
                  'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})'],
         "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time)"),
-    '.github/agent/bin/tests/test_panel.py': ('f746c6fa3e6f8bbd101227f64de17287fbb8a116532309f70c6ba489d4f1fcdd',
+    '.github/agent/bin/tests/test_panel.py': ('3f7358f4dcaff77b2fb9d5ffd1516f1498f23fd461b8f7d1dbb40ed9f59899dc',
         [        '"package database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
                  '"file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\\n"',
                  'b = ("h\\n%s\\npackage database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
                  '"Breaks: tzdata-legacy (= 2023c-8)\\nfile: /var/lib/dpkg/status.d/tzdata.md5sums\\n" % P.EVIDENCE_MARK)',
                  'self.assertIsNone(P.vote(false(ev="file: /var/lib/dpkg/status.d/tzdata.md5sums"), b, finding()))',
                  'gb = "h\\n%s\\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\\n" % P.EVIDENCE_MARK',
-                 'named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])'],
+                 '"file: /usr/lib/libssl3.so"])'],
         'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
-    '.github/agent/bin/tests/test_panel_io.py': ('aed277767fd23c17a9b665938cbdd5ec3f29466fcd3d16ca0a212cbe2eb88097',
+    '.github/agent/bin/tests/test_panel_io.py': ('8954c033e7f21b8798e3e8c6977bfdbbeff0cd21b0da65f2620eaf7ce8bd83ad',
         [        'self.assertIn("/usr/share/zoneinfo/tzdata.zi", facts["paths"])',
                  'self.assertNotIn("/etc/old-tzdata.conf", facts["paths"])',
                  'self.assertEqual(sorted(facts["status"]), ["/var/lib/dpkg/status", "/var/lib/dpkg/status.d/tzdata"])',
