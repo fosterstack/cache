@@ -126,8 +126,8 @@ def read_fips_module(path):
 
 
 # the closed set of the driver's melange call, each once, each with one value
-MELANGE_FLAGS = ("--arch", "--runner", "--signing-key", "--keyring-append", "--repository-append", "--build-date",
-    "--cache-dir", "--source-dir", "--out-dir", "--apk-cache-dir")
+MELANGE_FLAGS = ("--arch", "--runner", "--namespace", "--signing-key", "--keyring-append", "--repository-append",
+    "--build-date", "--cache-dir", "--source-dir", "--out-dir", "--apk-cache-dir")
 
 
 def sealed_call(call, expected_env=None):
@@ -161,6 +161,8 @@ def sealed_call(call, expected_env=None):
         k += 2
     if seen.get("--runner") != "bubblewrap":
         return "melange is not run with exactly one --runner bubblewrap"
+    if seen.get("--namespace") != "fosterstack":
+        return "melange is not given --namespace fosterstack (the supplier and package URL of the apk's SBOM)"
     if seen.get("--arch") not in ("x86_64", "aarch64"):
         return "melange is not given --arch x86_64 or aarch64"
     return None

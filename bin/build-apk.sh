@@ -135,7 +135,8 @@ exdir=${excl%/*}
 mkdir -p "$exdir" 2>/dev/null || true   # a checkout made with an empty template has no info/ directory
 "$PY3" -I -B bin/build-apk-helper.py exclude-file "$excl" "$exdir"
 # tree-exclude end
-margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"
+margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --namespace fosterstack
+  --signing-key "$assembly_key"
   --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"
   --cache-dir "$tmp/cache" --source-dir "$src" --out-dir "$out")
 [ -z "$apkcache" ] || margs+=(--apk-cache-dir "$apkcache")
@@ -201,7 +202,8 @@ printf '%s\n' "$gov" >"$tmp/go.out"
 
 # ---- 6. the module SBOM and the inputs manifest ----
 "$PY3" -I -B bin/go-module-sbom.py --modules "$src/vendor/modules.txt" --provenance "$src/dependency-provenance.json" \
-  --buildinfo "$tmp/buildinfo.txt" --out "$out/fscache-modules$vsfx.spdx.json" \
+  --buildinfo "$tmp/buildinfo.txt" --name "$pkg" --version "$apkver" \
+  --out "$out/fscache-modules$vsfx.spdx.json" \
   || { echo "build-apk.sh: the Go module list does not match the binary (see above)" >&2; exit 1; }
 "$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" \
   --out "$out/inputs-manifest$vsfx.json" \

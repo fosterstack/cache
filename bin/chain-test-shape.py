@@ -798,7 +798,7 @@ NS_SHA = {
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
-    "bin/build-apk-helper.py": "b8e1f71b9717e681d67eacb6b4eea7d5967d3fb45dac0d2c66874fc8bff26bd1",
+    "bin/build-apk-helper.py": "0b8141aea6e4d75c6367f362287c7fc8fefa7e4ccfad30cc4c59ead738a279bf",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
@@ -807,7 +807,7 @@ NS_SHA = {
     "bin/chain_common.py": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
     "bin/chain_hostile.py": "377ac8e8f5440fb51616ae937416ba0a206c70bce93999270c2df5cfb9c92d0c",
     "bin/chain_items.py": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6",
-    "bin/go-module-sbom.py": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26",
+    "bin/go-module-sbom.py": "82e3c5033fdfdbe69f6acfd7d2724518e5f40c7fb36730bf2d0b8b182ad8843c",
     "bin/install-host-bwrap.py": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
@@ -1071,7 +1071,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'exdir=${excl%/*}',
         'mkdir -p "$exdir" 2>/dev/null || true   # a checkout made with an empty template has no info/ directory',
         '"$PY3" -I -B bin/build-apk-helper.py exclude-file "$excl" "$exdir"',
-        'margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"',
+        'margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --namespace fosterstack',
+        '  --signing-key "$assembly_key"',
         '  --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"',
         '  --cache-dir "$tmp/cache" --source-dir "$src" --out-dir "$out")',
         '[ -z "$apkcache" ] || margs+=(--apk-cache-dir "$apkcache")',
@@ -1121,8 +1122,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'printf \'%s\\n\' "$gov" >"$tmp/go.out"',
         '"$PY3" -I -B bin/build-apk-helper.py go-verdict "$gorc" "$tmp/go.out" "$tmp/buildinfo.txt" "$tmp/go.err"',
         '"$PY3" -I -B bin/go-module-sbom.py --modules "$src/vendor/modules.txt" --provenance '
-        '"$src/dependency-provenance.json" --buildinfo "$tmp/buildinfo.txt" --out '
-        '"$out/fscache-modules$vsfx.spdx.json" || { echo "build-apk.sh: the Go module list does not match the binary '
+        '"$src/dependency-provenance.json" --buildinfo "$tmp/buildinfo.txt" --name '
+        '"$pkg" --version "$apkver" --out "$out/fscache-modules$vsfx.spdx.json" || { echo "build-apk.sh: the Go module list does not match the binary '
         '(see above)" >&2; exit 1; }',
         '"$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out '
         '"$out/inputs-manifest$vsfx.json" || { echo "build-apk.sh: the inputs manifest could not be made (see above)" '

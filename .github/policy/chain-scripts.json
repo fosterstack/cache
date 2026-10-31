@@ -2158,7 +2158,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "b8e1f71b9717e681d67eacb6b4eea7d5967d3fb45dac0d2c66874fc8bff26bd1",
+      "sha256": "0b8141aea6e4d75c6367f362287c7fc8fefa7e4ccfad30cc4c59ead738a279bf",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2260,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "8c3bf014d81476ca2812045d64ad4b27984ffced54e8763936e7ec6046953864",
+      "sha256": "f93baf43ec082446bd19ef51194a52becc006e054d66236e6ee05fec977050be",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2274,8 +2274,8 @@
         },
         {
           "rule": "deny",
-          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --signing-key \"$assembly_key\"",
-          "line_sha256": "15c3ae00acf6befcf023f19ef023d50948fc792321de98309406cfb4e3df4039",
+          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --namespace fosterstack",
+          "line_sha256": "bad358b18787f3bfd4b0a6decc10904dd10afc992255517649def0771e4323ad",
           "count": 1,
           "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         },
@@ -2420,7 +2420,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
-      "sha256": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26"
+      "sha256": "82e3c5033fdfdbe69f6acfd7d2724518e5f40c7fb36730bf2d0b8b182ad8843c"
     },
     {
       "path": "bin/vendor-provenance.py",
