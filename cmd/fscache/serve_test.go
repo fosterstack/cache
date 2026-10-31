@@ -1226,23 +1226,13 @@ func TestServeAuthAndEviction(t *testing.T) {
 		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 			defer cancel()
 			addr := boundAddr(t, &logs)
-			// Wait for the listener to actually accept before driving
-			// traffic (ready() fires at goroutine handoff, which can
-			// precede the bind - the source of a CI-only flake).
-			ready := false
-			for range 100 {
-				resp, err := http.Get("http://" + addr + "/healthz")
-				if err == nil {
-					_ = resp.Body.Close()
-					ready = true
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			if !ready {
+			health, err := http.Get("http://" + addr + "/healthz")
+			if err != nil {
+				t.Errorf("healthz: %v", err)
 				evicted <- false
 				return
 			}
+			_ = health.Body.Close()
 			// Two authenticated 40-byte PUTs against a 64-byte cap: the
 			// second must evict the first, firing the onEvict callback.
 			put := func(k string) {
@@ -1317,15 +1307,13 @@ func TestServeSeedsTheDiskGaugesBeforeAnyRequest(t *testing.T) {
 	go func() {
 		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 			addr := boundAddr(t, &logs)
-			for i := 0; i < 100; i++ { // ready() runs as the listener goroutine starts: retry until it accepts
-				resp, err := http.Get("http://" + addr + "/metrics")
-				if err == nil {
-					b, _ := io.ReadAll(resp.Body)
-					_ = resp.Body.Close()
-					body = string(b)
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
+			resp, err := http.Get("http://" + addr + "/metrics")
+			if err != nil {
+				t.Errorf("scrape: %v", err)
+			} else {
+				b, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				body = string(b)
 			}
 			cancel()
 		})
@@ -1426,11 +1414,8 @@ func TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets(t *testing.T) {
 	go func() {
 		errc <- serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
 			addr = boundAddr(t, &logs)
-			for i := 0; i < 100; i++ {
-				if c, _ := do(http.MethodGet, "/healthz", ""); c == 200 {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
+			if c, _ := do(http.MethodGet, "/healthz", ""); c != 200 {
+				t.Errorf("healthz status = %d, want 200", c)
 			}
 			putOK, _ = do(http.MethodPut, "/kgood", "good data")
 			_ = os.Chmod(filepath.Join(dir, "blobs"), 0o500) // the volume stops accepting writes
@@ -1499,8 +1484,12 @@ func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(dir, 0o700) }()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	addr := freePort(t)
-	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
+	var serveCalls atomic.Int32
+	origPlain, origTLS := httpServe, httpServeTLS
+	t.Cleanup(func() { httpServe, httpServeTLS = origPlain, origTLS })
+	httpServe = func(*http.Server, net.Listener) error { serveCalls.Add(1); return errTestServe }
+	httpServeTLS = func(*http.Server, net.Listener) error { serveCalls.Add(1); return errTestServe }
 	ready := false
 	err := serve(context.Background(), quietLogger(), func() { ready = true })
 	if err == nil || !strings.Contains(err.Error(), "write shutdown marker") {
@@ -1509,9 +1498,8 @@ func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
 	if ready {
 		t.Error("the ready hook ran: the server started on a directory it could not write")
 	}
-	if c, cerr := net.DialTimeout("tcp", addr, 200*time.Millisecond); cerr == nil {
-		_ = c.Close()
-		t.Error("something listens on the address: the server served on a directory it could not write")
+	if n := serveCalls.Load(); n != 0 {
+		t.Errorf("the server was started %d times on a directory it could not write", n)
 	}
 }
 
