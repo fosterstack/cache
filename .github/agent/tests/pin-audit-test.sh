@@ -2061,16 +2061,13 @@ trees = [{".github/workflows/caller.yml": caller, ".github/workflows/callee.yml"
 walks = []
 real_found = inv._file_found
 inv._file_found = lambda path, text: (walks.append(path), real_found(path, text))[1]
-try:
-    for t in trees:                   # warm-up: each tree once; the caller is walked once per read-set
+for t in trees:                       # warm-up: each tree once; the caller is walked once per read-set
+    inv.inventory(dict(t))
+assert walks.count(".github/workflows/caller.yml") == 2, walks
+walks.clear()
+for _ in range(2):
+    for t in trees:
         inv.inventory(dict(t))
-    assert walks.count(".github/workflows/caller.yml") == 2, walks
-    walks.clear()
-    for _ in range(2):
-        for t in trees:
-            inv.inventory(dict(t))
-finally:
-    inv._file_found = real_found
 assert walks == [], walks      # then every file of every tree is answered by the memo: no walk at all
 PY
 
