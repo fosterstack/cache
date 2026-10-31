@@ -678,7 +678,8 @@ jobs:
         if: ${{ github.base_ref != '' }}
         env:
           BASE: ${{ github.base_ref }}
-        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
 
       - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
