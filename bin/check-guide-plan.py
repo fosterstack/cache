@@ -112,7 +112,7 @@ def split_pipes(c):
 
 def syntax_why(c):
     """Why the command has shell syntax no command of the guide may have (a backquote, an expansion, an unquoted brace, glob
-    or tilde), or None. bash expands these after any check of the words, so they are judged on the text, before the
+    or tilde), or None. the shell expands these after any check of the words, so they are judged on the text, before the
     cannot-run list is consulted."""
     if "`" in c:
         return "shell syntax: a backquote"
@@ -134,7 +134,7 @@ def syntax_why(c):
         elif ch == "$":
             return "shell syntax: an expansion ($) outside single quotes"
         elif ch in "{}*?[]~":
-            return "shell syntax: a brace, glob or tilde outside quotes: bash would expand it after this check"
+            return "shell syntax: a brace, glob or tilde outside quotes: the shell would expand it after this check"
         i += 1
     return None
 
