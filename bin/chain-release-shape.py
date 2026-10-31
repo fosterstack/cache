@@ -550,7 +550,9 @@ def metadata(path):
     for k, need in (("images", ["--items witness-build/items.json", "--digests witness-build/digests.json", "--images-dir images"]),
                     ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "--images release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
                     ("baseline", ["--admission witness-build/admission-baseline.json", '--tag "$GITHUB_REF_NAME"', '--commit "$GITHUB_SHA"']),
-                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata", "--digests witness-build/digests.json", '--baseline-version "$baseline"'])):
+                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata",
+                                  "--digests witness-build/digests.json", '--baseline-version "$baseline"',
+                                  "--modules-dir apks/ubuntu-24.04 "])):      # trailing space: -arm is another path
         for n in need:
             if n not in lines[marks[k]]:
                 bad.append("the %s step must carry %s" % (k, n))

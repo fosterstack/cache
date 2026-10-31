@@ -32,7 +32,7 @@ python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images 
 # the baseline is the one admission chose (REQ-CHAIN-007-AC19): read from Build's verified admission-baseline.json (bound to Build's record by release-verify), so an
 # owner-signed tag uses its own and a CI patch tag the line's owner baseline; Release never picks one itself
 baseline=$(python3 bin/release-metadata.py baseline --admission witness-build/admission-baseline.json --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
-python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --vex-dir release-metadata --baseline-version "$baseline" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
+python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --modules-dir apks/ubuntu-24.04 --vex-dir release-metadata --baseline-version "$baseline" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
 python3 bin/release-metadata.py list --version "$GITHUB_REF_NAME" --dir release-metadata --out release-metadata/release-files.sha256
 # The logins live in a private DOCKER_CONFIG of this step, removed when it ends (round 1 F2).
 DOCKER_CONFIG=$(mktemp -d)
@@ -62,6 +62,10 @@ cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/pol
 has_rekor release-evidence/production.sbom.json.bundle
 cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fips.sbom.json.bundle images/fips-sbom/sbom.json
 has_rekor release-evidence/fips.sbom.json.bundle
+cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fscache-modules.spdx.json.bundle apks/ubuntu-24.04/fscache-modules.spdx.json
+has_rekor release-evidence/fscache-modules.spdx.json.bundle
+cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fscache-modules-fips.spdx.json.bundle apks/ubuntu-24.04/fscache-modules-fips.spdx.json
+has_rekor release-evidence/fscache-modules-fips.spdx.json.bundle
 cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/production.full.lock.json.bundle images/production.full.lock.json
 has_rekor release-evidence/production.full.lock.json.bundle
 cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fips.full.lock.json.bundle images/fips.full.lock.json

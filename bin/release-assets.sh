@@ -50,6 +50,7 @@ for v in production fips; do
     if [ -f "${kind#*:}" ]; then stage "${kind#*:}" "${kind%%:*}"; fi
   done
 done
+for f in fscache-modules.spdx.json fscache-modules-fips.spdx.json; do stage "apks/ubuntu-24.04/$f" "$f"; done
 only witness-build build-collection.json digests.json items.json admission-baseline.json
 only witness-rebuild rebuild-collection.json verdict.json
 only provenance provenance.json provenance.rekor.json provenance.bundle.json
