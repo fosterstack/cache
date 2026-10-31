@@ -99,7 +99,8 @@ for stage, previous_list in WRITTEN_FOR["starts_from"].items():
                                                                             "--digests", "digests.json", "--policy", "policy.json"], previous, None))
 SUBCOMMANDS += [
     ("check-build-record", ["check-build-record", "--digests", "digests.json", "--build-record", "{rec}", "--policy", "policy.json"], "build", None),
-    ("sign --check", ["sign", "--check", "--signer", "cosign", "--digests", "digests.json", "--build-record", "{rec}",
+    ("sign --check", ["sign", "--check", "--signer", "cosign", "--digests", "digests.json", "--items", "items.json",
+                      "--build-record", "{rec}",
                       "--template", TEMPLATE, "--out", "provenance"], "build", SIGN_ENV),
 ]
 for label, args, stage, env in SUBCOMMANDS:
