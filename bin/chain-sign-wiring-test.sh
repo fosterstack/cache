@@ -624,7 +624,8 @@ judge() {
 expect() { # expect ok|caught LABEL judge ARG
   local out rc=0
   out=$(judge "$3" "$4") || rc=$?
-  if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $2"
+  if [ "$rc" = 70 ]; then failn=$((failn + 1)); echo "FAIL $2: the persistent judge is gone"
+  elif [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $2"
   elif [ "$1" = caught ] && [ "$rc" != 0 ]; then pass=$((pass + 1)); echo "ok   $2 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $2 -> ${out:0:500}"; fi
 }
@@ -3183,7 +3184,8 @@ tg caught "$work/rel-nogate.yml" "R8 mutation: a build without the tag gate is c
 expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged; a caught case must name FRAGMENT and must not be a traceback
   local out rc=0
   out=$(judge tree "$2" 2>&1) || rc=$?
-  if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $4"
+  if [ "$rc" = 70 ]; then failn=$((failn + 1)); echo "FAIL $4: the persistent judge is gone"
+  elif [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $4"
   elif [ "$1" = caught ] && [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -F -q -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $4 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $4 -> rc=$rc ${out:0:500}"; fi
 }
@@ -3350,7 +3352,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='021abb8c1f22ccfd8e362559df8067b5ef0e2cc2749687370c14e78414db1adb'
+FX_PIN='0ebd7d1441c9ca09325d60cc27fd1b015d860a867ec086b6d1124c5ca01de48c'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
