@@ -267,6 +267,10 @@ ALLOW_PATTERNS=(
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
+  # the base-layout package (0710): its recipe, its test and the files its recipe copies into our own base-layout apk
+  '^build/melange-baselayout\.yaml$'
+  '^build/baselayout/etc/(group|hosts|nsswitch\.conf|os-release|passwd|protocols|services)$'
+  '^bin/baselayout-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'

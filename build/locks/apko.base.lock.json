@@ -28,44 +28,6 @@
     ],
     "packages": [
       {
-        "name": "wolfi-baselayout",
-        "url": "/work/archive/x86_64/wolfi-baselayout-20230201-r30.apk",
-        "version": "20230201-r30",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-1992",
-          "checksum": "sha1-qyFV0NZAQAnaHoGFhRwUQlzoQC0="
-        },
-        "data": {
-          "range": "bytes=1993-13932",
-          "checksum": "sha256-GUiGMWhlBBd1oq+UTUb+B5DlF9Qi2CshfZZfAIFZq+Y="
-        },
-        "checksum": "Q1qyFV0NZAQAnaHoGFhRwUQlzoQC0="
-      },
-      {
-        "name": "ca-certificates-bundle",
-        "url": "/work/archive/x86_64/ca-certificates-bundle-20260909-r3.apk",
-        "version": "20260909-r3",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-11302",
-          "checksum": "sha1-8MLPVxhaLLo4YMbPIN2d/wZuNN4="
-        },
-        "data": {
-          "range": "bytes=11303-119135",
-          "checksum": "sha256-1+IVu1WG99TBRcht9bbGKwOYWDqRH4fvl8TUSBiPCzE="
-        },
-        "checksum": "Q18MLPVxhaLLo4YMbPIN2d/wZuNN4="
-      },
-      {
         "name": "tzdata",
         "url": "/work/archive/x86_64/tzdata-2026e-r0.apk",
         "version": "2026e-r0",
@@ -83,44 +45,6 @@
           "checksum": "sha256-Alclh5b/XuP2cN0UTSnY6A1BrRdFhZiXJHJEuoPuD9o="
         },
         "checksum": "Q1MHM0+rPotBcMXgdP2Yoh/s2vpO8="
-      },
-      {
-        "name": "wolfi-baselayout",
-        "url": "/work/archive/aarch64/wolfi-baselayout-20230201-r30.apk",
-        "version": "20230201-r30",
-        "architecture": "aarch64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-2022",
-          "checksum": "sha1-aF/6XzN/J9leZvrqW26UuNZ1IXw="
-        },
-        "data": {
-          "range": "bytes=2023-13963",
-          "checksum": "sha256-A+qVu/YUl+qkViUwFJNkxVXYCUuDeB+T7MaTy8Xgwl0="
-        },
-        "checksum": "Q1aF/6XzN/J9leZvrqW26UuNZ1IXw="
-      },
-      {
-        "name": "ca-certificates-bundle",
-        "url": "/work/archive/aarch64/ca-certificates-bundle-20260909-r3.apk",
-        "version": "20260909-r3",
-        "architecture": "aarch64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-11332",
-          "checksum": "sha1-2NXUp1YSrgDFsj3YmYoLOz7Pngg="
-        },
-        "data": {
-          "range": "bytes=11333-119163",
-          "checksum": "sha256-hpSNa8gz7XSmd/yqSaTZcDta1/b9z/3EvEzauNnyQ98="
-        },
-        "checksum": "Q12NXUp1YSrgDFsj3YmYoLOz7Pngg="
       },
       {
         "name": "tzdata",
