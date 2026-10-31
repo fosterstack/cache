@@ -1,5 +1,5 @@
-# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: read-token. It is never published or signed. The probe renders
-# it into a temporary folder (@BUSYBOX@, @RECORD@ and @KEYDIR@ are replaced there) and runs it through the sealed melange call.
+# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: read-token. Never published.
+# The probe renders it into a temporary folder (@BUSYBOX@, @RECORD@, @KEYDIR@ are replaced there) and runs it sealed.
 package:
   name: probe-read-token
   version: 0.0.1
@@ -13,4 +13,4 @@ environment:
       - @BUSYBOX@
 pipeline:
   - runs: |
-      env | grep -E 'ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN'
+      if env | cut -d = -f 1 | grep -E 'ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN'; then exit 1; fi

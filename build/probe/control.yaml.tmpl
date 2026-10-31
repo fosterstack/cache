@@ -1,5 +1,5 @@
-# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: control. It is never published or signed. The probe renders
-# it into a temporary folder (@BUSYBOX@, @RECORD@ and @KEYDIR@ are replaced there) and runs it through the sealed melange call.
+# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: control. Never published.
+# The probe renders it into a temporary folder (@BUSYBOX@, @RECORD@, @KEYDIR@ are replaced there) and runs it sealed.
 package:
   name: probe-control
   version: 0.0.1
@@ -17,4 +17,6 @@ pipeline:
       command -v env
       command -v grep
       command -v wget
+      command -v cut
+      cat /proc/net/route > /dev/null
       ls -R /home/build

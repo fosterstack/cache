@@ -1,5 +1,5 @@
-# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: read-record. It is never published or signed. The probe renders
-# it into a temporary folder (@BUSYBOX@, @RECORD@ and @KEYDIR@ are replaced there) and runs it through the sealed melange call.
+# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: read-record. Never published.
+# The probe renders it into a temporary folder (@BUSYBOX@, @RECORD@, @KEYDIR@ are replaced there) and runs it sealed.
 package:
   name: probe-read-record
   version: 0.0.1
@@ -13,4 +13,5 @@ environment:
       - @BUSYBOX@
 pipeline:
   - runs: |
-      cat @RECORD@ > /dev/null
+      if cat @RECORD@ > /dev/null; then exit 1; fi
+      if cat /home/build/witness-apk/apk-collection.local.json > /dev/null; then exit 1; fi
