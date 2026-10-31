@@ -225,6 +225,18 @@ def judge_db(d):
             bad.append(f"the {eco} entry is missing")
         elif "cooldown" in ups[eco]:
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+    # groups (audit ruling Oct 31, cache-dependabot-grouping): github-actions keeps ONLY the codeql-action group (an action's only pin-age proof is the PR
+    # clock, restarted on every recreate, so no actions group yet); pip has exactly `pydantic`, then `pip-minor-patch` (minor and patch updates only, no
+    # patterns: it takes what the earlier group did not), in that order, because Dependabot gives a dependency to the first group that matches
+    if (ups.get("github-actions") or {}).get("groups") != {"codeql-action": {"patterns": ["github/codeql-action*"]}}:
+        bad.append("the github-actions groups are not exactly codeql-action (no actions group)")
+    pg = (ups.get("pip") or {}).get("groups") or {}
+    if list(pg) != ["pydantic", "pip-minor-patch"]:
+        bad.append("the pip groups are not exactly pydantic then pip-minor-patch, in that order")
+    if pg.get("pydantic") != {"patterns": ["pydantic", "pydantic-core"]}:
+        bad.append("the pip pydantic group is not exactly pydantic and pydantic-core")
+    if pg.get("pip-minor-patch") != {"update-types": ["minor", "patch"]}:
+        bad.append("the pip-minor-patch group is not exactly update-types minor and patch (a major never joins a group; no patterns)")
     return bad
 
 def judge_rest():
@@ -262,7 +274,7 @@ result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a par
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker; groups: codeql-action only on actions, pydantic then pip-minor-patch on pip" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -394,6 +406,25 @@ mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: ec
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))
 mut_db("gomod gets a cooldown", "gomod entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
 mut_db("docker gets a cooldown", "docker entry has a cooldown", lambda d: eco(d, "docker").update(cooldown={"default-days": "7"}))
+mut_db("github-actions gets an actions-minor-patch group", "github-actions groups are not exactly codeql-action",
+       lambda d: eco(d, "github-actions")["groups"].update({"actions-minor-patch": {"update-types": ["minor", "patch"]}}))
+mut_db("github-actions loses its codeql-action group", "github-actions groups are not exactly codeql-action", lambda d: eco(d, "github-actions").pop("groups"))
+mut_db("the codeql-action group widens", "github-actions groups are not exactly codeql-action",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update(patterns=["github/*"]))
+mut_db("pip loses the pip-minor-patch group", "pip groups are not exactly pydantic then pip-minor-patch", lambda d: eco(d, "pip")["groups"].pop("pip-minor-patch"))
+d = copy.deepcopy(real_db)    # dict equality ignores key order, so this one is judged directly instead of through mut_db
+eco(d, "pip")["groups"] = dict(reversed(list(eco(d, "pip")["groups"].items())))
+found = judge_db(d)
+ok = list(eco(d, "pip")["groups"]) == ["pip-minor-patch", "pydantic"] and any("pip groups are not exactly pydantic then pip-minor-patch" in x for x in found)
+result(ok, "caught: pip-minor-patch comes before pydantic (reason: 'pip groups are not exactly pydantic then pip-minor-patch')" + ("" if ok else f"; saw {found}"))
+mut_db("pip-minor-patch takes a major", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("pip-minor-patch gets patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update(patterns=["*"]))
+mut_db("pip-minor-patch gets exclude-patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"exclude-patterns": ["anthropic"]}))
+mut_db("the pydantic group changes", "pip pydantic group is not exactly pydantic and pydantic-core",
+       lambda d: eco(d, "pip")["groups"]["pydantic"].update(patterns=["pydantic"]))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

@@ -62,3 +62,10 @@ updates:
         patterns:
           - "pydantic"
           - "pydantic-core"
+      # Minor and patch updates of the other agent packages arrive as ONE pull request instead of one each (audit
+      # ruling Oct 31): one head, one review, one audit record. A major never joins (it stays a lane task, bump rule 3).
+      # It comes after pydantic: Dependabot gives a dependency to the first group that matches it.
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
