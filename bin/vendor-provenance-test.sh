@@ -87,6 +87,8 @@ t AC1 "every build recipe that exists sets GOFLAGS=-mod=vendor and GOPROXY=off" 
 import glob, re
 for f in glob.glob("build/melange*.yaml"):
     s = open(f).read()
+    if "go build" not in s:      # a recipe that builds no Go (the base layout) has nothing to vendor
+        continue
     assert re.search(r"GOFLAGS:\s*[\"']?-mod=vendor", s) and re.search(r"GOPROXY:\s*[\"']?off", s), f
 PY
 t AC1 "go.sum exists and is non-empty" test -s "$root/go.sum"

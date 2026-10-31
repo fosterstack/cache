@@ -147,8 +147,9 @@ run — there is no primary platform.
 | `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
 
 Both images hold only the `fscache` binary and the few packages it needs
-(base layout, CA certificates, time zone data): there is no base image, no
-shell to exec into and no package manager. To troubleshoot, attach a second
+(base layout, time zone data): there is no base image, no CA certificate
+bundle, no shell to exec into and no package manager. The server cannot verify
+any outside certificate; it serves HTTPS from the certificate and key you give it. To troubleshoot, attach a second
 container from the outside ([below](#debugging-a-running-container)); see also
 [the variant docs](docs/verify-images.md).
 
