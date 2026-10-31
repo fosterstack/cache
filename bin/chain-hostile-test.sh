@@ -104,7 +104,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export CHAIN_ROOT="$root"                 # the wiring judge loads the shared YAML loader from the real bin/chain-test-signers.py
 cv="$root/bin/chain-verify.py"
-work=$(mktemp -d); strays=(); trap 'kill "${strays[@]}" 2> /dev/null || true; rm -rf "$work"' EXIT
+work=$(mktemp -d); strays=(); trap 'kill ${strays[@]+"${strays[@]}"} 2> /dev/null || true; rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
@@ -317,6 +317,7 @@ if [ -r /proc/self/environ ]; then
   # grade a copy without the holder lines: the step runs under env -i, so no holder is in this test's tree, and a stray on a shared box must not change the grade (the grading of a holder is covered by tok_absenthold)
   grep -v 'holds a token request address' "$work/stepproc/attempts/read_sign_token.txt" > "$work/stepproc/graded.txt"
   mrc=0; cvx hostile-material --kind token --file "$work/stepproc/graded.txt" || mrc=$?
+  # the step keeps the first 5 holder lines (head -5): with 5 or more other holders on a shared box (b) and (c) can be cut off, a false failure and never a false pass
   # (b) the stray is a real holder: the runner scan lists it, so the step's scan is not narrowed
   if grep -qx "a process on this runner holds a token request address: /proc/$stray/environ" "$work/stepproc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): the real scan lists a holder outside the step's tree (the runner scan is not narrowed)"; else bad "hostile step (Linux): the real scan did not list the stray holder /proc/$stray/environ"; fi
   kill "$stray" 2> /dev/null || true
