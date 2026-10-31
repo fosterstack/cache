@@ -199,18 +199,20 @@ def iso_time(epoch):
         return None
 
 
-def parse_options(args):
-    """The options of the build driver as a dict without the leading dashes; the last of a repeated option wins."""
+def parse_options(args, allowed=None):
+    """The options of the build driver as a dict without the leading dashes; the last of a repeated option wins.
+    allowed: the value options this driver takes (the base-layout driver takes fewer); only the apk driver also takes
+    --print-source-date-epoch."""
     opts = {}
     i = 0
     while i < len(args):
         word = args[i]
-        if word == "--print-source-date-epoch":
+        if word == "--print-source-date-epoch" and allowed is None:
             opts[word[2:]] = "1"
             i += 1
         elif word == "--signing-key":
             raise Refused("--signing-key is not accepted: the apk is signed with the committed assembly key only")
-        elif word in VALUE_OPTIONS:
+        elif word in (VALUE_OPTIONS if allowed is None else allowed):
             if i + 1 >= len(args):
                 raise Refused("missing value for " + word)
             opts[word[2:]] = args[i + 1]
@@ -462,6 +464,91 @@ def go_verdict(rc, go_out, buildinfo, go_err):
                       "the recorded build information is not the binary's own", 1)
 
 
+# ---- the base-layout driver (bin/build-baselayout-apk.sh): the same decisions, a smaller set of options ----
+
+BASELAYOUT_PREFIX = "build-baselayout-apk.sh: "
+BASELAYOUT_OPTIONS = ("--arch", "--version", "--source-dir", "--repo", "--keyring", "--melange-lock", "--out",
+    "--render-dir", "--apk-cache-dir")
+BASELAYOUT_PACKAGE = "fscache-baselayout"
+
+
+def baselayout_check_args(uname_s, uname_m, *args):
+    """Every refusal of the base-layout driver that comes before a tool runs. Prints build."""
+    if uname_s != "Linux":
+        raise Refused("refusing to run on %s: this script uses sudo, unshare and the sealed build tools, which run on "
+            "Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" % uname_s)
+    opts = parse_options(args, BASELAYOUT_OPTIONS)
+    src = opts.get("source-dir", "")
+    if not src:
+        raise Refused("--source-dir is required")
+    arch = opts.get("arch", "")
+    version = opts.get("version", "")
+    if arch not in ("x86_64", "aarch64"):
+        raise Refused("--arch must be an apk architecture name: x86_64 or aarch64 (not '%s')" % arch)
+    host = {"amd64": "x86_64", "arm64": "aarch64"}.get(uname_m, uname_m)
+    if arch != host:
+        raise Refused("refusing to build %s on a %s host: each architecture builds natively on its own runner, no "
+            "emulation" % (arch, host))
+    if not (re.fullmatch(VERSION_GRAMMAR, version) or version == "0.0.0-rc.1"):
+        raise Refused("--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 "
+                      "(numbers without leading zeros; not '%s')" % version)
+    check_environment()
+    repo = opts.get("repo")
+    keyring = opts.get("keyring", "")
+    if repo is None:
+        raise Refused("--repo DIR (the local package repository melange installs the build tools from) is required")
+    if "://" in repo:
+        raise Refused("--repo must be a local directory, not an address (%s)" % repo)
+    if not os.path.isdir(repo):
+        raise Refused("--repo %s is not a directory" % repo)
+    if not keyring or not os.path.isfile(keyring):
+        raise Refused("--keyring file not found: " + keyring)
+    melange_lock = opts.get("melange-lock", "")
+    if not melange_lock or not os.path.isfile(melange_lock):
+        raise Refused("--melange-lock file not found: " + melange_lock)
+    if not opts.get("out"):
+        raise Refused("--out DIR is required")
+    if not os.path.exists(src + "/.git"):
+        raise Refused("%s has no .git: the files of the package are read from a checkout" % src)
+    return "build"
+
+
+def baselayout_arg(name, *args):
+    """One value of the base-layout driver's options, as the script uses it (the names of arg, without variant, goarch
+    and go-archive)."""
+    opts = parse_options(args, BASELAYOUT_OPTIONS)
+    if name in ("goarch", "variant", "go-archive"):
+        raise Refused("unknown value name " + name, 2)
+    return arg(name, *(a for a in args))
+
+
+def baselayout_facts(recipe, outfile):
+    """The recipe must be the base-layout package: file-only (no fetch, no dependency, no provides, no subpackage).
+    Writes name= and one pin= line per build-environment package."""
+    import yaml
+    try:
+        d = yaml.safe_load(open(recipe))
+        name = d["package"]["name"]
+        pins = [str(p) for p in d["environment"]["contents"]["packages"]]
+    except (OSError, KeyError, TypeError, AttributeError, yaml.YAMLError):
+        raise Refused("cannot read the recipe %s" % recipe)
+    if name != BASELAYOUT_PACKAGE:
+        raise Refused("the recipe %s is for the package %s, not %s: this driver builds only the base layout"
+            % (recipe, name, BASELAYOUT_PACKAGE))
+    for key in ("dependencies", "provides", "scriptlets"):
+        if key in d["package"]:
+            raise Refused("the recipe %s gives the base layout a %s" % (recipe, key))
+    for key in ("subpackages", "update"):
+        if key in d:
+            raise Refused("the recipe %s has a %s section" % (recipe, key))
+    if any("uses" in s for s in d.get("pipeline", [])):
+        raise Refused("the recipe %s has a pipeline step that fetches or builds (uses): it must only copy files"
+            % recipe)
+    with open(outfile, "w") as f:
+        f.write("name=%s\n" % name)
+        f.write("".join("pin=%s\n" % p for p in pins))
+
+
 # name -> (function, fewest words, most words); the answer a function returns is printed
 DECISIONS = {
     "check-args": (check_args, 2, None),
@@ -472,6 +559,9 @@ DECISIONS = {
     "check-buildinfo": (check_buildinfo, 2, 2),
     "check-revision": (check_revision, 4, 4),
     "go-verdict": (go_verdict, 4, 4),
+    "baselayout-check-args": (baselayout_check_args, 2, None),
+    "baselayout-arg": (baselayout_arg, 1, None),
+    "baselayout-facts": (baselayout_facts, 2, 2),
 }
 
 
@@ -483,7 +573,7 @@ def decide(name, words):
     try:
         answer = function(*words)
     except Refused as e:
-        print(PREFIX + str(e), file=sys.stderr)
+        print((BASELAYOUT_PREFIX if name.startswith("baselayout-") else PREFIX) + str(e), file=sys.stderr)
         return e.code
     if answer is not None:
         print(answer)

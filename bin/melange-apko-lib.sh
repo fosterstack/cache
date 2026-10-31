@@ -407,6 +407,12 @@ def stubbuild(recipe_path, out, arch, cache):
                 "\tdep\tgithub.com/example/x\tv1.0.0\n\tdep\tgolang.org/x/sys\tv0.30.0\n\tbuild\t-trimpath=true\n\tbuild\tvcs.revision=" + subprocess.run(["git", "-C", os.environ.get("STUB_SRC", "."), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() + "\n\tbuild\tvcs.modified=false\n")
         if name.endswith("-fips"): text += "\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n"
     files = {"usr/bin/fscache": ("fscache-binary %s %s %s" % (name, arch, os.environ.get("STUB_SALT", ""))).encode(), "usr/share/fscache/buildinfo.txt": text.encode()}
+    if name == "fscache-baselayout":   # the file-only recipe (0710): the files of build/baselayout/etc, put under etc/
+        etc = os.environ["STUB_SRC"] + "/build/baselayout/etc"
+        files = {"etc/" + f: open(etc + "/" + f, "rb").read() for f in sorted(os.listdir(etc))}
+        bad = os.environ.get("STUB_BL_BAD")
+        if bad: files[bad] = files.get(bad, b"") + b"tampered"
+        if os.environ.get("STUB_BL_BUNDLE"): files["etc/ssl/certs/ca-certificates.crt"] = b"bundle"
     envd = d.get("environment", {})
     if os.environ.get("STUB_ENV_EXTRA"): envd = {"contents": {"packages": list(envd.get("contents", {}).get("packages", [])) + [os.environ["STUB_ENV_EXTRA"]]}}   # a package melange used that is not in the lock
     ctl = {".melange.yaml": yaml.safe_dump({"package": {"name": name}, "environment": envd}).encode()}

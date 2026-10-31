@@ -1749,6 +1749,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-IMAGE-001-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/build-baselayout-apk-test.sh" }
   - ac: REQ-GUIDE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }

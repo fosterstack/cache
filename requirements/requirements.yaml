@@ -4813,6 +4813,12 @@ requirements:
         then: "it refuses naming the package, before any build"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-IMAGE-001-AC16
+        given: "bin/build-baselayout-apk.sh is run with the recipe build/melange-baselayout.yaml, the committed assembly key and a local repository"
+        when: "it builds fscache-baselayout, or is given another option, another recipe, no assembly key, a melange call outside the fosterstack namespace, an apk signed by another key, an apk whose files differ from build/baselayout/etc or an apk that ships a CA bundle file"
+        then: "a good run makes the apk signed by the assembly key and inputs-manifest-baselayout.json through the sealed melange call (bubblewrap runner, namespace fosterstack, cut network); every bad one is refused or fails, and the script has no signing option and no loop"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-GUIDE-001
     title: The v0.3.0 customer verification guide
     statement: >

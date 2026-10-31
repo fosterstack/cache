@@ -271,6 +271,8 @@ ALLOW_PATTERNS=(
   '^build/melange-baselayout\.yaml$'
   '^build/baselayout/etc/(group|hosts|nsswitch\.conf|os-release|passwd|protocols|services)$'
   '^bin/baselayout-test\.sh$'
+  '^bin/build-baselayout-apk\.sh$'
+  '^bin/build-baselayout-apk-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'

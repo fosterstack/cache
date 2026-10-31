@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 102 |
-| Acceptance criteria | 513 |
+| Acceptance criteria | 514 |
 | Release-blocking ACs | 132 |
-| ACs with mapped evidence | 503 |
+| ACs with mapped evidence | 504 |
 | Release-blocking ACs with mapped evidence | 132 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 49 |
@@ -1535,6 +1535,7 @@ The production and FIPS images shall be assembled by apko in one offline run for
 | REQ-IMAGE-001-AC13 | Given the non-test Go code of the cache, and the linked fscache binaries (amd64 and arm64, plain and FIPS); when bin/check-no-outbound.py reads the source, and lists each binary's symbols (go tool nm: the linker keeps only what main can reach); then our own non-test code imports no HTTP client, dials no address (net, syscall, x/sys/unix, a crypto/tls client), runs no outside program and verifies no certificate; the amd64 and arm64 binaries, plain and FIPS, hold none of the listed symbols; a binary without runtime.main is refused; so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials or verifies a certificate through an unlisted symbol (net.Dialer is in every net/http binary) is not caught by the binary check, and the source scan covers our own code only | unit | yes | approved | 1 item(s) |
 | REQ-IMAGE-001-AC14 | Given the recipe build/melange-baselayout.yaml and the files under build/baselayout/; when the package fscache-baselayout is read, and its install steps are run into a folder; then the package has no dependency and no provides, holds only the files of build/baselayout/ (passwd, group, hosts, nsswitch.conf, os-release, protocols, services), names no shell path and no network address, and ships no CA bundle file (0710 rule 1) | unit |  | approved | 1 item(s) |
 | REQ-IMAGE-001-AC15 | Given bin/assemble-image.sh is run with a melange repository that lacks the fscache-baselayout apk for one architecture, or with a full lock that lacks it, holds it for one architecture only, or holds an apk beyond fscache and fscache-baselayout; when it starts or compares the locks; then it refuses naming the package, before any build | unit |  | approved | 2 item(s) |
+| REQ-IMAGE-001-AC16 | Given bin/build-baselayout-apk.sh is run with the recipe build/melange-baselayout.yaml, the committed assembly key and a local repository; when it builds fscache-baselayout, or is given another option, another recipe, no assembly key, a melange call outside the fosterstack namespace, an apk signed by another key, an apk whose files differ from build/baselayout/etc or an apk that ships a CA bundle file; then a good run makes the apk signed by the assembly key and inputs-manifest-baselayout.json through the sealed melange call (bubblewrap runner, namespace fosterstack, cut network); every bad one is refused or fails, and the script has no signing option and no loop | unit |  | approved | 1 item(s) |
 
 ## GUIDE
 
