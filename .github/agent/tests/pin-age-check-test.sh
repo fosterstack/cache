@@ -5196,5 +5196,49 @@ one_line("the age check, a RuntimeError while it runs", *run(SCAN))
 ac._run = raising(ac.CouldNotLook(EVIL))
 one_line("the age check, a CouldNotLook", *run(SCAN))
 PY
+CASE="pin age (report lines): pull request text in a report line is one line, at each report line that prints it"
+check python3 - "$chk" "$work" <<'PY'
+import argparse, contextlib, hashlib, importlib.util, io, json, sys, types
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ac)
+out_json = sys.argv[2] + "/report-lines.json"
+def evil(tag):
+    return tag + "\n::warning::x\n\x1b[31m##[warning]y"
+ITEM, REASON, KEY, PATH = (evil(t) for t in ("item", "reason", "key", "path"))
+LINE = hashlib.sha256(b"curl x").hexdigest() + ":curl x"      # every unmeasured line is a hash, a colon, the text
+def item(key):
+    return types.SimpleNamespace(key=key, label="", name="base:b.json", src=("w.yml",))
+a = argparse.Namespace(root=".", base="b", head="h", exceptions=None, base_inputs=None, json=out_json, min_days=3.0)
+ac._unmeasured_counts = lambda *x: {(PATH, "a thing", "L"): {"h0": 1}, ("scripts/run.sh", "a thing", LINE): {"h1": 1}}
+ac._context_regressions = lambda *x: {}
+ac._context_proved = lambda *x: True
+ac.ruled_unpinned_lines = lambda *x: []
+ac.drop_ruled_unpinned = lambda moved, ruled: moved
+ac.load_base_inputs = lambda *x, **k: {}
+ac.split_base_inputs = lambda moved, paths: (moved, [item("tool:file:bin/tools.json@(file)")])
+ac.split_ruled_local_calls = lambda moved, rulings: (moved, [(item(KEY), "ruled")])
+ac.split_go_exempt = lambda moved, root, head: ([], [item("tool:go@1.23.4")])
+ac.load_file_pins = lambda *x, **k: {}
+ac.FilePinSource = lambda *x: None
+ac.Live = lambda *x: None
+ac.check = lambda *x: [{"item": ITEM, "label": "", "ok": False, "proof": None, "reason": REASON}]
+ac.load_ruled_text = lambda *x, **k: {("scripts/run.sh", "a thing", LINE.split(":", 1)[0], "h1"): ("ruled", 1)}
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = ac._run(a, [item("moved")], None, 0)
+text = out.getvalue()
+lines = text.split("\n")
+# 8 lines: the header, one for each of the six report lines (the first holds two fields), then the verdict
+assert rc == 1 and len(lines) == 9 and lines[-1] == "", (rc, text)
+assert not any(l.lstrip().startswith("::") for l in lines), text
+assert "##[" not in text and "\x1b" not in text, text
+for word in ("item", "reason", "key", "path"):
+    assert word + " ::warning::x" in text, (word, text)      # the text stays, made inert
+rows = json.load(open(out_json))["moved"]
+items = [r["item"] for r in rows]
+# the data file keeps the raw text
+assert ITEM in items and "unmeasured:" + PATH in items and KEY in items, items
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
