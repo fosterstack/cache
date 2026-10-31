@@ -1117,7 +1117,10 @@ def rollback(item, net, now):
 
 def clean(text):
     """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
-    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
+    # control characters out, and an expression (a secret's name) never printed
+    text = re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))
+    # the runner reads ##[command] anywhere in a line; last, so a removed character cannot join the two
+    return text.replace("##[", "## [")
 
 
 def _safe(text, limit=64):
@@ -1536,7 +1539,7 @@ def main(argv=None):
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
-        print(f"audit: cannot do its job: {e}", file=sys.stderr)
+        print(f"audit: cannot do its job: {clean(e)}", file=sys.stderr)
         return 2
     except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the audit cannot do its job, it never says 'as of' and never ends in a traceback
         print(f"audit: cannot do its job: an answer could not be read ({type(e).__name__})", file=sys.stderr)
