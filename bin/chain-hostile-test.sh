@@ -104,7 +104,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export CHAIN_ROOT="$root"                 # the wiring judge loads the shared YAML loader from the real bin/chain-test-signers.py
 cv="$root/bin/chain-verify.py"
-work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+work=$(mktemp -d); strays=(); trap 'kill "${strays[@]}" 2> /dev/null || true; rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
@@ -309,11 +309,23 @@ if [ -r /proc/self/environ ]; then
   mkdir -p "$work/stepproc"
   cp "$work/stepnotok/fns.sh" "$work/stepproc/fns.sh"
   python3 -c 'import ctypes, time; ctypes.CDLL(None).prctl(4, 0); time.sleep(40)' & unrel=$!
+  # a stray holder of a request address in its own session, outside the step's tree (another job's leftover, or another test on a shared box)
+  setsid bash -c 'ACTIONS_ID_TOKEN_REQUEST_TOKEN=x exec sleep 40' & stray=$!; strays+=("$stray")
   sleep 1
   (cd "$work/stepproc" && env -i PATH="$PATH" HOME="$work" bash -c '. ./fns.sh; attempt_read_sign_token')
   kill "$unrel" 2> /dev/null || true
-  mrc=0; cvx hostile-material --kind token --file "$work/stepproc/attempts/read_sign_token.txt" || mrc=$?
-  if [ "$mrc" = 1 ] && grep -qx 'environ-unreadable-same-user: 0' "$work/stepproc/attempts/read_sign_token.txt" && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated (K counts the step's ancestors only)"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
+  # grade a copy without the holder lines: the step runs under env -i, so no holder is in this test's tree, and a stray on a shared box must not change the grade (the grading of a holder is covered by tok_absenthold)
+  grep -v 'holds a token request address' "$work/stepproc/attempts/read_sign_token.txt" > "$work/stepproc/graded.txt"
+  mrc=0; cvx hostile-material --kind token --file "$work/stepproc/graded.txt" || mrc=$?
+  # (b) the stray is a real holder: the runner scan lists it, so the step's scan is not narrowed
+  if grep -qx "a process on this runner holds a token request address: /proc/$stray/environ" "$work/stepproc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): the real scan lists a holder outside the step's tree (the runner scan is not narrowed)"; else bad "hostile step (Linux): the real scan did not list the stray holder /proc/$stray/environ"; fi
+  kill "$stray" 2> /dev/null || true
+  if [ "$mrc" = 1 ] && grep -qx 'environ-unreadable-same-user: 0' "$work/stepproc/graded.txt" && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated (K counts the step's ancestors only)"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
+  # (c) a holder inside the step's own tree (a child of the step's shell that holds the address in its environment) is listed by its PID and the transcript is an error
+  mkdir -p "$work/steptree"; cp "$work/stepnotok/fns.sh" "$work/steptree/fns.sh"
+  (cd "$work/steptree" && env -i PATH="$PATH" HOME="$work" bash -c '. ./fns.sh; ACTIONS_ID_TOKEN_REQUEST_URL=x sleep 30 & echo $! > child.pid; sleep 0.5; attempt_read_sign_token; kill $(cat child.pid) 2> /dev/null')
+  mrc=0; cvx hostile-material --kind token --file "$work/steptree/attempts/read_sign_token.txt" || mrc=$?
+  if [ "$mrc" = 2 ] && grep -qx "a process on this runner holds a token request address: /proc/$(cat "$work/steptree/child.pid")/environ" "$work/steptree/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a holder inside the step's own tree is listed by its PID and the transcript is an error (exit 2)"; else bad "hostile step (Linux): a holder in the step's tree: rc $mrc, transcript $(tr '\n' '|' < "$work/steptree/attempts/read_sign_token.txt" | head -c 200)"; fi
   mkdir -p "$work/stepanc"; cp "$work/stepnotok/fns.sh" "$work/stepanc/fns.sh"
   (cd "$work/stepanc" && env -i PATH="$PATH" HOME="$work" python3 -c 'import ctypes, subprocess; ctypes.CDLL(None).prctl(4, 0); subprocess.run(["bash", "-c", ". ./fns.sh; attempt_read_sign_token"])')
   mrc=0; cvx hostile-material --kind token --file "$work/stepanc/attempts/read_sign_token.txt" || mrc=$?
@@ -1428,7 +1440,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=281
+EXPECT=283
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
