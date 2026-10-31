@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC5
 # Offline half of the sandbox wall probe (sandboxed-build rules 3, 5 and 6; sibling of bin/chain-hostile-test.sh, the
-# static
-# half of the hostile Build step). bin/chain-sandbox-probe.sh renders six test-only recipes (build/probe/*.yaml.tmpl),
-# runs
-# each through the same sealed melange call as the apk build and judges by melange's exit status alone: every attempt
-# recipe
-# is `if <attempt>; then exit 1; fi`, so a wall is held only when melange exits 0. Here melange, unshare and sudo are
-# stubs
-# and the probe runs as a COPY in which exactly the lines ending in TEST-SUBST are replaced (no other line may
-# differ): this
-# test proves the verdicts, the sealed shape and the leak-freeness of the probe; the walls themselves are proved by the
-# signed release-candidate run.
+# static half of the hostile Build step). bin/chain-sandbox-probe.sh renders six test-only recipes
+# (build/probe/*.yaml.tmpl), runs each through the same sealed melange call as the apk build and judges by melange's
+# exit status alone: every attempt recipe is `if <attempt>; then exit 1; fi`, so a wall is held only when melange
+# exits 0. Here melange, unshare and sudo are stubs and the probe runs as a COPY in which exactly the lines ending in
+# TEST-SUBST are replaced (no other line may differ): this test proves the verdicts, the sealed shape and the
+# leak-freeness of the probe; the walls themselves are proved by the signed release-candidate run.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'chmod -R u+w "$work" 2> /dev/null; rm -rf "$work"' EXIT
@@ -114,10 +109,10 @@ for f in glob.glob(sys.argv[1] + "/build/probe/*.yaml.tmpl"):
     assert not re.search(r"cosign|upload|sign|key\.pem|fetch", re.sub(r"^#.*$", "", s, flags=re.M)), f
     if not f.endswith("control.yaml.tmpl"):
         body = s.split("  - runs: |\n")[1]
-        assert all(re.fullmatch(r"      if .*; then exit 1; fi", l) for l in body.splitlines() if l.strip()), f
+        joined = body.replace("\\\n", "")
+        assert all(re.fullmatch(r"      if .*; then exit 1; fi", l) for l in joined.splitlines() if l.strip()), f
 PY
 t "AC5" "each attempt names its wall: the record (host path, copy), key folder, token names, address" \
-  \
   python3 - "$root" << 'PY'
 import sys
 d = sys.argv[1] + "/build/probe/"
@@ -137,7 +132,7 @@ HASHES="277db462b97327e3cbc0731850f96c951f6fb64b81538930b588c851faa7fac3  build/
 6a8c80b624b77ebb004ef2528260bbfdae119e3aab290435d8c4b71e4096d3fc  build/probe/read-record.yaml.tmpl
 8cbe432aa1741f9903fb2bd8419a0c27288270a056a4a4b855a43673b92f4bdb  build/probe/write-record.yaml.tmpl
 32d50e8b55421866d20bbc620e8b7dd0fc7d8d3646eac82ee4467220e9083e9e  build/probe/read-keydir.yaml.tmpl
-431340feae44cd94df108e44ef0dd2277cfa186affd36863c9d036bc7749c469  build/probe/read-token.yaml.tmpl
+9f365493701556423ef2622e76a46e414191acb745c1e56ffb8f6247bdf36208  build/probe/read-token.yaml.tmpl
 b7e43370bc58dfdeb3ad3c140c0651a523c6624e20f14e8169d562e9d843c095  build/probe/network.yaml.tmpl"
 t "AC5" "the six templates equal the hashes bound in this test" \
   bash -c "cd '$root' && printf '%s\\n' \"\$0\" | sha256sum -c --quiet -" "$HASHES"
@@ -204,7 +199,6 @@ t "AC5" "the workspace listing is unchanged" bash -c "ls -R '$co' | cmp -s - '$w
 setrc 0; echo 1 > "$work/rc/read-token"
 runprobe "$work/probe.sh" > "$work/transcript" 2>&1
 t "AC5" "with the token wall open, the transcript and the temporary folders hold no token or sealed item value" \
-  \
   bash -c "! grep -rq -e '$SENT_TOKEN' -e 'SOURCE_DATE_EPOCH=0' -e 'LC_ALL=C' '$work/transcript' '$work/tmp' '$work/rt'"
 setrc 1
 runprobe "$work/probe.sh" > "$work/transcript2" 2>&1

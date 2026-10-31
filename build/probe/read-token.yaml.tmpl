@@ -13,4 +13,5 @@ environment:
       - @BUSYBOX@
 pipeline:
   - runs: |
-      if env | cut -d = -f 1 | grep -E 'ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN'; then exit 1; fi
+      if env | cut -d = -f 1 \
+        | grep -E 'ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN'; then exit 1; fi

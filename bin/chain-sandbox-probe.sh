@@ -61,10 +61,9 @@ set -- "${sealed[@]}"   # the chain judge reads a hash sign in a test as a comme
 RC=0
 run_wall() { # run_wall NAME: sets RC to the exit status of one sealed melange call on that recipe
   local call why
-  # The folder given to melange is empty: when this probe runs, the checkout already holds the Witness record of this
-  # job,
-  # which melange would copy to /home/build; the call of the apk build runs before Witness writes it, so an empty folder
-  # gives the sandbox the view of the real build.
+  # The folder given to melange is empty: when this probe runs, the checkout already holds this job's Witness
+  # record, which melange would copy to /home/build; the apk build's call runs before Witness writes it, so an
+  # empty folder gives the sandbox the view of the real build.
   call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$MELANGE" build "probe-$1.yaml" --arch "$arch" --runner bubblewrap
     --namespace fosterstack --keyring-append "$KEYRING" --repository-append "$REPO" --cache-dir "$tmp/cache"
     --source-dir "$tmp/src" --out-dir "$tmp/out-$1")
