@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "290fe807e7fbdbac9b8069123902e0e0132f955a3eb3dedba9d7fc2454872b88",
+      "sha256": "9e6fa5ff55970527ba73b17d49cdc6cb266c56178cb342f3908963694b893dac",
       "tools": [
         "make",
         "at",
@@ -365,8 +365,8 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "e73388d1d48eb6a07adfef56182548753e304e6973f20f0c26a13fc80e7febc7",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "976e8f8bef4cd84f5d6f409a239d5c04f67ee312f8dbc9fdf8800878de174a1a",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",

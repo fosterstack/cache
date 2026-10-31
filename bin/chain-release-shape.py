@@ -179,7 +179,7 @@ def verify_job(j):
 
 def compare_job(j):
     """The owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks runs in a job with no secrets, no
-    publish permission and no identity token: contents read ONLY (an id-token can mint a signing certificate), no environment, no env, no needs, no condition. Its steps are
+    publish permission and no identity token: contents read ONLY (an id-token can assume the signing role), no environment, no env, no needs, no condition. Its steps are
     exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
     under Witness: Witness signs through the identity token) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []

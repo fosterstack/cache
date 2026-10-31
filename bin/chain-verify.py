@@ -1250,7 +1250,7 @@ def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
         envelope = {"payloadType": dsse["payloadType"], "payload": dsse["payload"],
                     "signatures": [{"keyid": sig.get("keyid", ""), "sig": sig["sig"]}]}
         if expect_payload is not None and b64d(dsse["payload"]) != expect_payload:
-            refuse("sign", "the bundle cosign wrote signed another payload than the one handed to it")
+            refuse("sign", "the bundle cosign wrote signed another payload than the statement handed to it")
         tlog = vm.get("tlogEntries")
         if not isinstance(tlog, list) or not tlog:
             refuse("sign", "the bundle cosign wrote has no Rekor entry (verificationMaterial.tlogEntries is missing or "
@@ -1265,15 +1265,19 @@ def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
 
 
 
-REKOR_ERROR = re.compile(rb"rekor|tlog|transparency log", re.I)      # what cosign's stderr says when the log, not the key, failed
+# One plain string decides whether a cosign failure is Rekor's (worth the retries): the word "rekor" in its error text. It matches
+# `error: creating log entry: rekor: 503 Service Unavailable`; it refuses `AccessDeniedException: not authorized to perform kms:Sign`
+# (a KMS or argument error is refused at once, with no second signature asked of KMS). UNVERIFIED against a real cosign v3.1.3 outage.
+REKOR_WORD = b"rekor"
 
 
-def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sleep=time.sleep):
+def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sleep=time.sleep, bundle_path=None):
     """The one signing function of the release chain: sign the statement in `statement_path` with the release key held in
     AWS KMS through `cosign attest-blob --key`, keep its Rekor entry, and write `out_record` (a DSSE envelope with exactly
     one signature) and the entries file beside it (<out_record minus .json>.rekor.json). One try and six retries while
     Rekor does not answer (waits 1, 2, 4, 8, 16, 32 seconds); any other failure, a bundle that signed another payload than
     the staged one, a bundle with no Rekor entry or with more than one signature is a refusal, and no record is left.
+    `bundle_path` keeps cosign's bundle at that path (Sign publishes it); without it the bundle is a temporary file.
     `run` and `sleep` are arguments so a test passes a fake cosign and a clock that waits for nothing."""
     out_record = os.path.abspath(out_record)
     if os.path.lexists(out_record):
@@ -1283,7 +1287,7 @@ def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sle
     with open(statement_path, "rb") as f:
         statement = f.read()
     with tempfile.TemporaryDirectory() as tmp:
-        bundle = os.path.join(tmp, "record.bundle.json")
+        bundle = bundle_path or os.path.join(tmp, "record.bundle.json")
 
         def fetch():
             argv = ["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF, "--signing-config", signing_config,
@@ -1294,7 +1298,7 @@ def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sle
                 refuse("sign", "cosign not found on PATH" if isinstance(ex, FileNotFoundError)
                        else "cosign could not be started (%s)" % type(ex).__name__)
             if r.returncode != 0:
-                if REKOR_ERROR.search(r.stderr or b""):
+                if REKOR_WORD in (r.stderr or b"").lower():
                     raise RekorDown(r.stderr[:200])
                 refuse("sign", "cosign failed: %s" % (r.stderr or b"").decode(errors="replace")[:200])
             try:
@@ -1370,16 +1374,8 @@ def cmd_sign(a):
         make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         try:
-            r = subprocess.run(["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF, "--signing-config",
-                                signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
-        except OSError as ex:   # no cosign on PATH, or not runnable: a refusal, and the fresh output folder goes
-            remove_own_out(a.out)
-            refuse("sign", "cosign not found on PATH" if isinstance(ex, FileNotFoundError) else "cosign could not be started (%s)" % type(ex).__name__)
-        if r.returncode != 0:
-            remove_own_out(a.out)
-            refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
-        try:
-            convert_and_verify(bundle, a.out, pol, statement, tmpd)
+            kms_sign(sp, os.path.join(os.path.abspath(a.out), "provenance.json"), signing_config, bundle_path=bundle)
+            verify_own_output(a.out, pol, statement, tmpd)
         except Refuse as bad:
             remove_own_out(a.out)   # a failed sign leaves no provenance behind (001-AC2)
             refuse("sign", bad.reason)
@@ -1672,17 +1668,10 @@ def same_json(a, b):
     return a == b
 
 
-def convert_and_verify(bundle, out_dir, pol, statement, tmpd):
-    """Write Release's file from cosign's bundle, then verify it as stage sign exactly as Release will, and require that
-    the
-    payload cosign signed IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3; Codex security r1 S1,
-    Opus r1-verify F1): Sign never reports success for provenance Release would refuse, nor for a statement it did not make."""
-    try:
-        with open(bundle, "rb") as f:
-            bun = strict_json(f.read())
-    except (OSError, ValueError) as ex:
-        refuse("sign", "the bundle cosign wrote is missing or not JSON (%s)" % type(ex).__name__)
-    bundle_to_outputs(bun, out_dir)
+def verify_own_output(out_dir, pol, statement, tmpd):
+    """Verify what the one signing function wrote as stage sign exactly as Release will, and require that the payload cosign signed
+    IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3): Sign never reports success for
+    provenance Release would refuse, nor for a statement it did not make."""
     vdir = os.path.join(tmpd, "verify-own-output")
     os.makedirs(vdir)
     signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), vdir,
