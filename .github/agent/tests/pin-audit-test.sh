@@ -1600,6 +1600,26 @@ for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"),
         rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
     assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
 PY
+CASE="error lines: a path with line breaks, escapes or ##[ in an error prints as one stderr line, no workflow command"
+check python3 - "$aud" "$root" "$work" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1])
+pa = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pa)
+fx = sys.argv[3] + "/errline-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
+def boom(*a, **k):
+    raise RuntimeError("a\n::warning::x\n\x1b[31m##[warning]y/requirements.txt is too large to read safely")
+pa.inv.load_at = boom      # the tree reader's error carries a path of the pull request
+out, err = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
+lines = err.getvalue().split("\n")
+ok = rc == 2 and len(lines) == 2 and lines[1] == "" and not any(l.startswith("::") for l in lines)
+assert ok, (rc, err.getvalue())
+for word in ("cannot do its job", "::warning::x", "too large to read safely"):
+    assert word in lines[0], err.getvalue()
+assert "\x1b" not in lines[0] and "##[" not in lines[0], err.getvalue()
+PY
 CASE="structural closure (Fable ruling, round 6): every reader takes a mandatory need/rows with no default, and EVERY site that reads an answer (AST-enumerated in both programs: _http_dict, _gh_api, _gh_list, _gh_pages, _gh_json, _fetch_json, json.load/loads) has a {} / [{}] / null case that is refused; the optional keys are named (OSV vulns and next_page_token, a commit committer date, a Docker digest/images/push time, a PyPI file upload time, a release date on a draft) and accepted when absent; local policy and fixture files are covered too"
 check python3 - "$aud" <<'PY'
 import ast, collections, importlib.util, inspect, io, json, os, subprocess, sys, tempfile, urllib.request

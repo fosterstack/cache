@@ -387,7 +387,8 @@ def _gh_bytes(path):
 
 def observed():
     """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and cannot be read.
-    Only runs that are event=schedule, branch main, success, of this workflow's path are read, so a pull request can never forge them."""
+    Only runs of this workflow's path with event=schedule, branch main and conclusion success or failure are read
+    (tag_observer.accept_run: a failed daily run still wrote its state), so a pull request can never forge them."""
     if "state" in _OBS:
         return _OBS["state"]
     repo = os.environ.get("GITHUB_REPOSITORY")
@@ -1069,6 +1070,13 @@ def _run_docker(cmd):
         raise RuntimeError("docker timed out") from None
 
 
+def _one_line(error):
+    """An error as one line. Its text can hold a pull request's file path, and a path may contain newlines;
+    a log line that starts with :: is an Actions command, and the runner reads ##[command] anywhere in a line."""
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(error)).split())
+    return text.replace("##[", "## [")
+
+
 def _cosign_verify_main(argv):
     ap = argparse.ArgumentParser(prog="pin-age-check.py cosign-verify")
     ap.add_argument("--root", default=".")
@@ -1088,12 +1096,12 @@ def _cosign_verify_main(argv):
         if not isinstance(a.cosign_image, str) or not re.fullmatch(by_digest, a.cosign_image):
             raise ValueError("the cosign image must be named by digest")
     except (OSError, ValueError, KeyError) as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     try:
         results = cosign_verify_images(a.root, a.head, a.cosign_image, _run_docker)
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     if not results:
         print("pin-age: no pinned image in the tree, nothing to verify")
@@ -1125,19 +1133,19 @@ def main(argv=None):
         base_items = inv.load_at(a.root, a.base)
         head_items = inv.load_at(a.root, a.head)
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {e}", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)}", file=sys.stderr)
         return 2
     moved = inv.moved(base_items, head_items)
     try:
         return _run(a, moved, fx, now)
     except RuntimeError as e:
-        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
         print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
         return 2
     except CouldNotLook as e:
-        print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
+        print(f"pin-age: cannot run: {_one_line(e)} (not a pass: re-run the check)", file=sys.stderr)
         return 2
 
 
@@ -2241,20 +2249,20 @@ def _run(a, moved, fx, now):
         rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
-            print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
+            print(f"  {'ok  ' if r['ok'] else 'FAIL'} {_one_line(r['item'])}: {_one_line(r['reason'])}")
         for it in go_free:
             rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_EXEMPT_REASON, "proof": None})
             print(f"  ok   {it.key}: {GO_EXEMPT_REASON}")
     for path, what, line in added:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
-        print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+        print(f"  FAIL unmeasured:{_one_line(path)}: {what} added: not measurable, refused")
     for it in base_files:
         rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
         print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
     for it, ruling in ruled_calls:
         rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
-        print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
+        print(f"  ok   {_one_line(it.key)}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
