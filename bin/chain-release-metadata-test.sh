@@ -131,9 +131,10 @@ for variant, name in MODULE_SBOMS:
                         lambda t: open(t + "/modules/" + name, "w").write("changed"))
     module_sbom_refused("a missing %s is refused, naming it" % name, name, lambda t: os.remove(t + "/modules/" + name))
     module_sbom_refused("a %s that is a symlink to Build's bytes is refused, naming it" % name, name,
-                        lambda t: make_symlink(t, name))
+                        lambda t: make_symlink(t, name), also="not a regular file")
     module_sbom_refused("a %s that is a directory is refused, naming it" % name, name,
-                        lambda t: (os.remove(t + "/modules/" + name), os.mkdir(t + "/modules/" + name)))
+                        lambda t: (os.remove(t + "/modules/" + name), os.mkdir(t + "/modules/" + name)),
+                        also="not a regular file")
     module_sbom_refused("no Build item modules-sbom-%s is refused, naming the file and the item" % variant, name,
                         lambda t: setitems(t, {k: v for k, v in items_of(t).items() if k != "modules-sbom-" + variant}),
                         also="modules-sbom-" + variant)
