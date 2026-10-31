@@ -157,14 +157,25 @@ def _wanted(n):
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
 
-def tree_key(root, rev):
-    """The identity of what tree_files would read at a revision: the (path, blob) pairs of the files it reads, without reading them. Two revisions with the same key give the same inventory."""
+_LISTINGS = {}  # (root, full sha) -> [(path, blob)] of the files the inventory reads: the one ls-tree a revision costs
+
+
+def _listing(root, rev):
+    if (root, rev) in _LISTINGS:
+        return _LISTINGS[(root, rev)]
     pairs = []
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if n and _wanted(n):
             pairs.append((n, meta.split()[2]))
-    return tuple(pairs)
+    if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
+        _LISTINGS[(root, rev)] = pairs
+    return pairs
+
+
+def tree_key(root, rev):
+    """The identity of what tree_files would read at a revision: the (path, blob) pairs of the files it reads, without reading them. Two revisions with the same key give the same inventory."""
+    return tuple(_listing(root, rev))
 
 
 def tree_files(root, rev):
@@ -183,11 +194,7 @@ def tree_files(root, rev):
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
         return out
-    for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
-        meta, _, n = line.partition("\t")
-        if not n or not wanted(n):
-            continue
-        blob = meta.split()[2]
+    for n, blob in _listing(root, rev):
         if blob not in _BLOBS:
             _BLOBS[blob] = git(root, "cat-file", "blob", blob)
         if len(_BLOBS[blob]) > MAX_FILE:

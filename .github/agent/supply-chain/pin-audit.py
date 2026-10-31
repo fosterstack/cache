@@ -1178,6 +1178,13 @@ SKIP_UNREADABLE = {
     "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
+    "27b14e37ed06bca44ae479a8880480fa5855605b": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "c4ac17f07ac894c014034ec7e535e4598e06ced8": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "c9e30be29823765fce4c8a23bb11a4340a73fd69": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "23f771008513913f5a1bf434af83530125621a53": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "c5b8f225a378db6fa72200bafcf9af7998ef23e5": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "9045a08f287801c75cbf385caae8038774ed9f10": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "115c746b17620f08c0fe52c789dea720c887d465": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
 }
 
 
@@ -1334,6 +1341,15 @@ def main(argv=None):
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         try:
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
+        except RuntimeError as e:
+            raise Fail(str(e))
+        if a.observations_out and not a.base:   # before the history is read: a history that cannot be read must not lose the observations
+            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
+            with open(a.observations_out, "w") as f:
+                json.dump(state, f, sort_keys=True)
+            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
+        try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
                 hist = history_items(a.root, a.base, now) if audited else {}
@@ -1352,12 +1368,6 @@ def main(argv=None):
             except RuntimeError as e:
                 raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
-        if a.observations_out and not a.base:
-            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
-            with open(a.observations_out, "w") as f:
-                json.dump(state, f, sort_keys=True)
-            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
             seen_um = {}
             for (path, what, _line), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
