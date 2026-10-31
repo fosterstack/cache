@@ -490,8 +490,9 @@ def graph(path):
 
 # Q10 (advisor, Oct 10): bin/check-guide.sh runs the customer guide's VERIFY commands against the signed candidate, so it may name exactly
 # these verify-only commands (case-sensitive, whole words). Every other signing word stays refused there (cosign sign, cosign attest,
-# cosign upload, gh attestation download ...), and no other check script may name even these.
-VERIFY_ONLY = re.compile(r"\b(?:cosign verify-blob-attestation|cosign verify-attestation|cosign verify-blob|cosign verify|gh attestation verify)(?![\w-])")
+# cosign upload, gh attestation ...), and no other check script may name even these.
+VERIFY_ONLY = re.compile(r"\b(?:cosign verify-blob-attestation|cosign verify-attestation|cosign verify-blob"
+                         r"|cosign verify)(?![\w-])")
 
 
 def plain(files):
@@ -570,7 +571,7 @@ def verify_form(c):
             w = shlex.split(seg)
         except ValueError:
             return False
-        if not (w[:1] == ["jq"] or w[:2] == ["cosign", "verify"] or w[:3] == ["gh", "attestation", "verify"]
+        if not (w[:1] == ["jq"] or w[:2] == ["cosign", "verify"]
                 or w[:2] in (["cosign", "verify-attestation"], ["cosign", "verify-blob"], ["cosign", "verify-blob-attestation"])):
             return False
     return True

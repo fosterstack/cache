@@ -22,6 +22,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
+export REPO_ROOT="$root"
 python3 - "$@" <<'PY'
 import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
@@ -717,15 +718,24 @@ t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" 
 # ---- REQ-CHAIN-006-AC7 (rule 79 amended, owner Oct 10): the post-publish verification, release-postverify.sh -----------------------------------
 # PROPOSED interface: it reads docs/verify-release.cannot-run.json ([{command, reason}], the one exact-text list Check also reads), runs each
 # listed command with <IMAGE_REF> / <IMAGE_REF_FIPS> = ghcr.io/fosterstack/cache@ the image-production / image-fips digest of
-# witness-build/digests.json, <TAG> = $GITHUB_REF_NAME, <IDENTITY> = https://github.com/$GITHUB_REPOSITORY/.github/workflows/stage-sign.yml@refs/tags/<TAG>.
+# witness-build/digests.json, <TAG> = $GITHUB_REF_NAME, <RELEASE_KEY> = the verified release key file in $RUNNER_TEMP.
 # Every command is judged BEFORE any is run (a verify form only, a placeholder it cannot fill is refused): a refusal runs nothing. A command
 # that fails fails the script (exit non-zero, naming the command) after all have run. The step holds GH_TOKEN (read) and no registry credential.
 ISS = "https://token.actions.githubusercontent.com"
-IDQ = "--certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS
+IDQ = "--key <RELEASE_KEY>"      # every verify form carries exactly one key flag, whose value is the placeholder
 PV1 = "cosign verify <IMAGE_REF> " + IDQ
 PV2 = "cosign verify <IMAGE_REF_FIPS> " + IDQ
-PV3 = "gh attestation verify oci://<IMAGE_REF> --owner fosterstack"
-PV4 = "cosign verify-blob --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/<TAG> --certificate-oidc-issuer " + ISS + " --bundle b.json x.txt"
+PV3 = "cosign verify-attestation --type https://slsa.dev/provenance/v1 " + IDQ + " <IMAGE_REF>"
+PV4 = "cosign verify-blob " + IDQ + " --type slsa-<TAG> --bundle b.json x.txt"
+GOODKEY = ("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexamplekeyexamplekeyexamplekeyexample\n"
+           "-----END PUBLIC KEY-----\n")
+KEYOF = {}   # tree -> the $RUNNER_TEMP of its run
+def keydir(key=GOODKEY):
+    """A fresh $RUNNER_TEMP outside the tree, holding the verified key file (key None: no file)."""
+    d = tempfile.mkdtemp()
+    if key is not None: open(os.path.join(d, "release-key.verified.pub"), "w").write(key)
+    return d
+def kp(t): return os.path.join(os.path.realpath(KEYOF[t]), "release-key.verified.pub")
 def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None):
     t = tree(); os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     lp = os.path.join(t, "docs/verify-release.cannot-run.json")
@@ -733,33 +743,49 @@ def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None):
     if raw is not None: open(lp, "w").write(raw)
     elif rows is not None: json.dump([{"command": c, "reason": "needs the image in a registry"} for c in rows], open(lp, "w"))
     if digs is not None: json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
-    e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(env or {})
+    KEYOF[t] = keydir()
+    e = {"GITHUB_REPOSITORY": "fosterstack/cache", "RUNNER_TEMP": KEYOF[t]}; e.update(env or {})
     rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"], tag=tag)
     return t, rc, so, se
 def calls(t): return [l for l in log(t) if l.startswith(("cosign ", "gh "))]
 REGS = ["ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"]   # the two repositories are constants of the script (identical digests in both)
 def refs(key): return [r + "@" + DIG[key] for r in REGS]
-SID = "https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"
 t, rc, so, se = pv([PV1, PV2, PV3, PV4]); C = calls(t)
 P, F = refs("image-production"), refs("image-fips")
 check(rc == 0, "AC7 post-publish: a good list of four commands passes in both registries", se)
 check(len(C) == 7, "AC7 post-publish: the three image commands run twice and the verify-blob (no image placeholder) once: seven runs, not eight", str(len(C)))
-mk = lambda ref: "cosign verify %s --certificate-identity %s --certificate-oidc-issuer %s" % (ref, SID, ISS)
+mk = lambda ref: "cosign verify %s --key %s" % (ref, kp(t))
 check(C[:1] == [mk(P[0])] and mk(P[1]) in C, "AC7 post-publish: <IMAGE_REF> is the repository@digest, once per registry (ghcr.io first, then docker.io), with the SAME digest", str(C[:2]))
 check(any(c.startswith("cosign verify " + F[0] + " ") for c in C) and any(c.startswith("cosign verify " + F[1] + " ") for c in C), "AC7 post-publish: <IMAGE_REF_FIPS> is substituted in both registries with the one -fips digest", str(C))
-check(all(("gh attestation verify oci://%s --owner fosterstack" % r) in C for r in P), "AC7 post-publish: <IMAGE_REF> inside oci:// is substituted per registry", str(C))
-check(len([c for c in C if c.startswith("cosign verify-blob")]) == 1 and "refs/tags/v0.3.0 " in [c for c in C if c.startswith("cosign verify-blob")][0] and not re.search(r"<[A-Z_]+>", "\n".join(C)), "AC7 post-publish: a command with no image placeholder runs once; <TAG> is the release tag; no placeholder is left in any command run", str(C))
+check(all(("cosign verify-attestation --type https://slsa.dev/provenance/v1 --key %s %s" % (kp(t), r)) in C for r in P),
+        "AC7 post-publish: <IMAGE_REF> in a verify-attestation is substituted per registry, beside the key "
+                "file", str(C))
+check(len([c for c in C if c.startswith("cosign verify-blob")]) == 1 and
+        "--type slsa-v0.3.0 " in [c for c in C if c.startswith("cosign verify-blob")][0] and not re.search(r"<[A-Z_]+>",
+        "\n".join(C)),
+        "AC7 post-publish: a command with no image placeholder runs once; <TAG> is the release tag; no placeholder "
+                "is left in any command run", str(C))
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1"):
     t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC14 post-publish: the tag %r is refused, nothing runs (a release candidate publishes nothing to verify)" % tag, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([]); check(rc == 0 and not calls(t), "AC7 post-publish: an empty list runs nothing and passes")
-t, rc, so, se = pv([PV1, PV3], env={"GH_FAIL": "1"}); C = calls(t)
-t2, rc2, so2, se2 = pv([PV1, PV3], env={"GH_FAIL_ON": "docker.io"})
-check(rc2 != 0 and len(calls(t2)) == 4 and "::error::" in se2 and "docker.io/fosterstack/cache" in [l for l in se2.split("\n") if l.startswith("::error::")][0] and "gh attestation verify" in [l for l in se2.split("\n") if l.startswith("::error::")][0] and "ghcr.io" not in [l for l in se2.split("\n") if l.startswith("::error::")][0], "AC7 post-publish: a command that fails only against docker.io fails the run, and the ::error:: line names docker.io and the command", "rc=%s %s" % (rc2, se2[:300]))
+t, rc, so, se = pv([PV1, PV3], env={"COSIGN_FAIL_ON": "verify-attestation"}); C = calls(t)
+t2, rc2, so2, se2 = pv([PV1, PV3], env={"COSIGN_FAIL_ON": "docker.io"})
+E2 = [l for l in se2.split("\n") if l.startswith("::error::")]
+check(rc2 != 0 and len(calls(t2)) == 4 and len(E2) == 2 and all("docker.io/fosterstack/cache" in l and
+        "ghcr.io" not in l for l in E2),
+        "AC7 post-publish: commands that fail only against docker.io fail the run, and each ::error:: line names "
+                "docker.io",
+        "rc=%s %s" % (rc2, se2[:300]))
 t2, rc2, so2, se2 = pv([PV1, PV3], env={"COSIGN_FAIL_ON": "ghcr.io"})
 check(rc2 != 0 and len(calls(t2)) == 4 and "ghcr.io/fosterstack/cache" in [l for l in se2.split("\n") if l.startswith("::error::")][0], "AC7 post-publish: a command that fails only against ghcr.io fails the run (the docker.io pass still runs), the ::error:: line names ghcr.io", "rc=%s %s" % (rc2, se2[:300]))
-t2, rc2, so2, se2 = pv([PV1, PV2, PV3], env={"GH_FAIL": "1", "COSIGN_FAIL_ON": "docker.io"})
-check(rc2 != 0 and len([l for l in se2.split("\n") if l.startswith("::error::")]) == 4, "AC7 post-publish: every failed run (registry x command) gets its own ::error:: line: 2 gh + 2 cosign on docker.io = 4", se2[:300])
-check(rc != 0 and len(C) == 4 and "post-publish verification failed" in se and "gh attestation verify" in se, "AC7 post-publish: a failing command fails the script (exit non-zero), the others still run, and the failure names the command", "rc=%s %s" % (rc, first(se)))
+t2, rc2, so2, se2 = pv([PV1, PV2, PV3], env={"COSIGN_FAIL_ON": "docker.io"})
+check(rc2 != 0 and len([l for l in se2.split("\n") if l.startswith("::error::")]) == 3,
+        "AC7 post-publish: every failed run (registry x command) gets its own ::error:: line: three commands on "
+                "docker.io = 3", se2[:300])
+check(rc != 0 and len(C) == 4 and "post-publish verification failed" in se and "verify-attestation" in se,
+        "AC7 post-publish: a failing command fails the script (exit non-zero), the others still run, and the "
+                "failure names the command",
+        "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([PV1, PV2], env={"COSIGN_FAIL": "1"}); check(rc != 0 and "post-publish verification failed" in se, "AC7 post-publish: a failing cosign verify fails the script")
 t, rc, so, se = pv(None); check(rc != 0 and "verify-release.cannot-run.json" in se and not calls(t), "AC7 post-publish: a missing list file fails the script, naming it, and runs nothing")
 for raw, what in (("[{\"command\": ", "unparsable JSON"), ("{\"command\": \"x\"}", "an object, not a list"), ("[\"cosign verify x\"]", "a row that is not {command, reason}"),
@@ -773,8 +799,12 @@ for bad_cmd, what in (("curl -sS https://example.com/x", "curl"), ("cosign sign 
                       ("cosign verify <IMAGE_REF> --certificate-identity \\'x${HOME}y\\'", "a backslash-escaped quote before a $"),
                       ("cosign verify <IMAGE_REF> # '\nprintf LOCAL_MARKER", "a comment holding a quote, then a newline and a second command"), ("cosign verify <IMAGE_REF> #\nprintf LOCAL_MARKER", "a comment, then a newline and a second command")):
     t, rc, so, se = pv([PV1, bad_cmd, PV2]); check(rc != 0 and "not an allowed verify form" in se and not calls(t), "AC7 post-publish: %s is refused (not an allowed verify form) and NOTHING runs, not even the good commands before it" % what, "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
-t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> --certificate-identity <DIGEST> --certificate-oidc-issuer " + ISS]); check(rc != 0 and "<DIGEST>" in se and not calls(t), "AC7 post-publish: a command with a placeholder the step cannot fill is refused, never run literally, and nothing runs")
-t, rc, so, se = pv([PV1 + " --extra <TAGS>"]); check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run literally")
+t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> " + IDQ + " --type <DIGEST>"])
+check(rc != 0 and "<DIGEST>" in se and not calls(t), "AC7 post-publish: a command with a placeholder the step "
+        "cannot fill is refused, never run literally, and nothing runs")
+t, rc, so, se = pv([PV1 + " --type <TAGS>"])
+check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run "
+        "literally")
 digs = {"image-production": DIG["image-production"], "apk-amd64": "sha256:" + "c" * 64}
 t, rc, so, se = pv([PV2], digs=digs); check(rc != 0 and "image-fips" in se and not calls(t), "AC7 post-publish: <IMAGE_REF_FIPS> with no image-fips digest in the digest list is refused")
 t, rc, so, se = pv([PV1], digs={"image-production": "sha256:zz"}); check(rc != 0 and not calls(t), "AC7 post-publish: a malformed image digest is refused")
@@ -790,26 +820,35 @@ t, rc, so, se = pv([PV1], env={"RELEASE_REPOSITORY": "evil.example/x", "REPOSITO
 check(rc == 0 and len(calls(t)) == 2 and not [c for c in calls(t) if "evil" in c], "AC7 post-publish: no environment variable can name a repository", str(calls(t)))
 t, rc, so, se = pv(None, raw=json.dumps([{"command": PV1, "reason": "r", "repository": "evil.example/x"}])); check(rc != 0 and not calls(t), "AC7 post-publish: a list row with a repository key is refused (a third repository cannot be injected through the list)")
 for lit in ("evil.example/x/cache@" + DIG["image-production"], "docker.io/library/alpine@sha256:" + "d" * 64, "ghcr.io/fosterstack/cache@" + DIG["image-production"], "oci://evil.example/x/cache@" + DIG["image-production"], "quay.io/x/y:latest"):
-    t, rc, so, se = pv([PV1, "cosign verify " + lit + " " + IDQ.replace("<IDENTITY>", "<IDENTITY>")]); check(rc != 0 and "repository" in se and not calls(t), "AC7 post-publish: a literal image reference (%s) in a listed command is refused and nothing runs: only the two constant repositories, through the placeholders" % lit[:28], "rc=%s %s" % (rc, first(se)))
+    t, rc, so, se = pv([PV1, "cosign verify " + lit + " " + IDQ])
+    check(rc != 0 and "repository" in se and not calls(t),
+            "AC7 post-publish: a literal image reference (%s) in a listed command is refused and nothing runs: only "
+                    "the two constant repositories, through the placeholders" % lit[:28],
+            "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([PV4.replace("x.txt", "dir/x.txt")]); check(rc == 0 and len(calls(t)) == 1, "AC7 post-publish: a file path with a slash is not an image reference and runs once")
 for tag in ("main", "v0.3", "0.3.0", "v0.3.0-RC1", ""):
     t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC7 post-publish: the tag %r is refused, nothing runs" % tag, "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pv([PV1], env={"GITHUB_REPOSITORY": ""}); check(rc != 0 and not calls(t), "AC7 post-publish: no GITHUB_REPOSITORY means <IDENTITY> cannot be filled: refused when a command uses it")
+t, rc, so, se = pv([PV1], env={"GITHUB_REPOSITORY": ""})
+check(rc == 0 and len(calls(t)) == 2, "AC7 post-publish: no input names a signer or a repository: an empty "
+        "GITHUB_REPOSITORY changes nothing")
 t, rc, so, se = pv([PV1, PV3]); L = "\n".join(log(t))
 check(rc == 0 and not re.search(r"crane|docker login|auth login|\bpush\b", L) and SENT["GH_TOKEN"] not in L + so + se, "AC7 post-publish: no registry login or push, and the read token is never on a command line or in output")
 # ---- REQ-CHAIN-007-AC20 (advisor ruling B, Oct 15): the commands run from the downloaded assets; a jq-only command only after a verify of the same file --------------
 PBF = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ
 PJ = "jq -e '.ok == true' provenance.bundle.json"
-def pva(rows, assets=None, nodir=False, **kw):
-    """pv with files in release-published/ (assets: name -> text), or the directory removed."""
+def pva(rows, assets=None, nodir=False, key=GOODKEY, home=None, **kw):
+    """pv with files in release-published/ (assets: name -> text), or the directory removed; key: the text of the
+    verified key file in $RUNNER_TEMP (None: no such file); home "tree": $RUNNER_TEMP is the checkout itself."""
     t = tree()
+    KEYOF[t] = t if home == "tree" else keydir(None if home else key)
+    if home == "tree" and key is not None: open(os.path.join(t, "release-key.verified.pub"), "w").write(key)
     rp = os.path.join(t, "release-published")
     if nodir: shutil.rmtree(rp)
     else:
         for n, c in (assets or {}).items(): open(os.path.join(rp, n), "w").write(c)
     os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     json.dump([{"command": c, "reason": "needs a release file"} for c in rows], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
-    e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(kw.get("env") or {})
+    e = {"GITHUB_REPOSITORY": "fosterstack/cache", "RUNNER_TEMP": KEYOF[t]}; e.update(kw.get("env") or {})
     rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"])
     return t, rc, so, se
 OK = '{"ok": true}'
@@ -822,6 +861,118 @@ t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}); check(rc 
 t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": '{"ok": false}'}); check(rc != 0 and "post-publish verification failed" in se and PJ in se, "AC20 post-publish: the jq-only command really runs on the file: a false filter fails the run, naming it", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PJ], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command with no earlier verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PJ, PBF], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command listed BEFORE its verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
+# F1/F3/F4 (round 1): <RELEASE_KEY> is filled only with the verified key file of $RUNNER_TEMP; every verify form has
+# exactly one key flag with that
+# placeholder as its value; no list text skips or redirects the public log. Each refusal below runs nothing and names
+# its own reason.
+PK = "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json provenance.bundle.json"
+t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK}); kc = calls(t)
+check(rc == 0 and len(kc) == 1 and kp(t) in kc[0] and "<RELEASE_KEY>" not in kc[0],
+      "F13 post-publish: <RELEASE_KEY> is filled with the verified key file of "
+              "$RUNNER_TEMP", "rc=%s %s %s" % (rc, kc, first(se)))
+def refused(label, want, rows=None, **kw):
+    t, rc, so, se = pva(rows or [PK], assets={"provenance.bundle.json": OK}, **kw)
+    check(rc != 0 and not calls(t) and want in se, "F13 post-publish: %s: nothing runs, and the run says %r" % (label,
+            want), "rc=%s %s" % (rc, first(se)))
+refused("with no verified key file", "release-key.verified.pub, and there is none", key=None)
+refused("with $RUNNER_TEMP unset", "needs $RUNNER_TEMP, an absolute path", env={"RUNNER_TEMP": ""})
+refused("with $RUNNER_TEMP relative", "needs $RUNNER_TEMP, an absolute path", env={"RUNNER_TEMP": "tmp"})
+refused("with a key file in the checkout and $RUNNER_TEMP unset (a tracked file at the repo root)",
+        "needs $RUNNER_TEMP, an absolute path", home="tree", env={"RUNNER_TEMP": ""})
+refused("with $RUNNER_TEMP inside the checkout", "is inside the checkout", home="tree")
+# joined: no tracked file may hold the marker
+for label, text in (("a private key", "-----BEGIN PRIV" + "ATE KEY-----\nabc\n-----END PRIV" + "ATE KEY-----\n"),
+                    ("an awskms reference", "awskms:///alias/example\n"), ("an empty file", ""),
+                    ("two PEM blocks", GOODKEY + GOODKEY), ("a key and a trailing line", GOODKEY + "extra\n")):
+    refused("%s is not a verified public key" % label, "is not one PEM public key", key=text)
+t, rc, so, se = pva([PK], assets={"provenance.bundle.json": OK}, key=None)
+d = KEYOF[t]
+open(os.path.join(d, "real.pub"), "w").write(GOODKEY)
+os.symlink(os.path.join(d, "real.pub"), os.path.join(d, "release-key.verified.pub"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache", "RUNNER_TEMP": d},
+                  creds=["GH_TOKEN"])
+check(rc != 0 and not calls(t) and "there is none" in se,
+        "F13 post-publish: a symlink named release-key.verified.pub is not the key file: nothing "
+                "runs", "rc=%s %s" % (rc, first(se)))
+# F1: a key flag that is not exactly the placeholder never reaches a verify, whether or not a key file exists
+for label, row in (("a key file by name",
+        "cosign verify-blob --key unverified.pub --bundle provenance.bundle.json provenance.bundle.json"),
+                   ("a KMS reference", "cosign verify-blob --key awskms:///alias/x --bundle provenance.bundle.json "
+                           "provenance.bundle.json"),
+                   ("a URL in --key=", "cosign verify-blob --key=https://example.org/k.pub --bundle "
+                           "provenance.bundle.json provenance.bundle.json"),
+                   ("a path out of the directory", "cosign verify-blob --key ../rekor.pub --bundle "
+                           "provenance.bundle.json provenance.bundle.json"),
+                   ("a second key flag beside the placeholder", PK + " --key cosign.pub"),
+                   ("a verify with no key flag", "cosign verify-blob --bundle provenance.bundle.json "
+                           "provenance.bundle.json"),
+                   ("a key flag with no value", "cosign verify-blob --bundle provenance.bundle.json "
+                           "provenance.bundle.json --key"),
+                   ("an identity instead of a key", "cosign verify-blob --certificate-identity x "
+                           "--certificate-oidc-issuer " + ISS + " --bundle provenance.bundle.json "
+                                   "provenance.bundle.json")):
+    for kkey in ((GOODKEY,) if "<RELEASE_KEY>" in row else (None, GOODKEY)):
+        refused("%s%s" % (label, "" if kkey else ", with no key file at all"), "key flag", rows=[row], key=kkey)
+refused("a key flag in the second segment of a pipe", "key flag", rows=[PK + " | cosign verify-blob --bundle b.json "
+        "x.txt"])
+refused("gh attestation verify (it verifies by identity), even with a key flag", "is not a verify form or jq",
+        rows=["gh attestation verify oci://<IMAGE_REF> --key <RELEASE_KEY> --owner fosterstack"])
+# G1 (round 4): bash runs a listed command and expands these AFTER the judge reads its words, so an unquoted brace,
+# glob or tilde is refused by name.
+# `--insecure-ignore-{tlog,tlog}` would become the flag twice, `{--key,awskms:///alias/x}` a second key beside the
+# placeholder.
+BRACE = "a brace, glob or tilde outside quotes"
+for label, tail in (("a brace that builds the offline flag twice", "--insecure-ignore-{tlog,tlog}"),
+                    ("a brace that builds a second key flag", "{--key,awskms:///alias/x}"),
+                    ("a glob in a file operand", "--bundle a.bun*"), ("a ? glob", "a?.json"),
+                    ("a [ ] class", "a[12].json"),
+                    ("a tilde", "~/k.pub"), ("a lone closing brace", "}")):
+    refused("%s beside the key flag" % label, BRACE, rows=[PK + " " + tail])
+# H1 (round 5): cosign reads --key, --bundle and --type WITH their value; a value word is never a flag, so a
+# key-looking word after a
+# value-taking flag is that flag's value, not the key flag.
+NOVAL = "has no value: the next word is a flag"
+for label, row in (("--key as the value of --bundle",
+                    "cosign verify-blob --bundle --key <RELEASE_KEY> provenance.bundle.json"),
+                   ("--key as the value of --type",
+                    "cosign verify-blob --type --key <RELEASE_KEY> provenance.bundle.json"),
+                   ("--bundle as the value of --key", "cosign verify-blob --key --bundle provenance.bundle.json"),
+                   ("a trailing --bundle", "cosign verify-blob --key <RELEASE_KEY> provenance.bundle.json --bundle"),
+                   ("a trailing --type", "cosign verify-blob --key <RELEASE_KEY> provenance.bundle.json --type")):
+    refused(label, NOVAL, rows=[row])
+# J1 (round 6): shlex keeps the newline of a backslash-newline in the next word, bash removes both; so a flag or a
+# second key after one is
+# invisible to the judge but reaches cosign. A backslash before a newline or CR is refused by name.
+NLM = "a newline outside quotes"
+for label, row in (("the offline flag after a backslash-newline",
+                    "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json provenance.bundle.json "
+                            "\\\n--insecure-ignore-tlog"),
+                   ("a second key after a backslash-newline",
+                    "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json provenance.bundle.json "
+                            "\\\n--key awskms:///alias/x"),
+                   ("a value after a backslash-newline", "cosign verify-blob --key <RELEASE_KEY> --bundle "
+                           "\\\nprovenance.bundle.json x"),
+                   ("a backslash-CR", "cosign verify-blob --key <RELEASE_KEY> --bundle provenance.bundle.json x "
+                           "\\\r--insecure-ignore-tlog")):
+    refused(label, NLM, rows=[row])
+# G2 (round 4): a verify form carries only --key, --bundle, --type and --check-claims (with or without =value); every
+# other flag is refused by name.
+CLOSED = "outside the closed set"
+for label, tail in (("--rekor-url with a value", "--rekor-url https://example.org"), ("--rekor-url=x", "--rekor-url=x"),
+                    ("--trusted-root", "--trusted-root x.json"),
+                    ("--custom-trusted-root", "--custom-trusted-root x.json"),
+                    ("--insecure-ignore-tlog", "--insecure-ignore-tlog"),
+                    ("--insecure-ignore-tlog=true", "--insecure-ignore-tlog=true"),
+                    ("a quoted --insecure-ignore-tlo''g", "--insecure-ignore-tlo''g"),
+                    ("--private-infrastructure", "--private-infrastructure"),
+                    ("--certificate-identity", "--certificate-identity x"),
+                    ("a short flag", "-o json")):
+    refused("%s in a listed command" % label, CLOSED, rows=[PK + " " + tail])
+t, rc, so, se = pva([PK + " --type https://slsa.dev/provenance/v1 "
+        "--check-claims=false"], assets={"provenance.bundle.json": OK})
+check(rc == 0 and len(calls(t)) == 1,
+        "G2 post-publish: --key, --bundle, --type and --check-claims (with =value) are the whole allowed set",
+        "rc=%s %s" % (rc, first(se)))
 OTHER = PBF.replace("provenance.bundle.json", "other.bundle.json")
 t, rc, so, se = pva([OTHER, PJ], assets={"provenance.bundle.json": OK, "other.bundle.json": OK}); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se, "AC20 post-publish: a verify of a DIFFERENT file does not license the jq-only command: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL_ON": "provenance.bundle.json"}); E = [l for l in se.split("\n") if l.startswith("::error::")]
@@ -849,21 +1000,40 @@ for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined 
                       ("jq -e '.ok' provenance.bundle.json > out.json", "a redirect"), ("jq -e '.ok' provenance.bundle.json; id", "a ; after it")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "unverified.jq": ".ok", "other.json": OK, "-unverified.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
 # a verify command's FLAG VALUES (an identity, an issuer, a type) never license a file; only a file flag's value and a positional do
-VID = "cosign verify-blob --certificate-identity provenance.bundle.json --certificate-oidc-issuer " + ISS + " --bundle b.json x.txt"
+VID = "cosign verify-blob " + IDQ + " --check-claims provenance.bundle.json --bundle b.json x.txt"
 t, rc, so, se = pva([VID, PJ], assets={"provenance.bundle.json": OK, "b.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 round 1: a jq operand equal to a verify's --certificate-identity value is NOT licensed (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
-VT = "cosign verify-blob-attestation --type provenance.bundle.json --bundle b.json --certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS
+VT = "cosign verify-blob-attestation --type provenance.bundle.json --bundle b.json " + IDQ
 t, rc, so, se = pva([VT, PJ], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: a verify's --type value does not license a file", "rc=%s %s" % (rc, first(se)))
-VP = "cosign verify-blob --certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS + " --bundle b.json provenance.bundle.json"
+VP = "cosign verify-blob " + IDQ + " --bundle b.json provenance.bundle.json"
 t, rc, so, se = pva([VP, PJ], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc == 0, "AC20 round 1: a verify's positional blob operand licenses the jq read of that file", "rc=%s %s" % (rc, first(se)))
-VB = "cosign verify-blob --certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS + " --bundle=provenance.bundle.json x.txt"
+VB = "cosign verify-blob " + IDQ + " --bundle=provenance.bundle.json x.txt"
 t, rc, so, se = pva([VB, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc == 0, "AC20 round 1: a --bundle=FILE value licenses the file", "rc=%s %s" % (rc, first(se)))
-VU = "cosign verify-blob --insecure-flag provenance.bundle.json x.txt"
+VU = "cosign verify-blob " + IDQ + " --check-claims provenance.bundle.json x.txt"
 t, rc, so, se = pva([VU, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t), "AC20 round 1: the word after an unknown flag is taken as its value and licenses nothing (fail closed)", "rc=%s %s" % (rc, first(se)))
 # the page's own two jq commands (docs/verify-release.md section 3, cache#360) are in the grammar
 J1 = "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json"
-J2 = "jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json"
-PROV = json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}}, {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}]}).encode()).decode()}})
-t, rc, so, se = pva([PBF, J1, J2], assets={"provenance.bundle.json": PROV}); check(rc == 0 and len(calls(t)) == 1, "AC20 round 1: the guide's two real jq commands are accepted and PASS on a provenance of the right shape (the image commands' placeholder is filled per registry)", "rc=%s %s" % (rc, se[:300]))
+# the judge corpus below keeps the OLD second jq (its digest must not move); the test of the page's commands reads the
+# REAL one
+J2OLD = ("jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | "
+         ".name + \" sha256:\" + .digest.sha256' provenance.bundle.json")
+LIST = json.load(open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.cannot-run.json")))
+# the page's second jq, read from the list, not retyped
+J2 = next(r_["command"] for r_ in LIST if "runDetails.byproducts" in r_["command"])
+check(J2 in open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.md")).read(),
+      "AC20 round 6 J2: the list's second jq is byte for byte on the page", J2[:80])
+SBOMD = "5b" * 32
+def prov_of(subjects, byproducts=None):
+    st = {"predicateType": "https://slsa.dev/provenance/v1", "subject": subjects}
+    if byproducts is not None: st["predicate"] = {"runDetails": {"byproducts": byproducts}}
+    return json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps(st).encode()).decode()}})
+PROV = prov_of([{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}},
+                {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}],
+               [{"name": "sbom-production", "digest": {"sha256": SBOMD}}])
+t, rc, so, se = pva([PBF, J1, J2], assets={"provenance.bundle.json": PROV})
+check(rc == 0 and len(calls(t)) == 1 and ("sbom-production sha256:" + SBOMD) in so,
+      "AC20 round 1: the guide's two real jq commands are accepted and PASS on a provenance of the right shape, and "
+              "the second prints the SBOM line (the image commands' placeholder is filled per "
+              "registry)", "rc=%s %s" % (rc, se[:300]))
 FIPSONLY = json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-fips", "digest": {"sha256": DIG["image-production"].split(":")[1]}}]}).encode()).decode()}})
 t, rc, so, se = pva([PBF, J1], assets={"provenance.bundle.json": FIPSONLY}); check(rc != 0 and "post-publish verification failed" in se, "AC20 round 1: the production digest check fails when the matching digest sits under another subject name", "rc=%s %s" % (rc, se[:200]))
 # round 2 (seat B): the shell never sees a jq-only command, and a placeholder is never a file name
@@ -880,12 +1050,16 @@ t, rc, so, se = pva([], nodir=True); check(rc != 0 and "release-published" in se
 # ---- the command judge answers as it did before the plain rewrite (owner rule 6, Oct 24) -------------------------
 # The judge's five seams run over a fixed corpus (the guide's commands, each with one odd snippet put at every word
 # edge and quote): the sha256 of all their answers, messages included, must not change. The hash was taken from the
-# code of base commit 5916cbc4, before the rewrite.
+# code of base commit 5916cbc4, before the rewrite. Re-pinned for cache#797 round 1: the `gh attestation verify` form
+# is gone from the
+# judge (F2) and the corpus's commands now carry the key flag; on the old corpus the old and the new judge differ on
+# the gh forms only. Re-pinned again in round 4 (G1): a command that goes to bash is refused for an unquoted brace,
+# glob or tilde; on this corpus every command whose answer changed holds one (a jq-only command never goes to bash).
 src = open(os.path.join(BIN, "release-postverify.py")).read().rstrip()
 src = src[:-len("main()")] if src.endswith("\nmain()") else src
 judge = {"__name__": "judge"}
 exec(compile(src, "release-postverify.py", "exec"), judge)
-BASES = [PV1, PV2, PV3, PV4, PBF, PJ, J1, J2, VID, VT, VP, VB, VU, "jq -r --arg ref 'a b' '.a | .b' f.json",
+BASES = [PV1, PV2, PV3, PV4, PBF, PJ, J1, J2OLD, VID, VT, VP, VB, VU, "jq -r --arg ref 'a b' '.a | .b' f.json",
          "jq -c '.ok' f.json | jq -e '. == true'", PBF + " | jq -e '.ok' x.json",
          "cosign verify-attestation --key k.pub <IMAGE_REF_FIPS>"]
 SNIPS = ["`", "$", "$(id)", "${X}", "#", "\n", "\r", "\\", "\\$", "'", '"', ";", "&", "&&", ">", "<", "(", ")", "|",
@@ -904,7 +1078,7 @@ def verdict(c):
                sorted(j["verify_files"](c)))
     return repr(answers)
 digest = hashlib.sha256("\n".join(verdict(c) for c in CORPUS).encode()).hexdigest()
-check(digest == "d8c38764f45d912a00a98e1072c42f75685d0f4ce8e4ca15b97709ad1010ae0d",
+check(digest == "8984109f67e41a2c2ab8cdc68737d6b2a885db7f7f26d380457a2b1f80b11a8f",
       "owner rule 6: the judge answers the same on %d commands (form_error, all_jq, jq_files, verify_files)"
       % len(CORPUS), digest)
 t, rc, so, se = pva([PBF, "jq -e '.ok \u00e9' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
@@ -917,7 +1091,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "401"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "458"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
