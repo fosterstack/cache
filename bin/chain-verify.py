@@ -1342,7 +1342,8 @@ SR_CHECK_PREFIX = "check-results/"
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
 SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}   # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in witness-rebuild/; matched in full, never by basename
-SR_ATTESTORS = ("environment", "git", "material", "product")
+# Witness 0.12.0 `run -- command` writes these five and no other; command-run holds the command, its stdout and stderr and its exit code
+SR_ATTESTORS = ("environment", "git", "material", "command-run", "product")
 GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
 ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
 
