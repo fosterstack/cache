@@ -36,7 +36,8 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # panel-scout/panel-google above; it never mints or uses the auditor App's token
            ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),
            # automatic patch releases (REQ-REL-009): decide holds no environment and no secret and cuts no tag
-           # (handoff 0713 P8); patch-notes alone mints the auditor App's token (contents + pull-requests) for the changelog PR
+           # (handoff 0713 P8); patch-notes alone mints the auditor App's token (contents + pull-requests) for the
+           # changelog PR
            ("release.yml", "patch-notes"),
            # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
            # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
