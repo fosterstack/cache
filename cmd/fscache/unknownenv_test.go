@@ -74,7 +74,7 @@ func TestUnknownEnvDoesNotStopStartup(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	t.Setenv("FSCACHE_MAX_BYTE", "1")
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
@@ -372,7 +372,7 @@ func TestReconciledLineCarriesDuration(t *testing.T) {
 	}
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
 	ctx, cancel := context.WithCancel(context.Background())
