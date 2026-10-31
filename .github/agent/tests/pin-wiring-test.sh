@@ -315,12 +315,13 @@ def _by_shape(st):
     """A step with `uses: name@<full 40-hex commit>` stands for every digest of
     that action: the digest VALUE is judged by
     check-action-pins --verify-tags, pin-age and the daily audit (a Dependabot bump moves it), not by these lists. The
-    action name and the exact shape of the ref (40 lower-case hex) stay compared."""
+    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
+    scalar can equal."""
     u = st.get("uses")
     if isinstance(u, str) and u.count("@") == 1:
         name, _, ref = u.partition("@")
         if re.fullmatch(r"[0-9a-f]{40}", ref):
-            return dict(st, uses=name + "@<commit>")
+            return dict(st, uses=(name, "@40-hex"))
     return st
 
 
@@ -921,8 +922,9 @@ case_ uses-tag-ref             bad "${BUMP//%s/actions/setup-python@v7}"
 case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababababababababababababababababa}"
 case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
 case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
+case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
-case_msg run-changed-names-step "$RUNX" "the allowlist-persona step "
+case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
 case_msg run-changed-names-key  "$RUNX" "differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
