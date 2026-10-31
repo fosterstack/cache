@@ -94,7 +94,7 @@
   },
   {
    "name": "chain-verify sign",
-   "regex": "chain-verify\\.py\\s+sign\\b",
+   "regex": "chain-verify\\.py\\s+sign(?![-\\w])",
    "prov": "always",
    "pseudo": "https://slsa.dev/provenance/v1"
   },

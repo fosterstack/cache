@@ -306,12 +306,14 @@
         "command",
         "env",
         "git",
+        "python3",
         "script",
         "sh",
         "trap"
       ],
       "runs": [
-        "bin/loopback-get.sh"
+        "bin/loopback-get.sh",
+        "bin/chain-verify.py"
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN unless the step is release-sign; a Witness collection is not a provenance statement",
@@ -383,7 +385,8 @@
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
-        "arm64": "bin/check-phase-arm64.sh"
+        "arm64": "bin/check-phase-arm64.sh",
+        "release-verify": "bin/release-verify.sh"
       },
       "exceptions": [
         {

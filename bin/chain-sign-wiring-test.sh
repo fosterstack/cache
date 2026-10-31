@@ -3279,7 +3279,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='10ff41402b8a5a1e5e2c2c5794c0e0f8290524752a59f97ed68b7dcdcf594b21'
+FX_PIN='9f55b91097be644eed57c589dd3948787fbeeed8f4fd07234316749172156252'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4967,7 +4967,7 @@ hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
 # ---- F4 (cache#586 round 1): witness-sign-staged.sh signs exactly the list the records step printed, and refuses anything else ----
-# A fake witness records what it is asked to sign; a stub token fetcher and verifier stand in for the network and the verifier.
+# A stub verifier (it holds the one signing function, sign-record) records what it is asked to sign; a stub token fetcher stands in for the network.
 wsdir="$work/wsst"; mkdir -p "$wsdir/fakebin"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "$WS_LOG.args"\nwhile [ $# -gt 0 ]; do case "$1" in -f) echo "$2" >> "$WS_LOG" ;; -o) o="$2" ;; esac; shift; done\nmkdir -p "$(dirname "$o")"; echo signed > "$o"\n' > "$wsdir/fakebin/witness"
 chmod +x "$wsdir/fakebin/witness"
@@ -4975,7 +4975,17 @@ ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record stage
   local t="$wsdir/$1"; mkdir -p "$t/bin" "$t/staged/witness-build" "$t/staged/witness-apk-ubuntu-24.04"
   cp "$root/bin/witness-sign-staged.sh" "$t/bin/"
   echo "echo '{\"value\":\"tok\"}'" > "$t/bin/loopback-get.sh"
-  printf 'import sys\nsys.exit(0)\n' > "$t/bin/chain-verify.py"
+  cat > "$t/bin/chain-verify.py" <<'PYSTUB'
+import os, sys
+a = sys.argv[1:]
+if a[:1] == ["sign-record"]:      # the one signing function: log the payload it is handed and write the record like it does
+    open(os.environ["WS_LOG"], "a").write(a[a.index("--payload") + 1] + "\n")
+    o = a[a.index("--out") + 1]
+    os.makedirs(os.path.dirname(o), exist_ok=True)
+    open(o, "w").write("signed\n")
+if a[:2] == ["policy", "make"]:
+    open(a[a.index("--out") + 1], "w").write("{}")
+PYSTUB
   echo '{}' > "$t/staged/witness-build/build-collection.payload"; echo '{}' > "$t/staged/witness-build/digests.json"
   echo '{}' > "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"
   printf 'staged/witness-build/build-collection.payload\tsigned/witness-build/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"
