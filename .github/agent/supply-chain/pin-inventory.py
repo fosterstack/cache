@@ -602,8 +602,6 @@ def _step(node, out, labels):
 
 
 _STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
-# the file memo, counted for the gate: a read-miss is a known blob whose callees read differently
-_MEMO_STATS = {"lookups": 0, "hits": 0, "read_misses": 0, "misses": 0}
 
 
 def _step_line(node, out):
@@ -611,7 +609,7 @@ def _step_line(node, out):
     if not _MEMO_ON[0]:
         _step(node, out, {})
         return
-    assert not _JOB_RUNS[0], "a script line is never read after the steps of a job"
+    assert not _JOB_RUNS[0], "_JOB_RUNS is not in the memo key"
     key = (json.dumps(node, sort_keys=True), _ENV_CTX[0], _INPUT_CTX[0], tuple(_JOB_SUMS[0]))
     made = _STEP_MEMO.get(key)
     if made is None:
@@ -860,9 +858,6 @@ def inventory(files):
         known = _FILE_MEMO.get(mk, []) if mk is not None else []
         # the reads the walk made are re-asked of THIS tree: the same answers, the same items
         hit = next((m for m in known if all(_read_of(r[0]) == r for r in m[1])), None)
-        if mk is not None:
-            _MEMO_STATS["lookups"] += 1
-            _MEMO_STATS["hits" if hit is not None else "read_misses" if known else "misses"] += 1
         if hit is not None:
             found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:

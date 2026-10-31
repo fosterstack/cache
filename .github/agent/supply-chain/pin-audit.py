@@ -1107,23 +1107,30 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
-# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is never read partially, pin-inventory MAX_LINE). Exactly these revisions
-# are skipped instead, by FULL lowercase 40-hex sha, each for one stated reason (advisor 0637): they are the Oct 20 2026 RED commits of the release-chain branch's PR 459, whose test
-# file bin/chain-sign-wiring-test.sh held a 12000-character fixture line (removed in the later rounds of that PR). They sit in that branch's history, so once it lands every pull request
-# that moves a version would stop at them for the 90-day lookback. Their trees differ from their neighbours' by that one test file, so no pin is lost by skipping them.
-# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a revision is added to this list only by a reviewed change that names it.
+# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is
+# never read partially, pin-inventory MAX_LINE). A revision is skipped instead only when it is named below by its
+# FULL lowercase 40-hex sha with its own reason: the three Oct 20 RED commits of PR 459 (a 12000-character fixture
+# line), the Oct 23 #597 commit (4103 characters) and ten commits of the cache6-0713-p1p5 branch (4529 characters,
+# wrapped at 0289dc91). Each sits in a branch's history, so without the skip every audit would stop at it for the
+# 90-day lookback.
+# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
+# revision is added to this list only by a reviewed change that names it.
+P1P5_LINE = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
 SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
-    "27b14e37ed06bca44ae479a8880480fa5855605b": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
-    "c4ac17f07ac894c014034ec7e535e4598e06ced8": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
-    "c9e30be29823765fce4c8a23bb11a4340a73fd69": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
-    "23f771008513913f5a1bf434af83530125621a53": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
-    "c5b8f225a378db6fa72200bafcf9af7998ef23e5": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
-    "9045a08f287801c75cbf385caae8038774ed9f10": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
-    "115c746b17620f08c0fe52c789dea720c887d465": "cache6-0713-p1p5 (Oct 30): bin/chain-rekor-key-test.sh held a 4529-character command line",
+    "27b14e37ed06bca44ae479a8880480fa5855605b": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "c4ac17f07ac894c014034ec7e535e4598e06ced8": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "c9e30be29823765fce4c8a23bb11a4340a73fd69": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "23f771008513913f5a1bf434af83530125621a53": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "c5b8f225a378db6fa72200bafcf9af7998ef23e5": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "9045a08f287801c75cbf385caae8038774ed9f10": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "115c746b17620f08c0fe52c789dea720c887d465": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987": "cache6-0713-p1p5 (Oct 30): " + P1P5_LINE,
+    "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8": "cache6-0713-p1p5 (Oct 31): " + P1P5_LINE,
+    "464b72fea4e356a9876bf9bd70f57cc84e07cab4": "cache6-0713-p1p5 (Oct 31): " + P1P5_LINE,
 }
 
 
