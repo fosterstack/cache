@@ -548,7 +548,8 @@ expect_refuse \
 fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused" tag-annotated
 fresh; retag none; run_admit;    expect_refuse "AC4 an unsigned annotated tag is refused" tag-signature
 fresh; retag attacker; run_admit; expect_refuse "AC4 a tag signed by a key that is not in main's allowed signers is refused" tag-signature
-# a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run (handoff 0713 P8); an owner-signed patch tag passes this check and meets the later ones (the rc-proof cases below)
+# a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run (handoff 0713 P8);
+# an owner-signed patch tag passes this check and meets the later ones (the rc-proof cases below)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a keyless patch tag is refused at tag-signature: no keyless route is left" tag-signature keyless
 grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a keyless patch tag" || ok "AC4 gitsign is never run, not even to look at a keyless patch tag"
@@ -758,9 +759,12 @@ else bad "AC4 policy from main: a script of the tagged commit ran on the patch r
 fi
 fresh; commit_move owner "newer"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit GITHUB_SHA="$SHAC"
 expect_refuse "AC4 the re-tag race: a tag that was moved after the event (it no longer points at GITHUB_SHA) is refused" tag-ref sha
-# ---- a patch tag with a REAL PKCS7 (keyless) signature, unchanged requirements and an owner-approved baseline is still refused (handoff 0713 P8) ---
-# The CI patch path (the baseline of its line, bin/admission-tag-signer.py baseline) is not reachable from admission any more: the router refuses a keyless
-# signature on every tag, a patch tag included (an owner SSH signature on a patch tag is admitted, above). The baseline subcommands keep their own tests
+# ---- a patch tag with a REAL PKCS7 (keyless) signature, unchanged requirements and an owner-approved baseline is still
+# refused (handoff 0713 P8) ---
+# The CI patch path (the baseline of its line, bin/admission-tag-signer.py baseline) is not reachable from admission any
+# more: the router refuses a keyless
+# signature on every tag, a patch tag included (an owner SSH signature on a patch tag is admitted, above). The baseline
+# subcommands keep their own tests
 # in bin/admission-tag-signer-test.sh.
 patch_setup() { # patch_setup : a signed commit on main and the patch tag v0.3.1 on it, signed as gitsign signs (a real PKCS7 block)
   fresh
@@ -795,8 +799,10 @@ expect_refuse "AC6 a marker naming an rc tag that does not exist is refused" rc-
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; G -c user.signingkey="$W/keys/owner" commit -q -S -m "marker removed"; G push -q origin main 2> /dev/null
 G fetch -q origin 2> /dev/null; G checkout -q --detach v0.3.0; run_admit
 expect_refuse "AC6 the marker is read from origin/main: v0.3.0 (whose own tree has a marker) is refused when main has none" rc-proof marker
-# an owner-signed patch tag is admitted like any owner-signed tag (handoff 0713 P8, ruling b: owner SSH on every tag, patch tags included):
-# the marker on main, an approved requirements/releases/v0.3.1.yaml, the checks green; admission.json records owner-ssh and the patch baseline
+# an owner-signed patch tag is admitted like any owner-signed tag (handoff 0713 P8, ruling b: owner SSH on every tag,
+# patch tags included):
+# the marker on main, an approved requirements/releases/v0.3.1.yaml, the checks green; admission.json records owner-ssh
+# and the patch baseline
 fresh; G checkout -q main
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null

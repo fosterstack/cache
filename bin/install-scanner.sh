@@ -6,7 +6,8 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|govulncheck> [dest-dir]
+# Usage: install-scanner.sh
+# <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|govulncheck> [dest-dir]
 # `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that
 # version is the pinned one (GO_VER); admission's freeze check runs it from there (the runner's own Go may be older than go.mod).
 # `govulncheck` (the Go source scan of Check, ruling G of Oct 12) is a Go MODULE, not release archives (golang/vuln publishes none): it is built from the committed module

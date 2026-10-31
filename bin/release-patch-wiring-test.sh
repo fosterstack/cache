@@ -4,9 +4,11 @@
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
 # - decide runs on main only, with no environment and its own token read-only plus checks and issues (the standing
-#   "not patch-clean" issue); it holds no id-token and no secret; the critical/high comparison scans the release (no base image exists: rules 61, 62)
+#   "not patch-clean" issue); it holds no id-token and no secret; the critical/high comparison scans the release (no
+#   base image exists: rules 61, 62)
 #   and the base-input-changed signal is read from the committed base-input list (.github/policy/base-inputs.json);
-# - decide cuts NO tag (handoff 0713 P8: no signer exists until the release KMS Sign job signs a patch tag, owner question
+# - decide cuts NO tag (handoff 0713 P8: no signer exists until the release KMS Sign job signs a patch tag, owner
+# question
 #   O4); its step `cut` records tagged=false;
 # - a failed patch-tag run opens one issue and is never retried;
 # - AC8 wired (advisor 0135): the notes are built before signing and are the signed tag's message; a separate job opens
@@ -62,8 +64,10 @@ steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
 if re.search(r"(?i)gitsign", yaml.safe_dump(dec)):
     bad.append("decide still names gitsign (keyless signing is out; handoff 0713 P8)")
-# no unsigned tag, ever (advisor ruling 09:52Z): until the release KMS Sign job signs a patch tag (owner question O4), a decided patch cuts NO tag. No step of decide
-# creates, signs or pushes a tag, none mints a token that could push one, and the one output `tagged` comes from a step that sets it false and nothing sets true.
+# no unsigned tag, ever (advisor ruling 09:52Z): until the release KMS Sign job signs a patch tag (owner question O4), a
+# decided patch cuts NO tag. No step of decide
+# creates, signs or pushes a tag, none mints a token that could push one, and the one output `tagged` comes from a step
+# that sets it false and nothing sets true.
 if re.search(r"git\s+(-c\s+\S+\s+)*tag\b|\btag\s+-s\b|git\s+push|git\s+(-c\s+\S+\s+)*mktag|update-ref\s+refs/tags|git/(refs|tags)|gh\s+release\s+create|create-release", text):
     bad.append("a step of decide creates, signs or pushes a tag: no tag may be cut until the release KMS Sign job signs it")
 if "tagged=true" in text.replace(" ", ""):
@@ -178,7 +182,8 @@ if len(nstep) != 1 or "steps.decide.outputs.cut == 'true'" not in nstep[0].get("
 elif "--next-notes docs/next-release-notes.md" not in nstep[0]["run"] or "--published" not in nstep[0]["run"] or \
         "removed-unknown" not in nstep[0]["run"]:
     bad.append("the notes step skips the next-release entries, the published guard, or an unscannable release")
-# the notes are written, but no tag carries them until a signer cuts one (handoff 0713 P8): the signed-tag message, the tagger identity and the push are gone with the signer
+# the notes are written, but no tag carries them until a signer cuts one (handoff 0713 P8): the signed-tag message, the
+# tagger identity and the push are gone with the signer
 import os as _os
 if scan and "event_name" in scan[0].get("if", ""):
     bad.append("the release is scanned on push only: a daily patch's notes would list no fixes")

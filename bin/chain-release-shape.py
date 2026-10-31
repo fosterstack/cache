@@ -428,7 +428,8 @@ def graph(path):
                        % (n, "exactly the if %s" % IFS_OF[n] if n in IFS_OF else "no if", j.get("if")))
         if "continue-on-error" in j or "secrets" in j:
             bad.append("job %s has continue-on-error or secrets" % n)
-    # no job of release.yml creates a tag or a release, decide included (handoff 0713 P8: nothing here signs a tag, so nothing cuts one)
+    # no job of release.yml creates a tag or a release, decide included (handoff 0713 P8: nothing here signs a tag, so
+    # nothing cuts one)
     rest = json.dumps(jobs)
     # matches `gh api repos/o/r/git/refs -f ref=refs/tags/v9.9.9` (the refs API makes a tag); refuses nothing in
     # `gh api repos/o/r/git/commits/abc` (reading a commit makes no tag)

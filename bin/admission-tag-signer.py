@@ -14,7 +14,8 @@ PATCH = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.([1-9][0-9]*)$")
 
 
 def kind(tag_object):
-    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous. A signature is a
+    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous. A
+    signature is a
     PEM-style block with a signature label (BLOCKS) that git appends at the END of the object; any other PEM-style block
     (a key or certificate quoted in the notes) is message text (Codex #163 r1, B03). Two signature-labelled blocks, or one
     that is not at the end, are ambiguous."""
@@ -32,7 +33,8 @@ def kind(tag_object):
 
 
 def route(tag_object):
-    """(route, why) with route in ssh / refuse. Only the owner's key is routed, so nothing but the tag object's signature is read:
+    """(route, why) with route in ssh / refuse. Only the owner's key is routed, so nothing but the tag object's
+    signature is read:
     no rule about the tag's name, its kind or the previous patch is left here."""
     k = kind(tag_object)
     if k == "ssh":
@@ -226,7 +228,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("route")
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
-    # --tag and --tags are accepted and ignored: this router runs from main while build-admit runs from the tagged commit, so an
+    # --tag and --tags are accepted and ignored: this router runs from main while build-admit runs from the tagged
+    # commit, so an
     # older tagged commit still passes them
     r.add_argument("--tag")
     r.add_argument("--tags")

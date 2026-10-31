@@ -793,11 +793,11 @@ NS_KNOWN_LINES = (      # the two physical lines of the admission step's go run
     ' "verify-freeze", base],',
     '        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))')
 NS_SHA = {
-    "bin/admission-tag-signer.py": "9086710adb4a6f3c9465d7b4c953f4eb4db375ee0f3fbe46465b9ece2aadd2bb",
+    "bin/admission-tag-signer.py": "e3df12b9a6dc8d83f24572f2c3a5fe9f11db859d435ae630c785fe5d5b3f2145",
     "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
-    "bin/build-admit.py": "b74a2031d5c22bd9e6eceabb0c2cba9178e2a3aa5ea1bd9923d71ffb98a9f3a4",
+    "bin/build-admit.py": "9efc9ad8b061414ec0ea50c51249f6fdbba04094a8541fc2c312c8f7a0ac1a05",
     "bin/build-apk-helper.py": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
@@ -1173,8 +1173,10 @@ SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": 
              "sign-check": {"digests": "${{ needs.build.outputs.digests }}", "stage": "check", "records": "${{ needs.check.outputs.records }}", "records-arm64": "${{ needs.check.outputs.records-arm64 }}"}}
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
-# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide (no environment, no
-# secret: it cuts no tag since handoff 0713 P8), patch-notes and patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
+# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter.
+# decide (no environment, no
+# secret: it cuts no tag since handoff 0713 P8), patch-notes and patch-failed exist today (automatic patch releases,
+# REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
 LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"

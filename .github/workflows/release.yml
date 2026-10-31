@@ -36,8 +36,10 @@ jobs:
   # ---------------------------------------------------------------------------------------------------------------
   # Automatic patch releases (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056/0057; REQ-REL-009).
   # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag, rule 1; at once for
-  # a removed critical/high finding on push, else at most once a day, rule 2), checks the ACs baseline and the tagged commit's required checks, and writes
-  # the notes. It cuts NO tag: until the release KMS Sign job signs a patch tag (owner question O4) there is no signer here, and an unsigned tag is never
+  # a removed critical/high finding on push, else at most once a day, rule 2), checks the ACs baseline and the tagged
+  # commit's required checks, and writes
+  # the notes. It cuts NO tag: until the release KMS Sign job signs a patch tag (owner question O4) there is no signer
+  # here, and an unsigned tag is never
   # cut (handoff 0713 P8, advisor ruling Oct 30). The step `cut` records that.
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
@@ -163,8 +165,10 @@ jobs:
           if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
       # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
-      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources (owner-signed
-      # tags) and cuts no tag at all since handoff 0713 P8 (no signer exists yet); admission accepts an owner-signed patch
+      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources
+      # (owner-signed
+      # tags) and cuts no tag at all since handoff 0713 P8 (no signer exists yet); admission accepts an owner-signed
+      # patch
       # tag on the owner's baseline. Otherwise no cut: it waits for the owner.
       - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
         id: basecheck

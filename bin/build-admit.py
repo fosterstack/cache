@@ -165,8 +165,10 @@ def check_tag_annotated(ctx):
 # ---------------------------------------------------------------- 5. tag-signature (REQ-REL-009-AC6)
 
 def route_tag(ctx):
-    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is refused:
-    a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag, patch tags included."""
+    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is
+    refused:
+    a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag,
+    patch tags included."""
     rc, obj, _ = outcome(lambda: subprocess.run(["git", "cat-file", "tag", "refs/tags/" + ctx.tag], capture_output=True,
         check=False))
     if rc != 0:

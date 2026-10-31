@@ -3223,9 +3223,9 @@ expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 shape="$shape_real"
 real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
-if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:408"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
-  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:408) is the ONE finding"
-else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:408 -> ${real_json:0:300}"; fi
+if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:410"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
+  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:410) is the ONE finding"
+else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:410 -> ${real_json:0:300}"; fi
 ns_hits=""
 for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
   ns_hits+=$(grep -rnw "NS_$n" "$root/bin" || true)
