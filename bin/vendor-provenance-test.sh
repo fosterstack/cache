@@ -83,14 +83,35 @@ for f in files:
             bad.append("%s:%d" % (f, n))
 assert not bad, bad
 PY
-t AC1 "every build recipe that exists sets GOFLAGS=-mod=vendor and GOPROXY=off" python3 - <<'PY'
-import glob, re
-for f in glob.glob("build/melange*.yaml"):
+# recipe_env_check <dir>: every <dir>/melange*.yaml sets GOFLAGS=-mod=vendor and GOPROXY=off. A recipe is skipped only when the
+# word "go" appears nowhere in it, so a recipe that builds Go any way at all (go build, go install, go run, a Go download) is checked.
+recipe_env_check() {
+  python3 - "$1" <<'PY'
+import glob, re, sys
+for f in glob.glob(sys.argv[1] + "/melange*.yaml"):
     s = open(f).read()
-    if "go build" not in s:      # a recipe that builds no Go (the base layout) has nothing to vendor
+    if not re.search(r"\bgo\b", s):
         continue
     assert re.search(r"GOFLAGS:\s*[\"']?-mod=vendor", s) and re.search(r"GOPROXY:\s*[\"']?off", s), f
 PY
+}
+t AC1 "every build recipe that exists sets GOFLAGS=-mod=vendor and GOPROXY=off" recipe_env_check build
+# the check itself, on recipes written for it: only a recipe with no "go" word is skipped
+GOENV=$'  environment:\n    GOFLAGS: -mod=vendor\n    GOPROXY: "off"\n'
+mkrec() { mkdir -p "$work/rec/$1"; printf '%s\n' "$2" >"$work/rec/$1/melange.yaml"; }
+mkrec ok-go "go build ./cmd/x
+$GOENV"
+mkrec no-env "go build ./cmd/x"
+mkrec install-no-env "go install ./cmd/x"
+mkrec comment-no-env "# built with go
+pipeline: []"
+mkrec no-go "package: {name: base}
+pipeline: []"
+t  AC1 "recipe check: a Go recipe with both settings passes" recipe_env_check "$work/rec/ok-go"
+tn AC1 "recipe check: a recipe with go build and no settings fails" recipe_env_check "$work/rec/no-env"
+tn AC1 "recipe check: a recipe with go install and no settings fails (not only go build is checked)" recipe_env_check "$work/rec/install-no-env"
+tn AC1 "recipe check: a recipe that only mentions go in a comment, without the settings, fails" recipe_env_check "$work/rec/comment-no-env"
+t  AC1 "recipe check: a recipe with no go word anywhere is skipped" recipe_env_check "$work/rec/no-go"
 t AC1 "go.sum exists and is non-empty" test -s "$root/go.sum"
 
 # ===== AC4: check ==============================================================================
