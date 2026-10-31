@@ -24,9 +24,9 @@
 #      missing from the melange repository, a keyring dir without the two keys;
 #   2. render the config (@FSCACHE_VERSION@ replaced);
 #   3. make the FULL lock: sudo unshare -n apko lock (apko lock has no offline flag, so the namespace has no network);
-#   4. compare it with the committed base lock: the full lock must be the base lock plus our two apks and nothing else, and
-#      every package must resolve to the same version on both architectures (bin/apko-lock.sh compare, arch-check);
-#      verify the full lock against the archive and the melange repository;
+#   4. compare it with the committed base lock: the full lock must be the base lock plus our two apks and nothing
+#      else, and every package must resolve to the same version on both architectures (bin/apko-lock.sh compare,
+#      arch-check); verify the full lock against the archive and the melange repository;
 #   5. ONE apko build for both architectures: sudo unshare -n apko build --offline --lockfile FULL --sbom-path SBOM
 #      --build-date (the lock's checksum check is the tamper check), into a private temporary tar;
 #   6. bin/oci-digest.py unpack reads that tar and writes the image as an OCI layout DIRECTORY OUT/<variant>/
