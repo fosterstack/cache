@@ -26,12 +26,15 @@ name: scan
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
 # (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
 # ratified Sep 29, decision row 73; the role's trust names those subjects).
+# In the merge queue the subject is ref:refs/heads/gh-readonly-queue/main/...: the role's trust must admit it (an owner
+# step, before the queue is turned on) or the inspector job fails, and with it `scan`, for every merge group.
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
 
 on:
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
   push:
     branches: [main]
     tags: ['v*']

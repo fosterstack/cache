@@ -239,8 +239,10 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
-    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
+    # main's gate workflow (the passed-audit record judge and writer)
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",
+    # the gate workflow with the merge queue judge (REQ-DEP-005-AC3, cache#542)
+    "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc",
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2303,7 +2305,12 @@ def _drop_foreign_heredocs(text):
 GENERATED_OK = {}
 
 
-BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"
+# main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, the group's parent
+# commit: main, or the entry ahead of this one in the queue; the queue's HEAD is never main's copy
+BASE_SHA_REFS = (
+    "${{ github.event.pull_request.base.sha }}",
+    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+)
 _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
 
 
@@ -2956,7 +2963,7 @@ def _uses_writes(uses, with_node, key_of):
     if name == "actions/checkout":
         ref, pth, lfs = val("ref"), val("path"), val("lfs")
         lfs_on = lfs is not None and lfs.strip().strip("\"'").lower() != "false"
-        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() == BASE_SHA_REF and \
+        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() in BASE_SHA_REFS and \
                 re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
             return []                                    # the base-sha fence: main's copy, handled as a base directory
         if "repository" in wm or ref is not None or pth is not None or lfs_on:
@@ -3007,7 +3014,8 @@ def run_scripts(doc):
                         dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
                         lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
                         lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
-                        if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
+                        if (isinstance(ref, yaml.ScalarNode)
+                                and ref.value.strip() in BASE_SHA_REFS and "repository" not in wm
                                 and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)

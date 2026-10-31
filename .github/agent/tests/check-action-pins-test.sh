@@ -72,8 +72,17 @@ case_() {
   # otherwise be judged "ok" and make an `ok` case pass without testing anything
   if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
+  # every tree must carry the pinned gate
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
+  : > "$d/.github/agent/bin/check-action-pins.py"
+  mkdir -p "$d/bin" "$d/.github/agent/tests"
+  : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/bin/audit-record-judge.sh"
+  : > "$d/bin/audit-record-prepare.sh"
+  : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -697,8 +706,16 @@ gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
+  : > "$d/.github/agent/bin/check-action-pins.py"
+  mkdir -p "$d/bin" "$d/.github/agent/tests"
+  : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/bin/audit-record-judge.sh"
+  : > "$d/bin/audit-record-prepare.sh"
+  : > "$d/.github/agent/bin/auditor-signed-commit.py"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
@@ -1116,6 +1133,7 @@ case_out() {
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
   : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
@@ -1754,8 +1772,16 @@ mutant_() {   # name, python replace (old|||new), probe script, optional setup
   local name=$1 d="$work/mut-$1"
   take "mutant-$name" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
+  mkdir -p "$d/bin" "$d/.github/agent/tests"
+  : > "$d/.github/agent/bin/check-action-pins.py"
+  : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/bin/audit-record-judge.sh"
+  : > "$d/bin/audit-record-prepare.sh"
+  : > "$d/.github/agent/bin/auditor-signed-commit.py"
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
 import sys
@@ -2067,7 +2093,8 @@ real_repo=$(cd "$here/../../.." && pwd)
 realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
-cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"
+cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"; mkdir -p "$realcase/.github/agent/bin"
+cp "$here/../bin/queue-gate-judge.sh" "$realcase/.github/agent/bin/queue-gate-judge.sh"
 : > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
@@ -3025,6 +3052,22 @@ case_ a-base-checkout-dot-slash-ok ok "$head
 $(co "          ref: $BASE_REF
           path: trusted")
       - run: python3 ./trusted/bin/tool.py" "$mk_trusted"
+QUEUE_BASE_REF='${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'
+case_ a-queue-base-checkout-python-ok ok "$head
+    steps:
+$(co "          ref: $QUEUE_BASE_REF
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-queue-head-checkout-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-queue-base-only-checkout-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.merge_group.base_sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
 case_ a-other-ref-bad bad "$head
     steps:
 $(co "          ref: \${{ github.event.pull_request.head.sha }}
@@ -3235,7 +3278,10 @@ case3_() {
   local name=$1 d="$work/$1"
   take "$name" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; printf '%s\n' "$2" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
+  : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   if [ -n "${3:-}" ]; then (cd "$d" && eval "$3"); fi
   local out rc=0; out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ] && grep -q 'REQ-REL-005-AC3' <<< "$out"; then pass=$((pass+1)); echo "PASS $name → AC3 finding"; else failn=$((failn+1)); echo "FAIL $name → no REQ-REL-005-AC3 finding"; fi

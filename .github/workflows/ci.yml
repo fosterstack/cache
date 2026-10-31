@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
 
 # A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
 # its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
@@ -17,6 +18,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read   # the allowlist job's merge-queue lookup (a block on that job would end its plain-job trust)
 
 jobs:
   test:
@@ -270,8 +272,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           # empty on a push (nothing to compare against); on a pull request refuse an odd base name before the fetch
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
@@ -283,6 +287,9 @@ jobs:
         env:
           # head repo vs this repo decides whether an auditor/* head is the real lane (a fork can name a branch anything)
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          # the queue's commit has no head branch: the script reads the pull request from the queue ref (one call)
+          GITHUB_QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
         run: git ls-files | ./bin/check-file-allowlist.sh
 
       - name: allowlist branch-scoping regressions (auditor suppression lane)
@@ -347,8 +354,10 @@ jobs:
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           # REQ-SUP-001-AC28, AC31: when a pull request changes the Gradle wrapper pin or jar, the online tests compare them with Gradle's published sum
           if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar .github/policy/gradle-wrapper-jar-sha256.txt; then
             export GRADLE_SUM_ONLINE=1
@@ -439,8 +448,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -482,8 +493,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -517,8 +530,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -558,8 +573,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -601,8 +618,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -675,10 +694,14 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json suite-guard-test.sh bin/suite-guard-test.sh
 
       - name: suite floors only rise (against the merge base on a pull request)
-        if: ${{ github.base_ref != '' }}
+        if: ${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}
         env:
-          BASE: ${{ github.base_ref }}
-        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
+        run: |
+          BASE="${BASE#refs/heads/}"
+          bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" \
+            test-evidence/suite-floors.json
 
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
@@ -771,8 +794,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -808,6 +833,8 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
       - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
         run: bash bin/audit-record-test.sh
+      - name: the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json queue-gate-judge-test.sh .github/agent/tests/queue-gate-judge-test.sh
       - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
@@ -843,11 +870,8 @@ jobs:
   required-check-guard:
     name: required-check guard
     runs-on: ubuntu-latest
-    outputs:
-      drift_issue: ${{ steps.drift-issue.outputs.issue }}
     permissions:
       contents: read
-      issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -861,12 +885,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/required-check-guard.sh .github/policy/required-checks.json
 
-      # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
-      # first; one open issue, updated in place, never duplicated. Best effort: a
-      # Dependabot or fork run has no issues:write, and the red check above still stands.
+  # Row 76: on a push to main, drift between main's list and the ruleset opens (or updates) the `required-check drift`
+  # issue and dispatches the fixer in the ops repository. Only on push to main: the issue write and the App secrets (the
+  # main-only `agent` environment) are held by a job that runs main's own code, never by a job that runs a pull
+  # request's or a queue group's scripts. A drift first seen on a PR run stays a red check there and is picked up by the
+  # next push to main. Best effort: no token or a failed call is a warning; the issue is the record.
+  drift-fixer-dispatch:
+    name: dispatch the fixer for required-check drift
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # One open issue, updated in place, never duplicated.
       - name: open or update the `required-check drift` issue when main's list has drifted
         id: drift-issue
-        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -899,10 +937,23 @@ jobs:
           else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
           if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
 
-  # Row 76: a drift issue dispatches the fixer in the ops repository. Only on push to main: the
-  # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
-  # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
-  # a failed call is a warning; the issue is the record.
+      - name: mint the App token for dispatching the fixer (ops, contents:write only)
+        if: ${{ steps.drift-issue.outputs.issue != '' }}
+        id: app-ops
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: ops
+          permission-contents: write
+      - name: dispatch
+        if: ${{ steps.drift-issue.outputs.issue != '' }}
+        env:
+          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
+          ISSUE: ${{ steps.drift-issue.outputs.issue }}
+        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
+
   # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6; orchestrator ruling Oct 13). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
   # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
@@ -935,33 +986,6 @@ jobs:
           set -euo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
           python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
-
-  drift-fixer-dispatch:
-    name: dispatch the fixer for required-check drift
-    needs: required-check-guard
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}
-    runs-on: ubuntu-latest
-    environment: agent
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
-      - name: dispatch
-        env:
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
-          ISSUE: ${{ needs.required-check-guard.outputs.drift_issue }}
-        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
 
   requirements:
     name: requirements
@@ -1007,14 +1031,27 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json rescan-statement-test.sh bin/rescan-statement-test.sh
 
   dependency-review:
-    if: ${{ github.event_name == 'pull_request' }}   # required on pull requests only; the action needs a PR
+    # required on pull requests and in the merge queue; never on a push (nothing to compare)
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
+      - name: the merge queue's base and head are named (REQ-DEP-005-AC2)
+        if: github.event_name == 'merge_group'
+        env:
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          [ -n "$QUEUE_BASE_SHA" ] && [ -n "$QUEUE_HEAD" ] || {
+            echo "::error::the merge queue named no base or head commit:" \
+              "nothing to compare, so this check fails"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # a pull request leaves both empty (the action reads the PR); the queue's two commits are read in its place
+          base-ref: ${{ github.event.merge_group.base_sha }}
+          head-ref: ${{ github.event.merge_group.head_sha }}
 
   # Scanner-panel rule 12 (REQ-SCAN-012-AC4): on main, a change to the guide, the VEX file or its generator runs the live test against the newest published
   # release that carries the rule-10 files (never on a pull request or a schedule); until a v0.3 release exists the test announces a skip.

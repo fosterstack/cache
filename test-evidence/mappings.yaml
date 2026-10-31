@@ -583,6 +583,17 @@ mappings:
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+      - { type: shell-test, ref: "bin/check-file-allowlist-test.sh" }
+  - ac: REQ-DEP-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+  - ac: REQ-DEP-005-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/queue-gate-judge-test.sh" }
   - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }

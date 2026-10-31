@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-DEP-005-AC1
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
 # scoping of the daily CVE auditor's suppression outputs (.snyk,
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
@@ -119,9 +120,9 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 204 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
-# plus the two outbound-check patterns (0710) and the recorded publisher signatures (REQ-SUP-001)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 204, 6
+# 205 allow patterns: chain-v030's 204 (202 minus the bin/scout-vex-scan pattern (rc-5a K), plus the two outbound-check
+# patterns (0710) and the recorded publisher signatures (REQ-SUP-001)) plus the queue-gate-judge pattern (cache#542)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 205, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -169,7 +170,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "c5b7d8b428f7b0b63dd65de800a4d1879d5adedde59aef1039b8be74b3d21a14"
+PINNED_SHA256 = "30d27070677ddcc4050f883c8a6543f236163e3ac39a275a93478f83b118fcc5"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -754,6 +755,12 @@ passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.t
 runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
 runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
+passfam "feature/x" "queue gate: the merge queue judge script (cache#542)" ".github/agent/bin/queue-gate-judge.sh"
+runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
+  ".github/agent/bin/queue-gate-judge.sh.bak" ".github/agent/bin/queue-gate-judgeX.sh" \
+  ".github/agent/bin/queue-gate-judge.shx" ".github/agent/bin/Queue-gate-judge.sh" \
+  ".github/agent/bin/x/queue-gate-judge.sh" "bin/queue-gate-judge.sh" ".github/agent/queue-gate-judge.sh" \
+  ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
 passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py"
@@ -813,6 +820,120 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss ref
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
+# The merge queue (REQ-DEP-005-AC1): the queue's commit has no pull request head branch, so the script looks up the
+# pull request named by GITHUB_QUEUE_REF through the API, with one call, and applies the same lane rule: only an
+# auditor/* branch of this repository may change a suppression file. A lookup that fails or is unclear fails the check.
+QSHA="$(printf 'a%.0s' $(seq 40))"
+QREF="refs/heads/gh-readonly-queue/main/pr-12-$QSHA"
+mkdir -p "$TMPROOT/qgh"
+cat > "$TMPROOT/qgh/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$QGH_LOG"
+[ "${QGH_FAIL:-}" = 1 ] && { echo "gh: HTTP 500" >&2; exit 1; }
+printf '%b' "${QGH_OUT-}"
+EOF
+chmod +x "$TMPROOT/qgh/gh"
+# qrun <expect> <desc> <queue ref> <gh output> <paths...>: the queue case, run inside $R
+# (GITHUB_HEAD_REF is empty there)
+qrun() {
+  local expect="$1" desc="$2" qref="$3" ghout="$4"; shift 4
+  local out rc
+  : > "$TMPROOT/qgh.log"
+  out="$(cd "$R" && printf '%s\n' "$@" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
+    QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
+    GITHUB_HEAD_REF="" GITHUB_REF_NAME="${qref#refs/heads/}" GITHUB_QUEUE_REF="$qref" GITHUB_REPOSITORY=o/r \
+    "$ABS_SCRIPT" 2>&1)"; rc=$?
+  # QWANT: the refusal text a failing case must print, so it cannot fail for another reason
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } \
+     || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && { [ -z "${QWANT:-}" ] || grep -qF -- "$QWANT" <<<"$out"; }; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+mkrepo "$R"; ( cd "$R" && echo '{"a":9}' > $PS && mkdir -p internal && echo 'package y' > internal/other.go \
+    && g add -A && g commit -qm edit )
+qrun pass "queue: an auditor/* branch of this repository may change a suppression file" "$QREF" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: any other branch may not change a suppression file" "$QREF" 'feature/x\to/r\n' "$PS"
+qrun fail "queue: main as the head branch is not the suppression lane" "$QREF" 'main\to/r\n' "$PS"
+qrun fail "queue: an auditor/* branch of a fork may not change a suppression file" "$QREF" 'auditor/x\tfork/r\n' "$PS"
+qrun fail "queue: an auditor/* look-alike prefix may not change a suppression file" "$QREF" 'auditorX/x\to/r\n' "$PS"
+qrun pass "queue: an ordinary file passes for any branch" "$QREF" 'feature/x\to/r\n' internal/other.go
+
+# A queue group is a chain of merges: each entry merges one pull request into the entry before it (the first into
+# main), and is judged on its own queue ref under its own pull request's lane. mkgroup <dir> <kind>...: main, then one
+# merge per kind. aud: an auditor pull request changes a suppression file; feat: a pull request changes only code;
+# featps: a pull request that is not an auditor's changes a suppression file (.snyk)
+mkgroup() {
+  local d="$1" k n=0; shift
+  mkrepo "$d"
+  ( cd "$d" && g checkout -q -b queue refs/remotes/origin/main
+    for k in "$@"; do
+      n=$((n+1)); g checkout -q -b "pr$n" refs/remotes/origin/main
+      case "$k" in
+        aud) echo '{"a":2}' > .auditor/panel-state.json ;;
+        feat) mkdir -p internal && echo 'package y' > internal/other.go ;;
+        featps) echo 'ignore: {x: 1}' > .snyk ;;
+      esac
+      g add -A && g commit -qm "pr$n" && g checkout -q queue && g merge -q --no-ff -m "entry$n" "pr$n" || exit 1
+    done ) || { echo "mkgroup failed: $*" >&2; exit 1; }
+}
+G="$TMPROOT/grp"; ALLPATHS=("$PS" .snyk internal/other.go)
+R_SAVED="$R"; R="$G"
+mkgroup "$G" aud feat
+qrun pass "queue group: a code entry behind an auditor entry is judged on its own change" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" feat aud
+qrun pass "queue group: an auditor entry behind a code entry may change a suppression file" \
+    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
+qrun fail "queue group: the same auditor entry named as a feature branch may not" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" feat featps
+qrun fail "queue group: a non-auditor entry that changes a suppression file is refused" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" aud featps
+qrun fail "queue group: the same change behind an auditor entry is refused too" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" featps aud
+qrun pass "queue group: an earlier entry's change is that entry's own run, not this one's" \
+    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
+rm -rf "$G"; mkdir -p "$G/.auditor"
+( cd "$G" && g init -q -b main . && echo '{"a":1}' > "$PS" && g add -A && g commit -q -m root \
+    && g update-ref refs/remotes/origin/main HEAD )
+qrun fail "queue group: a head with no first parent is refused" "$QREF" 'feature/x\to/r\n' "$PS"
+R="$R_SAVED"
+
+QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" \
+    "$QREF" '' internal/other.go
+# each refusal runs on an ordinary file, which every lane allows, and must print its own reason
+QWANT="could not be looked up" QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" \
+    "$QREF" 'auditor/x\to/r\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an empty answer is a failure" "$QREF" '' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: two answers are ambiguous, a failure" \
+    "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an answer with no repository is a failure" \
+    "$QREF" 'auditor/x\t\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an answer with no branch is a failure" \
+    "$QREF" '\to/r\n' internal/other.go
+QWANT="not a merge queue ref" qrun fail "queue: a queue ref with no pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' internal/other.go
+QWANT="no pull request number" qrun fail "queue: a queue ref with a non-numeric pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' internal/other.go
+QWANT="not a merge queue ref" qrun fail "queue: a ref that is not a queue ref is refused" \
+    "refs/heads/feature/x" 'auditor/x\to/r\n' internal/other.go
+qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" \
+    "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun pass "queue: one lookup" "$QREF" 'auditor/x\to/r\n' "$PS"
+[ "$(wc -l < "$TMPROOT/qgh.log")" -eq 1 ] && gp "queue: the lookup is exactly one gh call" \
+    || gf "queue: the lookup is exactly one gh call" "$(cat "$TMPROOT/qgh.log")"
+grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call reads pull request 12 of this repository" \
+    || gf "queue: the call reads pull request 12 of this repository" "$(cat "$TMPROOT/qgh.log")"
+: > "$TMPROOT/qgh.log"
+( cd "$R" && printf '%s\n' "$PS" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
+    GITHUB_HEAD_REF=auditor/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main \
+    GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
+[ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" \
+    || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
 # pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
 runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
 runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"

@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 102 |
-| Acceptance criteria | 511 |
+| Active requirements | 103 |
+| Acceptance criteria | 514 |
 | Release-blocking ACs | 132 |
-| ACs with mapped evidence | 501 |
+| ACs with mapped evidence | 504 |
 | Release-blocking ACs with mapped evidence | 132 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 49 |
-| Confidence: implementation-only | 52 |
+| Confidence: implementation-only | 53 |
 
 ## Cache protocol
 
@@ -727,6 +727,18 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 | REQ-DEP-003-AC1 | Given a Dependabot patch or minor pull request; when the auto-merge lane runs; then it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer | ci-workflow |  | approved | 1 item(s) |
 | REQ-DEP-003-AC2 | Given a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case; when the auto-merge lane runs; then it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing | ci-workflow |  | approved | 2 item(s) |
 | REQ-DEP-003-AC3 | Given a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged); when the auto-merge lane or the hourly reviewer sees it; then the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual | ci-workflow |  | approved | 2 item(s) |
+
+### REQ-DEP-005 — Every required check runs in the merge queue
+
+Every check the main branch requires shall also run in the merge queue, on the queue's own commit, with the same pass bar. A check that reads the pull request (pin age, dependency review, the review gate) shall read the queue's commits instead and fail if it cannot. No required check shall be skipped in the queue, except the landing marker check.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json; .github/workflows/agent-review-gate.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEP-005-AC1 | Given any context in .github/policy/required-checks.json; when the merge queue tests a group; then the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, except that marker-gate (the landing marker check) runs on the pull request only, by a job-level condition for the pull request event; the review gate's check is produced by the workflow_run job of AC3 instead; no pull_request or merge_group trigger of these workflows carries a path or branch filter; the allowlist check applies the same suppression rule in the queue as on the pull request (only a head branch auditor/* of this repository may change a suppression file) to the change of the queue entry the ref names, that is its commit compared with its first parent (each entry has its own run, and the queue's grouping is ALLGREEN, so every entry's run must pass), finding the pull request's head branch by one API lookup of the pull request the queue ref names, and a lookup that fails or is unclear fails the check; and a context the wiring test does not know fails the test, so a required check added later cannot be missed | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-005-AC2 | Given a required check that reads the pull request (pin age and dependency review); when it runs on the merge_group event; then it reads the queue's base and head commits instead of the pull request's, and it fails, never passes, when either is empty or the difference cannot be read; every step that names the pull request's base branch names the queue's too | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-005-AC3 | Given the review gate (auditor-review-gate); when the merge queue tests a group; then its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request, and is posted when the queue starts its CI run; it reads the queue's commits as git objects and runs nothing of them, and only when the queue branch it fetches ends at the head commit of the event; it demands a two-parent merge for every group commit (the queue's merge method must be MERGE; a squash or rebase queue fails every group; its grouping must be ALLGREEN, so that every entry's own run must pass, and the required-check guard fails when a merge_queue rule on main says otherwise) and the passed-audit record for the exact head of every pull request in the group; main's pin, allowlist (given the queue ref), pin-wiring and scanner judges pass over the queue head; it fails, never passes, when any of these cannot be read or does not hold; no scheduled job judges the queue's refs, and the pull request publisher and the scheduled sweep post nothing on a head that is the tip of a live queue branch, so a pull request cannot replace the queue's verdict; a verdict that is not posted leaves the check absent and the queue ejects the group; and the App token is held only by a separate job that publishes the verdict on the queue's head | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-DEP-004 — A held bump or drift dispatches the fixer
 
