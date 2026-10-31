@@ -4,9 +4,11 @@
   release-metadata.py images   --digests D --images-dir I --items ITEMS --out F
         the image input of vex-forms, {variant: {index, children}}, made ONLY from Build's verified digest list and Build's
         images/<variant>.digest and images/<variant>.manifests; never from a registry
-  release-metadata.py manifest --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W --out F
+  release-metadata.py manifest --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR
+        --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W --out F
         release-manifest.json, deterministic (no clock): the images (`.images[].variant`, `.images[].digest` and both registry references,
-        the shape the daily rescan reads), the archives and the apks as Build attested them, and the two Go module SBOMs by Build's digest
+        the shape the daily rescan reads), the archives and the apks as Build attested them,
+        and the two Go module SBOMs by Build's digest
   release-metadata.py list     --version V --dir DIR --out F
         release-files.sha256: `<sha256>  <name>` for exactly release-manifest.json, the OpenVEX file, the CSAF file and the inspector-filters
         file of this version, in this order
@@ -155,18 +157,18 @@ MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-mod
 
 
 def module_sboms(items_path, modules_dir):
-    """The two Go module SBOMs in modules_dir must be the bytes of Build's items modules-sbom-<variant>; returns them as manifest entries."""
+    """The two Go module SBOMs in modules_dir must be the bytes of Build's items modules-sbom-<variant>.
+    Returns them as manifest entries."""
     items = items_of(items_path)
     out = []
     for variant, name in MODULE_SBOMS:
         path = os.path.join(modules_dir, name)
-        try:
-            have = "sha256:" + sha256_file(path)
-        except OSError:
-            refuse("%s is missing" % path)
+        if os.path.islink(path) or not os.path.isfile(path):
+            refuse("%s is missing or not a regular file" % path)
+        have = "sha256:" + sha256_file(path)
         want = items.get("modules-sbom-" + variant)
         if want is None:
-            refuse("%s: modules-sbom-%s is missing" % (items_path, variant))
+            refuse("%s: modules-sbom-%s is missing (needed for %s)" % (items_path, variant, path))
         if want != have:
             refuse("%s: modules-sbom-%s is %s, but %s hashes to %s" % (items_path, variant, want, path, have))
         out.append({"name": name, "digest": want})
@@ -456,7 +458,8 @@ def main(argv):
     sub = p.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("images"); i.add_argument("--digests", required=True); i.add_argument("--images-dir", required=True); i.add_argument("--items", required=True); i.add_argument("--out", required=True)
     m = sub.add_parser("manifest")
-    for k in ("digests", "images-dir", "items", "modules-dir", "vex-dir", "baseline-version", "repo-root", "version", "commit", "ci-url", "workflow", "out"):
+    for k in ("digests", "images-dir", "items", "modules-dir", "vex-dir", "baseline-version", "repo-root", "version",
+              "commit", "ci-url", "workflow", "out"):
         m.add_argument("--" + k, required=True)
     b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)

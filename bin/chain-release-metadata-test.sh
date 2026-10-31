@@ -4,7 +4,8 @@
 #
 # The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
 #   images    --digests D --images-dir I --items ITEMS --out F   the image digests for bin/vex-forms.py, ONLY from Build's verified digests.json and images/<variant>.digest/.manifests
-#   manifest  --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR --version V --commit SHA --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
+#   manifest  --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR --version V --commit SHA
+#             --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
 #             the shape the REQ-REL-004 rescan reads)
 #   list      --version V --dir DIR --out F        release-files.sha256: the sha256 of exactly the four files, in this order: release-manifest.json, the OpenVEX file,
 #             the CSAF file, the inspector-filters file (the form of cache's change under handoff 0362, PR #276)
@@ -44,7 +45,8 @@ def tree():
         items.update({"image-%s-manifest-%s" % (v, a): h for a, h in KIDS[v].items()})
     os.makedirs(t + "/modules")
     for variant, name in MODULE_SBOMS:
-        open(os.path.join(t, "modules", name), "w").write(module_sbom(variant)); items["modules-sbom-" + variant] = sha(module_sbom(variant).encode())
+        open(os.path.join(t, "modules", name), "w").write(module_sbom(variant))
+        items["modules-sbom-" + variant] = sha(module_sbom(variant).encode())
     json.dump(items, open(t + "/witness-build/items.json", "w"))
     return t, d
 def setd(t, d): json.dump(d, open(t + "/witness-build/digests.json", "w"))
@@ -87,7 +89,11 @@ def repo(t, base=V):
     open("%s/requirements/releases/%s.yaml" % (r, base), "w").write("baseline of " + base + "\n"); open(r + "/test-evidence/mappings.yaml", "w").write("evidence\n")
     return r
 def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None):
-    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules", "--vex-dir", vexdir(t, version), "--version", version, "--commit", commit, "--baseline-version", base or version, "--repo-root", root or repo(t, base or version),
+    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
+               "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
+               "--vex-dir", vexdir(t, version),
+               "--version", version, "--commit", commit, "--baseline-version", base or version,
+               "--repo-root", root or repo(t, base or version),
                "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
 t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
 mj = json.load(open(m1)) if os.path.exists(m1) else {}
@@ -98,20 +104,39 @@ check({a["name"]: a["digest"] for a in mj.get("archives", [])} == {k: v for k, v
 hexs = lambda n: hashlib.sha256(open(t + "/vex/" + n, "rb").read()).hexdigest()
 check([(x.get("form"), x.get("file"), x.get("sha256")) for x in mj.get("vex", [])] == [("openvex", "fosterstack-cache.openvex.json", hexs("fosterstack-cache.openvex.json")), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % V, hexs("fosterstack-cache-%s.inspector-filters.json" % V)), ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % V, hexs("fosterstack-cache-%s.csaf.json" % V))], "manifest: records the sha256 of the OpenVEX, inspector-filters and CSAF files it was made after (generated before the manifest)", str(mj.get("vex")))
 for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % V, "fosterstack-cache-%s.inspector-filters.json" % V):
-    t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n); rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules", "--vex-dir", t + "/vex", "--version", V, "--commit", "a" * 40, "--baseline-version", V, "--repo-root", t + "/repo", "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n)
+    rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
+                     "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
+                     "--vex-dir", t + "/vex",
+                     "--version", V, "--commit", "a" * 40, "--baseline-version", V, "--repo-root", t + "/repo",
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
     check(rc == 1 and n in se and not os.path.exists(t + "/m2.json"), "manifest: a missing %s (not generated before the manifest) is refused, naming it" % n, se[:160])
 for label, ver, com in (("a version that is not vX.Y.Z", "v0.3", "a" * 40), ("a release candidate (no release is made for one)", "v0.3.0-rc1", "a" * 40), ("a commit that is not 40 hex", V, "abc")):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json", ver, com); check(rc == 1 and not os.path.exists(t + "/m.json"), "manifest: " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
 t, d = tree(); d.pop("apk-fips-arm64"); setd(t, d); rc, so, se = manifest(t, t + "/m.json"); check(rc == 1 and "apk-fips-arm64" in se, "manifest: a digest list without one of the four apks is refused, naming it", se[:160])
-t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); mj = json.load(open(t + "/m.json")) if rc == 0 else {}
-check(mj.get("module_sboms") == [{"name": name, "digest": sha(module_sbom(variant).encode())} for variant, name in MODULE_SBOMS], "manifest: names both Go module SBOMs with Build's items.json digests", se[:160])
+t, d = tree(); rc, so, se = manifest(t, t + "/m.json")
+mj = json.load(open(t + "/m.json")) if rc == 0 else {}
+want = [{"name": name, "digest": sha(module_sbom(variant).encode())} for variant, name in MODULE_SBOMS]
+check(mj.get("module_sboms") == want, "manifest: names both Go module SBOMs with Build's items.json digests", se[:160])
+def module_sbom_refused(label, name, change, also=""):
+    t, d = tree(); change(t)
+    rc, so, se = manifest(t, t + "/m.json")
+    check(rc == 1 and name in se and also in se and not os.path.exists(t + "/m.json"), "manifest: " + label, se[:160])
+def make_symlink(t, name):
+    path = t + "/modules/" + name
+    os.rename(path, t + "/real-" + name)
+    os.symlink(t + "/real-" + name, path)
 for variant, name in MODULE_SBOMS:
-    t, d = tree(); open(t + "/modules/" + name, "w").write("changed"); rc, so, se = manifest(t, t + "/m.json")
-    check(rc == 1 and name in se and not os.path.exists(t + "/m.json"), "manifest: a %s that differs from Build's item is refused, naming it" % name, se[:160])
-    t, d = tree(); os.remove(t + "/modules/" + name); rc, so, se = manifest(t, t + "/m.json")
-    check(rc == 1 and name in se and not os.path.exists(t + "/m.json"), "manifest: a missing %s is refused, naming it" % name, se[:160])
-    t, d = tree(); setitems(t, {k: v for k, v in items_of(t).items() if k != "modules-sbom-" + variant}); rc, so, se = manifest(t, t + "/m.json")
-    check(rc == 1 and "modules-sbom-" + variant in se and not os.path.exists(t + "/m.json"), "manifest: no Build item modules-sbom-%s is refused, naming it" % variant, se[:160])
+    module_sbom_refused("a %s that differs from Build's item is refused, naming it" % name, name,
+                        lambda t: open(t + "/modules/" + name, "w").write("changed"))
+    module_sbom_refused("a missing %s is refused, naming it" % name, name, lambda t: os.remove(t + "/modules/" + name))
+    module_sbom_refused("a %s that is a symlink to Build's bytes is refused, naming it" % name, name,
+                        lambda t: make_symlink(t, name))
+    module_sbom_refused("a %s that is a directory is refused, naming it" % name, name,
+                        lambda t: (os.remove(t + "/modules/" + name), os.mkdir(t + "/modules/" + name)))
+    module_sbom_refused("no Build item modules-sbom-%s is refused, naming the file and the item" % variant, name,
+                        lambda t: setitems(t, {k: v for k, v in items_of(t).items() if k != "modules-sbom-" + variant}),
+                        also="modules-sbom-" + variant)
 # ---- the baseline travels with the manifest (REQ-REL-009-AC13 note; AC19): requirements/releases/<baseline>.yaml and test-evidence/mappings.yaml, by sha256 ----------------
 t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); mj = json.load(open(t + "/m.json")) if os.path.exists(t + "/m.json") else {}
 hx = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest()
@@ -124,7 +149,12 @@ check(rc == 1 and "requirements/releases/%s.yaml" % V in se and not os.path.exis
 t, d = tree(); r = repo(t); os.remove(r + "/test-evidence/mappings.yaml"); rc, so, se = manifest(t, t + "/m.json", root=r)
 check(rc == 1 and "mappings.yaml" in se, "baseline: missing test evidence is refused, naming it", se[:160])
 for bad_base in ("main", "0.3.0", "v0.3", "../v0.3.0", "v0.3.0/x", ""):
-    t, d = tree(); r = repo(t); rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules", "--vex-dir", vexdir(t), "--version", V, "--commit", "a" * 40, "--baseline-version", bad_base, "--repo-root", r, "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json")
+    t, d = tree(); r = repo(t)
+    rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
+                     "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
+                     "--vex-dir", vexdir(t),
+                     "--version", V, "--commit", "a" * 40, "--baseline-version", bad_base, "--repo-root", r,
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json")
     check(rc == 1 and not os.path.exists(t + "/m.json"), "baseline: the version %r is not vX.Y.Z and is refused" % bad_base, se[:120])
 t, d = tree(); r = repo(t); f = r + "/requirements/releases/%s.yaml" % V; os.remove(f); os.symlink(r + "/test-evidence/mappings.yaml", f); rc, so, se = manifest(t, t + "/m.json", root=r)
 check(rc == 1 and "symlink" in se, "baseline: a symlinked baseline file is refused", se[:120])
@@ -164,8 +194,11 @@ gate("a bundle whose signed file is not an asset is refused", lambda a: open(a +
 gate("a file listed in checksums.txt that is not an asset is refused", lambda a: open(a + "/checksums.txt", "a").write("%s  gone.tar.gz\n" % ("0" * 64)), "gone.tar.gz")
 gate("an archive whose bytes differ from checksums.txt is refused", lambda a: open(a + "/fscache_0.3.0_linux_amd64.tar.gz", "wb").write(b"tampered"), "fscache_0.3.0_linux_amd64.tar.gz")
 gate("a metadata file altered after the list was made is refused", lambda a: open(a + "/release-manifest.json", "a").write("x"), "release-manifest.json")
-gate("a module SBOM with no bundle is refused, naming it", lambda a: open(a + "/fscache-modules.spdx.json", "w").write("{}"), "fscache-modules.spdx.json")
-def with_module_sbom(a): open(a + "/fscache-modules.spdx.json", "w").write("{}"); open(a + "/fscache-modules.spdx.json.bundle", "w").write("{}")
+gate("a module SBOM with no bundle is refused, naming it",
+     lambda a: open(a + "/fscache-modules.spdx.json", "w").write("{}"), "fscache-modules.spdx.json")
+def with_module_sbom(a):
+    open(a + "/fscache-modules.spdx.json", "w").write("{}")
+    open(a + "/fscache-modules.spdx.json.bundle", "w").write("{}")
 gate("a module SBOM with its bundle passes", with_module_sbom)
 gate("an extra line in release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "a").write("%s  extra.json\n" % ("0" * 64)), "extra")
 # Codex 4b-2 r1 (A B3): the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final newline) is an extra line
@@ -287,7 +320,7 @@ check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "116"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "120"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

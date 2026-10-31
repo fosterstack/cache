@@ -22,9 +22,6 @@ done
 for n in scanners acceptance runtime arm64; do
   [ -f "witness-check/witness-$n/$n-collection.json" ] || { echo "release-assets: the Check record witness-check/witness-$n/$n-collection.json is missing: the list is incomplete" >&2; exit 1; }
 done
-for f in fscache-modules.spdx.json fscache-modules-fips.spdx.json; do
-  [ -f "apks/ubuntu-24.04/$f" ] || { echo "release-assets: the Go module SBOM apks/ubuntu-24.04/$f is missing: the list is incomplete" >&2; exit 1; }
-done
 python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
 rm -rf release-upload release-published
 mkdir release-upload
