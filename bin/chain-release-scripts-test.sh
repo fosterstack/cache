@@ -735,7 +735,7 @@ PV1 = "cosign verify <IMAGE_REF> " + IDQ
 PV2 = "cosign verify <IMAGE_REF_FIPS> " + IDQ
 PV3 = "gh attestation verify oci://<IMAGE_REF> --owner fosterstack"
 PV4 = "cosign verify-blob --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/<TAG> --certificate-oidc-issuer " + ISS + " --bundle b.json x.txt"
-def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None):
+def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",)):
     t = tree(); os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     lp = os.path.join(t, "docs/verify-release.cannot-run.json")
     if rows is None and raw is None: os.remove(lp)
@@ -743,7 +743,7 @@ def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None):
     elif rows is not None: json.dump([{"command": c, "reason": "needs the image in a registry"} for c in rows], open(lp, "w"))
     if digs is not None: json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
     e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(env or {})
-    rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"], tag=tag)
+    rc, so, se = run(t, "release-postverify", env=e, creds=list(creds), tag=tag)
     return t, rc, so, se
 def calls(t): return [l for l in log(t) if l.startswith(("cosign ", "gh "))]
 REGS = ["ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"]   # the two repositories are constants of the script (identical digests in both)
@@ -806,6 +806,9 @@ for tag in ("main", "v0.3", "0.3.0", "v0.3.0-RC1", ""):
 t, rc, so, se = pv([PV1], env={"GITHUB_REPOSITORY": ""}); check(rc != 0 and not calls(t), "AC7 post-publish: no GITHUB_REPOSITORY means <IDENTITY> cannot be filled: refused when a command uses it")
 t, rc, so, se = pv([PV1, PV3]); L = "\n".join(log(t))
 check(rc == 0 and not re.search(r"crane|docker login|auth login|\bpush\b", L) and SENT["GH_TOKEN"] not in L + so + se, "AC7 post-publish: no registry login or push, and the read token is never on a command line or in output")
+# round 2 (F12): the step holds no token (KL-1), so the script passes a good list with no GH_TOKEN in its environment
+t, rc, so, se = pv([PV1], creds=())
+check(rc == 0 and len(calls(t)) == 2, "AC7 post-publish: with no GH_TOKEN in the environment a passing list exits 0 (the step holds no token; one command in each of the two registries)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 # ---- REQ-CHAIN-007-AC20 (advisor ruling B, Oct 15): the commands run from the downloaded assets; a jq-only command only after a verify of the same file --------------
 PBF = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ
 PJ = "jq -e '.ok == true' provenance.bundle.json"
@@ -1032,7 +1035,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "448"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "449"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

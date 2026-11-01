@@ -3393,7 +3393,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='44d8922b167fb52155eb2f94581e4498bd80c2c5d226ca2a8a8016b0e707ea18'
+FX_PIN='69b10f47f1624844fd115c89a19052b39f0675e0a588c68a631893afbe3f0fd7'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4949,8 +4949,8 @@ d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py"
 # ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
 # ONE closed list, four rows: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
 # pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN
-# -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh, release-assets.sh,
-# release-postverify.sh. bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the secrets in Release. Every other name, place or script is refused.
+# -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh and release-assets.sh
+# (release-postverify.sh holds no token). bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the secrets in Release. Every other name, place or script is refused.
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 RCIF="if: \${{ !contains(github.ref_name, '\\''-'\\'') }}"
 for f in stage-sign stage-reproducibility stage-verify stage-build; do

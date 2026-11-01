@@ -10,8 +10,7 @@ workflow identity at the tag.
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
 verify-attestation, verify-blob, verify-blob-attestation, gh attestation verify) and jq, with at least one verify
 form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. A command that fails
-fails the run (exit 1) after all have run. The step holds the job's GITHUB_TOKEN (the Release job's own
-contents/packages/id-token grant) and no registry credential.
+fails the run (exit 1) after all have run. The step holds no token and no registry credential.
 
 Every command runs with release-published/ (the assets just downloaded from the published release) as its working
 directory, so the guide's bare file names resolve as a customer's do (REQ-CHAIN-007-AC20). A command made only of jq is

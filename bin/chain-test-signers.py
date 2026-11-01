@@ -588,7 +588,7 @@ _WITL = "bin/witnessed-local.sh"      # the Witness wrapper of the BUILDING step
 _HUB = {(_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
 SECRET_ROWS = {
     "GH_TOKEN": {(_SB, "apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                      # row 1: the run's own token, admission only
-                 (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}},   # row 5
+                 (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},   # row 5
     "DOCKERHUB_USERNAME": _HUB,                                                                             # row 3
     "DOCKERHUB_TOKEN": _HUB,                                                                                # row 4
 }
