@@ -504,7 +504,7 @@ STEPS = ("apk", "build", "rapk", "rebuild",
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # Handoff 0713: Witness signs with the release KMS key by its alias. The identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 # file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; every step but
-# release-sign runs its script under `env -u` of both variables; both are sensitive keys of the record.
+# release-sign and release-apks (the two scripts that sign with the key through cosign) runs its script under `env -u` of both variables; both are sensitive keys of the record.
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
 
 
@@ -530,11 +530,10 @@ def witnessed_lines():
             'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"',
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            'if [ "$step" = release-sign ]; then',
-            "  wrap=()",
-            "else",
-            "  wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)",
-            "fi",
+            'case "$step" in',
+            "  release-sign|release-apks) wrap=() ;;",
+            "  *) wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN) ;;",
+            "esac",
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",

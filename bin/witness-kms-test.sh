@@ -10,7 +10,7 @@
 #   - the identity token is asked for exactly once, with audience sts.amazonaws.com (the audience the AWS trust requires), and lands in a file of mode 0600 in a
 #     directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
 #   - the AWS SDK is pointed at that file by AWS_WEB_IDENTITY_TOKEN_FILE and at the role by AWS_ROLE_ARN, for Witness; the wrapped script of every step but
-#     release-sign has neither; the request variables are gone for all; nothing is written to GITHUB_ENV
+#     release-sign and release-apks has neither; the request variables are gone for all; nothing is written to GITHUB_ENV
 #   - both variables are sensitive keys of the record; no SIGSTORE_ID_TOKEN is used
 #   - the token directory is gone after success, after a failing Witness (its exit status is kept), and after a refusal
 #   - a job with no role or region, a missing RUNNER_TEMP, or an empty or null token stops before Witness runs
@@ -227,6 +227,11 @@ def problems_witnessed(text):
         bad.append("the wrapped script of release-sign does not keep AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE")
     if len(read(os.path.join(log2, "loop.log")).splitlines()) != 1:
         bad.append("release-sign asks for more than one token")
+    # release-apks (K2): the apk signer calls cosign with the KMS key itself, so its wrapped script keeps both variables too
+    t2b, repo2b, log2b, runner2b, r2b = run_witnessed(text, "release-apks")
+    inner2b = read(os.path.join(log2b, "inner.log"))
+    if not (re.search(r"^AWS_ROLE_ARN=" + re.escape(ROLE) + "$", inner2b, re.M) and re.search(r"^AWS_WEB_IDENTITY_TOKEN_FILE=", inner2b, re.M)):
+        bad.append("the wrapped script of release-apks does not keep AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE")
     # a failing Witness: its exit status is kept and the token directory is gone
     t3, repo3, log3, runner3, r3 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_RC": "7"})
     d3 = os.path.dirname((lines(log3, "witness.log", "TOKFILE") or [""])[0])
@@ -291,7 +296,8 @@ mutant("the exit status of Witness lost", lambda s: s.replace('exit "$rc"', "exi
 mutant("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
 mutant("no role check before the token is asked for", lambda s: s.replace(': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"\n', ""))
 mutant("the token not checked for null", lambda s: s.replace('[ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }\n', ""))
-mutant("release-sign loses the variables too", lambda s: s.replace("  wrap=()\nelse\n  wrap=(env", "  wrap=(env -u AWS_ROLE_ARN)\nelse\n  wrap=(env"))
+mutant("release-sign loses the variables too", lambda s: s.replace("  release-sign|release-apks) wrap=() ;;", "  release-apks) wrap=() ;;"))
+mutant("release-apks loses the variables too", lambda s: s.replace("  release-sign|release-apks) wrap=() ;;", "  release-sign) wrap=() ;;"))
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # bin/witness-sign-staged.sh: Sign's step for the records of the jobs that hold no token
