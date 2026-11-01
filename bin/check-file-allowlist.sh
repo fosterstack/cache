@@ -299,6 +299,10 @@ ALLOW_PATTERNS=(
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The sandbox wall probe of the dry run (sandboxed-build rules 3, 5, 6): the probe, its offline test and its six test-only recipe templates.
+  '^bin/chain-sandbox-probe\.sh$'
+  '^bin/build-sandbox-hostile-test\.sh$'
+  '^build/probe/(control|read-record|write-record|read-keydir|read-token|network)\.yaml\.tmpl$'
   # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
   # of bin/build-apk.sh, and the closed rule-23 variable list as data.
   '^bin/build-apk-helper\.py$'

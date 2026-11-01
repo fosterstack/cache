@@ -2135,6 +2135,31 @@
       ]
     },
     {
+      "path": "bin/chain-sandbox-probe.sh",
+      "tools": [
+        "bash",
+        "cat",
+        "cut",
+        "grep",
+        "mapfile",
+        "mkdir",
+        "mktemp",
+        "printf",
+        "rm",
+        "sed",
+        "trap",
+        "umask",
+        "uname"
+      ],
+      "runs": [
+        "bin/build-apk-helper.py",
+        "bin/net-probe.py"
+      ],
+      "signs": false,
+      "reason": "the sandbox wall probe of the dry run: six test-only recipes (build/probe) through the sealed melange call, judged by melange's exit status; signs, uploads and publishes nothing",
+      "sha256": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30"
+    },
+    {
       "path": "bin/net-probe.py",
       "tools": [
         "sudo",
