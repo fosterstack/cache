@@ -731,7 +731,7 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {k} job is not named `{k}`")
             if sj.get("runs-on") != "ubuntu-latest":
                 bad.append(f"the {k} job does not run on exactly `ubuntu-latest`")
-            if sj.get("steps") != chain_shard_steps(n_):
+            if [_by_shape(s) for s in sj.get("steps") or []] != [_by_shape(s) for s in chain_shard_steps(n_)]:
                 bad.append(f"the {k} steps are not exactly the judged list (REQ-CI-001-AC1: every step of the one job in exactly one shard, unchanged, in order)")
         # REQ-CI-001-AC1/AC4, exactly once across the WHOLE workflow: a chain suite appears once more than it does in the other judged jobs (the pins-auditor
         # job runs one of them too) and nowhere else, so a copy kept in the allowlist job or in a renamed original job is refused
@@ -1267,7 +1267,8 @@ case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][
 # a bump of an action that the judged jobs use (cache#790: setup-python 7.0.0 to 7.1.0) moves the digest in every judged
 # step; the digest value is judged by check-action-pins --verify-tags, pin-age and the daily audit, not by this list.
 # The action name and the full 40-hex shape of the ref stay exact.
-BUMP="for j in ('allowlist', 'allowlist-chain', 'allowlist-persona', 'allowlist-pins-auditor'): "
+BUMP="for j in ('allowlist', 'allowlist-chain-1', 'allowlist-chain-2', 'allowlist-chain-3', 'allowlist-chain-4', "
+BUMP+="'allowlist-persona', 'allowlist-pins-auditor'): "
 BUMP+="[s.__setitem__('uses', '%s') for s in d['jobs'][j]['steps'] "
 BUMP+="if s.get('uses', '').startswith('actions/setup-python@')]"
 case_ uses-digest-bumped       ok  "${BUMP//%s/actions/setup-python@abababababababababababababababababababab}"
