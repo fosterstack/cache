@@ -353,6 +353,25 @@ def _disarm_before_replace(ws, pr):
     return None
 
 
+def _hold_as_draft(ws, pr):
+    """A held major's PR is a draft with auto-merge off, whatever an earlier run (or a person) left it as. None, or the
+    failure text."""
+    if not pr:
+        return None
+    err = _disarm_before_replace(ws, pr)
+    if err:
+        return err
+    v = subprocess.run(["gh", "pr", "view", pr, "--json", "isDraft", "--jq", ".isDraft"], cwd=ws, capture_output=True,
+        text=True)
+    if v.returncode != 0:
+        return "gh pr view (isDraft): " + (v.stderr or "").strip()
+    if (v.stdout or "").strip() != "true":
+        r = subprocess.run(["gh", "pr", "ready", "--undo", pr], cwd=ws, capture_output=True, text=True)
+        if r.returncode != 0:
+            return "could not make %s a draft: %s" % (pr, (r.stderr or "").strip())
+    return None
+
+
 def _head_is(ws, pr, oid):
     """Arm only the head THIS run wrote: another run's later replacement must never inherit this run's arming. None, or the failure text."""
     h = subprocess.run(["gh", "pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid"], cwd=ws, capture_output=True, text=True)
@@ -649,6 +668,109 @@ def _trigger_text(t):
     return "%s >= %s embeds %s >= %s" % (t["carrier"], t["min_version"], t["component"], t["component_min_version"])
 
 
+# dot-separated identifiers of a semantic version's prerelease or build part. Matches "rc.1", "incompatible",
+# "0.20200101000000-abc"; refuses "" (a bare "-" or "+"), "a..b" and "x y"
+_SEMVER_IDS = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
+
+
+def _vmajor(v):
+    """The major number of a Go version (`v1.2.3`, `0.3.0`, a prerelease, `+incompatible`), None when it is not a
+    readable semantic version."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:-%s)?(?:\+%s)?$" % (_SEMVER_IDS, _SEMVER_IDS), str(v or ""))
+    return int(m.group(1)) if m else None
+
+
+def _is_major_bump(module, frm, to):
+    """rc-5b A6 (agent-remediation-rules: "a major bump means an API changed"): the transition changes the major number
+    (v0.9 -> v1.0 included), the
+    module path's /vN suffix disagrees with the target's major, or either version is unreadable (fail safe: held, never
+    auto-treated as a patch)."""
+    f, t = _vmajor(frm), _vmajor(to)
+    if f is None or t is None or f != t:
+        return True
+    pm = re.search(r"/v(\d+)$", str(module or ""))
+    return bool(pm) and int(pm.group(1)) != t
+
+
+_DEPENDABOT_TITLE = re.compile(r"\b[Bb]ump (\S+) from \S+ to (\S+)")
+
+
+def _dependabot_match(prs, module, tkey):
+    """The open Dependabot PR (number, url) whose title is `Bump <module> from X to <tkey>` for exactly this module and
+    version, else None."""
+    for pr in prs or []:
+        title = str(pr.get("title") or "")
+        m = _DEPENDABOT_TITLE.search(title)
+        # a Dependabot PR for another directory says so ("... in /tools/govulncheck"): it bumps that module's go.mod,
+        # never ours
+        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey and not re.search(r" in /\S",
+            title):
+            return pr.get("number"), pr.get("url") or ""
+    return None
+
+
+def _open_dependabot_prs(ws):
+    """(list of {number,title,url}, None) of the open Dependabot PRs, or (None, the failure text). Row 47 (owner, Sep
+    21): the auditor performs bumps
+    "deferring to an open Dependabot PR where one exists"."""
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    if log:
+        if os.environ.get("AUDITOR_SHIM_DEPENDABOT_FAIL"):
+            return None, "simulated lookup failure"
+        return json.loads(os.environ.get("AUDITOR_SHIM_DEPENDABOT_PRS") or "[]"), None
+    r = subprocess.run(["gh", "pr", "list", "--state", "open", "--author", "app/dependabot", "--json",
+        "number,title,url", "--limit", "200"],
+                       cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, "gh pr list: " + (r.stderr or "").strip()
+    try:
+        return json.loads(r.stdout or "[]"), None
+    except ValueError:
+        return None, "gh pr list: unreadable answer"
+
+
+def _emit_held_issue(title, body, dry, would, cves=(), target=None):
+    """Open OR update the issue that hands a held MAJOR bump to a harness lane as a task (rc-5b A6: a major is judged
+    by a machine, never by the owner). NOT an owner-decision issue: no owner label, no assignee. Returns (ok, ref)
+    like _emit_owner_issue."""
+    cmd = "gh issue create --title %s" % shlex.quote(title)
+    if dry:
+        _plan(would, "held-major issue", target or title, cves, cmd)
+        print("dry-run would create: " + cmd); return True, "dry"
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    if log:
+        prior = open(log).read() if os.path.exists(log) else ""
+        if ("issue create --title %s" % shlex.quote(title)) in prior:
+            open(log, "a").write("gh issue comment --title %s --body %s\n" % (shlex.quote(title), shlex.quote(body)))
+            return True, "shim-updated"
+        open(log, "a").write(cmd + " --body " + shlex.quote(body) + "\n")
+        failing = bool(os.environ.get("AUDITOR_SHIM_ISSUE_FAIL"))
+        return (not failing), (None if failing else "shim-created")
+    if not _real_gh_allowed():
+        print("would open/update held-major issue (real gh disabled): " + title); return True, "skipped"
+    ienv = dict(os.environ)
+    ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
+    try:
+        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
+            capture_output=True, text=True, env=ienv)
+        if r.returncode != 0:
+            print("held-major issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
+        found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
+        if found:
+            c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body], capture_output=True,
+                text=True, env=ienv)
+            return (c.returncode == 0), found[0]["number"]
+        c = subprocess.run(["gh", "issue", "create", "--title", title, "--body", body], capture_output=True, text=True,
+            env=ienv)
+        if c.returncode != 0:
+            print("held-major issue create FAILED: %s" % (c.stderr or "").strip()); return False, None
+        url = (c.stdout or "").strip().splitlines()[-1] if c.stdout else ""
+        num = url.rstrip("/").split("/")[-1] if url else None
+        return True, (int(num) if (num or "").isdigit() else url)
+    except Exception as e:
+        print("held-major issue open/update failed: %s" % e); return False, None
+
+
 def _bump_target(fb):
     """The delivery TARGET of a bump: (module, version) — one PR per target, never per CVE
     (LR-32; owner, Sep 28: "one PR per bump, listing every CVE it fixes"). `0.22.0` and `v0.22.0`
@@ -664,26 +786,62 @@ def _branch_slug(s):
 
 def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
     """Deliver every §1/§3 bump: ONE delivery per (module, version) target carrying all its CVEs
-    (LR-32), then set each row's honest action from its target's delivery status. Returns the
-    delivery errors (each makes the run INCOMPLETE)."""
+    (LR-32), then set each row's honest action from its target's delivery status. A MAJOR transition
+    (rc-5b A6) is delivered as the same draft and also opens one issue, a task for a harness lane; a target an open
+    Dependabot PR already covers (A7) is deferred to. Returns the delivery errors (each makes the run INCOMPLETE)."""
     fix_errs = []
     targets = {}                                   # LR-32: ONE delivery per (module, version) target
     for r in rows:
         if r.get("fix_bump"):
             targets.setdefault(_bump_target(r["fix_bump"]), []).append(r)
     delivered = {}
+    held = {}                                      # target -> (ok, issue ref) for a delivered major
     for tk, group in targets.items():
         delivered[tk] = _deliver_fix_pr(group, today, commit, dry, would, is_test=is_test)
+        fb0 = group[0]["fix_bump"]
+        # MAJOR-HELD
+        if delivered[tk][2] in ("delivered", "delivered-unchecked", "would") and _is_major_bump(fb0.get("module"),
+            fb0.get("from"), fb0.get("to")):
+            cves = sorted({g["fix_bump"].get("cve") or g["id"] for g in group})
+            title = policy.subject("major bump %s -> %s held as a harness lane task" % (fb0["module"], fb0["to"]))
+            body = ("The daily CVE auditor found a fixed version of %s that is a MAJOR transition (%s -> %s). "
+                    "A major bump means an API changed (judged by a machine, not by the repository owner), "
+                    "so the auditor opened the draft PR but did not arm it; a harness lane makes the change on our "
+                    "side.\n\n- Vulnerabilities: %s\n- Draft PR: %s\n"
+                    % (fb0["module"], fb0.get("from"), fb0["to"], ", ".join(cves), delivered[tk][0] or "(dry run)"))
+            held[tk] = _emit_held_issue(title, body, dry, would, cves=cves, target="%s %s -> %s" % (fb0["module"],
+                fb0.get("from"), fb0["to"]))
     for r in rows:
         if not r.get("fix_bump"):
             continue
         fb = r["fix_bump"]; lift = r.get("lift_note", "")
         furl, ferr, fstatus = delivered[_bump_target(fb)]
-        if fstatus == "delivered":
-            r["action"] = ("opened draft bump PR: %s" % (furl or "(App bot)")) + lift
+        hold = held.get(_bump_target(fb))
+        held_note = ""
+        if hold is not None:
+            if hold[0]:
+                if hold[1] == "dry":
+                    held_note = "; MAJOR transition: the held-major issue would be opened (dry run)"
+                elif hold[1] == "skipped":
+                    held_note = "; MAJOR transition: held as a harness lane task, issue NOT opened (delivery disabled)"
+                else:
+                    ref = hold[1] if hold[1] not in (None, "shim-created", "shim-updated") else "opened"
+                    held_note = "; MAJOR transition: held as a harness lane task (issue %s)" % ref
+            else:
+                held_note = "; MAJOR transition: the held-major issue FAILED to open (run INCOMPLETE)"
+                r["pending_delivery"] = True
+                if "held-major issue" not in fix_errs:
+                    fix_errs.append("held-major issue")
+        if fstatus in ("delivered", "delivered-unchecked"):
+            r["action"] = ("opened draft bump PR: %s" % (furl or "(App bot)")) + held_note + lift
+            if fstatus == "delivered-unchecked":
+                r["action"] += "; could not look at Dependabot PRs (lookup failed), delivered without the check"
             r["fix_pr_url"] = furl
+        elif fstatus == "deferred":
+            r["action"] = ("deferred to Dependabot PR %s: it already carries this bump" % furl) + lift
         elif fstatus == "would":
-            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"], fb["to"])) + lift
+            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"],
+                fb["to"])) + held_note + lift
         elif fstatus == "unresolvable":
             r["action"] = ("fix not resolvable: %s@%s did not resolve from the module proxy — stays in section 3" % (fb["module"], fb["to"])) + lift
         elif fstatus == "skipped-test":
@@ -731,9 +889,26 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if is_test:                                 # a test image is not shipped and always dry (AC9)
         _plan(would, "bump PR", target, cves, note="skipped: test image", key=branch)
         return None, None, "skipped-test"
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    ws0 = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    if log or _real_gh_allowed():
+        prs, lerr = _open_dependabot_prs(ws0)
+        hit = _dependabot_match(prs, module, tkey) if prs is not None else None
+        # row 47: defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
+        if hit:
+            if dry:
+                _plan(would, "bump PR", target, cves, note="deferred to Dependabot PR #%s" % hit[0], key=branch)
+            print("bump %s -> %s deferred to Dependabot PR #%s" % (module, to, hit[0]))
+            return (hit[1] or "#%s" % hit[0]), None, "deferred"
+        unchecked = lerr is not None
+        if unchecked:
+            print("warning: could not look at Dependabot PRs (%s); delivering without the check" % lerr)
+    else:
+        unchecked = False
     # AC3/AC4: a bump PR touches only go.mod/go.sum (no prompt file), so it auto-merges when the
-    # owner turned auto-merge on; otherwise draft.
-    automerge = _automerge_allowed(["go.mod", "go.sum"])
+    # owner turned auto-merge on; otherwise draft. A MAJOR transition is held (rc-5b A6): always a draft, never armed.
+    major = _is_major_bump(module, frm, to)
+    automerge = _automerge_allowed(["go.mod", "go.sum"]) and not major
     draft = "" if automerge else "--draft "
     if dry:
         _plan(would, "bump PR", target, cves,
@@ -741,7 +916,6 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
               note="auto-merge" if automerge else "draft", key=branch)
         print("dry-run would open %sbump PR on %s" % ("auto-merge " if automerge else "draft ", branch))
         return None, None, "would"
-    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         # test shim: the log is the remote. A target already delivered with the same CVE set is
         # left alone; a changed CVE set updates the SAME PR (AC2); a new target gets its own branch.
@@ -750,7 +924,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         mark = "SHIM_TARGET %s %s" % (branch, ",".join(cves))
         if mark in prior.splitlines():
             open(log, "a").write("UNCHANGED %s\n" % branch)
-            return url, None, "delivered"
+            return url, None, ("delivered-unchecked" if unchecked else "delivered")
         seq = ["git checkout -B %s origin/main" % branch,
                "go get %s@%s" % (module, to),
                "go mod tidy",
@@ -765,7 +939,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
             return None, "simulated: push to origin/%s rejected" % branch, "error"
         open(log, "a").write("%s\nPR_URL %s\n" % (mark, url))
-        return url, None, "delivered"
+        return url, None, ("delivered-unchecked" if unchecked else "delivered")
     if not _real_gh_allowed():
         print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
         _plan(would, "bump PR", target, cves, note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
@@ -826,7 +1000,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, want,
                                             app_login=slug + "[bot]" if slug else None)
     if oid is None:
-        err = _disarm_before_replace(ws, ex)     # the existing PR is found and DISARMED first, then its branch is replaced
+        # the existing PR is found and DISARMED first (a held major is made a draft too), then its branch is replaced
+        err = _hold_as_draft(ws, ex) if major else _disarm_before_replace(ws, ex)
         if err:
             return None, err, "error"
         oid, err = _signed_delivery(ws, branch, base_sha, title, files)
@@ -843,12 +1018,17 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     def _reuse(u):
         # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never
         # armed, never reported delivered) — whichever discovery path found the PR
+        # a held major stays a draft with auto-merge off, even a PR an earlier run armed
+        if major:
+            err = _hold_as_draft(ws, u)
+            if err:
+                return None, err, "error"
         e = subprocess.run(["gh", "pr", "edit", u, "--title", title, "--body", body], cwd=ws,
                            capture_output=True, text=True)
         if e.returncode != 0:
             return None, ("gh pr edit: " + (e.stderr or "").strip()), "error"
         err = _arm(u)
-        return (None, err, "error") if err else (u, None, "delivered")
+        return (None, err, "error") if err else (u, None, ("delivered-unchecked" if unchecked else "delivered"))
     if ex:
         return _reuse(ex)
     create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
@@ -863,7 +1043,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         return None, ("gh pr create: " + (r.stderr or "").strip()), "error"
     url = r.stdout.strip()
     err = _arm(url)
-    return (None, err, "error") if err else (url, None, "delivered")
+    return (None, err, "error") if err else (url, None, ("delivered-unchecked" if unchecked else "delivered"))
 
 
 def _merge_suppressions(ws, supp, base=None):
