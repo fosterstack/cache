@@ -126,7 +126,6 @@ ALLOW_PATTERNS=(
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
-  '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
   '^bin/inspector-reuse\.py$'
@@ -146,11 +145,13 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|no-keyless-tag|manifest|rekor-key|trust-files)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
+  '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
   '^\.github/policy/rekor\.pub$'
+  '^\.github/policy/fulcio-chain\.pem$'
+  '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
@@ -293,6 +294,7 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/build-freeze\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'

@@ -1090,7 +1090,8 @@ def tag_notes(raw):
     if cut < 0:
         return None
     body, sig = body[:cut], body[cut + len(SIG_DELIM):]
-    # only the release workflow's own patch tag: its tagger and a gitsign (x509) signature — an owner's tag is SSH-signed
+    # only the release workflow's own patch tag: its tagger and an x509 signature (no job signs one now: handoff 0713
+    # P8) — an owner's tag is SSH-signed
     # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
         return None

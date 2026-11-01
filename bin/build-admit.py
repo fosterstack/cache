@@ -6,7 +6,7 @@
 
 The tag, ref and sha come ONLY from the runner environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID,
 GITHUB_RUN_ATTEMPT); an argument naming one is a usage error. They are never put in a shell: every command is an argument list.
-Policy (allowed signers, the pinned web-flow key, the required checks, the signer router, the gitsign installer) is read from
+Policy (allowed signers, the pinned web-flow key, the required checks, the signer router) is read from
 origin/main, never from the tagged commit, because the tagged commit is the thing being admitted. GitHub is read with `gh api`
 (GET only, no -X / -f / -F / --input) and the JSON is parsed here. The token (GH_TOKEN) is inherited by `gh` and never printed.
 
@@ -15,10 +15,12 @@ is left. Exit 2: usage or environment error.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,21 +33,20 @@ CHECKS = [
 
 TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")  # fullmatch: no trailing newline slips through
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
-BASE_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
-KEYLESS = "release-workflow-keyless"
 OWNER_SSH = "owner-ssh"
-ISSUER = "https://token.actions.githubusercontent.com"
-# the Go toolchain of go.mod, installed and checksum-pinned by `bash bin/install-scanner.sh go` (its fixed directory is <dest>/fscache-go, dest /usr/local/bin):
-# the freeze check runs THIS Go, never the runner's own `go`, which may be older than go.mod; GOTOOLCHAIN=local, so nothing is downloaded
-GO_BIN = "/usr/local/bin/fscache-go/bin/go"
+# The freeze check (the requirements tool, Go code of the tagged commit) runs in the `freeze` job before Build, not
+# here. That job writes this file, one `freeze-ok COMMIT BASE` line per baseline file that passed, and Build's apk job
+# downloads it. Admission starts no Go: it reads the file and prints what it trusted.
+FREEZE_FILE = "freeze/freeze.txt"
+FREEZE_CAP = 65536
+FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?)")
 RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
 RC_BYTES = "bin/chain-bytes-sha.py"
 RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SIGNER = "bin/admission-tag-signer.py"
-INSTALLER = "bin/install-scanner.sh"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
-POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER, INSTALLER)
+POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER)
 
 
 class Refusal(Exception):
@@ -169,25 +170,24 @@ def check_tag_annotated(ctx):
 # ---------------------------------------------------------------- 5. tag-signature (REQ-REL-009-AC6)
 
 def route_tag(ctx):
-    """Ask main's bin/admission-tag-signer.py which verifier applies: 'ssh' or 'gitsign'. Anything else is refused."""
+    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is
+    refused:
+    a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag,
+    patch tags included."""
     rc, obj, _ = outcome(lambda: subprocess.run(["git", "cat-file", "tag", "refs/tags/" + ctx.tag], capture_output=True,
         check=False))
     if rc != 0:
         raise Refusal("tag-signature", "cannot read the tag object of %s" % ctx.tag)
     obj_file = os.path.join(ctx.tmp, "tag-object")
-    tags_file = os.path.join(ctx.tmp, "released-tags")
     with open(obj_file, "wb") as fh:
         fh.write(obj)
-    _, tags, _ = outcome(lambda: subprocess.run(["git", "tag", "-l", "v*"], capture_output=True, check=False))
-    with open(tags_file, "wb") as fh:
-        fh.write(tags)
     rc, out, err = outcome(lambda: subprocess.run(["python3", "-I", os.path.join(ctx.policy, os.path.basename(SIGNER)),
-        "route", "--tag", ctx.tag, "--tag-object", obj_file, "--tags", tags_file], capture_output=True, check=False))
+        "route", "--tag-object", obj_file], capture_output=True, check=False))
     if rc != 0:
         raise Refusal("tag-signature", "the signer router failed: %s" % one_line(text(err)))
     answer = text(out).strip()
     route = answer.split(" ", 1)[0]
-    if route not in ("ssh", "gitsign"):
+    if route != "ssh":
         raise Refusal("tag-signature", "tag %s refused: %s" % (ctx.tag, answer.partition(" ")[2] or answer))
     return route, obj
 
@@ -205,46 +205,10 @@ def verify_tag_ssh(ctx):
     return m.group(1), m.group(2)
 
 
-def x509_fingerprint(tag_object):
-    """sha256 fingerprint of the certificate in the gitsign block of the tag object, or '' when it cannot be read."""
-    m = re.search(r"^-----BEGIN SIGNED MESSAGE-----\n.*?^-----END SIGNED MESSAGE-----$", text(tag_object), re.S | re.M)
-    if not m:
-        return ""
-    pem = m.group(0).replace("SIGNED MESSAGE", "PKCS7").encode()
-    rc, certs, _ = outcome(lambda: subprocess.run(["openssl", "pkcs7", "-print_certs"], input=pem, capture_output=True,
-        check=False))
-    if rc != 0 or not certs.strip():
-        return ""
-    rc, out, _ = outcome(lambda: subprocess.run(["openssl", "x509", "-noout", "-fingerprint", "-sha256"], input=certs,
-        capture_output=True, check=False))
-    f = re.search(r"^sha256 Fingerprint=(\S+)$", text(out), re.I | re.M)
-    return "x509-sha256:" + f.group(1) if rc == 0 and f else ""
-
-
-def verify_tag_keyless(ctx, tag_object):
-    """The release workflow's keyless identity on a patch tag, via gitsign. Returns (principal, fingerprint)."""
-    rc, _, err = outcome(lambda: subprocess.run(["bash", os.path.join(ctx.policy, os.path.basename(INSTALLER)),
-        "gitsign"], capture_output=True, check=False))
-    if rc != 0:
-        raise Refusal("tag-signature", "installing gitsign failed: %s" % one_line(text(err)))
-    identity = "https://github.com/%s/.github/workflows/release.yml@refs/heads/main" % ctx.repo
-    rc, _, err = outcome(lambda: subprocess.run(["gitsign", "verify-tag", ctx.tag, "--certificate-identity", identity,
-        "--certificate-oidc-issuer", ISSUER, "--certificate-github-workflow-repository", ctx.repo,
-        "--certificate-github-workflow-ref", "refs/heads/main", "--certificate-github-workflow-sha", ctx.sha],
-        capture_output=True, check=False))
-    if rc != 0:
-        raise Refusal("tag-signature", "gitsign verify-tag refused %s: %s" % (ctx.tag, one_line(text(err))))
-    return identity, x509_fingerprint(tag_object)
-
-
 def check_tag_signature(ctx):
-    route, tag_object = route_tag(ctx)
-    if route == "ssh":
-        ctx.method = OWNER_SSH
-        ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
-    else:
-        ctx.method = KEYLESS
-        ctx.principal, ctx.fingerprint = verify_tag_keyless(ctx, tag_object)
+    route_tag(ctx)      # the router refuses everything but an owner SSH signature, on any tag
+    ctx.method = OWNER_SSH
+    ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
     if not ctx.principal or not ctx.fingerprint:
         raise Refusal("tag-signature", "tag signature verified but signer metadata could not be extracted: no empty evidence is admitted")
 
@@ -417,30 +381,6 @@ def check_required_checks(ctx):
 
 # ---------------------------------------------------------------- 9. baseline (REQ-REL-009-AC13)
 
-def patch_baseline_version(ctx):
-    """A CI-signed patch tag uses the latest OWNER-signed baseline of its line, by main's signer script. Returns the version."""
-    script = os.path.join(ctx.policy, os.path.basename(SIGNER))
-    owner_dir = os.path.join(ctx.tmp, "owner-baselines")
-    rc, _, err = outcome(lambda: subprocess.run(["python3", "-I", script, "owner-baselines", "--tag", ctx.tag,
-        "--allowed-signers", ctx.allowed, "--out", owner_dir], capture_output=True, check=False))
-    if rc != 0:
-        raise Refusal("baseline", "owner-baselines failed: %s" % one_line(text(err)))
-    tagged_req = git_show("%s:requirements/requirements.yaml" % ctx.sha)
-    if tagged_req is None:
-        raise Refusal("baseline", "requirements/requirements.yaml does not exist at the tagged commit")
-    req_file = os.path.join(ctx.tmp, "tagged-requirements.yaml")
-    with open(req_file, "wb") as fh:
-        fh.write(tagged_req)
-    rc, out, err = outcome(lambda: subprocess.run(["python3", "-I", script, "baseline", "--tag", ctx.tag,
-        "--owner-baselines", owner_dir, "--requirements", req_file], capture_output=True, check=False))
-    answer = text(out).strip()
-    parts = answer.split(" ", 2)
-    if rc != 0 or len(parts) < 2 or parts[0] != "use" or not BASE_SYNTAX.fullmatch(parts[1]):
-        why = answer[3:].strip() if answer.startswith("no ") else (answer or one_line(text(err)))
-        raise Refusal("baseline", "%s has no usable ACs baseline: %s" % (ctx.tag, why))
-    return parts[1]
-
-
 def baseline_problems(d, base, tag):
     """Structural validation of an approved baseline: version match, boolean approval, a real date, a non-empty blocking set."""
     if not isinstance(d, dict):
@@ -460,26 +400,43 @@ def baseline_problems(d, base, tag):
     return errs
 
 
+def check_freeze(ctx, base):
+    """The freeze job's file has a line for the tagged commit and this base. The prints are log lines; the Build
+    record binds the file itself, which Witness hashes as a material before the wrapped step runs."""
+    try:
+        st = os.lstat(FREEZE_FILE)
+    except OSError:
+        raise Refusal("baseline", "%s is missing: the freeze job did not run, or its result was not "
+            "downloaded" % FREEZE_FILE)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > FREEZE_CAP:
+        raise Refusal("baseline", "%s is not a regular file of at most %d bytes" % (FREEZE_FILE, FREEZE_CAP))
+    with open(FREEZE_FILE, "rb") as fh:
+        raw = fh.read()
+    lines = text(raw).split("\n")
+    found = [FREEZE_LINE.fullmatch(line) for line in lines[:-1]]
+    if lines[-1] != "" or not all(found):
+        raise Refusal("baseline", "%s holds a line that is not exactly `freeze-ok COMMIT BASE`, or does not end in "
+            "a newline" % FREEZE_FILE)
+    if (ctx.sha, base) not in [m.groups() for m in found]:
+        raise Refusal("baseline", "%s has no freeze-ok for commit %s and baseline %s" % (FREEZE_FILE, ctx.sha, base))
+    print("freeze-file-sha256 %s" % hashlib.sha256(raw).hexdigest())
+    print("freeze-ok %s %s" % (ctx.sha, base))
+
+
 def check_baseline(ctx):
     try:
         import yaml
     except ImportError:
         raise EnvError("PyYAML is required")
-    base = patch_baseline_version(ctx) if ctx.method == KEYLESS else ctx.tag
+    base = ctx.tag
     ctx.base = base
     path = "requirements/releases/%s.yaml" % base
     tagged = git_show("%s:%s" % (ctx.sha, path))
     if tagged is None:
         raise Refusal("baseline", "%s does not exist at the tagged commit: freeze the release baseline first" % path)
-    if ctx.method == KEYLESS:
-        owner_copy = git_show("refs/tags/%s:%s" % (base, path))
-        if owner_copy != tagged:
-            raise Refusal("baseline", "%s at the tagged commit differs from the copy in the owner-signed %s" % (path, base))
-    # The requirements tool proves the exact requirements hash and the complete blocking set (R07); approval is checked below.
-    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base],
-        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))
-    if rc != 0:
-        raise Refusal("baseline", "the freeze check (verify-freeze %s) failed: %s" % (base, one_line(text(err), 200)))
+    # The freeze job ran the requirements tool: exact requirements hash and complete blocking set (R07). Approval is
+    # checked below.
+    check_freeze(ctx, base)
     try:
         d = yaml.safe_load(tagged)
     except yaml.YAMLError as e:
@@ -548,16 +505,13 @@ def read_environment():
             raise EnvError("%s is not a number" % n)
 
 
-def admit(out_path, go_bin=GO_BIN):
+def admit(out_path):
     read_environment()
-    if not (os.path.isfile(go_bin) and os.access(go_bin, os.X_OK)):
-        raise EnvError("the pinned Go toolchain is not installed at %s (bash bin/install-scanner.sh go installs it; the runner's own go is never used)" % go_bin)
     if os.path.exists(out_path):
         os.remove(out_path)  # a stale file must never survive a refusal
     tmp = tempfile.mkdtemp(prefix="build-admit-")
     try:
         ctx = Context(tmp)
-        ctx.go = go_bin
         check_tag_ref(ctx)
         check_tag_syntax(ctx)
         check_tag_points_at_sha(ctx)
@@ -582,7 +536,6 @@ def main(argv):
     sub.add_parser("list-checks")
     r = sub.add_parser("run")
     r.add_argument("--out", default="admission.json")
-    r.add_argument("--go", default=GO_BIN)      # the stage runs the default; the test points it at a fake
     args, extra = ap.parse_known_args(argv)
     if extra:
         print("usage error: the tag, ref and sha come only from the environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA), not from "
@@ -592,7 +545,7 @@ def main(argv):
         print("\n".join(CHECKS))
         return 0
     try:
-        admit(args.out, args.go)
+        admit(args.out)
     except Refusal as e:
         if os.path.exists(args.out):
             os.remove(args.out)

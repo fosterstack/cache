@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC2, REQ-DEP-004-AC1, REQ-DEP-004-AC2, REQ-DEP-003-AC3
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC2, REQ-DEP-003-AC3
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -457,7 +457,7 @@ act() { # name; env: A B (answers), PRS, FAIL, ARMED, RULES
      RUN_URL=https://example.invalid/run ANTHROPIC_IDENTITY_TOKEN_FILE="$W/token" \
      ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://example.invalid/oidc?x=1" \
      AUDITOR_MODEL_PRIMARY=ma AUDITOR_MODEL_FALLBACK="${MB:-mb}" ANSWER_ma="$A" ANSWER_mb="$B" \
-     GH_TOKEN=job CHECKS_TOKEN=chk MERGE_TOKEN=mrg DISPATCH_TOKEN="${DT-ops}" \
+     GH_TOKEN=job CHECKS_TOKEN=chk MERGE_TOKEN=mrg \
      bash --noprofile --norc -e -o pipefail "$w/act.sh") > "$w/act.out" 2>&1
   echo $? > "$w/act.rc"
 }
@@ -514,33 +514,12 @@ grep -q "reader A" "$w/run/work/pr-99/issue.md" && grep -q "reader B" "$w/run/wo
   && { echo "ok: act: the issue carries both readers' findings, attributed, with release notes"; pass=$((pass+1)); } \
   || { echo "FAIL: act: issue content"; sed 's/^/    /' "$w/run/work/pr-99/issue.md"; fail=$((fail+1)); }
 
-# --- row 76: a completed hold dispatches the fixer (best effort)
-A="$CLEAN" B="$BREAKS" act; expect "hold -> issue, failure check, THEN the fixer dispatch with issue and PR (row 76)" \
-  "+api repos/fosterstack/ops/dispatches -f event_type=fix-held-bump -f client_payload\[issue\]=5 -f client_payload\[pr\]=99 -f client_payload\[repo\]=o/r" \
-  "ORDER:$CHK>ops/dispatches" ERRORED=0
-A="$CLEAN" B="$BREAKS" FAIL="dispatch" act; expect "the dispatch fails -> the hold still stands: issue, failure check, not unfinished" "+issue create" "+$CHK" ERRORED=0
-grep -q "fixer dispatch (fix-held-bump, issue #5): the dispatch call failed" "$w/act.out" \
-  && { echo "ok: act: a failed dispatch is a warning naming the issue"; pass=$((pass+1)); } || { echo "FAIL: act: dispatch warning"; fail=$((fail+1)); }
-A="$CLEAN" B="$BREAKS" DT="" act; expect "no ops token (App not on ops) -> no dispatch call, hold stands" "-ops/dispatches" "+$CHK" ERRORED=0
-A="$CLEAN" B="$CLEAN" act; expect "a merge never dispatches the fixer" "-ops/dispatches"
-out=$(bash "$here/dispatch-fixer.sh" fix-something 5 2>&1); rc=$?
-[ "$rc" = 1 ] && grep -q "unknown event type" <<<"$out" && { echo "ok: dispatch-fixer: unknown event type refused"; pass=$((pass+1)); } || { echo "FAIL: unknown event"; fail=$((fail+1)); }
-out=$(DISPATCH_TOKEN=t bash "$here/dispatch-fixer.sh" fix-held-bump "" 2>&1); rc=$?
-[ "$rc" = 1 ] && grep -q "no issue number" <<<"$out" && { echo "ok: dispatch-fixer: no issue number refused"; pass=$((pass+1)); } || { echo "FAIL: no issue"; fail=$((fail+1)); }
-python3 - "$repo/.github/workflows/ci.yml" "$w/drift-dispatch.sh" <<'PY5'
-import sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]["drift-fixer-dispatch"]
-assert "push" in j["if"] and "refs/heads/main" in j["if"] and j["environment"] == "agent"
-open(sys.argv[2], "w").write([s for s in j["steps"] if s.get("name") == "dispatch"][0]["run"])
-PY5
-for mode in ok dispatch; do
-  : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" FAIL="$([ $mode = dispatch ] && echo dispatch)" DISPATCH_TOKEN=ops ISSUE=12 GITHUB_REPOSITORY=o/r \
-     bash --noprofile --norc -e -o pipefail "$w/drift-dispatch.sh") >/dev/null 2>&1; rc=$?
-  if [ "$rc" = 0 ] && grep -q "ops/dispatches -f event_type=fix-required-check-drift -f client_payload\[issue\]=12 -f client_payload\[pr\]= " "$w/gh.log"; then
-    echo "ok: hygiene drift dispatch ($mode): fix-required-check-drift for issue 12, step never fails"; pass=$((pass+1))
-  else echo "FAIL: hygiene drift dispatch ($mode) rc=$rc"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
-done
+# --- rules 4 and 5 (owner, Oct 26): no LLM inside a workflow fixes code; a hold or a drift opens its issue and stops
+if grep -rqE "repository_dispatch|/dispatches|dispatch-fixer|DISPATCH_TOKEN|repositories: ops" \
+     "$repo/.github/workflows/dependabot-reviewer.yml" "$repo/.github/workflows/ci.yml" || [ -e "$here/dispatch-fixer.sh" ]; then
+  echo "FAIL: a fixer dispatch or an ops token is back in the reviewer or ci workflow"; fail=$((fail+1))
+else echo "ok: no repository_dispatch and no ops token in dependabot-reviewer.yml or ci.yml"; pass=$((pass+1)); fi
+A="$CLEAN" B="$BREAKS" act; expect "a hold opens its issue, publishes the failure check and calls nothing in ops" "+issue create" "+$CHK" "-ops" ERRORED=0
 
 # --- round 2
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \

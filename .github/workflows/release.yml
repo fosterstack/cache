@@ -36,8 +36,11 @@ jobs:
   # ---------------------------------------------------------------------------------------------------------------
   # Automatic patch releases (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056/0057; REQ-REL-009).
   # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag, rule 1; at once for
-  # a removed critical/high finding on push, else at most once a day, rule 2), signs the tag keylessly with gitsign under
-  # THIS workflow's identity (rule 3), and pushes it with the auditor App's token, whose tag push starts the chain below.
+  # a removed critical/high finding on push, else at most once a day, rule 2), checks the ACs baseline and the tagged
+  # commit's required checks, and writes
+  # the notes. It cuts NO tag: until the release KMS Sign job signs a patch tag (owner question O4) there is no signer
+  # here, and an unsigned tag is never
+  # cut (handoff 0713 P8, advisor ruling Oct 30). The step `cut` records that.
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
@@ -45,14 +48,12 @@ jobs:
       group: patch-decide
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    environment: agent          # the App's secrets live here (main only)
     permissions:
       contents: read
       checks: read              # wait for the tagged commit's required checks (advisor 0063)
-      id-token: write           # gitsign signs with this workflow's own OIDC identity (no key)
       issues: write             # the standing "main is not patch-clean" issue
     outputs:
-      tagged: ${{ steps.push.outputs.tagged }}   # the patch-notes job opens the changelog PR (advisor 0135)
+      tagged: ${{ steps.cut.outputs.tagged }}    # always false until a signer cuts the tag; the patch-notes job opens the changelog PR only for a pushed tag (advisor 0135)
       version: ${{ steps.decide.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,10 +66,9 @@ jobs:
       - name: the rc-proof marker validates for this commit
         run: python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"
 
-      - name: install the pinned tools (gitsign; grype)
+      - name: install the pinned tool (grype)
         run: |
           set -euo pipefail
-          ./bin/install-scanner.sh gitsign
           ./bin/install-scanner.sh grype
 
       - name: what changed since the latest tag (the PR labels of each commit) and whether a patch was cut today
@@ -165,9 +165,11 @@ jobs:
           if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
       # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
-      # if the requirements are byte-for-byte unchanged since it. Admission applies this rule; decide applies the SAME
-      # rule to the same sources first (owner-signed tags), so it never cuts a tag admission must refuse. Otherwise no
-      # cut: it waits for the owner.
+      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources
+      # (owner-signed
+      # tags) and cuts no tag at all since handoff 0713 P8 (no signer exists yet); admission accepts an owner-signed
+      # patch
+      # tag on the owner's baseline. Otherwise no cut: it waits for the owner.
       - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
         id: basecheck
         if: ${{ steps.decide.outputs.cut == 'true' }}
@@ -253,38 +255,17 @@ jobs:
             --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: sign the patch tag keylessly (gitsign, this workflow's identity)
-        if: ${{ steps.checks.outputs.ready == 'true' }}
+      - name: no tag is cut until the release KMS Sign job signs it (owner question O4)
+        id: cut
         env:
           VERSION: ${{ steps.decide.outputs.version }}
+          READY: ${{ steps.checks.outputs.ready }}
         run: |
           set -euo pipefail
-          git config user.name "fosterstack release"
-          git config user.email "release@users.noreply.github.com"
-          git -c gpg.format=x509 -c gpg.x509.program=gitsign tag -s --cleanup=verbatim -F "$RUNNER_TEMP/notes.md" "$VERSION"
-          git -c gpg.format=x509 -c gpg.x509.program=gitsign verify-tag "$VERSION" 2>&1 | tail -2 || true
-
-      - name: mint the auditor App's token (contents write on cache only)
-        id: app-token
-        if: ${{ steps.checks.outputs.ready == 'true' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: cache
-          permission-contents: write
-
-      - name: push the signed tag (the App transports it)
-        id: push
-        if: ${{ steps.checks.outputs.ready == 'true' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ steps.decide.outputs.version }}
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          git push origin "refs/tags/${VERSION}"
-          echo "tagged=true" >> "$GITHUB_OUTPUT"
+          echo "tagged=false" >> "$GITHUB_OUTPUT"
+          if [ "$READY" = true ]; then
+            echo "A patch $VERSION is due and its required checks are ready. No tag is cut: nothing here signs a tag, and an unsigned tag is never cut." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # AC8 + advisor 0130/0135: the pushed tag's notes go on top of docs/quality/releases/CHANGELOG.md and leave docs/next-release-notes.md,
   # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
@@ -632,7 +613,7 @@ jobs:
       - name: attempt read_sign_key
         run: |
           rc=0
-          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json 2> /tmp/read_sign_key.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
       - name: attempt hand_sign_code
         run: |

@@ -681,6 +681,18 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
 
+      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
+
+      - name: "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-rekor-key-test.sh bin/chain-rekor-key-test.sh
+
+      - name: "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-trust-files-test.sh bin/chain-trust-files-test.sh
+
+      - name: "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
+
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
 
@@ -812,10 +824,10 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
       - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
         run: bash bin/audit-record-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
+      - name: admission's tag signer — the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
-      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
+      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue (owner Oct 2; handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-patch-wiring-test.sh bin/release-patch-wiring-test.sh
       - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json acceptance-maven-413-test.sh bin/acceptance-maven-413-test.sh
@@ -903,10 +915,6 @@ jobs:
           else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
           if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
 
-  # Row 76: a drift issue dispatches the fixer in the ops repository. Only on push to main: the
-  # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
-  # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
-  # a failed call is a warning; the issue is the record.
   # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6; orchestrator ruling Oct 13). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
   # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
@@ -939,33 +947,6 @@ jobs:
           set -euo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
           python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
-
-  drift-fixer-dispatch:
-    name: dispatch the fixer for required-check drift
-    needs: required-check-guard
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}
-    runs-on: ubuntu-latest
-    environment: agent
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
-      - name: dispatch
-        env:
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
-          ISSUE: ${{ needs.required-check-guard.outputs.drift_issue }}
-        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
 
   requirements:
     name: requirements

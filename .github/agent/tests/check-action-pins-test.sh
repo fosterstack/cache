@@ -3352,7 +3352,7 @@ assert judge(F, "audit", 10, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{
 D = ".github/workflows/dependabot-reviewer.yml"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
-for idx in (4, 8):
+for idx in (4, 7):
     drun = dsteps[idx]["run"]
     assert not judge(D, "review", idx, drun, {D: dwf}), "the exact identity-token step %d is excluded" % idx
     assert judge(D, "review", idx + 1, drun, {D: dwf}), "the same text at another step index is a finding"
@@ -3360,7 +3360,7 @@ for idx in (4, 8):
     assert judge(".github/workflows/x.yml", "review", idx, drun, {".github/workflows/x.yml": dwf}), "the same text in another file is a finding"
     assert judge(D, "review", idx, drun + "\n# edited", {D: dwf}), "an edited step is a finding"
     assert judge(D, "review", idx, drun, {D: dwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
-assert judge(D, "review", 4, dsteps[8]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
+assert judge(D, "review", 4, dsteps[7]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
 PY
 fi
 

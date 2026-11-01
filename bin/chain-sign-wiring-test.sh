@@ -528,20 +528,104 @@ def judge_calls(root):
                     bad.append("AC5: %s job %s calls %s; a stage file may not call another stage file" % (fn, jn, r))
     return bad
 
-if __name__ == "__main__":
-    which, arg = sys.argv[1], sys.argv[2]
+def run(which, arg):
+    """One judgement: (status, stdout text, stderr text), exactly what one `python3 judge.py WHICH ARG` prints."""
     bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
     ids = list(dict.fromkeys(bad))
+    err = ""
     if ids and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py); nothing else changes
-        print("FINDINGS-JSON " + json.dumps(ids), file=sys.stderr)
-    print("; ".join(ids) or "ok"); sys.exit(1 if bad else 0)
+        err = "FINDINGS-JSON " + json.dumps(ids) + "\n"
+    return (1 if bad else 0), ("; ".join(ids) or "ok") + "\n", err
+
+def gen(d):
+    """The fixture writer of the tree cases (a second request kind of the persistent judge): rewrites
+    D/.github/policy/chain-scripts.json with fresh hashes (moved verbatim from the shell function gen)."""
+    import hashlib
+    out = []
+    for r in json.load(open(d + "/.spec.json")):
+        r = dict(r)
+        r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest()
+        out.append(r)
+    doc = {"env_names": ["DIGESTS", "RECORDS", "RECORDS_ARM64", "V", "X1"], "scripts": out}
+    if os.path.exists(d + "/.ambient.json"):
+        doc["ambient_env"] = json.load(open(d + "/.ambient.json"))      # PR 1b: the closed ambient_env list
+        if not os.environ.get("AMBIENT_RAW"):     # round 4 (4): file and job are required; said once, here
+            for e in (doc["ambient_env"] if isinstance(doc["ambient_env"], list) else []):
+                if isinstance(e, dict):
+                    e.setdefault("file", ".github/workflows/stage-verify.yml"); e.setdefault("job", "j")
+    if os.path.exists(d + "/.envnames.json"): doc["env_names"] = json.load(open(d + "/.envnames.json"))
+    if os.path.exists(d + "/.pinned.json"):      # PR 1b round 1: reviewed pinned steps
+        doc["pinned_steps"] = json.load(open(d + "/.pinned.json"))
+    json.dump(doc, open(d + "/.github/policy/chain-scripts.json", "w"))
+
+# The persistent judge (`judge.py serve`): the shell starts ONE process and sends it one request per line, fields
+# separated by the unit separator (\037): KIND, ARG, then the five environment values the judgements read
+# (CHAIN_ALLOWED, CHAIN_ROOT, SINK_ARTIFACT_RX, CHAIN_FINDINGS, AMBIENT_RAW) exactly as the shell has them at that call,
+# or \001 for "not set". Each reply is one NUL-ended record: status, stdout text, stderr text, separated by \037. What
+# persists between requests is the signer table and the code, nothing else: before the first request the server copies
+# every module-level dict, list and set (of this file and of the signer helper) and compares them after every request; a
+# change is a state leak between cases, and the server answers with it and stops (the client prints a FAIL line).
+ENVS = ("CHAIN_ALLOWED", "CHAIN_ROOT", "SINK_ARTIFACT_RX", "CHAIN_FINDINGS", "AMBIENT_RAW")
+def _tables():
+    import copy
+    out = {}
+    for mod in (sys.modules[__name__], _cts):
+        for k, v in vars(mod).items():
+            if isinstance(v, (dict, list, set)) and not k.startswith("__"): out[(mod.__name__, k)] = copy.deepcopy(v)
+    return out
+
+def serve():
+    import traceback
+    base = _tables()
+    for line in sys.stdin:
+        f = line.rstrip("\n").split("\037")
+        kind, arg, vals = f[0], f[1], f[2:]
+        for name, val in zip(ENVS, vals):
+            if val == "\001": os.environ.pop(name, None)
+            else: os.environ[name] = val
+        out, err, rc = "", "", 0
+        try:
+            if kind == "gen": gen(arg)
+            else: rc, out, err = run(kind, arg)
+        except Exception:
+            rc, out, err = 1, "", traceback.format_exc()
+        now = _tables()
+        leaked = sorted(k[0] + "." + k[1] for k in base if now.get(k) != base[k])
+        if leaked:
+            sys.stdout.write("70\037\037judge state leaked between cases: " + ", ".join(leaked) + "\0")
+            sys.stdout.flush(); sys.exit(70)
+        sys.stdout.write("%d\037%s\037%s\0" % (rc, out, err)); sys.stdout.flush()
+
+if __name__ == "__main__":
+    if sys.argv[1] == "serve": serve(); sys.exit(0)
+    which, arg = sys.argv[1], sys.argv[2]
+    rc, out, err = run(which, arg)
+    sys.stderr.write(err); sys.stdout.write(out); sys.exit(rc)
 PY
 export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
-judge() { python3 "$work/judge.py" "$@"; }
+# One persistent judge process (judge.py serve) answers every judgement: python starts and the signer table load once.
+# judge KIND ARG prints what `python3 judge.py KIND ARG` printed (stdout, stderr) and returns its status; a dead or
+# silent server leaves a marker the final summary fails on.
+coproc JUDGE { python3 "$work/judge.py" serve; }
+trap 'kill "$JUDGE_PID" 2> /dev/null; rm -rf "$work"' EXIT
+judge() {
+  local rec rc o e v=() n
+  for n in CHAIN_ALLOWED CHAIN_ROOT SINK_ARTIFACT_RX CHAIN_FINDINGS AMBIENT_RAW; do
+    if [ -n "${!n+x}" ]; then v+=("${!n}"); else v+=($'\001'); fi
+  done
+  printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$1" "$2" "${v[@]}" >&"${JUDGE[1]}" 2> /dev/null \
+    || { : > "$work/judge-dead"; echo "judge: the persistent judge is gone" >&2; return 70; }
+  IFS= read -r -d '' -t 900 -u "${JUDGE[0]}" rec \
+    || { : > "$work/judge-dead"; echo "judge: the persistent judge died or did not answer" >&2; return 70; }
+  rc=${rec%%$'\037'*}; rec=${rec#*$'\037'}; o=${rec%%$'\037'*}; e=${rec#*$'\037'}
+  [ "$rc" != 70 ] || : > "$work/judge-dead"
+  printf '%s' "$e" >&2; printf '%s' "$o"; return "$rc"
+}
 expect() { # expect ok|caught LABEL judge ARG
   local out rc=0
   out=$(judge "$3" "$4") || rc=$?
-  if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $2"
+  if [ "$rc" = 70 ]; then failn=$((failn + 1)); echo "FAIL $2: the persistent judge is gone"
+  elif [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $2"
   elif [ "$1" = caught ] && [ "$rc" != 0 ]; then pass=$((pass + 1)); echo "ok   $2 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $2 -> ${out:0:500}"; fi
 }
@@ -936,23 +1020,7 @@ printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "     
 expect caught "002-AC4 a secret written to GITHUB_ENV by an earlier step of a job that signs" build "$work/build-ghenv.yml"
 # 001-AC1 (advisor decision, Oct 9, replaces the script-reach scan): the tree judge on fixture trees. A stage file may only run what
 # .github/policy/chain-scripts.json lists (path + sha256); a listed script may use only its tools and start only its `runs`.
-gen() { python3 - "$1" <<'PY'
-import hashlib, json, os, sys
-d = sys.argv[1]
-out = []
-for r in json.load(open(d + "/.spec.json")):
-    r = dict(r); r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest(); out.append(r)
-doc = {"env_names": ["DIGESTS", "RECORDS", "RECORDS_ARM64", "V", "X1"], "scripts": out}
-if os.path.exists(d + "/.ambient.json"):
-    doc["ambient_env"] = json.load(open(d + "/.ambient.json"))      # PR 1b: the closed ambient_env list
-    if not os.environ.get("AMBIENT_RAW"):                           # round 4 (4): file and job are required; the fixtures say them once, here
-        for e in (doc["ambient_env"] if isinstance(doc["ambient_env"], list) else []):
-            if isinstance(e, dict): e.setdefault("file", ".github/workflows/stage-verify.yml"); e.setdefault("job", "j")
-if os.path.exists(d + "/.envnames.json"): doc["env_names"] = json.load(open(d + "/.envnames.json"))
-if os.path.exists(d + "/.pinned.json"): doc["pinned_steps"] = json.load(open(d + "/.pinned.json"))      # PR 1b round 1: reviewed pinned steps
-json.dump(doc, open(d + "/.github/policy/chain-scripts.json", "w"))
-PY
-}
+gen() { judge gen "$1" > /dev/null; }
 edit_spec() { # edit_spec DIR 'python statements over rows (dict by path)' : edits the spec, then rewrites chain-scripts.json with fresh hashes
   python3 -c 'import json,sys;d=sys.argv[1];s=json.load(open(d+"/.spec.json"));rows={r["path"]:r for r in s};exec(sys.argv[2]);json.dump(list(rows.values()),open(d+"/.spec.json","w"))' "$1" "$2"
   gen "$1"
@@ -3015,21 +3083,22 @@ case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung t
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
-# the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
+# (the shadowed module must be one bin/chain-verify.py imports: it was fractions until the certificate and timestamp code went, and a control that shadows an unimported module proves nothing)
+# the isolation really works: with a bin/shutil.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
 iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
-printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
+printf 'print("SHADOW-MARKER-%s")\nfrom shutil import *\n' "$$" > "$iso/bin/shutil.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
-case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/fractions.py (not isolated)";;
-  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/fractions.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
+case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/shutil.py (not isolated)";;
+  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/shutil.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
   *) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help did not run: ${out:0:200}";; esac
 rc=0; out=$(cd "$iso" && python3 bin/chain-verify.py --help 2>&1) || rc=$?
-case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/fractions.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
+case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/shutil.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
 # Opus r5 B1: the helper modules are compiled from the bytes that carry the listed sha256, never from a bytecode cache. An UNCHECKED-HASH
 # bin/__pycache__/chain_common.<tag>.pyc that prints a marker must not run; and a changed chain_common.py (bytes no longer the listed ones)
 # is refused before it runs
-rm -f "$iso/bin/fractions.py"
+rm -f "$iso/bin/shutil.py"
 python3 - "$iso/bin" <<'PYC'
 import os, py_compile, sys, tempfile
 b = sys.argv[1]
@@ -3116,7 +3185,8 @@ tg caught "$work/rel-nogate.yml" "R8 mutation: a build without the tag gate is c
 expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged; a caught case must name FRAGMENT and must not be a traceback
   local out rc=0
   out=$(judge tree "$2" 2>&1) || rc=$?
-  if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $4"
+  if [ "$rc" = 70 ]; then failn=$((failn + 1)); echo "FAIL $4: the persistent judge is gone"
+  elif [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $4"
   elif [ "$1" = caught ] && [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -F -q -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $4 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $4 -> rc=$rc ${out:0:500}"; fi
 }
@@ -3283,7 +3353,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='036975fac4611f77e1b6e4d0c4b01610f668dfe088e2fc8c9ca4f98200622190'
+FX_PIN='a27cec6951ec4cf3dc9e6019bed68f49bacb399914cdba1195d5e3fc3ffc897b'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4960,7 +5030,8 @@ hostjudge() { # hostjudge LABEL 'script line using $ABS' : the verdict does not 
   chmod 644 "$abs"; printf 'plain text\n' > "$abs"
   o3=$(judge tree "$d" 2>&1) || rc3=$?
   rm -rf "$(dirname "$abs")"
-  if [ "$rc1" = "$rc2" ] && [ "$rc1" = "$rc3" ] && [ "$o1" = "$o2" ] && [ "$o1" = "$o3" ]; then pass=$((pass + 1)); echo "ok   host independence: $label (same verdict with no file, an executable file and a plain file at the absolute path)"
+  if [ "$rc1" = 70 ] || [ "$rc2" = 70 ] || [ "$rc3" = 70 ]; then failn=$((failn + 1)); echo "FAIL host independence: $label: the persistent judge is gone"
+  elif [ "$rc1" = "$rc2" ] && [ "$rc1" = "$rc3" ] && [ "$o1" = "$o2" ] && [ "$o1" = "$o3" ]; then pass=$((pass + 1)); echo "ok   host independence: $label (same verdict with no file, an executable file and a plain file at the absolute path)"
   else failn=$((failn + 1)); echo "FAIL host independence: $label -> rc $rc1/$rc2/$rc3; without: ${o1:0:200} | with an executable: ${o2:0:200}"; fi
 }
 hostjudge "an absolute command word" '$ABS arg'
@@ -5019,6 +5090,10 @@ if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$wo
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
 EXPECT=2112
+if [ -e "$work/judge-dead" ]; then
+  failn=$((failn + 1))
+  echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
+fi
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

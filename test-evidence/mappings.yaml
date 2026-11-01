@@ -587,12 +587,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
-  - ac: REQ-DEP-004-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
-  - ac: REQ-DEP-004-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
   - ac: REQ-DEP-001-AC9
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -806,6 +800,7 @@ mappings:
   - ac: REQ-REL-009-AC6
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
+      - { type: shell-test, ref: "bin/chain-no-keyless-tag-test.sh" }
   - ac: REQ-REL-009-AC13
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
@@ -1060,9 +1055,12 @@ mappings:
   - ac: REQ-CHAIN-002-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-trust-files-test.sh" }
+      - { type: shell-test, ref: "bin/chain-manifest-test.sh" }
   - ac: REQ-CHAIN-002-AC3
     evidence:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-rekor-key-test.sh" }
   - ac: REQ-CHAIN-002-AC4
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
