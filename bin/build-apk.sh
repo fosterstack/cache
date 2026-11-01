@@ -126,9 +126,10 @@ mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"
 # ---- 4. the sealed call ----
 # tree-exclude begin
 # The job's own directories and files are untracked in the checkout melange copies, and Go stamps vcs.modified=true for
-# any untracked file. The helper adds nine paths, anchored at the root, to the exclude file of the checkout (never
-# committed): archive/, host-tools/, out/, witness-apk/, admission.json, build-in/, witness-build/, witness-rapk/ and
-# policy.json. Every other untracked or modified file still makes the tree dirty, and the dirty-tree checks below stay.
+# any untracked file. The helper adds ten paths, anchored at the root, to the exclude file of the checkout (never
+# committed): archive/, host-tools/, out/, witness-apk/, admission.json, build-in/, witness-build/, witness-rapk/,
+# policy.json and freeze/ (the freeze job's result, downloaded into the checkout). Every other untracked or modified
+# file still makes the tree dirty, and the dirty-tree checks below stay.
 excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) \
   || { echo "build-apk.sh: cannot locate the exclude file of $src (git rev-parse failed)" >&2; exit 1; }
 exdir=${excl%/*}

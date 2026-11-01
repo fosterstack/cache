@@ -15,10 +15,12 @@ is left. Exit 2: usage or environment error.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,9 +38,12 @@ SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)
 KEYLESS = "release-workflow-keyless"
 OWNER_SSH = "owner-ssh"
 ISSUER = "https://token.actions.githubusercontent.com"
-# the Go toolchain of go.mod, installed and checksum-pinned by `bash bin/install-scanner.sh go` (its fixed directory is <dest>/fscache-go, dest /usr/local/bin):
-# the freeze check runs THIS Go, never the runner's own `go`, which may be older than go.mod; GOTOOLCHAIN=local, so nothing is downloaded
-GO_BIN = "/usr/local/bin/fscache-go/bin/go"
+# The freeze check (the requirements tool, Go code of the tagged commit) runs in the `freeze` job before Build, not
+# here. That job writes this file, one `freeze-ok COMMIT BASE` line per baseline file that passed, and Build's apk job
+# downloads it. Admission starts no Go: it reads the file and prints what it trusted.
+FREEZE_FILE = "freeze/freeze.txt"
+FREEZE_CAP = 65536
+FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?)")
 RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
 RC_BYTES = "bin/chain-bytes-sha.py"
 RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
@@ -460,6 +465,29 @@ def baseline_problems(d, base, tag):
     return errs
 
 
+def check_freeze(ctx, base):
+    """The freeze job's file has a line for the tagged commit and this base. The prints are log lines; the Build
+    record binds the file itself, which Witness hashes as a material before the wrapped step runs."""
+    try:
+        st = os.lstat(FREEZE_FILE)
+    except OSError:
+        raise Refusal("baseline", "%s is missing: the freeze job did not run, or its result was not "
+            "downloaded" % FREEZE_FILE)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > FREEZE_CAP:
+        raise Refusal("baseline", "%s is not a regular file of at most %d bytes" % (FREEZE_FILE, FREEZE_CAP))
+    with open(FREEZE_FILE, "rb") as fh:
+        raw = fh.read()
+    lines = text(raw).split("\n")
+    found = [FREEZE_LINE.fullmatch(line) for line in lines[:-1]]
+    if lines[-1] != "" or not all(found):
+        raise Refusal("baseline", "%s holds a line that is not exactly `freeze-ok COMMIT BASE`, or does not end in "
+            "a newline" % FREEZE_FILE)
+    if (ctx.sha, base) not in [m.groups() for m in found]:
+        raise Refusal("baseline", "%s has no freeze-ok for commit %s and baseline %s" % (FREEZE_FILE, ctx.sha, base))
+    print("freeze-file-sha256 %s" % hashlib.sha256(raw).hexdigest())
+    print("freeze-ok %s %s" % (ctx.sha, base))
+
+
 def check_baseline(ctx):
     try:
         import yaml
@@ -475,11 +503,9 @@ def check_baseline(ctx):
         owner_copy = git_show("refs/tags/%s:%s" % (base, path))
         if owner_copy != tagged:
             raise Refusal("baseline", "%s at the tagged commit differs from the copy in the owner-signed %s" % (path, base))
-    # The requirements tool proves the exact requirements hash and the complete blocking set (R07); approval is checked below.
-    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base],
-        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))
-    if rc != 0:
-        raise Refusal("baseline", "the freeze check (verify-freeze %s) failed: %s" % (base, one_line(text(err), 200)))
+    # The freeze job ran the requirements tool: exact requirements hash and complete blocking set (R07). Approval is
+    # checked below.
+    check_freeze(ctx, base)
     try:
         d = yaml.safe_load(tagged)
     except yaml.YAMLError as e:
@@ -548,16 +574,13 @@ def read_environment():
             raise EnvError("%s is not a number" % n)
 
 
-def admit(out_path, go_bin=GO_BIN):
+def admit(out_path):
     read_environment()
-    if not (os.path.isfile(go_bin) and os.access(go_bin, os.X_OK)):
-        raise EnvError("the pinned Go toolchain is not installed at %s (bash bin/install-scanner.sh go installs it; the runner's own go is never used)" % go_bin)
     if os.path.exists(out_path):
         os.remove(out_path)  # a stale file must never survive a refusal
     tmp = tempfile.mkdtemp(prefix="build-admit-")
     try:
         ctx = Context(tmp)
-        ctx.go = go_bin
         check_tag_ref(ctx)
         check_tag_syntax(ctx)
         check_tag_points_at_sha(ctx)
@@ -582,7 +605,6 @@ def main(argv):
     sub.add_parser("list-checks")
     r = sub.add_parser("run")
     r.add_argument("--out", default="admission.json")
-    r.add_argument("--go", default=GO_BIN)      # the stage runs the default; the test points it at a fake
     args, extra = ap.parse_known_args(argv)
     if extra:
         print("usage error: the tag, ref and sha come only from the environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA), not from "
@@ -592,7 +614,7 @@ def main(argv):
         print("\n".join(CHECKS))
         return 0
     try:
-        admit(args.out, args.go)
+        admit(args.out)
     except Refusal as e:
         if os.path.exists(args.out):
             os.remove(args.out)
