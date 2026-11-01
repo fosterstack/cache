@@ -1279,6 +1279,13 @@ def provenance_statement(pol, obj, dry, byproducts):
     return statement
 
 
+def bundle_certificate_why(vm):
+    """The refusal text when a bundle's verificationMaterial carries a certificate, else None (a key signed it; nothing here is keyless)."""
+    if "certificate" in vm or "x509CertificateChain" in vm:
+        return "the bundle cosign wrote carries a certificate: no certificate belongs to this chain"
+    return None
+
+
 def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
     """Turn the bundle cosign wrote into the two files Release verifies: its DSSE envelope, one signature {keyid, sig}
     (<name>.json), and the bundle's own Rekor entries, untouched (<name>.rekor.json). The bundle must hold a DSSE
@@ -1288,8 +1295,9 @@ def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
         vm = bun["verificationMaterial"]
         if not isinstance(vm, dict):
             raise TypeError("verificationMaterial")
-        if "certificate" in vm or "x509CertificateChain" in vm:
-            refuse("sign", "the bundle cosign wrote carries a certificate: no certificate belongs to this chain")
+        why = bundle_certificate_why(vm)
+        if why:
+            refuse("sign", why)
         dsse = bun["dsseEnvelope"]
         sigs = dsse["signatures"]
         if not isinstance(sigs, list) or len(sigs) != 1:

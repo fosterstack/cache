@@ -167,7 +167,7 @@ for n, b in BODY.items():
     t, s, r = ROWS[n]
     rows.append({"path": f"bin/{n}.sh", "sha256": hashlib.sha256(open(f"{w}/s/bin/{n}.sh", "rb").read()).hexdigest(), "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
-rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": [], "reason": "fixture"})
+rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "bash", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"], "reason": "fixture"})
 open(w + "/s/bin/release-compare.py", "w").write("import sys\n")
 rows.append({"path": "bin/release-compare.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-compare.py", "rb").read()).hexdigest(), "tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"], "reason": "fixture"})
 open(w + "/s/bin/release-layout.py", "w").write("import sys\n")

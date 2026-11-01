@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "0631cb29e883e8a9e19898c7a253bf7696037cca6a91cc70a03b7e8a8d1240e6",
+      "sha256": "7975bc004d9697c866f3f172e395c377ea331b7152d3e38a36723d2876d4389c",
       "tools": [
         "make",
         "at",
@@ -1873,17 +1873,35 @@
       "path": "bin/release-postverify.py",
       "tools": [
         "at",
-        "bash",
         "command",
         "cosign",
+        "exec",
         "gh",
         "jq",
         "just"
       ],
-      "runs": [],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
       "signs": false,
-      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "f0f2083bca437f02dece6af7dce3fb03bd40d9f5e667c4fe0bbc236949e96a46",
+      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
+      "sha256": "209204f4b770ae0a7a08bef903289f07a4e2a31745e375d4cbf520a94fbb6e0d",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "            return \"a # outside quotes (a shell comment would hide what follows from this check and not from bash)\"",
+          "line_sha256": "4f0ed76b7e3308c8638ba6e3ed8d151699a3f12ba6fb7f3f220b2db554f3dd21",
+          "count": 1,
+          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        },
+        {
+          "rule": "deny",
+          "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
+          "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
+          "count": 1,
+          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        }
+      ],
       "env_mentions": [
         {
           "name": "ENV",

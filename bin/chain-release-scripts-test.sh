@@ -60,7 +60,7 @@ esac''',
  "cosign": r'''#!/usr/bin/env bash
 echo "cosign $*" >> "$LOG"
 echo "$PWD" >> "$LOG.cwd"
-if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
+if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt|*"{"*|*"*"*) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
@@ -809,81 +809,173 @@ check(rc == 0 and not re.search(r"crane|docker login|auth login|\bpush\b", L) an
 # ---- REQ-CHAIN-007-AC20 (advisor ruling B, Oct 15): the commands run from the downloaded assets; a jq-only command only after a verify of the same file --------------
 PBF = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ
 PJ = "jq -e '.ok == true' provenance.bundle.json"
-def pva(rows, assets=None, nodir=False, **kw):
-    """pv with files in release-published/ (assets: name -> text), or the directory removed."""
+def pva(rows, assets=None, nodir=False, cv=None, links=None, **kw):
+    """pv with files in release-published/ (assets: name -> text), or the directory removed.
+    cv: "drop" removes bin/chain-verify.py from the tree, "alter" appends a line to it, "altercommon" does the same to
+    bin/chain_common.py. links: name -> target, made as symbolic links in release-published/."""
     t = tree()
+    # release-postverify.py loads the verifier (a bundle check) and that loads its helpers, each by the sha256 in
+    # chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use
+    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
+    if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
+        os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
+    if cv == "drop": os.remove(os.path.join(t, "bin/chain-verify.py"))
+    if cv == "alter": open(os.path.join(t, "bin/chain-verify.py"), "a").write("# altered\n")
+    if cv == "altercommon": open(os.path.join(t, "bin/chain_common.py"), "a").write("# altered\n")
     rp = os.path.join(t, "release-published")
     if nodir: shutil.rmtree(rp)
     else:
         for n, c in (assets or {}).items(): open(os.path.join(rp, n), "w").write(c)
+        for n, target in (links or {}).items(): os.symlink(target, os.path.join(rp, n))
     os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     json.dump([{"command": c, "reason": "needs a release file"} for c in rows], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
     e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(kw.get("env") or {})
     rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"])
     return t, rc, so, se
-OK = '{"ok": true}'
+# a bundle signed with a key (what release-postverify.py accepts); messageSignature is the field the jq filters below read, OKF lacks it
+OK = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True})
+OKF = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}})
+PJX = "jq -e '.messageSignature' provenance.bundle.json"      # PJ's twin for the cases that run jq: PJ itself stays as it is, it is part of the judge's corpus below
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": OK})
 cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
 check(rc == 0 and cwds and all(os.path.realpath(c) == os.path.realpath(os.path.join(t, "release-published")) for c in cwds), "AC20 post-publish: a listed command runs with release-published/ as its working directory", "rc=%s cwds=%s %s" % (rc, cwds, first(se)))
 t, rc, so, se = pva([PV1], nodir=True); check(rc != 0 and not calls(t) and "release-published" in se, "AC20 post-publish: a missing release-published/ fails the run before anything runs, naming it", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, PV1], env={"FAKE_NEEDFILES": "1"}); check(rc != 0 and len(calls(t)) == 3 and "post-publish verification failed" in se and "provenance.bundle.json" in se, "AC20 post-publish: a command naming a file absent from release-published/ fails the run, the others still run", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
-t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}); check(rc == 0 and len(calls(t)) == 1, "AC20 post-publish: a jq-only command after a verify of the same file runs and passes (jq read the file)", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": '{"ok": false}'}); check(rc != 0 and "post-publish verification failed" in se and PJ in se, "AC20 post-publish: the jq-only command really runs on the file: a false filter fails the run, naming it", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PJ], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command with no earlier verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PJ, PBF], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command listed BEFORE its verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OK}); check(rc == 0 and len(calls(t)) == 1, "AC20 post-publish: a jq-only command after a verify of the same file runs and passes (jq read the file)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OKF}); check(rc != 0 and "post-publish verification failed" in se and PJX in se, "AC20 post-publish: the jq-only command really runs on the file: a false filter fails the run, naming it", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PJX], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command with no earlier verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PJX, PBF], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command listed BEFORE its verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
 OTHER = PBF.replace("provenance.bundle.json", "other.bundle.json")
-t, rc, so, se = pva([OTHER, PJ], assets={"provenance.bundle.json": OK, "other.bundle.json": OK}); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se, "AC20 post-publish: a verify of a DIFFERENT file does not license the jq-only command: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, PJ], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL_ON": "provenance.bundle.json"}); E = [l for l in se.split("\n") if l.startswith("::error::")]
+t, rc, so, se = pva([OTHER, PJX], assets={"provenance.bundle.json": OK, "other.bundle.json": OK}); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se, "AC20 post-publish: a verify of a DIFFERENT file does not license the jq-only command: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL_ON": "provenance.bundle.json"}); E = [l for l in se.split("\n") if l.startswith("::error::")]
 check(rc != 0 and len(E) == 2 and "did not pass" in se, "AC20 post-publish: when the earlier verify failed the jq-only command is not run and fails the run (two ::error:: lines)", "rc=%s %s" % (rc, se[:300]))
-for bad_cmd, what in (("jq -e '.ok == true'", "no file operand (it would read stdin)"), ("jq -e --slurpfile o other.json '.ok' provenance.bundle.json", "--slurpfile (reads another file)"),
-                      ("jq -e -f prog.jq provenance.bundle.json", "-f (loads a program from a file)"), ("jq -e -L /tmp '.ok' provenance.bundle.json", "-L (a module directory)"),
-                      ("jq -e '.ok' provenance.bundle.json other.json", "a second file that no earlier verify names"), ("jq -e '.ok' ../provenance.bundle.json", "a file spelled differently from the verify's"),
+for bad_cmd, what in (("jq -e '.messageSignature'", "no file operand (it would read stdin)"), ("jq -e --slurpfile o other.json '.messageSignature' provenance.bundle.json", "--slurpfile (reads another file)"),
+                      ("jq -e -f prog.jq provenance.bundle.json", "-f (loads a program from a file)"), ("jq -e -L /tmp '.messageSignature' provenance.bundle.json", "-L (a module directory)"),
+                      ("jq -e '.messageSignature' provenance.bundle.json other.json", "a second file that no earlier verify names"), ("jq -e '.messageSignature' ../provenance.bundle.json", "a file spelled differently from the verify's"),
                       ("jq -n 1", "jq -n alone")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "other.json": OK}); check(rc != 0 and not calls(t), "AC20 post-publish: a jq-only command with %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, "jq -c '.ok' provenance.bundle.json | jq -e '. == true'"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 post-publish: a jq pipe whose first jq reads a verified file is accepted (the later jq reads the pipe)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -c '.messageSignature' provenance.bundle.json | jq -e '. == true'"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 post-publish: a jq pipe whose first jq reads a verified file is accepted (the later jq reads the pipe)", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([]); check(rc == 0 and not calls(t), "AC20 post-publish: an empty list runs nothing and passes with the assets directory present")
 # round 1 (both seats): the grammar is CLOSED, so none of these reads a file nothing verified
-for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined short options (-ef loads a program file)"), ("jq -er '.ok' provenance.bundle.json", "combined short options (-er)"),
-                      ("jq -L. '.ok' provenance.bundle.json", "an attached module path (-L.)"), ("jq --run-tests unverified.jq provenance.bundle.json", "--run-tests"),
-                      ("jq -e '.ok' -- -unverified.json provenance.bundle.json", "a -- before a dash-prefixed file"), ("jq --exit-status 'import \"other\" as $x {\"search\":\".\"}; $x::x[0].ok' provenance.bundle.json", "an import inside the filter"),
-                      ("jq -e 'include \"other\"; .ok' provenance.bundle.json", "an include inside the filter"), ("jq -e 'input_filename' provenance.bundle.json", "input_filename (not an allowed builtin)"),
+for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined short options (-ef loads a program file)"), ("jq -er '.messageSignature' provenance.bundle.json", "combined short options (-er)"),
+                      ("jq -L. '.messageSignature' provenance.bundle.json", "an attached module path (-L.)"), ("jq --run-tests unverified.jq provenance.bundle.json", "--run-tests"),
+                      ("jq -e '.messageSignature' -- -unverified.json provenance.bundle.json", "a -- before a dash-prefixed file"), ("jq --exit-status 'import \"other\" as $x {\"search\":\".\"}; $x::x[0].messageSignature' provenance.bundle.json", "an import inside the filter"),
+                      ("jq -e 'include \"other\"; .messageSignature' provenance.bundle.json", "an include inside the filter"), ("jq -e 'input_filename' provenance.bundle.json", "input_filename (not an allowed builtin)"),
                       ("jq -e '$ENV.HOME' provenance.bundle.json", "$ENV"), ("jq -e 'env.HOME' provenance.bundle.json", "env"), ("jq -e '[inputs]' provenance.bundle.json", "inputs"),
-                      ("jq -e 'debug' provenance.bundle.json", "debug"), ("jq -e '\"\\(.ok)\"' provenance.bundle.json", "a string interpolation"),
-                      ("jq -e '.ok # c' provenance.bundle.json", "a comment"), ("jq -e '@sh \"x\"' provenance.bundle.json", "the @sh format"),
-                      ("jq -e '.ok' provenance.*", "a glob in the file operand"), ("jq -e '.ok' provenance.bundle.js{on,}", "a brace in the file operand"),
-                      ("jq -e '.ok' $HOME/provenance.bundle.json", "a $ in the file operand"), ("jq -e '.ok' ./provenance.bundle.json", "a ./ in the file operand"),
-                      ("jq -e '.ok' sub/provenance.bundle.json", "a slash in the file operand"), ("jq -e '.ok' <TAG>.bundle.json", "a placeholder in the file operand"),
-                      ("jq -e '.ok' PH_TAG.bundle.json", "a name spelled like the placeholder form"), ("jq -e --arg ref '.ok' provenance.bundle.json", "--arg with no value"),
-                      ("jq -e '.ok' provenance.bundle.json | jq -ef x.jq", "a later pipe segment with a program file"),
-                      ("jq -e '.ok' provenance.bundle.json > out.json", "a redirect"), ("jq -e '.ok' provenance.bundle.json; id", "a ; after it")):
+                      ("jq -e 'debug' provenance.bundle.json", "debug"), ("jq -e '\"\\(.messageSignature)\"' provenance.bundle.json", "a string interpolation"),
+                      ("jq -e '.messageSignature # c' provenance.bundle.json", "a comment"), ("jq -e '@sh \"x\"' provenance.bundle.json", "the @sh format"),
+                      ("jq -e '.messageSignature' provenance.*", "a glob in the file operand"), ("jq -e '.messageSignature' provenance.bundle.js{on,}", "a brace in the file operand"),
+                      ("jq -e '.messageSignature' $HOME/provenance.bundle.json", "a $ in the file operand"), ("jq -e '.messageSignature' ./provenance.bundle.json", "a ./ in the file operand"),
+                      ("jq -e '.messageSignature' sub/provenance.bundle.json", "a slash in the file operand"), ("jq -e '.messageSignature' <TAG>.bundle.json", "a placeholder in the file operand"),
+                      ("jq -e '.messageSignature' PH_TAG.bundle.json", "a name spelled like the placeholder form"), ("jq -e --arg ref '.messageSignature' provenance.bundle.json", "--arg with no value"),
+                      ("jq -e '.messageSignature' provenance.bundle.json | jq -ef x.jq", "a later pipe segment with a program file"),
+                      ("jq -e '.messageSignature' provenance.bundle.json > out.json", "a redirect"), ("jq -e '.messageSignature' provenance.bundle.json; id", "a ; after it")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "unverified.jq": ".ok", "other.json": OK, "-unverified.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
 # a verify command's FLAG VALUES (an identity, an issuer, a type) never license a file; only a file flag's value and a positional do
 VID = "cosign verify-blob --certificate-identity provenance.bundle.json --certificate-oidc-issuer " + ISS + " --bundle b.json x.txt"
-t, rc, so, se = pva([VID, PJ], assets={"provenance.bundle.json": OK, "b.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 round 1: a jq operand equal to a verify's --certificate-identity value is NOT licensed (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([VID, PJX], assets={"provenance.bundle.json": OK, "b.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 round 1: a jq operand equal to a verify's --certificate-identity value is NOT licensed (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
 VT = "cosign verify-blob-attestation --type provenance.bundle.json --bundle b.json --certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS
-t, rc, so, se = pva([VT, PJ], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: a verify's --type value does not license a file", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([VT, PJX], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc != 0 and not calls(t), "AC20 round 1: a verify's --type value does not license a file", "rc=%s %s" % (rc, first(se)))
 VP = "cosign verify-blob --certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS + " --bundle b.json provenance.bundle.json"
-t, rc, so, se = pva([VP, PJ], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc == 0, "AC20 round 1: a verify's positional blob operand licenses the jq read of that file", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([VP, PJX], assets={"provenance.bundle.json": OK, "b.json": OK}); check(rc == 0, "AC20 round 1: a verify's positional blob operand licenses the jq read of that file", "rc=%s %s" % (rc, first(se)))
 VB = "cosign verify-blob --certificate-identity <IDENTITY> --certificate-oidc-issuer " + ISS + " --bundle=provenance.bundle.json x.txt"
-t, rc, so, se = pva([VB, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc == 0, "AC20 round 1: a --bundle=FILE value licenses the file", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([VB, PJX], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc == 0, "AC20 round 1: a --bundle=FILE value licenses the file", "rc=%s %s" % (rc, first(se)))
 VU = "cosign verify-blob --insecure-flag provenance.bundle.json x.txt"
-t, rc, so, se = pva([VU, PJ], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t), "AC20 round 1: the word after an unknown flag is taken as its value and licenses nothing (fail closed)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([VU, PJX], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t), "AC20 round 1: the word after an unknown flag is taken as its value and licenses nothing (fail closed)", "rc=%s %s" % (rc, first(se)))
 # the page's own two jq commands (docs/verify-release.md section 3, cache#360) are in the grammar
 J1 = "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json"
 J2 = "jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json"
-PROV = json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}}, {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}]}).encode()).decode()}})
+PROV = json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}}, {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}]}).encode()).decode()}})
 t, rc, so, se = pva([PBF, J1, J2], assets={"provenance.bundle.json": PROV}); check(rc == 0 and len(calls(t)) == 1, "AC20 round 1: the guide's two real jq commands are accepted and PASS on a provenance of the right shape (the image commands' placeholder is filled per registry)", "rc=%s %s" % (rc, se[:300]))
-FIPSONLY = json.dumps({"dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-fips", "digest": {"sha256": DIG["image-production"].split(":")[1]}}]}).encode()).decode()}})
+FIPSONLY = json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-fips", "digest": {"sha256": DIG["image-production"].split(":")[1]}}]}).encode()).decode()}})
 t, rc, so, se = pva([PBF, J1], assets={"provenance.bundle.json": FIPSONLY}); check(rc != 0 and "post-publish verification failed" in se, "AC20 round 1: the production digest check fails when the matching digest sits under another subject name", "rc=%s %s" % (rc, se[:200]))
 # round 2 (seat B): the shell never sees a jq-only command, and a placeholder is never a file name
-t, rc, so, se = pva([PBF, "jq -e --arg x {safe,--rawfile,hidden,other.json} '.ok' provenance.bundle.json"], assets={"provenance.bundle.json": OK, "other.json": '{"unverified":true}'})
+t, rc, so, se = pva([PBF, "jq -e --arg x {safe,--rawfile,hidden,other.json} '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK, "other.json": '{"unverified":true}'})
 check(rc == 0, "AC20 round 2: a brace in an --arg value is passed to jq as TEXT (no shell expands it into an extra option), and the command runs", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, "jq -e --arg x '~' '.ok' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 round 2: a tilde in an --arg value is text, not a home directory", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.ok' PH_TAG.bundle.json"], assets={"v0.3.0.bundle.json": '{"ok":false}', "PH_TAG.bundle.json": OK})
+t, rc, so, se = pva([PBF, "jq -e --arg x '~' '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 round 2: a tilde in an --arg value is text, not a home directory", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.messageSignature' PH_TAG.bundle.json"], assets={"v0.3.0.bundle.json": OKF, "PH_TAG.bundle.json": OK})
 check(rc != 0 and not calls(t), "AC20 round 2: a verify of <TAG>.bundle.json does not license a jq read of a file literally named PH_TAG.bundle.json (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.ok' v0.3.0.bundle.json"], assets={"v0.3.0.bundle.json": OK}); check(rc != 0 and not calls(t), "AC20 round 2: a verify of <TAG>.bundle.json does not license the substituted name either (fail closed)", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, "jq -e --arg ref 'ghcr.io/x/y@sha256:" + "a" * 64 + "' '.ok' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 round 2: a repository-looking --arg VALUE to jq is text and is not refused as a repository literal (jq opens no network)", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, "jq -e 'any(.[]; endswith(\"@sha256:abc\"))' provenance.bundle.json"], assets={"provenance.bundle.json": '[{"a":1}]'}.copy() | {"provenance.bundle.json": '["x@sha256:abc"]'}); check(rc == 0, "AC20 round 2: @sha256: inside a jq filter string is not a repository operand", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.messageSignature' v0.3.0.bundle.json"], assets={"v0.3.0.bundle.json": OK}); check(rc != 0 and not calls(t), "AC20 round 2: a verify of <TAG>.bundle.json does not license the substituted name either (fail closed)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -e --arg ref 'ghcr.io/x/y@sha256:" + "a" * 64 + "' '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 round 2: a repository-looking --arg VALUE to jq is text and is not refused as a repository literal (jq opens no network)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -e 'any(.messageSignature[]; endswith(\"@sha256:abc\"))' provenance.bundle.json"], assets={"provenance.bundle.json": json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": {"signature": "x@sha256:abc"}})}); check(rc == 0, "AC20 round 2: @sha256: inside a jq filter string is not a repository operand", "rc=%s %s" % (rc, first(se)))
+# ---- KL-1 (audit orchestrator, Nov 1): a bundle that carries a certificate is refused by the post-publish check, with the check chain-verify.py holds ----------------
+# The bundle files read are the --bundle operands of the listed verify commands, under release-published/. The refusal is chain-verify.py's own function, loaded
+# (never run as a program, never copied); a missing, altered or unloadable chain-verify.py refuses; a list that names no bundle reads nothing and needs nothing.
+def kbundle(identity):
+    """A bundle in the shape Sign checks: a DSSE envelope and a tlog entry that is the right shape (not a real Rekor proof), with the identity material given."""
+    vm = {"tlogEntries": [{"logIndex": "7", "kindVersion": {"kind": "dsse", "version": "0.0.1"}}]}; vm.update(identity)
+    return json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm,
+                       "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": "e30=", "signatures": [{"sig": "eA==", "keyid": ""}]}})
+KCERT = kbundle({"certificate": {"rawBytes": "eA=="}})
+KX509 = kbundle({"x509CertificateChain": {"certificates": [{"rawBytes": "eA=="}]}})
+KKEY = kbundle({"publicKey": {"hint": "awskms:///alias/fosterstack-release-signing"}})
+CERTMSG = "the bundle cosign wrote carries a certificate: no certificate belongs to this chain"
+for what, kb in (("a certificate", KCERT), ("an x509CertificateChain", KX509)):
+    t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kb})
+    check(rc == 1 and not calls(t) and ("release-postverify: provenance.bundle.json: " + CERTMSG) in se, "KL-1 post-publish: a bundle named by --bundle that carries %s is refused (exit 1, chain-verify.py's text) and NOTHING runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY})
+check(rc == 0 and len(calls(t)) == 1 and "certificate" not in se, "KL-1 post-publish control: the same bundle with a publicKey and no certificate is not refused for a certificate, and its command runs", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF.replace("--bundle provenance.bundle.json", "--bundle=provenance.bundle.json")], assets={"provenance.bundle.json": KCERT})
+check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: the --bundle=FILE form is read too", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PV1], assets={"provenance.bundle.json": KCERT})
+check(rc == 0 and len(calls(t)) == 2, "KL-1 post-publish: a certificate bundle that no listed command names is not read (the check is not required of a list that names none)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PV1], assets={}, cv="drop")
+check(rc == 0 and len(calls(t)) == 2, "KL-1 post-publish: with no bundle named, a missing bin/chain-verify.py is not needed (nothing is loaded)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": "not json"})
+check(rc == 1 and not calls(t) and "release-postverify: provenance.bundle.json" in se, "KL-1 post-publish: a named bundle that is not JSON is refused (exit 1), never skipped, and nothing runs", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+for esc, what in (("../escape.bundle.json", "a path that climbs out of release-published/"), ("/etc/hostname", "an absolute path")):
+    t, rc, so, se = pva([PBF.replace("provenance.bundle.json", esc)], assets={"provenance.bundle.json": KCERT})
+    check(rc == 1 and not calls(t) and (esc + ": not a plain file name in release-published/ (letters, digits, . _ - only)") in se, "KL-1 post-publish: a --bundle operand that is %s is refused as not a plain file name, and nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+for odd, what in (("provenance.bundle.js?n", "a ? glob"), ("provenance.bundle.[j]son", "a [ ] glob"), ("provenance.bundle.*", "a * glob"), ("{provenance,x}.bundle.json", "a brace list"),
+                  ("~/provenance.bundle.json", "a tilde"), ("provenance.bundle.json\\", "a trailing backslash")):
+    t, rc, so, se = pva([PBF.replace("provenance.bundle.json", odd)], assets={"provenance.bundle.json": KCERT})
+    check(rc == 1 and not calls(t) and "not a plain file name in release-published/ (letters, digits, . _ - only)" in se, "KL-1 post-publish: a --bundle operand that is not a plain name (%s) is refused before anything runs, even when its glob would match a present certificate bundle" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+for cvmode, what in (("drop", "missing"), ("alter", "altered (its bytes no longer carry the sha256 in .github/policy/chain-scripts.json)")):
+    t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY}, cv=cvmode)
+    check(rc == 1 and not calls(t) and "chain-verify" in se, "KL-1 post-publish: a bundle is named and bin/chain-verify.py is %s: refused (exit 1), nothing runs, never a skip" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+# a plain name that is a link out of release-published/ resolves outside it, and is refused
+outside = tempfile.mkdtemp(); open(os.path.join(outside, "x.json"), "w").write(KKEY)
+t, rc, so, se = pva([PBF], links={"provenance.bundle.json": os.path.join(outside, "x.json")})
+check(rc == 1 and not calls(t) and "provenance.bundle.json: resolves outside release-published/" in se, "KL-1 post-publish: a plain bundle name that is a link out of release-published/ is refused", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+# the shape of a bundle signed with a key: an object with an object verificationMaterial, strict JSON, and only the keys such a bundle holds
+def kmod(change):
+    b = json.loads(KKEY); change(b); return json.dumps(b)
+def drop(b): del b["verificationMaterial"]
+def spelled(b): b["verification_material"] = b.pop("verificationMaterial")
+for what, text, want in (
+        ("a bundle whose key is spelled verification_material (no verificationMaterial)", kmod(spelled), "provenance.bundle.json: not a bundle"),
+        ("a bundle with no verificationMaterial", kmod(drop), "provenance.bundle.json: not a bundle"),
+        ("a bundle whose verificationMaterial is a list", kmod(lambda b: b.update(verificationMaterial=[1])), "provenance.bundle.json: not a bundle"),
+        ("a bundle whose verificationMaterial is a string", kmod(lambda b: b.update(verificationMaterial="x")), "provenance.bundle.json: not a bundle"),
+        ("a bundle with a repeated key (Python keeps the last, another reader the first)", '{"verificationMaterial": {"publicKey": {}, "publicKey": {"hint": "x"}}}', "provenance.bundle.json: cannot be read as strict JSON"),
+        ("a verificationMaterial key spelled x509_certificate_chain", kmod(lambda b: b["verificationMaterial"].update(x509_certificate_chain={})), "verificationMaterial.x509_certificate_chain is not allowed"),
+        ("an unknown verificationMaterial key (cert)", kmod(lambda b: b["verificationMaterial"].update(cert="x")), "verificationMaterial.cert is not allowed"),
+        ("an unknown top-level key (cert)", kmod(lambda b: b.update(cert="x")), "provenance.bundle.json: cert is not allowed at the top of a bundle")):
+    t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": text})
+    check(rc == 1 and not calls(t) and want in se, "KL-1 post-publish: %s is refused and nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kmod(lambda b: b.update(cert="x", verificationMaterial=json.loads(KCERT)["verificationMaterial"]))})
+check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: a certificate bundle with an unknown key too gets the certificate refusal first", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+KREAL = kmod(lambda b: b["verificationMaterial"].update(timestampVerificationData={"rfc3161Timestamps": []}))      # the key set of a real key-signed bundle (the image-publishers fixture)
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KREAL})
+check(rc == 0 and len(calls(t)) == 1, "KL-1 post-publish control: a bundle with publicKey, tlogEntries and timestampVerificationData is accepted (the shape check is not vacuous)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY}, cv="altercommon")
+check(rc == 1 and not calls(t) and "chain_common.py does not match" in se, "KL-1 post-publish: an altered helper of the verifier (bin/chain_common.py) is refused and the message names it", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+# F9/F10 (round 2): the listed commands run WITHOUT a shell, and bundle discovery does not depend on the
+# unknown-flag rule of the licensing walk
+for flag in ("--offline", "--insecure-ignore-tlog", "--new-bundle-format"):
+    for form in (" cert.json", "=cert.json"):
+        t, rc, so, se = pva(["cosign verify-blob --key k.pub %s --bundle%s x.txt" % (flag, form)], assets={"cert.json": KCERT, "x.txt": "x"})
+        check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: a boolean flag (%s) before --bundle%s (the file named after it) does not hide the bundle: the certificate bundle is refused" % (flag, form), "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva(["cosign verify-blob --key k.pub {--bundle,cert.json} x.txt"], assets={"cert.json": KCERT, "x.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
+check(rc != 0 and any("{--bundle,cert.json}" in l for l in calls(t)) and not any(" --bundle " in l + " " for l in calls(t)), "KL-1 post-publish: a brace that would build the --bundle flag reaches the verifier as the literal word (no shell expands it), never as --bundle, and the run fails", "rc=%s %s" % (rc, calls(t)))
+t, rc, so, se = pva(["cosign verify-blob --key k.pub --bun\\\ndle cert.json x.txt"], assets={"cert.json": KCERT, "x.txt": "x"})
+lg = open(os.path.join(t, "calls.log")).read() if os.path.exists(os.path.join(t, "calls.log")) else ""
+check("--bundle" not in lg, "KL-1 post-publish: a backslash-newline inside the flag does not join into --bundle (no shell removes it): the verifier never receives --bundle", "rc=%s log=%r" % (rc, lg[:120]))
+t, rc, so, se = pva(["cosign verify-blob --key k.pub x.txt --bundle"], assets={"x.txt": "x"})
+check(rc == 1 and not calls(t) and "--bundle" in se, "KL-1 post-publish: a trailing --bundle with no file name is refused and nothing runs", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva(["cosign verify-blob --key k.pub x*.txt"], assets={"x1.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
+check(rc != 0 and any("x*.txt" in l for l in calls(t)), "KL-1 post-publish: a glob in an operand reaches the verifier as the literal word (the commands run without a shell), so it names no file and the run fails", "rc=%s %s" % (rc, calls(t)))
 # an EMPTY list still requires the assets directory (nothing is skipped by listing nothing)
 t, rc, so, se = pva([], nodir=True); check(rc != 0 and "release-published" in se, "AC20 round 1: an empty list with no release-published/ fails (the directory is required whatever the list holds)", "rc=%s %s" % (rc, first(se)))
 # ---- the command judge answers as it did before the plain rewrite (owner rule 6, Oct 24) -------------------------
@@ -940,7 +1032,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "409"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "448"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

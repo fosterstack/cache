@@ -80,7 +80,7 @@ ROWS = {
     "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
     "bin/release-assets.sh":  {"tools": ["gh", "git", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # git reads the tag object; release-metadata.py tag-notes extracts its notes
     "bin/release-postverify.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-postverify.py"]},   # rule 79 amended
-    "bin/release-postverify.py": {"tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": []},   # runs only verify forms, judged first
+    "bin/release-postverify.py": {"tools": ["at", "bash", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"]},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
