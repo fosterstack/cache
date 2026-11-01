@@ -30,7 +30,8 @@ cosign verify <IMAGE_REF_FIPS> \
 
 Download the release files named below from the release page for `<TAG>`.
 
-The provenance is a SLSA provenance statement (predicate type https://slsa.dev/provenance/v1) signed by `<IDENTITY>`, issuer https://token.actions.githubusercontent.com. TO-VERIFY: the flags against a real bundle.
+The provenance is a SLSA provenance statement (predicate type https://slsa.dev/provenance/v1) signed by `<IDENTITY>`,
+issuer https://token.actions.githubusercontent.com. TO-VERIFY: the flags against a real bundle.
 
 ```sh
 # Not run before release.
@@ -42,7 +43,9 @@ cosign verify-blob-attestation --bundle provenance.bundle.json \
 
 ## 3. Digests
 
-The provenance names each image by digest. The first command succeeds only if the subject named image-production is the production image you set; the second lists every image and digest, so you can compare the -fips digest with yours. TO-VERIFY: the field names against a real bundle.
+The provenance names each image by digest. The first command succeeds only if the subject named image-production is the
+production image you set; the second lists every image and digest, so you can compare the -fips digest with yours.
+TO-VERIFY: the field names against a real bundle.
 
 ```sh
 # Not run before release.
@@ -53,7 +56,8 @@ jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + " sha2
 
 ## 4. The SBOM and the inputs
 
-Each SBOM lists what is in an image; each lock lists the packages the image was assembled from. TO-VERIFY: the flags against a real bundle, and the build's own inputs manifest, which is in Build's record and not a signed file of its own.
+Each SBOM lists what is in an image; each lock lists the packages the image was assembled from. TO-VERIFY: the flags
+against a real bundle, and the build's own inputs manifest, which is in Build's record and not a signed file of its own.
 
 ```sh
 # Not run before release.
@@ -78,4 +82,5 @@ cosign verify-blob --bundle fips.full.lock.json.bundle \
 
 TO-VERIFY: the trust boundary, written once the chain has run end to end.
 
-Witness records from the build stages are extra evidence anyone with Witness can check; they are outside the steps above.
+Witness records from the build stages are extra evidence anyone with Witness can check; they are outside the steps
+above.
