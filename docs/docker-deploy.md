@@ -61,6 +61,8 @@ docker run -d -p 127.0.0.1:8080:8080 -v fscache-data:/data \
   -e FSCACHE_DATA_DIR=/data ghcr.io/fosterstack/cache:latest
 ```
 
+What the server writes to its log, including the startup line: [logging](logging.md).
+
 ## Sizing
 
 The server is a single static Go binary that idles in tens of megabytes.
