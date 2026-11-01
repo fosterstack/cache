@@ -482,8 +482,8 @@ def check_record_type(stage, pol, ptype, payload):
 
 
 def environment_ref(att):
-    """GITHUB_REF out of a Witness environment attestation, or None when the attestation is not an object or its variables are
-    not an object (a list or a string must be a refusal for the caller, never a traceback)."""
+    """GITHUB_REF out of a Witness environment attestation, or None when the attestation is not an object or its
+    variables are not an object (a list or a string must be a refusal for the caller, never a traceback)."""
     variables = att.get("variables") if isinstance(att, dict) else None
     return variables.get("GITHUB_REF") if isinstance(variables, dict) else None
 
