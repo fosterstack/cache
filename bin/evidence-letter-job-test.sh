@@ -8,7 +8,7 @@ set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$root" <<'PY'
-import copy, hashlib, json, os, re, stat, subprocess, sys, tempfile
+import base64, copy, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 import yaml
 ROOT = sys.argv[1]
 passed = failed = 0
@@ -153,25 +153,7 @@ case "$*" in *%Y-%m-%d*) cat "$FIX/today_full" ;; *%Y-%m*) cat "$FIX/today" ;; *
 """,
     "python3": """#!/bin/sh
 case "$*" in
-  *chain-verify.py*policy*make*--ref*)
-    echo "python3 $*" >> "$LOG"
-    if [ -e "$FIX/bad-manifest" ]; then
-      echo "refused: the key manifest is not signed by the offline root" >&2; exit 1
-    fi
-    while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
-    echo '{"release_key":{"public_key":"MANIFEST-KEY"}}' > "$out"; exit 0 ;;
-  *chain-verify.py*policy*make*--tag*)
-    echo "python3 $*" >> "$LOG"
-    "$REAL_PYTHON" "$@" || exit $?
-    while [ $# -gt 0 ]; do
-      [ "$1" = --out ] && out=$2
-      [ "$1" = --tag ] && tag=$2
-      shift
-    done
-    [ -e "$FIX/no-release-key" ] && exit 0
-    "$REAL_PYTHON" -c 'import json, sys; d = json.load(open(sys.argv[1])); \
-d["release_key"] = {"public_key": "KEY-" + sys.argv[2]}; json.dump(d, open(sys.argv[1], "w"))' "$out" "$tag"
-    exit 0 ;;
+  *chain-verify.py*policy*make*) echo "python3 $*" >> "$LOG" ;;
   *chain-verify.py*check-list*)
     [ -z "$REAL_CHECKLIST" ] || exec "$REAL_PYTHON" "$@"
     echo "python3 $*" >> "$LOG"
@@ -207,22 +189,52 @@ esac
 }
 
 
+def openssl(*args):
+    return subprocess.run(["openssl", *args], check=True, capture_output=True).stdout
+
+
+def throwaway_repo(tmp):
+    """A copy of the scripts and the policy folder with a root key, a release key and a manifest made here: the real
+    `chain-verify.py policy make` runs on it, so no case needs a stand-in for the tool under test."""
+    repo = os.path.join(tmp, "repo")
+    shutil.copytree(os.path.join(ROOT, "bin"), os.path.join(repo, "bin"))
+    shutil.copytree(os.path.join(ROOT, ".github/policy"), os.path.join(repo, ".github/policy"))
+    keys = os.path.join(tmp, "keys")
+    os.makedirs(keys)
+    for name in ("root", "rel"):
+        openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", keys + "/%s.key" % name)
+        openssl("pkey", "-in", keys + "/%s.key" % name, "-pubout", "-out", keys + "/%s.pub" % name)
+    pub = open(keys + "/rel.pub").read()
+    der = openssl("pkey", "-pubin", "-in", keys + "/rel.pub", "-outform", "DER")
+    when = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body = json.dumps({"public_key": pub, "key_id": hashlib.sha256(der).hexdigest(), "valid_from": when},
+                      sort_keys=True, indent=1).encode() + b"\n"
+    pol = os.path.join(repo, ".github/policy")
+    open(pol + "/release-key-root.pub", "w").write(open(keys + "/root.pub").read())
+    open(pol + "/release-key-manifest.json", "wb").write(body)
+    open(keys + "/m.json", "wb").write(body)
+    sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/m.json")
+    open(pol + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    return repo, pub.splitlines()[1]
+
+
 def sandbox(tmp):
     fix, bins = os.path.join(tmp, "fix"), os.path.join(tmp, "bin")
     os.makedirs(os.path.join(fix, "assets"))
     os.makedirs(bins)
+    repo, key_line = throwaway_repo(tmp)
     for name, body in STUBS.items():
         path = os.path.join(bins, name)
         open(path, "w").write(body)
         os.chmod(path, 0o755)
-    for name in ("log", "uploaded"):
-        open(os.path.join(fix if name == "uploaded" else tmp, name), "w").close()
+    open(os.path.join(fix, "uploaded"), "w").close()
+    open(os.path.join(tmp, "log"), "w").write("throwaway-key: %s\n" % key_line)
     open(os.path.join(fix, "today"), "w").write("2026-12\n")
     open(os.path.join(fix, "today_full"), "w").write("2026-12-10\n")
     open(os.path.join(fix, "advisories.json"), "w").write(
         json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
-               REAL_PYTHON=sys.executable, REAL_CHECKLIST="",
+               REAL_PYTHON=sys.executable, REAL_CHECKLIST="", REPO_DIR=repo, KEY_LINE=key_line,
                TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
                FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
     return fix, env
@@ -271,7 +283,7 @@ def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=Fal
     if real_verifier:
         env["REAL_CHECKLIST"] = "1"
     out = os.path.join(tmp, "work")
-    p = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-fetch.sh"), month, out], cwd=ROOT, env=env,
+    p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-fetch.sh"), month, out], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
     got = sorted(os.listdir(out + "/rel")) if os.path.isdir(out + "/rel") else []
     return p, got, open(os.path.join(tmp, "log")).read().splitlines(), out, fix
@@ -279,6 +291,11 @@ def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=Fal
 
 def one_line(p):
     return p.returncode == 1 and len(p.stderr.strip().splitlines()) == 1
+
+
+def key_of(log):
+    """The public key line of the throwaway release key this sandbox made (the first line the log holds)."""
+    return next(l for l in log if l.startswith("throwaway-key: ")).split(": ", 1)[1]
 
 
 # ---- the fetch: which releases, from all pages
@@ -327,8 +344,8 @@ check("F1 5: each fetched release gets its own policy made for its tag, never fo
       sum("policy make" in l and "--tag v0.3.1" in l for l in log) == 1
       and sum("policy make" in l and "--tag v0.4.0" in l for l in log) == 1
       and not any("policy make" in l and "--ref" in l for l in log), log)
-check("F1 9: the list is verified with the key of the policy that check-list then gets",
-      "key-file: KEY-v0.3.1" in log and "key-file: KEY-v0.4.0" in log
+check("F1 9: the list is verified with the key of the policy that check-list then gets (the key the manifest holds)",
+      log.count(key_of(log)) == 2 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 2
       and all(any("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log)
               for t in ("v0.3.1", "v0.4.0")), log)
 check("AC10: the Check records are verified with the same command Release runs, under a policy made for the tag",
@@ -348,14 +365,35 @@ for t in ("v0.3.1", "v0.4.0"):
 check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
 
 
-def no_release_key(fix):
-    open(os.path.join(fix, "no-release-key"), "w").close()
+def helper(edit=None, tag=None):
+    """The shared check on an UNMODIFIED policy made by the real `chain-verify.py policy make` (a branch ref, or a tag)."""
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    pol, letter = os.path.join(tmp, "policy.json"), os.path.join(tmp, "evidence-letter-2026-11.md")
+    which = ["--tag", tag] if tag else ["--ref", "refs/heads/main"]
+    subprocess.run(["python3", "-I", "bin/chain-verify.py", "policy", "make", "--template",
+                    ".github/policy/release-policy.template.json", *which, "--out", pol],
+                   cwd=env["REPO_DIR"], env=env, check=True, capture_output=True)
+    if edit:
+        doc = json.load(open(pol))
+        edit(doc)
+        json.dump(doc, open(pol, "w"))
+    open(letter, "w").write("a letter\n")
+    open(letter + ".bundle", "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
+    p = subprocess.run(["bash", "bin/evidence-letter-verify.sh", pol, letter], cwd=env["REPO_DIR"], env=env,
+                       capture_output=True, text=True)
+    return p, open(os.path.join(tmp, "log")).read().splitlines()
 
 
-pk = fetch("2026-11", no_release_key)
-check("F1 5b: a policy with no release key ends the fetch in one line before any verify",
-      one_line(pk[0]) and "release key" in pk[0].stderr and not any("verify-blob" in l for l in pk[2]),
-      (pk[0].stderr, pk[2]))
+for label, tag in (("a branch ref", None), ("a tag", "v0.3.1")):
+    ph, lh = helper(tag=tag)
+    check("R1 a: the helper on the real policy for %s finds the manifest's key and verifies with it" % label,
+          ph.returncode == 0 and lh.count(key_of(lh)) == 1, (ph.stderr, lh))
+ph, lh = helper(lambda d: d.pop("release_key"))
+check("F1 5b: a policy with no release key ends the helper in one line before any verify",
+      one_line(ph) and "release key" in ph.stderr and not any("verify-blob" in l for l in lh), (ph.stderr, lh))
+check("R1 c: the pinned log root the helper names is a file in the tree",
+      os.path.isfile(os.path.join(ROOT, ".github/policy/rekor-trusted-root.json")))
 
 
 def list_without_rekor(fix):
@@ -452,7 +490,7 @@ def publish(**extra):
     env.update(extra)
     letter = os.path.join(tmp, "evidence-letter-2026-11.md")
     open(letter, "w").write("a letter\n")
-    p = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-publish.sh"), letter], cwd=ROOT, env=env,
+    p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), letter], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
     return (p, open(os.path.join(tmp, "log")).read().splitlines(),
             open(os.path.join(fix, "uploaded")).read().split(), letter)
@@ -470,7 +508,7 @@ check("F2: a good run takes the key from the root-checked manifest (policy make 
       and any("chain-verify.py policy make --template .github/policy/release-policy.template.json"
               " --ref refs/heads/main" in l for l in log)
       and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1]), (p.stderr, log))
-check("F2: the verify reads the manifest's key file", "key-file: MANIFEST-KEY" in log, log)
+check("F2: the verify reads the manifest's key file", log.count(key_of(log)) == 1, log)
 check("F2: the verify names no identity, issuer or ignored log",
       len(verifies) == 1 and not any(x in verifies[0] for x in ("--certificate-identity", "--certificate-oidc-issuer",
                                                               "--insecure-ignore-tlog")), verifies)
@@ -494,7 +532,7 @@ def refused_signature():
     open(os.path.join(fix, "bad-signature"), "w").close()
     lt = os.path.join(tmp, "evidence-letter-2026-11.md")
     open(lt, "w").write("a letter\n")
-    q = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-publish.sh"), lt], cwd=ROOT, env=env,
+    q = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), lt], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
     return q, open(os.path.join(fix, "uploaded")).read().split()
 
@@ -507,10 +545,10 @@ check("F2: a signature that does not verify against the manifest key and the pin
 def refused_manifest():
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
-    open(os.path.join(fix, "bad-manifest"), "w").close()
+    open(os.path.join(env["REPO_DIR"], ".github/policy/release-key-manifest.sig"), "w").write("AAAA\n")
     lt = os.path.join(tmp, "evidence-letter-2026-11.md")
     open(lt, "w").write("a letter\n")
-    q = subprocess.run(["bash", os.path.join(ROOT, "bin/evidence-letter-publish.sh"), lt], cwd=ROOT, env=env,
+    q = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), lt], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
     return q, open(os.path.join(fix, "uploaded")).read().split(), open(os.path.join(tmp, "log")).read().splitlines()
 
@@ -557,8 +595,8 @@ def present(pages, today="2026-12-10", **extra):
             rels.append({"tag_name": tag, "draft": draft, "prerelease": False, "assets": listed})
         out.append(rels)
     json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
-    script = os.path.join(ROOT, "bin/evidence-letter-present.sh")
-    p = subprocess.run(["bash", script], cwd=ROOT, env=env, capture_output=True, text=True)
+    script = os.path.join(env["REPO_DIR"], "bin/evidence-letter-present.sh")
+    p = subprocess.run(["bash", script], cwd=env["REPO_DIR"], env=env, capture_output=True, text=True)
     return p, open(os.path.join(tmp, "log")).read().splitlines()
 
 
