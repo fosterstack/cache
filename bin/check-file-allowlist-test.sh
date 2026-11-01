@@ -124,8 +124,9 @@ ALLOWED_MENTIONS = {
 # be added without touching the test.
 # 204 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
 # plus the two outbound-check patterns (0710) and the recorded publisher signatures (REQ-SUP-001),
-# plus the sandbox wall probe's three patterns (the probe, its test, its six recipe templates)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 207, 6
+# plus the sandbox wall probe's three patterns (the probe, its test, its six recipe templates),
+# minus the bin/dispatch-fixer.sh pattern
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 206, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0

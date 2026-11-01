@@ -728,17 +728,6 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 | REQ-DEP-003-AC2 | Given a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case; when the auto-merge lane runs; then it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing | ci-workflow |  | approved | 2 item(s) |
 | REQ-DEP-003-AC3 | Given a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged); when the auto-merge lane or the hourly reviewer sees it; then the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual | ci-workflow |  | approved | 2 item(s) |
 
-### REQ-DEP-004 — A held bump or drift dispatches the fixer
-
-A held Dependabot major, or a required-check drift issue, shall send one generic dispatch to the ops repository so an agent fixes our side; a failed dispatch shall be a warning and never undo the hold.
-
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/dispatch-fixer.sh; .github/workflows/dependabot-reviewer.yml; .github/workflows/ci.yml*
-
-| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
-|---|---|---|---|---|---|
-| REQ-DEP-004-AC1 | Given a completed hold; when the reviewer finishes it; then it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands | unit |  | approved | 1 item(s) |
-| REQ-DEP-004-AC2 | Given a required-check drift issue opened by the guard; when hygiene has seen it; then the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job | unit |  | approved | 1 item(s) |
-
 ## Release evidence
 
 ### REQ-REL-008 — The workflow set is consolidated to the ratified list (ratified 32 → 23; 19 files today)

@@ -903,10 +903,6 @@ jobs:
           else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
           if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
 
-  # Row 76: a drift issue dispatches the fixer in the ops repository. Only on push to main: the
-  # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
-  # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
-  # a failed call is a warning; the issue is the record.
   # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6; orchestrator ruling Oct 13). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
   # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
@@ -939,33 +935,6 @@ jobs:
           set -euo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
           python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
-
-  drift-fixer-dispatch:
-    name: dispatch the fixer for required-check drift
-    needs: required-check-guard
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}
-    runs-on: ubuntu-latest
-    environment: agent
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
-      - name: dispatch
-        env:
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
-          ISSUE: ${{ needs.required-check-guard.outputs.drift_issue }}
-        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
 
   requirements:
     name: requirements
