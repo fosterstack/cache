@@ -298,7 +298,7 @@ def cmd_gate(a):
     metadata files; checksums.txt lists existing files with their hashes; release-files.sha256 lists exactly the four metadata files with theirs;
     and every asset is covered: it is in checksums.txt or in release-files.sha256, or it is a bundle whose signed file is an asset, or it has its
     own bundle, or it is an apk (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
-    verified) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and
+    verified, with exactly one `*-collection.rekor.json` entries file beside it and none without its record) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and
     provenance.bundle.json (the record the Sign stage signed; all three are required). A symlink, a directory, or anything else is refused by name."""
     names = sorted(os.listdir(a.dir))
     for n in names:
@@ -342,6 +342,13 @@ def cmd_gate(a):
     for n in names:
         if n in covered:
             continue
+        # a Witness record and its entries file belong together: exactly one <stem>.rekor.json beside each *-collection.json, and none without its record
+        if n.endswith("-collection.rekor.json"):
+            if n[:-len(".rekor.json")] + ".json" not in have:
+                refuse("%s is an entries file with no record beside it (%s)" % (n, n[:-len(".rekor.json")] + ".json"))
+            continue
+        if n.endswith("-collection.json") and n[:-len(".json")] + ".rekor.json" not in have:
+            refuse("%s has no entries file beside it (%s is missing)" % (n, n[:-len(".json")] + ".rekor.json"))
         if n.endswith(".bundle"):
             if signed_by(n) not in have:
                 refuse("%s signs %s, which is not an asset" % (n, signed_by(n)))

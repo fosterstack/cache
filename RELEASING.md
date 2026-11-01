@@ -193,7 +193,7 @@ a file that anyone could have written.
 | `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, keyless | `stage-sign.yml` for Build, Rebuild and Check; `stage-promote.yml` for Release's own |
+| Witness records | Witness envelope, signed with the KMS key; its Rekor entry is recorded | `stage-sign.yml` for Build, Rebuild and Check; `stage-promote.yml` for Release's own |
 
 ### VEX statements
 

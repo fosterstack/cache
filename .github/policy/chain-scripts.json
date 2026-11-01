@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2bea5f9192ddca1d92df21fcc39c02dbe21d2bd746f1cabf4affde3527acc61e",
+      "sha256": "43d62d448512bf8e8c7cd9009548621104900b9f700d76a1a85aaa619864257c",
       "tools": [
         "make",
         "at",
@@ -69,11 +69,6 @@
       "sign_subcommand": "sign",
       "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
       "env_mentions": [
-        {
-          "name": "PATH",
-          "text": "no cosign on PATH, or not runnable",
-          "why": "a code comment naming where Python looks for cosign; nothing is set"
-        },
         {
           "name": "PATH",
           "text": "cosign not found on PATH",
@@ -313,24 +308,28 @@
         "at",
         "bash",
         "command",
-        "curl",
-        "exec",
+        "env",
         "git",
+        "python3",
         "script",
         "sh",
-        "timeout"
+        "trap"
       ],
       "runs": [
-        "bin/loopback-get.sh"
+        "bin/loopback-get.sh",
+        "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "0b95fcac85c4e52273299b557d78fb9677bb2ec1901a137bb3ebe22dc879dccd",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key and no identity token or AWS variable in its environment (attestors environment, git, material, product; never slsa; release-sign alone keeps the token and the variables for its own script), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
+      "sha256": "3cc64062a68ff31f9eaaf3ddae03f829956b61985cdbeb3f1804766fd85b4920",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
         "DOCKERHUB_USERNAME",
-        "DOCKERHUB_TOKEN"
+        "DOCKERHUB_TOKEN",
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "RELEASE_KMS_KEY_REF"
       ],
       "arg_map": {
         "release-verify": "bin/release-verify.sh",
@@ -342,14 +341,9 @@
       },
       "exceptions": [
         {
-          "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
-        },
-        {
           "rule": "witness-target",
-          "text": "timeout -k 20 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout -k 20 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+          "text": "bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2 (handoff 0713): the wrapped command is `bash STEP-SCRIPT`; the target is one of the arg_map scripts, bound by the stage line"
         },
         {
           "rule": "script-name",
@@ -370,8 +364,8 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "33bafd785c9e646f6a530bfd15f286be7063a4e239f9cfbe293fa55104684fc5",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -390,7 +384,8 @@
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
-        "arm64": "bin/check-phase-arm64.sh"
+        "arm64": "bin/check-phase-arm64.sh",
+        "release-verify": "bin/release-verify.sh"
       },
       "exceptions": [
         {
@@ -408,21 +403,29 @@
     {
       "path": "bin/witness-sign-staged.sh",
       "tools": [
+        "at",
         "bash",
         "cp",
+        "jq",
         "make",
         "mkdir",
         "python3",
         "script",
-        "sh"
+        "sh",
+        "trap"
       ],
       "runs": [
         "bin/loopback-get.sh",
         "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
-      "sha256": "1fdd8eaf6aa2cc24bd61c77f5a88a79454ca828b951cf3618956ce7b692dab2e"
+      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
+      "sha256": "f767f51053f6835a8da2e6422fd8f45ede89074f86d5ae73e42605497e30bfb5",
+      "reads_env": [
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "RELEASE_KMS_KEY_REF"
+      ]
     },
     {
       "path": "bin/rebuild-records-digests.sh",
@@ -1742,7 +1745,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "b46bbe571ce4a4146cb3ae2a846e44230f05cf875e88546d4f918e9bbf6c579f",
+      "sha256": "6945acea098c6f9162388eb5e85bfa4c73e08aace64613011394ac6c5426643c",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1874,7 +1877,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
+      "sha256": "2ab251e2da3215459cf19425b057d71bc4f5626459a78727ede5b0755ddf30ad"
     },
     {
       "path": "bin/vex-forms.py",

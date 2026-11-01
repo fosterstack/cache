@@ -4,7 +4,7 @@ name: 'Stage: sign'
 # identity (the workflow file at the tag, with release.yml as the top-level workflow): no job that builds can obtain a certificate in it, and a second workflow that calls
 # this file still carries its OWN top-level workflow in the certificate's Build Config URI, which the release policy pins to release.yml.
 # The building jobs hold no identity token (owner, Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness records are made with a throwaway
-# key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it keyless; every later stage trusts
+# key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it with the release key held in AWS KMS, keeping its Rekor entry beside it; every later stage trusts
 # only a record signed here.
 #   sign:         receives Build's records (witness-build, witness-apk-<runner>) and the artifacts those records name (images, dist, the apks), checks them (bin/chain-verify.py
 #                 sign-records), signs the records, then checks Build's digest list against the signed record and asks cosign for the provenance signature.
@@ -13,7 +13,9 @@ name: 'Stage: sign'
 #   sign-check:   receives the records of the Check jobs (witness-check, witness-check-arm64) and the results they name (check-results, check-results-arm64), nothing else and
 #                 nothing built by them (REQ-REL-011-AC1: the Check jobs build tools and run workloads, so they hold no identity token); checks the records against the results and
 #                 against the lists the Check jobs published as job outputs, and signs them.
-# The identity token is requested by cosign for the provenance signature and by bin/witness-sign-staged.sh for the records; only those steps and the records commands' env -u (below) mention its variables.
+# The two signing steps (bin/witness-sign-staged.sh for the records, chain-verify.py sign for the provenance) carry exactly three non-secret entries as step env, literals: the AWS role of the release Sign identity,
+# its region and the release key's reference (the verifier's RELEASE_KEY_REF); the identity token itself is requested only inside bin/witness-sign-staged.sh, just before each record is signed. Every job installs cosign
+# (the one signing function calls it); no job runs Witness. Only those steps and the records commands' env -u (below) mention the token variables.
 # The records command of each job that reads the building jobs' files runs under `env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL`, so the process that
 # parses those files does not receive the identity-token request variables in its own environment (the step's shell still holds them: the boundary stays the job and its
 # identity, not this command); the sign-wiring judge pins the exact command line.
@@ -106,8 +108,6 @@ jobs:
       - name: install cosign (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
 
-      - name: install Witness (pinned by checksum)
-        run: bash bin/install-scanner.sh witness
 
       - name: write Build's digest list to a file
         env:
@@ -118,9 +118,17 @@ jobs:
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
 
       - name: sign the staged records and check each signed one
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
 
       - name: check Build's record and the digests, then sign the provenance
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -162,8 +170,8 @@ jobs:
           name: witness-rebuild
           path: witness-rebuild
 
-      - name: install Witness (pinned by checksum)
-        run: bash bin/install-scanner.sh witness
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
 
       - name: write Build's digest list to a file
         env:
@@ -179,6 +187,10 @@ jobs:
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
 
       - name: sign the staged records and check each signed one
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -228,8 +240,8 @@ jobs:
           name: check-results-arm64
           path: artifacts/check-results-arm64
 
-      - name: install Witness (pinned by checksum)
-        run: bash bin/install-scanner.sh witness
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
 
       - name: write Build's digest list to a file
         env:
@@ -250,6 +262,10 @@ jobs:
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
 
       - name: sign the staged records and check each signed one
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

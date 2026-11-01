@@ -690,6 +690,9 @@ jobs:
       - name: "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
 
+      - name: "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup (handoff 0713)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json witness-kms-test.sh bin/witness-kms-test.sh
+
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
 

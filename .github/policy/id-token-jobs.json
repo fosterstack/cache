@@ -1,5 +1,5 @@
 {
- "_note": "The CLOSED list of the jobs that may hold id-token: write (their own permissions, or the workflow's when they set none). Keyless signing needs the job's OIDC token, so bin/chain-sign-wiring-test.sh fails for any job holding it that is not listed, and for a listed job that no longer holds it (REQ-CHAIN-001-AC1). The list is data: review of a change to it is the control.",
+ "_note": "The CLOSED list of the jobs that may hold id-token: write (their own permissions, or the workflow's when they set none). Signing with the release key needs the job's OIDC token (it is exchanged for the signing role's short-lived credentials), so bin/chain-sign-wiring-test.sh fails for any job holding it that is not listed, and for a listed job that no longer holds it (REQ-CHAIN-001-AC1). The list is data: review of a change to it is the control.",
  "jobs": [
   {
    "workflow": "auditor.yml",
@@ -49,7 +49,7 @@
   {
    "workflow": "release.yml",
    "job": "release",
-   "reason": "calls stage-promote.yml: Release, whose Witness steps and keyless cosign signatures mint the signing identity (REQ-CHAIN-007)"
+   "reason": "calls stage-promote.yml: Release, whose Witness steps and cosign signatures are made with the release key through the job's OIDC token (REQ-CHAIN-007)"
   },
   {
    "workflow": "scan.yml",
@@ -60,11 +60,6 @@
    "workflow": "scorecard.yml",
    "job": "analysis",
    "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
-  },
-  {
-   "workflow": "stage-promote.yml",
-   "job": "verify",
-   "reason": "Release, job verify (REQ-CHAIN-007-AC1, Astra R6): release-verify runs under Witness, whose wrapper fetches the identity token for the keyless record; contents read and id-token write only, no environment, no secret, no packages write; signs no provenance"
   },
   {
    "workflow": "go-freshness.yml",
@@ -79,7 +74,7 @@
   {
    "workflow": "stage-promote.yml",
    "job": "release",
-   "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
+   "reason": "Release (REQ-CHAIN-007): the Witness steps and the cosign signatures of release-sign.sh are made with the release key through the job's OIDC token; the one job with a registry credential, the apk signing key and packages: write"
   },
   {
    "workflow": "stage-sign.yml",

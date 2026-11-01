@@ -29,6 +29,7 @@ import subprocess
 import unicodedata
 import sys
 import tempfile
+import time
 
 # PyYAML is imported by the `actions` subcommand only (load_yaml): the Sign job installs cosign and nothing else (Codex security r1 S4)
 import types
@@ -504,10 +505,9 @@ def collection_ref(stage, pol, stmt):
 
 def verify_record(pol, stage, rec_path, tmp, rekor_path=None):
     """Verify one stage's DSSE record against the policy: the envelope, the release key's signature, the record type
-    bound to the stage, and,
-    for the provenance and the release policy, the Rekor entry of that signature (ratify B: Release refuses a signature
-    without its entry;
-    a Witness record has none). No time inside a record is trusted.
+    bound to the stage, and the Rekor entry of that signature (ratify B: every signature by the release key has one,
+    and Release refuses a signature without it). The entries file is `rekor_path`, else the file beside the record
+    (see rekor_entries_path). No time inside a record is trusted.
     Returns (statement-or-policy-dict, payload, envelope)."""
     if stage not in STAGES or stage not in pol.get("stages", {}):
         refuse(stage, "stage %r is not in the policy" % stage)
@@ -522,8 +522,8 @@ def verify_record(pol, stage, rec_path, tmp, rekor_path=None):
                       % (ex if isinstance(ex, ValueError) else type(ex).__name__))
     check_signature(stage, pol, ptype, payload, sig, tmp)
     stmt = check_record_type(stage, pol, ptype, payload)
-    if ptype == POLT or (isinstance(stmt, dict) and stmt.get("predicateType") == PROV):
-        check_rekor(pol, stage, rekor_path, payload, sig, public_key_der(release_key_pem(stage, pol)))
+    check_rekor(pol, stage, rekor_path or rekor_entries_path(rec_path, None), payload, sig,
+                public_key_der(release_key_pem(stage, pol)))
     if isinstance(stmt, dict) and stmt.get("predicateType") == COLL:
         chain_items.check_record_env(stage, dsse, payload)      # REQ-CHAIN-004-AC8: no token variable or value in a verified Witness collection
     return stmt, payload, dsse
@@ -748,18 +748,23 @@ def check_rekor(pol, stage, rekor_path, payload, sig, key_der):
     refuse(stage, first)
 
 
-def rekor_with_retry(fetch, sleep):
+class RekorDown(Exception):
+    """Raised by a fetch when Rekor did not answer: the one failure that is worth a wait and another try."""
+
+
+def rekor_with_retry(fetch, sleep, stage="release"):
     """Ask Rekor for the entries with `fetch`: one try, then up to six retries after waits of 1, 2, 4, 8, 16 and 32
-    seconds. Rekor still
-    down after the last wait: Release fails closed with one line naming Rekor, and a re-run continues. `sleep` is passed
-    in so a test waits for nothing."""
+    seconds. A refusal raised by `fetch` is final and is not retried. Rekor still down after the last wait: the run
+    fails closed with one line naming Rekor, and a re-run continues. `sleep` is passed in so a test waits for nothing."""
     for wait in REKOR_WAITS + (None,):
         try:
             return fetch()
+        except Refuse:
+            raise
         except Exception:
             if wait is None:
-                refuse("release", "rekor did not answer after one try and six retries (63 seconds): the release "
-                                  "stops here, run it again when Rekor is back")
+                refuse(stage, "rekor did not answer after one try and six retries (63 seconds): the run "
+                              "stops here, run it again when Rekor is back")
             sleep(wait)
 
 
@@ -1035,12 +1040,15 @@ def cmd_check_list(a):
         if os.path.islink(d) or not os.path.isdir(d):
             refuse("check", "missing: the %s record (witness-%s/%s-collection.json)" % (n, n, n))
         inside = sorted(os.listdir(d))
-        if inside != ["%s-collection.json" % n]:
-            if "%s-collection.json" % n not in inside:
-                refuse("check", "missing: the %s record (witness-%s/%s-collection.json)" % (n, n, n))
-            refuse("check", "extra: witness-%s holds %s besides its record" % (n, ", ".join(x for x in inside if x != "%s-collection.json" % n)))
-        if os.path.islink(os.path.join(d, inside[0])):
-            refuse("check", "the %s record is a symlink" % n)
+        record, entries = "%s-collection.json" % n, "%s-collection.rekor.json" % n      # a record and, beside it, its Rekor entries file (nothing else)
+        if record not in inside:
+            refuse("check", "missing: the %s record (witness-%s/%s)" % (n, n, record))
+        stray = [x for x in inside if x not in (record, entries)]
+        if stray:
+            refuse("check", "extra: witness-%s holds %s besides its record and its Rekor entries file" % (n, ", ".join(stray)))
+        for x in (record, entries):
+            if x in inside and os.path.islink(os.path.join(d, x)):
+                refuse("check", "the %s %s is a symlink" % (n, "record" if x == record else "Rekor entries file"))
     seen = set()
     for n in CHECK_RECORDS:
         path = os.path.join(a.dir, "witness-" + n, "%s-collection.json" % n)
@@ -1271,11 +1279,11 @@ def provenance_statement(pol, obj, dry, byproducts):
     return statement
 
 
-def bundle_to_outputs(bun, out_dir):
+def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
     """Turn the bundle cosign wrote into the two files Release verifies: its DSSE envelope, one signature {keyid, sig}
-    (provenance.json), and the
-    bundle's own Rekor entries, untouched (provenance.rekor.json). The bundle must hold a
-    DSSE envelope and no certificate (a key signed it; nothing here is keyless)."""
+    (<name>.json), and the bundle's own Rekor entries, untouched (<name>.rekor.json). The bundle must hold a DSSE
+    envelope and no certificate (a key signed it; nothing here is keyless). With `expect_payload`, the payload it signed
+    must be byte-equal to those bytes."""
     try:
         vm = bun["verificationMaterial"]
         if not isinstance(vm, dict):
@@ -1290,6 +1298,8 @@ def bundle_to_outputs(bun, out_dir):
         sig = sigs[0]
         envelope = {"payloadType": dsse["payloadType"], "payload": dsse["payload"],
                     "signatures": [{"keyid": sig.get("keyid", ""), "sig": sig["sig"]}]}
+        if expect_payload is not None and b64d(dsse["payload"]) != expect_payload:
+            refuse("sign", "the bundle cosign wrote signed another payload than the statement handed to it")
         tlog = vm.get("tlogEntries")
         if not isinstance(tlog, list) or not tlog:
             refuse("sign", "the bundle cosign wrote has no Rekor entry (verificationMaterial.tlogEntries is missing or "
@@ -1297,11 +1307,102 @@ def bundle_to_outputs(bun, out_dir):
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
         # a malformed bundle is a refusal, never a traceback (property e); the field named is the one that was missing or wrong
         refuse("sign", "the bundle cosign wrote is malformed: envelope field %s (%s)" % (ex, type(ex).__name__))
-    with open(os.path.join(out_dir, "provenance.json"), "w") as f:
+    with open(os.path.join(out_dir, name + ".json"), "w") as f:
         json.dump(envelope, f)
-    with open(os.path.join(out_dir, "provenance.rekor.json"), "w") as f:
+    with open(os.path.join(out_dir, name + ".rekor.json"), "w") as f:
         json.dump({"entries": tlog}, f)
 
+
+
+# One plain string decides whether a cosign failure is Rekor's (worth the retries): the word "rekor" in its error text. It matches
+# `error: creating log entry: rekor: 503 Service Unavailable`; it refuses `AccessDeniedException: not authorized to perform kms:Sign`
+# (a KMS or argument error is refused at once, with no second signature asked of KMS). UNVERIFIED against a real cosign v3.1.3 outage.
+REKOR_WORD = b"rekor"
+
+
+def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sleep=time.sleep, bundle_path=None):
+    """The one signing function of the release chain: sign the statement in `statement_path` with the release key held in
+    AWS KMS through `cosign attest-blob --key`, keep its Rekor entry, and write `out_record` (a DSSE envelope with exactly
+    one signature) and the entries file beside it (<out_record minus .json>.rekor.json). One try and six retries while
+    Rekor does not answer (waits 1, 2, 4, 8, 16, 32 seconds); any other failure, a bundle that signed another payload than
+    the staged one, a bundle with no Rekor entry or with more than one signature is a refusal, and no record is left.
+    `bundle_path` keeps cosign's bundle at that path (Sign publishes it); without it the bundle is a temporary file.
+    `run` and `sleep` are arguments so a test passes a fake cosign and a clock that waits for nothing."""
+    out_record = os.path.abspath(out_record)
+    out_dir, base = os.path.split(out_record)
+    stem = base[:-len(".json")] if base.endswith(".json") else base
+    entries = os.path.join(out_dir, stem + ".rekor.json")
+    # both paths are checked before cosign is asked: lexists, so a symlink or a directory counts as taken and is never followed or written through
+    if os.path.lexists(out_record):
+        refuse("sign", "the record %s exists: a signed record is never overwritten" % os.path.basename(out_record))
+    if os.path.lexists(entries):
+        refuse("sign", "the entries file %s exists: a signed record's entries are never overwritten" % os.path.basename(entries))
+    with open(statement_path, "rb") as f:
+        statement = f.read()
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = bundle_path or os.path.join(tmp, "record.bundle.json")
+        tries = [0]
+        last_err = [b""]
+
+        def fetch():
+            tries[0] += 1
+            argv = ["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF, "--signing-config", signing_config,
+                    "--statement", statement_path, "--bundle", bundle]
+            try:
+                r = run(argv, capture_output=True)
+            except OSError as ex:
+                refuse("sign", "cosign not found on PATH" if isinstance(ex, FileNotFoundError)
+                       else "cosign could not be started (%s)" % type(ex).__name__)
+            if r.returncode != 0:
+                if REKOR_WORD in (r.stderr or b"").lower():
+                    last_err[0] = r.stderr or b""
+                    raise RekorDown(r.stderr[:200])
+                refuse("sign", "cosign failed: %s" % (r.stderr or b"").decode(errors="replace")[:200])
+            try:
+                with open(bundle, "rb") as f:
+                    return strict_json(f.read())
+            except (OSError, ValueError):
+                refuse("sign", "the bundle cosign wrote is missing or not JSON")
+
+        try:
+            bun = rekor_with_retry(fetch, sleep, "sign")
+        except Refuse as bad:
+            if last_err[0] and "did not answer" in bad.reason:
+                # the last error cosign printed, bounded, instead of a claim about what Rekor did
+                refuse("sign", "cosign failed %d times with an error naming Rekor: %s" % (tries[0], last_err[0][-2000:].decode(errors="replace").strip()))
+            raise
+        bundle_to_outputs(bun, tmp, stem, expect_payload=statement)
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(tmp, stem + ".json"), "rb") as f:
+            record_bytes = f.read()
+        with open(os.path.join(tmp, stem + ".rekor.json"), "rb") as f:
+            entries_bytes = f.read()
+        # the entries file first and the record last: the record is the commit point, so a failure leaves no record; each file is created
+        # exclusively and never through a link, and what this call made is removed when a later write fails
+        made = []
+        try:
+            for path, data in ((entries, entries_bytes), (out_record, record_bytes)):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+                made.append(path)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+        except OSError as ex:
+            for path in made:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            refuse("sign", "cannot write the record and its entries file (%s): nothing is left behind" % type(ex).__name__)
+
+
+def cmd_sign_record(a):
+    """Sign one staged Witness payload with the release key (the one signing function), write the record and its entries."""
+    # the one place the job's key reference is checked: it must be the verifier's own key, byte for byte, and is refused before cosign is asked
+    if os.environ.get("RELEASE_KMS_KEY_REF") != RELEASE_KEY_REF:
+        print("error: sign-record needs RELEASE_KMS_KEY_REF set to %s (got %s)" % (RELEASE_KEY_REF, json.dumps(os.environ.get("RELEASE_KMS_KEY_REF"))), file=sys.stderr)
+        sys.exit(2)
+    signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template)), "cosign-signing-config.json")
+    kms_sign(a.payload, a.out, signing_config)
 
 # the files Sign writes into its output folder: on a refusal exactly these, and the folder Sign made, are removed
 OWN_FILES = ("provenance.bundle.json", "provenance.json", "provenance.rekor.json", "DRY-RUN")
@@ -1358,16 +1459,8 @@ def cmd_sign(a):
         make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         try:
-            r = subprocess.run(["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF, "--signing-config",
-                                signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
-        except OSError as ex:   # no cosign on PATH, or not runnable: a refusal, and the fresh output folder goes
-            remove_own_out(a.out)
-            refuse("sign", "cosign not found on PATH" if isinstance(ex, FileNotFoundError) else "cosign could not be started (%s)" % type(ex).__name__)
-        if r.returncode != 0:
-            remove_own_out(a.out)
-            refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
-        try:
-            convert_and_verify(bundle, a.out, pol, statement, tmpd)
+            kms_sign(sp, os.path.join(os.path.abspath(a.out), "provenance.json"), signing_config, bundle_path=bundle)
+            verify_own_output(a.out, pol, statement, tmpd)
         except Refuse as bad:
             remove_own_out(a.out)   # a failed sign leaves no provenance behind (001-AC2)
             refuse("sign", bad.reason)
@@ -1664,17 +1757,10 @@ def same_json(a, b):
     return a == b
 
 
-def convert_and_verify(bundle, out_dir, pol, statement, tmpd):
-    """Write Release's file from cosign's bundle, then verify it as stage sign exactly as Release will, and require that
-    the
-    payload cosign signed IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3; Codex security r1 S1,
-    Opus r1-verify F1): Sign never reports success for provenance Release would refuse, nor for a statement it did not make."""
-    try:
-        with open(bundle, "rb") as f:
-            bun = strict_json(f.read())
-    except (OSError, ValueError) as ex:
-        refuse("sign", "the bundle cosign wrote is missing or not JSON (%s)" % type(ex).__name__)
-    bundle_to_outputs(bun, out_dir)
+def verify_own_output(out_dir, pol, statement, tmpd):
+    """Verify what the one signing function wrote as stage sign exactly as Release will, and require that the payload cosign signed
+    IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3): Sign never reports success for
+    provenance Release would refuse, nor for a statement it did not make."""
     vdir = os.path.join(tmpd, "verify-own-output")
     os.makedirs(vdir)
     signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), vdir,
@@ -1890,6 +1976,10 @@ def build_parser():
         which = s.add_mutually_exclusive_group(required=True)
         which.add_argument("--template")   # the committed release-policy template: the per-tag policy is made here from GITHUB_REF
         which.add_argument("--policy")     # a finished policy (the dry run's policy.json)
+    sg = sub.add_parser("sign-record")
+    sg.add_argument("--payload", required=True)      # the staged statement, signed byte for byte
+    sg.add_argument("--out", required=True)          # the record to write; its Rekor entries file is written beside it
+    sg.add_argument("--template", required=True)     # the release policy template: the signing config sits beside it
     sr = sub.add_parser("sign-records")
     sr.add_argument("--stage", required=True, choices=sorted(SR_STEPS))
     sr.add_argument("--template", required=True)
@@ -1974,6 +2064,8 @@ def main(argv):
             cmd_check_list(a)
         elif a.cmd == "bind-check":
             cmd_bind_check(a)
+        elif a.cmd == "sign-record":
+            cmd_sign_record(a)
         elif a.cmd == "sign-records":
             cmd_sign_records(a)
         elif a.cmd == "actions":

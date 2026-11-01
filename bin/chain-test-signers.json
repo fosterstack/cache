@@ -94,9 +94,15 @@
   },
   {
    "name": "chain-verify sign",
-   "regex": "chain-verify\\.py\\s+sign\\b",
+   "regex": "chain-verify\\.py\\s+sign(?![-\\w])",
    "prov": "always",
    "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "chain-verify sign-record",
+   "regex": "chain-verify\\.py\\s+sign-record\\b",
+   "prov": "never",
+   "pseudo": "https://witness.testifysec.com/attestation-collection/v0.1"
   },
   {
    "name": "witness-run-action",

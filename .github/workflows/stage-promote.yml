@@ -4,7 +4,7 @@
 # It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68) and the pinned melange (for the apk re-signing, REQ-CHAIN-007-AC1), the earlier stages' artifacts, then six Witness steps through the one helper,
 # each a committed script: release-verify (no credential is bound to this step: the tag, the release policy, every earlier stage's record in rule 69's order),
 # release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
-# release-sign (keyless signatures with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
+# release-sign (signatures with the release key, each with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
 # commands that need a registry, run against what was just published, in both registries; rule 79 as amended by the owner on Oct 10). Release creates no tag.
 # A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after the verify job: the release job carries the job-level condition below and is skipped (and every
 # witnessed step after release-verify carries it too), so no secret or key is bound to any step, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
@@ -17,7 +17,7 @@ permissions:
 jobs:
   # The compare job (the owner's rule of Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: "the signer and the builder need hardware isolation ... the best github
   # actions can do ... is to use separate jobs"): it receives Build's apks and Rebuild's apks, compares them with bin/release-compare.sh (control and data sections; signatures are checked against the committed key, not compared), and hands on one small result
-  # file. It holds contents read ONLY: no environment, no secret, no write token and no identity token (an identity token can mint a signing certificate), so it is a plain step and
+  # file. It holds contents read ONLY: no environment, no secret, no write token and no identity token (an identity token can assume the signing role), so it is a plain step and
   # not a Witness step. The verify job reads the result file and checks it against Build's attested apk digests; Rebuild's apks never reach a job that holds a credential.
   compare:
     runs-on: ubuntu-24.04
@@ -58,15 +58,14 @@ jobs:
           name: apk-compare
           path: apk-compare
           if-no-files-found: error
-  # The verify job (REQ-CHAIN-007-AC1, Astra R6): contents read and the identity token Witness needs, and nothing else: no environment, no secret, no write token.
-  # It verifies every earlier stage's record (release-verify under Witness). The release job below needs it, so no job that holds a write token or a secret starts
+  # The verify job (REQ-CHAIN-007-AC1, Astra R6; handoff 0713 P2): contents read and nothing else: no identity token, no environment, no secret, no write token.
+  # It verifies every earlier stage's record (release-verify under the local Witness script, a throwaway key). The release job below needs it, so no job that holds a write token or a secret starts
   # unless the records were verified by an earlier job; it also repeats release-verify on its own downloads before any credential step.
   verify:
     needs: compare
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,10 +112,10 @@ jobs:
         with:
           name: apk-compare
           path: apk-compare
-      - name: release-verify under Witness
-        run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - name: release-verify under Witness (a throwaway key, no identity token)
+        run: bash bin/witnessed-local.sh release-verify bin/release-verify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-release-verify
@@ -200,15 +199,25 @@ jobs:
           name: apk-ubuntu-24.04-arm
           path: apks/ubuntu-24.04-arm
       - name: release-verify under Witness
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witnessed.sh release-verify bin/release-verify.sh
       - name: release-apks under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}
         run: bash bin/witnessed.sh release-apks bin/release-apks.sh
       - name: release-publish under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -216,6 +225,9 @@ jobs:
       - name: release-sign under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -223,11 +235,17 @@ jobs:
       - name: release-assets under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-assets bin/release-assets.sh
       - name: release-postverify under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)

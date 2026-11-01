@@ -1318,7 +1318,7 @@ cat > "$hw/fakebin/witness" <<'EOF'
 echo "witness $*" >> "$HW_ARGV"
 out=""; a=("$@"); for i in "${!a[@]}"; do [ "${a[$i]}" = -o ] && out=${a[$((i + 1))]}; [ "${a[$i]}" = -- ] && { cmd=("${a[@]:$((i + 1))}"); break; }; done
 for i in "${!a[@]}"; do [ "${a[$i]}" = --signer-file-key-path ] && { [ -s "${a[$((i + 1))]}" ] || exit 9; }; done
-echo "tokenvars=[${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}${ACTIONS_ID_TOKEN_REQUEST_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${ACTIONS_RUNTIME_URL:-}${SIGSTORE_ID_TOKEN:-}]" >> "$HW_ARGV"
+echo "tokenvars=[${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}${ACTIONS_ID_TOKEN_REQUEST_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${ACTIONS_RUNTIME_URL:-}${AWS_WEB_IDENTITY_TOKEN_FILE:-}${AWS_ROLE_ARN:-}]" >> "$HW_ARGV"
 "${cmd[@]}" || exit $?
 printf '{"fake":"record"}' > "$out"
 EOF
@@ -1332,7 +1332,7 @@ chmod +x "$hw/fakebin/"*
 hrun() { # hrun [VAR=val...] -- STEP SCRIPT ARGS...  (runs in the helper tree, fakes first on PATH)
   local env=(); while [ "$1" != -- ]; do env+=("$1"); shift; done; shift; rc=0
   out=$( (cd "$hw" && env "${env[@]}" PATH="$hw/fakebin:$PATH" HW_LOG="$work/hwlog" HW_ARGV="$work/hwargv" RUNNER_TEMP="$hw/tmp" \
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://x/?a=b" ACTIONS_RUNTIME_TOKEN=rt ACTIONS_RUNTIME_URL="https://x/rt" SIGSTORE_ID_TOKEN=st bash bin/witnessed-local.sh "$@") 2>&1) || rc=$?
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://x/?a=b" ACTIONS_RUNTIME_TOKEN=rt ACTIONS_RUNTIME_URL="https://x/rt" AWS_WEB_IDENTITY_TOKEN_FILE=st AWS_ROLE_ARN=ar bash bin/witnessed-local.sh "$@") 2>&1) || rc=$?
 }
 reset_h() { rm -rf "$hw"/witness-*; : > "$work/hwlog"; : > "$work/hwargv"; }
 reset_h; hrun X=1 -- scanners bin/step.sh scanners

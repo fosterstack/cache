@@ -29,6 +29,7 @@ CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*toke
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
+RECORD_ENV_VERIFY_LOCAL = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json"      # the verify job runs the local script: its record is unsigned and local
 RECORD_ENV_VERIFY = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json"      # rc-2 R4: the verify job's own record, checked before it is uploaded
 MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"signed-witness-build", "signed-witness-rebuild", "signed-witness-check", "signed-witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
@@ -44,6 +45,20 @@ REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
 CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+# W1 (#822 round 1): every witnessed step of the release job signs its record through the one signing function (bin/chain-verify.py sign-record), so it carries the three non-secret
+# federation entries as step env, literals: the AWS role of the release Sign identity (ops/terraform/aws-apply/main.tf), its region, and the release key's reference, which must be
+# the verifier's own RELEASE_KEY_REF. They are not credentials: the identity token the role is assumed with is fetched by the helper just before each signing call.
+FED_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+FED_REGION = "us-east-1"
+
+
+def fed_env():
+    """The exact step env of a witnessed step: the key reference is read from bin/chain-verify.py next to this file (a literal in the workflow that differs from it is refused)."""
+    try:
+        m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
+    except OSError:
+        m = None
+    return {"AWS_ROLE_ARN": FED_ROLE, "AWS_REGION": FED_REGION, "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
@@ -110,8 +125,9 @@ def run_of(step):
 
 
 def verify_job(j):
-    """REQ-CHAIN-007-AC1 (Astra R6): the verify job holds contents read and id-token write ONLY (Witness mints its certificate from the identity token), no environment,
-    no secret, no env, no condition: checkout, the Witness install, the downloads release-verify reads, release-verify under Witness, then uploads."""
+    """REQ-CHAIN-007-AC1 (Astra R6; handoff 0713 P2): the verify job holds contents read ONLY (it runs release-verify under the local Witness script with a throwaway key,
+    so it has no identity token and cannot assume the signing role), no environment, no secret, no env, no condition: checkout, the Witness install, the downloads
+    release-verify reads, release-verify under the local Witness script, then uploads."""
     bad = []
     if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}:
         bad.append("verify job: job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}))
@@ -119,8 +135,8 @@ def verify_job(j):
         bad.append("verify job: must need exactly the compare job (needs: compare), got %r" % j.get("needs"))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("verify job: must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
-    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
-        bad.append("verify job: permissions must be exactly contents read and id-token write: %s" % j.get("permissions"))
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("verify job: permissions must be exactly contents read (no id-token): %s" % j.get("permissions"))
     kinds = []
     for s in j.get("steps") or []:
         if set(s) - {"name", "uses", "with", "run"}:
@@ -142,9 +158,9 @@ def verify_job(j):
             bad.append("verify job: uses not allowed: %s" % u)
         elif r == "bash bin/install-scanner.sh witness":
             kinds.append("install:witness")
-        elif r == "bash bin/witnessed.sh release-verify bin/release-verify.sh":
+        elif r == "bash bin/witnessed-local.sh release-verify bin/release-verify.sh":
             kinds.append("W:release-verify")
-        elif r == RECORD_ENV_VERIFY:
+        elif r == RECORD_ENV_VERIFY_LOCAL:
             kinds.append("RE")          # rc-2 R4 (Fable): the verify job holds id-token write and uploads its Witness record, so it checks it for a token first, with no if
         else:
             bad.append("verify job: a step that is none of checkout, the Witness install, download, release-verify, its record check or upload: %r" % (r or s.get("name")))
@@ -177,7 +193,7 @@ def verify_job(j):
 
 def compare_job(j):
     """The owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks runs in a job with no secrets, no
-    publish permission and no identity token: contents read ONLY (an id-token can mint a signing certificate), no environment, no env, no needs, no condition. Its steps are
+    publish permission and no identity token: contents read ONLY (an id-token can assume the signing role), no environment, no env, no needs, no condition. Its steps are
     exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
     under Witness: Witness signs through the identity token) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []
@@ -346,19 +362,28 @@ def credentials(path):
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
+            if name == "release-verify":      # the release job's own re-run: no credential, only the three federation entries (it signs its record)
+                seen_verify = True
+                if env != fed_env() or CRED_RE.search(blob) or has_expression(s):
+                    bad.append("release-verify must carry exactly the step env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), env))
+                continue
             if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
-            seen_verify = name == "release-verify"
             continue
         if name is None:
             if env is not None or CRED_RE.search(blob):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
+        fed = fed_env()
         got = set((env or {}).keys())
-        if got != want:
-            bad.append("%s must get exactly the credentials %s, got %s" % (name, sorted(want), sorted(got)))
+        if got != want | set(fed):
+            bad.append("%s must get exactly the credentials %s and the federation entries %s, got %s" % (name, sorted(want), sorted(fed), sorted(got)))
         for k, v in (env or {}).items():
+            if k in fed:
+                if v != fed[k]:
+                    bad.append("%s in %s must be the literal %r, got %r" % (k, name, fed[k], v))
+                continue
             ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
             if k in CREDS and not ok:
                 bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))

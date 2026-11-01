@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) and Check's four steps (REQ-REL-011-AC1).
 # the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
-# record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload keyless
-# (the job's identity token, audience sigstore, held in a shell variable and handed to Witness through a one-read process substitution; the request
-# variables are unset first) into SIGNED/<record-dir>/STEP-collection.json with the Sigstore timestamp, copies the data files unchanged, and then runs the
-# self-check `bin/chain-verify.py verify` on every signed record (identity stage-sign.yml, the committed template made for GITHUB_REF), so a signing that
-# did not produce a valid Sign-identity record stops the job. It builds nothing and runs no stage script.
+# record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload
+# with the release KMS key (handoff 0713) by the one signing function (bin/chain-verify.py sign-record: the key named by RELEASE_KMS_KEY_REF, checked there, signs through cosign, the Rekor
+# entry kept beside the record, one try and six retries while Rekor does not answer); the AWS SDK exchanges a fresh identity
+# token (audience sts.amazonaws.com), fetched immediately before each record is signed, for short-lived credentials. The token is written to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the
+# repository tree; AWS_WEB_IDENTITY_TOKEN_FILE points the SDK at it for that one call (AWS_ROLE_ARN and AWS_REGION come from the job's step environment), nothing goes to GITHUB_ENV, and the directory is removed when the script ends or gets
+# EXIT, HUP, INT or TERM. The request variables are plain shell variables, never exported. Each signed record goes into SIGNED/<record-dir>/STEP-collection.json (its Rekor entries in STEP-collection.rekor.json) with the data files copied unchanged, and
+# the self-check `bin/chain-verify.py verify` then runs on every signed record (the release key, the policy made for GITHUB_REF), so a signing that
+# did not produce a record signed by the manifest key stops the job. It builds nothing and runs no stage script.
 set -euo pipefail
 staged="$1"
 signed="$2"
@@ -52,10 +55,21 @@ top=$(ls -A "$staged" | wc -l | tr -d ' ')
 want=$((dirs + 1))
 [ "$top" -eq "$want" ] || { echo "witness-sign-staged: the staged root holds an entry that is neither a planned directory nor plan.txt" >&2; exit 1; }
 [ "$seen" -eq "$n" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
-tok=$(sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
-echo "::add-mask::$tok"
-unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
-unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN
+# the AWS role, region and key reference come from the job's step environment; a job that lacks one stops here, before any token is asked for
+: "${AWS_ROLE_ARN:?witness-sign-staged: AWS_ROLE_ARN is missing}"
+: "${AWS_REGION:?witness-sign-staged: AWS_REGION is missing}"
+: "${RELEASE_KMS_KEY_REF:?witness-sign-staged: RELEASE_KMS_KEY_REF is missing}"
+umask 077
+td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")
+trap 'rm -rf "$td"' EXIT HUP INT TERM
+req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL
+unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
+oidc_token() {
+  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"
+  tok=$(cat "$td/token")
+  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witness-sign-staged: no identity token" >&2; exit 1; }
+  echo "::add-mask::$tok"
+}
 python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
 while read -r line; do
   payload=$(printf '%s' "$line" | cut -f1)
@@ -66,13 +80,9 @@ while read -r line; do
   step=${base%-collection}
   mkdir -p "$signed/$name"
   for f in "$dir"/*; do case "$f" in *.payload) ;; *) cat "$f" > "$signed/$name/$(basename "$f")" ;; esac; done
-  witness sign -f "$payload" -t application/vnd.in-toto+json \
-    --signer-fulcio-url https://fulcio.sigstore.dev \
-    --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com \
-    --signer-fulcio-oidc-client-id sigstore \
-    --signer-fulcio-token-path <(printf %s "$tok") \
-    --timestamp-servers https://timestamp.sigstore.dev/api/v1/timestamp \
-    -o "$final"
+  oidc_token
+  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" python3 -I -B bin/chain-verify.py sign-record --payload "$payload" --out "$final" --template .github/policy/release-policy.template.json
   case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime|arm64) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
   python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
 done < "$plan"
+rm -rf "$td"
