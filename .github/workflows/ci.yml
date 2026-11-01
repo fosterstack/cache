@@ -681,6 +681,9 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
 
+      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
+
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
 
@@ -812,10 +815,10 @@ jobs:
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
       - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
         run: bash bin/audit-record-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
+      - name: admission's tag signer — the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
-      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
+      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue (owner Oct 2; handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-patch-wiring-test.sh bin/release-patch-wiring-test.sh
       - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json acceptance-maven-413-test.sh bin/acceptance-maven-413-test.sh

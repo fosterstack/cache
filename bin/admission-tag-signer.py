@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Which verifier source admission runs for a release tag (automatic patch releases rule 3; REQ-REL-009-AC6).
+"""Which verifier source admission runs for a release tag (REQ-REL-009-AC6; handoff 0713 P8).
 
 Read by stage-admission.yml from protected main (never from the tagged commit). It only ROUTES: the chosen verifier
-must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag. "gitsign":
-the release workflow's keyless identity, accepted only on a patch tag (vX.Y.Z, Z >= 1, whose previous patch vX.Y.(Z-1)
-is already released, so a line always starts from an owner-signed tag). Everything else is refused: an unsigned tag (an
-App-pushed tag carries no signature of its own), a PGP signature, two signature blocks, or the CI identity on a minor,
-major or rc tag or on a tag that already exists.
+must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag (a patch tag
+included: the owner's own key still signs minor, major and patch tags). Everything else is refused: an unsigned tag, a
+PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain signs with the release
+key and no keyless signer is left (KMS rule 2).
 """
 import argparse, datetime, hashlib, os, re, subprocess, sys
 
@@ -15,7 +14,8 @@ PATCH = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.([1-9][0-9]*)$")
 
 
 def kind(tag_object):
-    """The signature format of an annotated tag object: ssh, x509 (gitsign), pgp, none, or ambiguous. A signature is a
+    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous. A
+    signature is a
     PEM-style block with a signature label (BLOCKS) that git appends at the END of the object; any other PEM-style block
     (a key or certificate quoted in the notes) is message text (Codex #163 r1, B03). Two signature-labelled blocks, or one
     that is not at the end, are ambiguous."""
@@ -32,23 +32,17 @@ def kind(tag_object):
     return BLOCKS[label]
 
 
-def route(tag, tag_object, released):
-    """(route, why) with route in ssh / gitsign / refuse."""
+def route(tag_object):
+    """(route, why) with route in ssh / refuse. Only the owner's key is routed, so nothing but the tag object's
+    signature is read:
+    no rule about the tag's name, its kind or the previous patch is left here."""
     k = kind(tag_object)
     if k == "ssh":
         return "ssh", "an SSH signature: the owner's allowed-signers list decides"
-    if k != "x509":
-        return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
-                          "ambiguous": "the tag object carries an ambiguous signature"}[k]
-    m = PATCH.match(tag)
-    if not m:
-        return "refuse", "the CI identity signs patch tags only (vX.Y.Z with Z >= 1); %s is the owner's" % tag
-    if tag in released:
-        return "refuse", "%s is already released" % tag
-    prev = "v%s.%s.%d" % (m.group(1), m.group(2), int(m.group(3)) - 1)
-    if prev not in released:
-        return "refuse", "the CI identity cuts only the next patch: %s is not released" % prev
-    return "gitsign", "a patch tag signed keylessly: the release workflow's identity on main decides"
+    if k == "x509":
+        return "refuse", "a keyless signature is not accepted: the release chain signs with the release key"
+    return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
+                      "ambiguous": "the tag object carries an ambiguous signature"}[k]
 
 
 # REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + the owner's 0126 amendment (Oct 3) + advisor 0150's
@@ -233,9 +227,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="admission-tag-signer")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("route")
-    r.add_argument("--tag", required=True)
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
-    r.add_argument("--tags", required=True, help="file listing the released tags, one per line (excluding this one)")
+    # --tag and --tags are accepted and ignored: this router runs from main while build-admit runs from the tagged
+    # commit, so an
+    # older tagged commit still passes them
+    r.add_argument("--tag")
+    r.add_argument("--tags")
     b = sub.add_parser("baseline")
     b.add_argument("--tag", required=True)
     b.add_argument("--owner-baselines", required=True, help="the directory owner-baselines wrote")
@@ -255,8 +252,7 @@ def main(argv=None):
         v, why = baseline(a.tag, freeze, reqs, open(a.requirements, "rb").read())
         print(("use %s" % v) if v else "no", why)
         return 0
-    released = [t.strip() for t in open(a.tags) if t.strip() and t.strip() != a.tag]
-    r, why = route(a.tag, open(a.tag_object).read(), released)
+    r, why = route(open(a.tag_object).read())
     print(r, why)
     return 0
 

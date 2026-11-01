@@ -145,7 +145,7 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|no-keyless-tag)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
