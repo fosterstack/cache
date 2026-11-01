@@ -136,11 +136,11 @@ cp -R "$work/bsrc" "$bt/bsrc-miss"; echo "f 0644 etc/missing" >>"$bt/bsrc-miss/b
 sf "0710" "an apk missing a file members.txt lists is refused" 'members\.txt.*etc/missing' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-miss" --out "$(mo)"
 # the destdir token: only as a whole word or as a prefix of token/...; the first word of the original line is judged
 bl_recipe tokcp 'd["pipeline"][0]["runs"] += "cp /bin/true ${{targets.destdir}}cp\n${{targets.destdir}}cp x\n"'
-sr "0710" "refuses a recipe that plants a program at the destdir token glued to a name and runs it" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokcp-w.sh" "${bb_args[@]}" --out "$(mo)"
+sr "0710" "refuses a recipe that plants a program at the destdir token glued to a name and runs it" 'destdir token inside a word' "${bbe[@]}" "$bt/bb-tokcp-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe tokglue 'd["pipeline"][0]["runs"] += "cp x y${{targets.destdir}}\n"'
-sr "0710" "refuses the destdir token glued after other text" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokglue-w.sh" "${bb_args[@]}" --out "$(mo)"
+sr "0710" "refuses the destdir token glued after other text" 'destdir token inside a word' "${bbe[@]}" "$bt/bb-tokglue-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe tokletter 'd["pipeline"][0]["runs"] += "cp x ${{targets.destdir}}x/etc\n"'
-sr "0710" "refuses the destdir token followed by a letter" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokletter-w.sh" "${bb_args[@]}" --out "$(mo)"
+sr "0710" "refuses the destdir token followed by a letter" 'destdir token inside a word' "${bbe[@]}" "$bt/bb-tokletter-w.sh" "${bb_args[@]}" --out "$(mo)"
 # one strict form per line: ASCII and single spaces only, every destination under the destdir token, cp sources fixed (round-3 S1)
 bl_recipe sepU 'd["pipeline"][0]["runs"] += "mkdir cp\u3000\ncp\u3000/../../../bin/sh -c x\n"'
 sr "0710" "refuses a U+3000 separator (Python splits on it, the shell does not)" 'chains or expands' "${bbe[@]}" "$bt/bb-sepU-w.sh" "${bb_args[@]}" --out "$(mo)"
@@ -156,6 +156,18 @@ bl_recipe tabsep 'd["pipeline"][0]["runs"] += "mkdir\t-p ${{targets.destdir}}/x\
 sr "0710" "refuses a tab inside a line" 'chains or expands' "${bbe[@]}" "$bt/bb-tabsep-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe dblspace 'd["pipeline"][0]["runs"] += "mkdir  -p ${{targets.destdir}}/x\n"'
 sr "0710" "refuses a double space inside a line" 'allowed form' "${bbe[@]}" "$bt/bb-dblspace-w.sh" "${bb_args[@]}" --out "$(mo)"
+# the rest of the closed grammar, one case each (round-4 T2)
+bl_recipe chmod755 'd["pipeline"][0]["runs"] += "chmod 755 ${{targets.destdir}}/etc\n"'
+sr "0710" "refuses a chmod with a three-digit mode" 'allowed form' "${bbe[@]}" "$bt/bb-chmod755-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe mkdirnop 'd["pipeline"][0]["runs"] += "mkdir ${{targets.destdir}}/x\n"'
+sr "0710" "refuses a mkdir without -p" 'allowed form' "${bbe[@]}" "$bt/bb-mkdirnop-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe cpusr 'd["pipeline"][0]["runs"] += "cp build/baselayout/etc/hosts ${{targets.destdir}}/usr/\n"'
+sr "0710" "refuses a cp into a folder other than etc" 'allowed form' "${bbe[@]}" "$bt/bb-cpusr-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe crsep 'd["pipeline"][0]["runs"] += "mkdir -p ${{targets.destdir}}/x\r\n"'
+sr "0710" "refuses a carriage return at the end of a line" 'chains or expands' "${bbe[@]}" "$bt/bb-crsep-w.sh" "${bb_args[@]}" --out "$(mo)"
+# a copied source that is a link is refused before the recipe is judged (round-4 T1)
+cp -R "$work/bsrc" "$bt/bsrc-link"; rm "$bt/bsrc-link/build/baselayout/etc/services"; ln -s hosts "$bt/bsrc-link/build/baselayout/etc/services"
+sr "0710" "refuses a build/baselayout/etc file that is a symlink" 'not a regular file' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-link" --out "$(mo)"
 # a recipe that is not valid UTF-8 is a refusal at exit 2, not a traceback (round-2 R4)
 cp "$root/build/melange-baselayout.yaml" "$bt/recipe-utf.yaml"; printf '# \377\n' >>"$bt/recipe-utf.yaml"
 mkcopy "$bt/bb-utf.sh" "$bt/recipe-utf.yaml"; wrapper "$bt/bb-utf-w.sh" "$bt/bb-utf.sh"

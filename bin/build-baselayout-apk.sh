@@ -74,7 +74,9 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true' EXIT
 
 # the recipe is the base-layout package and only copies files; its pinned build environment must be in the melange lock
-# (rule 15), name for name and version for version, and the lock must hold nothing else
+# (rule 15), name for name and version for version, and the lock must hold nothing else; the files it copies must be
+# regular files in real folders (a link would be followed by cp and by the checks alike)
+"$PY3" -I -B bin/build-apk-helper.py baselayout-source "$src"
 "$PY3" -I -B bin/build-apk-helper.py baselayout-facts "$recipe" "$tmp/recipe.facts"
 pkg=$(sed -n 's/^name=//p' "$tmp/recipe.facts")
 sed -n 's/^pin=//p' "$tmp/recipe.facts" >"$tmp/pins"

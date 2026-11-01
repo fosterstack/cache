@@ -567,12 +567,32 @@ def baselayout_step_lines(step, recipe):
         if "" in words:
             raise Refused("the recipe %s has a line outside the allowed form (an empty word: a leading, trailing or double "
                 "space): %r" % (recipe, line))
+        if any(DESTDIR_TOKEN in w and w != DESTDIR_TOKEN and not w.startswith(DESTDIR_TOKEN + "/") for w in words):
+            raise Refused("the recipe %s has the destdir token inside a word (it must stand alone or start a path "
+                "${{targets.destdir}}/...): %s" % (recipe, line))
         if words[0] not in BASELAYOUT_COMMANDS:
             raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, words[0]))
         if not baselayout_line_ok(words):
             raise Refused("the recipe %s has a line outside the allowed form (mkdir -p, chmod MODE, or cp build/baselayout/etc/NAME "
                 "to ${{targets.destdir}}/etc/; every destination under ${{targets.destdir}}/ with no . or .. part): %s"
                 % (recipe, line))
+
+
+def baselayout_source(src):
+    """The files the recipe copies must be what they look like: build, build/baselayout and build/baselayout/etc are
+    real folders, and everything under build/baselayout is a regular file or a real folder (no link, no device)."""
+    top = os.path.join(src, "build", "baselayout")
+    try:
+        for path in (os.path.join(src, "build"), top, os.path.join(top, "etc")):
+            if not stat.S_ISDIR(os.lstat(path).st_mode):
+                raise Refused("%s is not a real folder (it is a link or a file)" % path)
+        for folder, names, files in os.walk(top):
+            for name in names + files:
+                mode = os.lstat(os.path.join(folder, name)).st_mode
+                if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                    raise Refused("%s is not a regular file or a real folder" % os.path.join(folder, name))
+    except OSError:
+        raise Refused("cannot read the base-layout files under %s" % top)
 
 
 def baselayout_facts(recipe, outfile):
@@ -619,6 +639,7 @@ DECISIONS = {
     "go-verdict": (go_verdict, 4, 4),
     "baselayout-check-args": (baselayout_check_args, 2, None),
     "baselayout-arg": (baselayout_arg, 1, None),
+    "baselayout-source": (baselayout_source, 1, 1),
     "baselayout-facts": (baselayout_facts, 2, 2),
 }
 

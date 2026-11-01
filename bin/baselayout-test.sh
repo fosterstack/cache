@@ -41,6 +41,11 @@ rec = open("build/melange-baselayout.yaml").read()
 named = set(re.findall(r"build/baselayout/(etc/[a-z.-]+)", rec))
 have = {os.path.join("etc", n) for n in os.listdir("build/baselayout/etc")}
 assert named == have, (named ^ have)
+import stat
+for r, ds, fs in os.walk("build/baselayout"):   # no link and no device anywhere under it (lstat, never followed)
+    for n in ds + fs:
+        m = os.lstat(os.path.join(r, n)).st_mode
+        assert stat.S_ISREG(m) or stat.S_ISDIR(m), os.path.join(r, n)
 assert sorted(os.listdir("build/baselayout")) == ["etc", "members.txt"]   # members.txt: the entry list the build checks the apk against
 PY
 chk "os-release is Wolfi's own file byte for byte (scanners identify the OS from it)" \
