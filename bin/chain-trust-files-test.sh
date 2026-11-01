@@ -62,7 +62,7 @@ def readers_of(name):
 
 # the Fulcio chain stays for the pin-age check of recorded vendor image signatures; the release chain no longer reads it, and nothing else may
 KEPT_FULCIO_READERS = ["pin-age-check.py", "pin-age-check-test.sh"]       # by file name: both sit under .github/
-check(os.path.exists(os.path.join(pol, "fulcio-chain.pem")), "fulcio-chain.pem stays (the pin-age check verifies recorded vendor image signatures against it)")
+check(os.path.exists(os.path.join(pol, "fulcio-chain.pem")), "fulcio-chain.pem stays (the pin-age check verifies recorded publisher image signatures against it)")
 fulcio_readers = readers_of("fulcio-chain.pem")
 check(sorted(os.path.basename(r) for r in fulcio_readers) == sorted(KEPT_FULCIO_READERS) and all(r.startswith(".github/") for r in fulcio_readers), "fulcio-chain.pem is named by exactly the pin-age check and its test, not by the release chain (readers: %s)" % ", ".join(fulcio_readers[:6]))
 for gone in ("tsa-chain.pem",):
