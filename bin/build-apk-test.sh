@@ -306,10 +306,10 @@ sr "rule 22" "release signing refuses the assembly key (nothing a customer trust
 # The ratified rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the job that holds the signing key never receives Rebuild's apks, so the
 # signer no longer takes --rebuild-dir (an old call is an unknown argument, exit 2) and the comparison lives only in bin/release-compare.sh, which runs in a job without a key
 sr "rule 22" "release signing has no --rebuild-dir any more: the old call is refused as an unknown argument (the comparison is release-compare.sh's, in a job without the key)" 'unknown argument' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
-cmpmk() { # <dir>: a repo-shaped tree around the script, with four identical Build/Rebuild pairs under apks/ and rapks/
+cmpmk() { # <dir>: a repo-shaped tree around the script, with four identical Build/Rebuild pairs and the image-only base-layout apk under apks/ and rapks/
   rm -rf "$1"; mkdir -p "$1/bin" "$1/build/keys"; cp "$root/bin/apk-tool.py" "$1/bin/"; cp "$root/build/keys/assembly.rsa.pub" "$1/build/keys/"
   [ -f "$root/bin/release-compare.sh" ] && cp "$root/bin/release-compare.sh" "$1/bin/"; [ -f "$root/bin/release-compare.py" ] && cp "$root/bin/release-compare.py" "$1/bin/"; mkdir -p "$1/.github/policy"; cp "$root/.github/policy/release-policy.template.json" "$1/.github/policy/"; cmpwrap "$1"
-  for top in apks rapks; do for rn in ubuntu-24.04:x86_64 ubuntu-24.04-arm:aarch64; do d="$1/$top/${rn%%:*}/${rn##*:}"; mkdir -p "$d"; for n in fscache fscache-fips; do cp "$fx/pair/a.apk" "$d/$n-0.3.0-r0.apk"; done; done; done; }
+  for top in apks rapks; do for rn in ubuntu-24.04:x86_64 ubuntu-24.04-arm:aarch64; do d="$1/$top/${rn%%:*}/${rn##*:}"; mkdir -p "$d"; for n in fscache fscache-fips fscache-baselayout; do cp "$fx/pair/a.apk" "$d/$n-0.3.0-r0.apk"; done; done; done; }
 # The Witness move: the compare job binds Rebuild's apks to the records Sign signed for them (bind_rebuild_apks: policy make, verify, bind). The tree gets a chain-verify.py
 # wrapper whose `policy make` and `verify` are doubles (the signature, the identity and the timestamp are bin/chain-verify-test.sh's business; a missing record is still refused)
 # and whose `bind` is the REAL bin/chain-verify.py; the records are made from the rapks of the tree just before the script runs (cmprec), so a case that edits the apks first
@@ -418,6 +418,21 @@ cmpmk "$work/cm16"; mkdir "$work/cm16/apks/ubuntu-24.04/x86_64/unexpected.apk"
 cmpexpect "a directory named unexpected.apk in Build -> refused (exit 2), not a regular file" 2 'not a regular file' "$work/cm16"
 cmpmk "$work/cm17"; mkdir "$work/cm17/rapks/ubuntu-24.04-arm/aarch64/unexpected.apk"
 cmpexpect "a directory named unexpected.apk in Rebuild -> refused (exit 2), not a regular file" 2 'not a regular file' "$work/cm17"
+t "0710" "release-compare: the base-layout apk on both sides is checked but has no row: the record holds the four pairs and no baselayout name" bash -c "python3 - '$work/cm1/apk-compare/apk-compare.json' <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert len(d['pairs']) == 4 and not [p for p in d['pairs'] if 'baselayout' in p['name'] or p['variant'] == 'baselayout'], d
+P"
+cmpmk "$work/cmb1"; rm "$work/cmb1/rapks/ubuntu-24.04-arm/aarch64/fscache-baselayout-0.3.0-r0.apk"
+cmpexpect "the base-layout apk on one side only -> refused (exit 2), named" 2 'baselayout' "$work/cmb1"
+cmpmk "$work/cmb2"; cp "$fx/pair/a.apk" "$work/cmb2/apks/ubuntu-24.04/x86_64/fscache-other-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/cmb2/rapks/ubuntu-24.04/x86_64/fscache-other-0.3.0-r0.apk"
+cmpexpect "a fifth apk named fscache-other-0.3.0-r0.apk on both sides is still an extra (exit 2)" 2 'extra' "$work/cmb2"
+cmpmk "$work/cmb5"; for top in apks rapks; do mv "$work/cmb5/$top/ubuntu-24.04/x86_64/fscache-baselayout-0.3.0-r0.apk" "$work/cmb5/$top/ubuntu-24.04/x86_64/fscache-baselayout-addon-0.3.0-r0.apk"; done
+cmpexpect "an apk named fscache-baselayout-addon-... in place of the base-layout apk is not the base-layout apk: refused (exit 2)" 2 'baselayout|extra' "$work/cmb5"
+cmpmk "$work/cmb3"; cp "$pr/b.apk" "$work/cmb3/rapks/ubuntu-24.04/x86_64/fscache-baselayout-0.3.0-r0.apk"
+cmpexpect "a base-layout apk signed by another key -> refused (exit 2), naming the signer" 2 'assembly\.rsa\.pub' "$work/cmb3"
+cmpmk "$work/cmb4"; cp "$fx/pair/c.apk" "$work/cmb4/rapks/ubuntu-24.04/x86_64/fscache-baselayout-0.3.0-r0.apk"
+cmpexpect "a base-layout apk whose bytes differ between Build and Rebuild -> exit 1, named, no pass record" 1 'fscache-baselayout-0.3.0-r0.apk' "$work/cmb4"
 cmpmk "$work/cm13"; mkdir -p "$work/cm13/elsewhere"; (cd "$work/cm13/elsewhere" && env -i PATH="$PATH" HOME=/nonexistent "$(command -v bash)" ../bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"
 t "rule 22" "release-compare: a run from another directory is refused (exit 2) naming the repository root" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi 'repository root' '$work/log'"
 t "rule 22" "release-compare reads no key, no secret and no signing tool: it names none of melange, openssl, a key file, a credential, a download tool or a network library" bash -c "test -f '$root/bin/release-compare.py' && ! cat '$root/bin/release-compare.sh' '$root/bin/release-compare.py' | grep -v '^ *#' | grep -Eqi 'melange|openssl|release\.rsa\b|APK_RELEASE|DOCKERHUB|GH_TOKEN|cu''rl|wg''et|\bnc\b|socket|urllib|requests|crane'"

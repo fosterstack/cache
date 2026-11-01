@@ -23,7 +23,7 @@ from chain_common import b64d, refuse, strict_json
 
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:"
 HERE = os.path.dirname(os.path.abspath(__file__))
-ITEM_LIST = os.path.join(HERE, "..", ".github", "policy", "rebuild-items.json")     # the committed list of the 29 items
+ITEM_LIST = os.path.join(HERE, "..", ".github", "policy", "rebuild-items.json")     # the committed list of the 32 items
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
@@ -188,7 +188,8 @@ def apk_output(result, command):
 
 
 def one_apk(out_dir, variant):
-    pattern = r"fscache-[0-9][^/]*-r0\.apk" if variant == "standard" else r"fscache-fips-[^/]*-r0\.apk"
+    pattern = {"standard": r"fscache-[0-9][^/]*-r0\.apk", "fips": r"fscache-fips-[^/]*-r0\.apk",
+        "baselayout": r"fscache-baselayout-[0-9][^/]*-r0\.apk"}[variant]
     found = [n for n in sorted(os.listdir(out_dir)) if re.fullmatch(pattern, n)]
     if len(found) != 1:
         refuse("build", "apk: expected exactly one %s apk in %s, found %d" % (variant, out_dir, len(found)))
@@ -217,6 +218,10 @@ def cmd_items_apk(a):
         items["binary-%s-%s" % (variant, arch)] = "sha256:" + hashlib.sha256(apk_output(binary, "cat")).hexdigest()
         items["modules-sbom-" + variant] = read_input("%s/fscache-modules%s.spdx.json" % (parent, suffix))
         items["inputs-manifest-" + variant] = read_input("%s/inputs-manifest%s.json" % (parent, suffix))
+    baselayout = one_apk(out_dir, "baselayout")      # 0710: assembled into the images only; not a release asset, so not in digests.json
+    digest = subprocess.run(["python3", "-I", "bin/apk-tool.py", "digest", baselayout], capture_output=True)
+    items["apk-baselayout-" + arch] = apk_output(digest, "digest").decode().strip()
+    items["inputs-manifest-baselayout"] = read_input("%s/inputs-manifest-baselayout.json" % parent)
     items["apkindex-" + arch] = read_input(out_dir + "/APKINDEX.tar.gz")
     with open(a.result, "w") as f:
         json.dump({"arch": arch, "items": items}, f, sort_keys=True, indent=1)

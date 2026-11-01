@@ -8,7 +8,8 @@ In:  witness-rapk-<runner>/rapk-collection.json   the records Sign signed for Re
      rapks/<runner>/<apk arch>/<file>.apk  Rebuild's apks, laid out the same (artifacts rapk-...)
 Out: apk-compare/apk-compare.json  {"verdict": "pass", "pairs": [four rows: arch, variant, name, build_sha256, rebuild_sha256, build_digest, rebuild_digest]}
      written only when all four pairs agree. The verify and release jobs read only this file; the release-verify step checks it against Build's attested apk digests.
-Each of the four expected pairs (amd64 and arm64, standard and fips) must exist on both sides exactly once. Any other .apk, a symlink, a name with a control character, an apk
+Each of the four expected pairs (amd64 and arm64, standard and fips) must exist on both sides exactly once. So must the one image-only apk per runner (the base layout,
+fscache-baselayout-*): it is checked like a pair (signer, signature, equal control and data) but has no row in the record, because no release ships it. Any other .apk, a symlink, a name with a control character, an apk
 that is not a regular file, a signer other than assembly.rsa.pub, or a signature that does not verify against build/keys/assembly.rsa.pub is refused (exit 2). Apks that differ
 in their control or data section exit 1 and name the apk; the signature section is not compared, only checked against the committed key."""
 import hashlib, json, os, re, shutil, stat, subprocess, sys
@@ -19,6 +20,9 @@ CHAIN = [sys.executable, "-I", "-B", "bin/chain-verify.py"]
 # the four expected pairs, one fixed table (REQ-CHAIN-007-AC17): artifact (runner) -> apk architecture directory -> short name; variant -> file name pattern
 RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
 VARIANTS = (("standard", re.compile(r"fscache-[0-9][^/]*-r0\.apk")), ("fips", re.compile(r"fscache-fips-[^/]+-r0\.apk")))
+# apks the images use and no release ships (0710): per runner exactly one on each side, the same signer, signature and
+# bytes, but no row in apk-compare.json
+IMAGE_ONLY = (("baselayout", re.compile(r"fscache-baselayout-[0-9][^/]*-r0\.apk")),)
 
 
 def die(msg, code=2):
@@ -93,9 +97,9 @@ def main():
         listed[top] = walk(top)
         if not listed[top]:
             die("no apk under %s/" % top)
-    pairs = []
+    pairs, image_only = [], []
     for runner, archdir, short in RUNNERS:
-        for variant, pat in VARIANTS:
+        for variant, pat in VARIANTS + IMAGE_ONLY:
             sides = {}
             for top, label in (("apks", "Build"), ("rapks", "Rebuild")):
                 d = os.path.join(top, runner, archdir)
@@ -109,15 +113,16 @@ def main():
                 sides[label] = os.path.join(d, hits[0])
             if os.path.basename(sides["Build"]) != os.path.basename(sides["Rebuild"]):
                 die("Rebuild's %s apk for %s is named %s, Build's %s" % (variant, short, os.path.basename(sides["Rebuild"]), os.path.basename(sides["Build"])))
-            pairs.append((short, variant, sides["Build"], sides["Rebuild"]))
-    # nothing else: an .apk that is none of the four on either side is an extra (fail closed)
+            (image_only if (variant, pat) in IMAGE_ONLY else pairs).append((short, variant, sides["Build"], sides["Rebuild"]))
+    # nothing else: an .apk that is none of the four (or the image-only ones) on either side is an extra (fail closed)
     for top, idx in (("apks", 2), ("rapks", 3)):
-        known = {p[idx] for p in pairs}
+        known = {p[idx] for p in pairs + image_only}
         for f in listed[top]:
             if f not in known:
-                die("%s is an extra apk that is none of the four expected (standard and fips, amd64 and arm64); refusing (no counterpart on the other side)" % f)
+                die("%s is an extra apk: it is none of the four pairs (standard and fips, amd64 and arm64) or the image-only "
+                    "base-layout apk; refusing" % f)
     # both sides come from the assembly-key build: anything else was signed by somebody else, and a signature name is not a signature
-    for short, variant, b, r in pairs:
+    for short, variant, b, r in pairs + image_only:
         for f in (b, r):
             res = tool("signer", f)
             if res.returncode != 0:
@@ -127,7 +132,7 @@ def main():
             if tool("verify", f, "build/keys/assembly.rsa.pub").returncode != 0:
                 die("the signature of %s does not verify against the committed assembly.rsa.pub: a signature name is not a signature" % f)
     bad = False
-    for short, variant, b, r in pairs:
+    for short, variant, b, r in pairs + image_only:
         if tool("same", b, r).returncode != 0:
             print("release-compare: %s (%s, %s) differs between Build and Rebuild" % (os.path.basename(b), variant, short), file=sys.stderr)
             bad = True

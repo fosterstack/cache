@@ -25,9 +25,8 @@ interpreter run on a variable path).
       another option or an environment that is not the file's).
 
   The other subcommands are the decisions the build driver makes, so that its script is straight-line text. Each prints
-  its
-  answer or the refusal "<script name>: <reason>" on standard error and exits with the status the script had for that
-  refusal:
+  its answer or the refusal "<script name>: <reason>" on standard error and exits with the status the script had for
+  that refusal:
   check-args UNAME_S UNAME_M ARG...     the host, the options, the environment and the inputs; prints "sde" or "build"
     (exit 2 refused)
   arg NAME ARG...                       one value of the options (src variant arch goarch version apkver build-date
@@ -35,8 +34,8 @@ interpreter run on a variable path).
                                         go-archive melange-lock out render-dir apk-cache-dir); a directory is printed
                                         absolute
   abs-file FILE                         FILE as an absolute path
-  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once (exit 1
-    refused)
+  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once
+                                        (exit 1 refused)
   melange-verdict RC PROBE              the status of the melange call (and of the network probe, empty if none ran):
     0, 1 or 4
   check-buildinfo FILE VERSION          the binary is stamped, clean, and carries the version being built (exit 1
@@ -199,18 +198,20 @@ def iso_time(epoch):
         return None
 
 
-def parse_options(args):
-    """The options of the build driver as a dict without the leading dashes; the last of a repeated option wins."""
+def parse_options(args, allowed=None):
+    """The options of the build driver as a dict without the leading dashes; the last of a repeated option wins.
+    allowed: the value options this driver takes (the base-layout driver takes fewer); only the apk driver also takes
+    --print-source-date-epoch."""
     opts = {}
     i = 0
     while i < len(args):
         word = args[i]
-        if word == "--print-source-date-epoch":
+        if word == "--print-source-date-epoch" and allowed is None:
             opts[word[2:]] = "1"
             i += 1
         elif word == "--signing-key":
             raise Refused("--signing-key is not accepted: the apk is signed with the committed assembly key only")
-        elif word in VALUE_OPTIONS:
+        elif word in (VALUE_OPTIONS if allowed is None else allowed):
             if i + 1 >= len(args):
                 raise Refused("missing value for " + word)
             opts[word[2:]] = args[i + 1]
@@ -462,6 +463,150 @@ def go_verdict(rc, go_out, buildinfo, go_err):
                       "the recorded build information is not the binary's own", 1)
 
 
+# ---- the base-layout driver: the same decisions, with a smaller set of options ----
+
+BASELAYOUT_PREFIX = "build-baselayout-apk.sh: "
+BASELAYOUT_OPTIONS = ("--arch", "--version", "--source-dir", "--repo", "--keyring", "--melange-lock", "--out",
+    "--render-dir", "--apk-cache-dir")
+BASELAYOUT_PACKAGE = "fscache-baselayout"
+
+
+def baselayout_check_args(uname_s, uname_m, *args):
+    """Every refusal of the base-layout driver that comes before a tool runs. Prints build."""
+    if uname_s != "Linux":
+        raise Refused("refusing to run on %s: this script uses sudo, unshare and the sealed build tools, which run on "
+            "Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" % uname_s)
+    opts = parse_options(args, BASELAYOUT_OPTIONS)
+    src = opts.get("source-dir", "")
+    if not src:
+        raise Refused("--source-dir is required")
+    arch = opts.get("arch", "")
+    version = opts.get("version", "")
+    if arch not in ("x86_64", "aarch64"):
+        raise Refused("--arch must be an apk architecture name: x86_64 or aarch64 (not '%s')" % arch)
+    host = {"amd64": "x86_64", "arm64": "aarch64"}.get(uname_m, uname_m)
+    if arch != host:
+        raise Refused("refusing to build %s on a %s host: each architecture builds natively on its own runner, no "
+            "emulation" % (arch, host))
+    if not (re.fullmatch(VERSION_GRAMMAR, version) or version == "0.0.0-rc.1"):
+        raise Refused("--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 "
+                      "(numbers without leading zeros; not '%s')" % version)
+    check_environment()
+    repo = opts.get("repo")
+    keyring = opts.get("keyring", "")
+    if repo is None:
+        raise Refused("--repo DIR (the local package repository melange installs the build tools from) is required")
+    if "://" in repo:
+        raise Refused("--repo must be a local directory, not an address (%s)" % repo)
+    if not os.path.isdir(repo):
+        raise Refused("--repo %s is not a directory" % repo)
+    if not keyring or not os.path.isfile(keyring):
+        raise Refused("--keyring file not found: " + keyring)
+    melange_lock = opts.get("melange-lock", "")
+    if not melange_lock or not os.path.isfile(melange_lock):
+        raise Refused("--melange-lock file not found: " + melange_lock)
+    if not opts.get("out"):
+        raise Refused("--out DIR is required")
+    if not os.path.exists(src + "/.git"):
+        raise Refused("%s has no .git: the files of the package are read from a checkout" % src)
+    return "build"
+
+
+def baselayout_arg(name, *args):
+    """One value of the base-layout driver's options, as the script uses it (the names of arg, without variant, goarch
+    and go-archive)."""
+    parse_options(args, BASELAYOUT_OPTIONS)   # called for its refusals: an option the base-layout driver does not know stops here
+    if name in ("goarch", "variant", "go-archive"):
+        raise Refused("unknown value name " + name, 2)
+    return arg(name, *(a for a in args))
+
+
+BASELAYOUT_PACKAGE_KEYS = ("name", "version", "epoch", "description", "copyright")
+BASELAYOUT_COMMANDS = ("mkdir", "chmod", "cp")
+BASELAYOUT_LINE_CHARS = re.compile(r"[A-Za-z0-9._/ -]*")
+BASELAYOUT_PART = re.compile(r"[A-Za-z0-9._-]+")
+BASELAYOUT_MODE = re.compile(r"[0-7]{4}")
+BASELAYOUT_SOURCE = re.compile(r"build/baselayout/etc/[A-Za-z0-9._-]+")
+DESTDIR_TOKEN = "${{targets.destdir}}"
+
+
+def baselayout_destination(word):
+    """True for ${{targets.destdir}}/rel where every component of rel is plain ASCII and none is . or .. """
+    if not word.startswith(DESTDIR_TOKEN + "/"):
+        return False
+    parts = word[len(DESTDIR_TOKEN) + 1:].split("/")
+    return all(BASELAYOUT_PART.fullmatch(p) and p not in (".", "..") for p in parts)
+
+
+def baselayout_line_ok(words):
+    """One line of the recipe, already split on single spaces: mkdir -p DEST..., chmod MODE DEST..., or
+    cp build/baselayout/etc/NAME... ${{targets.destdir}}/etc/ (DEST is a path under the destdir token)."""
+    if words[0] == "mkdir":
+        return len(words) >= 3 and words[1] == "-p" and all(baselayout_destination(w) for w in words[2:])
+    if words[0] == "chmod":
+        return len(words) >= 3 and bool(BASELAYOUT_MODE.fullmatch(words[1])) and all(baselayout_destination(w) for w in words[2:])
+    sources = words[1:-1]
+    return len(words) >= 3 and words[-1] == DESTDIR_TOKEN + "/etc/" and all(
+        BASELAYOUT_SOURCE.fullmatch(w) and not w.endswith(("/.", "/..")) for w in sources)
+
+
+def baselayout_step_lines(step, recipe):
+    """The lines of one pipeline step of the base-layout recipe, each checked: the step has the key runs only, and every
+    non-empty line is one of three exact forms (see baselayout_line_ok): ASCII only, single spaces, every destination
+    under the destdir token with no . or .. component. Python and the shell split a line differently on any other
+    separator, so no other separator is allowed at all."""
+    if not isinstance(step, dict) or set(step) != {"runs"} or not isinstance(step["runs"], str):
+        raise Refused("the recipe %s has a pipeline step that is not exactly one runs: text" % recipe)
+    for line in step["runs"].split("\n"):
+        if line == "":
+            continue
+        if not BASELAYOUT_LINE_CHARS.fullmatch(line.replace(DESTDIR_TOKEN, "")):
+            raise Refused("the recipe %s has a line with a character that chains or expands a command, or a separator the "
+                "shell does not split on (only letters, digits, . _ - / and single spaces are allowed): %r" % (recipe, line))
+        words = line.split(" ")
+        if "" in words:
+            raise Refused("the recipe %s has a line outside the allowed form (an empty word: a leading, trailing or double "
+                "space): %r" % (recipe, line))
+        if words[0] not in BASELAYOUT_COMMANDS:
+            raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, words[0]))
+        if not baselayout_line_ok(words):
+            raise Refused("the recipe %s has a line outside the allowed form (mkdir -p, chmod MODE, or cp build/baselayout/etc/NAME "
+                "to ${{targets.destdir}}/etc/; every destination under ${{targets.destdir}}/ with no . or .. part): %s"
+                % (recipe, line))
+
+
+def baselayout_facts(recipe, outfile):
+    """The recipe must be the base-layout package and nothing more: a closed set of keys, a build environment of package
+    pins, and pipeline steps that only run mkdir, chmod and cp. Writes name= and one pin= line per build-environment package.
+    Everything is read inside the try, so a wrong shape is a refusal and never a traceback."""
+    import yaml
+    try:
+        d = yaml.safe_load(open(recipe, encoding="utf-8"))
+        if not isinstance(d, dict) or not isinstance(d.get("package"), dict) or d["package"].get("name") != BASELAYOUT_PACKAGE:
+            raise Refused("the recipe %s is not for the package %s: this driver builds only the base layout" % (recipe, BASELAYOUT_PACKAGE))
+        if set(d) != {"package", "environment", "pipeline"}:
+            raise Refused("the recipe %s must have exactly the keys package, environment and pipeline" % recipe)
+        pkg = d["package"]
+        if not set(pkg) <= set(BASELAYOUT_PACKAGE_KEYS):
+            raise Refused("the recipe %s has a package section with keys other than %s" % (recipe, ", ".join(BASELAYOUT_PACKAGE_KEYS)))
+        env = d["environment"]
+        if not isinstance(env, dict) or set(env) != {"contents"} or not isinstance(env["contents"], dict) \
+                or set(env["contents"]) != {"packages"} or not isinstance(env["contents"]["packages"], list) \
+                or not all(isinstance(p, str) for p in env["contents"]["packages"]):
+            raise Refused("the recipe %s must have an environment of exactly contents: packages: a list of strings" % recipe)
+        if not isinstance(d["pipeline"], list) or not d["pipeline"]:
+            raise Refused("the recipe %s must have a pipeline with at least one step" % recipe)
+        for step in d["pipeline"]:
+            baselayout_step_lines(step, recipe)
+        name = pkg["name"]
+        pins = env["contents"]["packages"]
+    except (OSError, ValueError, RecursionError, yaml.YAMLError):   # ValueError holds bytes that are not UTF-8
+        raise Refused("cannot read the recipe %s" % recipe)
+    with open(outfile, "w") as f:
+        f.write("name=%s\n" % name)
+        f.write("".join("pin=%s\n" % p for p in pins))
+
+
 # name -> (function, fewest words, most words); the answer a function returns is printed
 DECISIONS = {
     "check-args": (check_args, 2, None),
@@ -472,6 +617,9 @@ DECISIONS = {
     "check-buildinfo": (check_buildinfo, 2, 2),
     "check-revision": (check_revision, 4, 4),
     "go-verdict": (go_verdict, 4, 4),
+    "baselayout-check-args": (baselayout_check_args, 2, None),
+    "baselayout-arg": (baselayout_arg, 1, None),
+    "baselayout-facts": (baselayout_facts, 2, 2),
 }
 
 
@@ -483,7 +631,7 @@ def decide(name, words):
     try:
         answer = function(*words)
     except Refused as e:
-        print(PREFIX + str(e), file=sys.stderr)
+        print((BASELAYOUT_PREFIX if name.startswith("baselayout-") else PREFIX) + str(e), file=sys.stderr)
         return e.code
     if answer is not None:
         print(answer)

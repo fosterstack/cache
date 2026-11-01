@@ -3637,7 +3637,7 @@ requirements:
       - id: REQ-CHAIN-005-AC3
         given: "Build's signed item list (items.json, a product in Build's Witness record) and Rebuild's own results for the per-architecture apks, the local package index contents, the full lock file, the OCI image index digest, each per-architecture manifest digest and the binary"
         when: "bin/chain-verify.py rebuild-compare runs"
-        then: "it checks Build's items.json against the hash Witness recorded for it (exit non-zero otherwise), requires the full committed item list (29 items: the apks, indexes, binaries, SBOMs, inputs manifests, locks, image index and manifest digests, the archive checksums and the four Linux archives) on both sides, and exits zero only when every item digest is identical; one differing byte in any item exits non-zero, and the verdict names each differing item and both digests; a missing item on either side, an unlisted extra item or a malformed digest is a refusal; items are never skipped, ignored or compared by size or time"
+        then: "it checks Build's items.json against the hash Witness recorded for it (exit non-zero otherwise), requires the full committed item list (32 items: the apks (the fscache apks and the base-layout apk), indexes, binaries, SBOMs, inputs manifests, locks, image index and manifest digests, the archive checksums and the four Linux archives) on both sides, and exits zero only when every item digest is identical; one differing byte in any item exits non-zero, and the verdict names each differing item and both digests; a missing item on either side, an unlisted extra item or a malformed digest is a refusal; items are never skipped, ignored or compared by size or time"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-005-AC4
@@ -3822,7 +3822,7 @@ requirements:
       - id: REQ-BUILDTOOLS-001-AC7
         given: "a base lock and the full lock made at build time"
         when: "apko-lock.sh compare BASE FULL --apk NAME runs"
-        then: "it exits 0 when the full lock is the base lock plus our apk for every architecture (compared by package entries, ignoring urls and the config checksum), 1 naming the package or architecture otherwise, and 2 when the base lock already holds our apk (rule 37)"
+        then: "it exits 0 when the full lock is the base lock plus our apks (the program and fscache-baselayout) for every architecture (compared by package entries, ignoring urls and the config checksum), 1 naming the package or architecture otherwise, and 2 when the base lock already holds our apk (rule 37)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDTOOLS-001-AC8
@@ -4712,7 +4712,7 @@ requirements:
   - id: REQ-IMAGE-001
     title: The image is assembled by apko from the archive alone, sealed from the network and proved so
     statement: >
-      The production and FIPS images shall be assembled by apko in one offline run for both architectures from the archive and our fresh apk only, with a committed base lock, a per-build full lock that must equal the base lock plus our apk, the network cut at the kernel, and an image digest that is the OCI index digest; the sealing and the lock method shall be proved by scripts that must be able to fail.
+      The production and FIPS images shall be assembled by apko in one offline run for both architectures from the archive and our fresh apk only, with a committed base lock, a per-build full lock that must equal the base lock plus our apks (the program and fscache-baselayout), the network cut at the kernel, and an image digest that is the OCI index digest; the sealing and the lock method shall be proved by scripts that must be able to fail.
     source: [build/apko.yaml, build/apko-fips.yaml, build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, bin/assemble-image.sh, bin/lock-proof.sh, bin/sealed-proof.sh]
     tier: community
     introduced: v0.3.0
@@ -4726,7 +4726,7 @@ requirements:
       - id: REQ-IMAGE-001-AC1
         given: "the two apko configs build/apko.yaml and build/apko-fips.yaml and the committed base locks"
         when: "they are read"
-        then: "the configs declare only baselayout, ca-certificates-bundle, tzdata and our apk, no base image and no shell, take packages only from /work/archive and /work/melange-repo, carry the Wolfi and assembly keys, build x86_64 and aarch64, run as nonroot 65532 with /home/nonroot and the entrypoint /usr/bin/fscache, and differ only in the apk name (rules 19, 25, 26, 33, 34, 38); each base lock is a v1 lock with every base package for both architectures, archive paths, no fscache entry and a keyring with content (rule 37)"
+        then: "the configs declare only our base-layout package fscache-baselayout, tzdata and our apk, no CA bundle, no base image and no shell, take packages only from /work/archive and /work/melange-repo, carry the Wolfi and assembly keys, build x86_64 and aarch64, run as nonroot 65532 with /home/nonroot and the entrypoint /usr/bin/fscache, and differ only in the apk name (rules 19, 25, 26, 33, 34, 38); each base lock is a v1 lock with every base package for both architectures, archive paths, no fscache or fscache-baselayout entry and a keyring with content (rule 37)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-IMAGE-001-AC2
@@ -4738,7 +4738,7 @@ requirements:
       - id: REQ-IMAGE-001-AC3
         given: "a valid assemble-image.sh run"
         when: "it assembles"
-        then: "it makes /work/archive, /work/melange-repo and /work/keyring point at the inputs with sudo, makes the full lock with apko lock under sudo unshare -n, requires the full lock to be the base lock plus our apk with the same versions on both architectures and to verify against the archive, then runs one apko build --offline --lockfile <the full lock> with --vcs=false, a private --cache-dir, --sbom-path and --build-date under sudo unshare -n for both architectures, giving apko the archive's RECORDED index (an archive view whose APKINDEX.tar.gz is index/APKINDEX-<recorded sha256>.tar.gz, never whatever the pointer holds now), refusing to run beside another assembly (a lock in /work) and removing only the links it made, with no repository flag, no network address, no proxy, no signature-skipping flag and no container, and keeps <variant>.full.lock.json in OUT and writes the image into OUT as AC8 says, with no tarball in OUT (rules 20, 25-28, 31, 33, 37, 38b)"
+        then: "it makes /work/archive, /work/melange-repo and /work/keyring point at the inputs with sudo, makes the full lock with apko lock under sudo unshare -n, requires the full lock to be the base lock plus our apks (the program and fscache-baselayout) with the same versions on both architectures and to verify against the archive, then runs one apko build --offline --lockfile <the full lock> with --vcs=false, a private --cache-dir, --sbom-path and --build-date under sudo unshare -n for both architectures, giving apko the archive's RECORDED index (an archive view whose APKINDEX.tar.gz is index/APKINDEX-<recorded sha256>.tar.gz, never whatever the pointer holds now), refusing to run beside another assembly (a lock in /work) and removing only the links it made, with no repository flag, no network address, no proxy, no signature-skipping flag and no container, and keeps <variant>.full.lock.json in OUT and writes the image into OUT as AC8 says, with no tarball in OUT (rules 20, 25-28, 31, 33, 37, 38b)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-IMAGE-001-AC4
@@ -4800,6 +4800,24 @@ requirements:
         when: "bin/check-no-outbound.py reads the source, and lists each binary's symbols (go tool nm: the linker keeps only what main can reach)"
         then: "our own non-test code imports no HTTP client, dials no address (net, syscall, x/sys/unix, a crypto/tls client), runs no outside program and verifies no certificate; the amd64 and arm64 binaries, plain and FIPS, hold none of the listed symbols; a binary without runtime.main is refused; so the cache needs no CA bundle (0710 rule 1); residual: a dependency that dials or verifies a certificate through an unlisted symbol (net.Dialer is in every net/http binary) is not caught by the binary check, and the source scan covers our own code only"
         verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-IMAGE-001-AC14
+        given: "the recipe build/melange-baselayout.yaml and the files under build/baselayout/"
+        when: "the package fscache-baselayout is read, and its install steps are run into a folder"
+        then: "the package has no dependency and no provides, holds only the files of build/baselayout/ (passwd, group, hosts, nsswitch.conf, os-release, protocols, services), names no shell path and no network address, and ships no CA bundle file (0710 rule 1)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-IMAGE-001-AC15
+        given: "bin/assemble-image.sh is run with a melange repository that lacks the fscache-baselayout apk for one architecture, or with a full lock that lacks it, holds it for one architecture only, or holds an apk beyond fscache and fscache-baselayout"
+        when: "it starts or compares the locks"
+        then: "it refuses naming the package, before any build"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-IMAGE-001-AC16
+        given: "bin/build-baselayout-apk.sh is run with the recipe build/melange-baselayout.yaml, the committed assembly key and a local repository"
+        when: "it builds fscache-baselayout, or is given another option, another recipe, no assembly key, a melange call outside the fosterstack namespace, an apk signed by another key, an apk whose files differ from build/baselayout/etc or an apk that ships a CA bundle file"
+        then: "a good run makes the apk signed by the assembly key and inputs-manifest-baselayout.json through the sealed melange call (bubblewrap runner, namespace fosterstack, cut network); every bad one is refused or fails, and the script has no signing option and no loop"
+        verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-GUIDE-001
     title: The v0.3.0 customer verification guide

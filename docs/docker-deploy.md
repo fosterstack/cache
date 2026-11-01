@@ -197,6 +197,8 @@ Four more:
   Each file may be at most 1 MiB. The files are read only at startup: replace
   them, then restart the container. Terminating TLS in a reverse proxy in front
   of the server remains the other option, and needs neither variable.
+  The image has no CA certificate bundle, so the server cannot verify any
+  outside certificate; it only presents the certificate and key you give it.
   If clients cannot connect over TLS, check from the client side:
   `openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
   chain, the negotiated version and cipher, and the alert). The server does not

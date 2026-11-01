@@ -47,6 +47,10 @@ pipeline.
 Silicon and Graviton. See
 [docker-deploy.md](docker-deploy.md#platforms-and-multi-arch-images).
 
+**The container images carry no CA certificate bundle.** The server makes no
+outbound connection and verifies no certificate; for HTTPS it uses the
+certificate and key you give it ([docker-deploy.md](docker-deploy.md)).
+
 **macOS and Windows are not built.** On a Mac, run the container image
 (Docker Desktop pulls `linux/arm64` on Apple Silicon). **Windows is not
 planned.** This is a server-side cache that

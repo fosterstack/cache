@@ -272,7 +272,7 @@ def apk_tree(name, tag="v0.3.0", key="assembly", edit=None):
     shutil.rmtree(d, ignore_errors=True)
     for rel, data in h.out_files("x86_64", tag).items():
         if rel.endswith(".apk"):
-            data = h.apk_bytes("fips" if "fips" in rel else "standard", "x86_64", tag, key)
+            data = h.apk_bytes("fips" if "fips" in rel else "baselayout" if "baselayout" in rel else "standard", "x86_64", tag, key)
         h.write("%s/out/%s" % (d, rel), data)
     h.write(d + "/bin/apk-tool.py", h.FAKE_APKTOOL, 0o755)
     if edit:
@@ -322,6 +322,32 @@ check("items-apk: a dot directory under out/ is refused (upload-artifact would d
       rc == 1 and err.startswith("refused at build: hidden: "), "exit %s %s" % (rc, err[:100]))
 
 
+def drop_baselayout_apk(d):
+    os.remove(d + "/out/x86_64/fscache-baselayout-0.3.0-r0.apk")
+
+
+def add_second_baselayout_apk(d):
+    h.write(d + "/out/x86_64/fscache-baselayout-0.3.1-r0.apk", h.apk_bytes("baselayout", "x86_64", "v0.3.1"))
+
+
+def drop_baselayout_inputs(d):
+    os.remove(d + "/out/inputs-manifest-baselayout.json")
+
+
+rc, frag7, err = fragment_of(apk_tree("apk7", edit=drop_baselayout_apk))
+check("items-apk: no base-layout apk in the directory is refused, naming it (0710)",
+      rc == 1 and err.startswith("refused at build: apk: ") and "baselayout" in err.split("\n", 1)[0], "exit %s %s" % (rc, err[:100]))
+rc, frag8, err = fragment_of(apk_tree("apk8", edit=add_second_baselayout_apk))
+check("items-apk: two base-layout apks in one directory are refused (exactly one)",
+      rc == 1 and err.startswith("refused at build: apk: ") and "baselayout" in err.split("\n", 1)[0], "exit %s %s" % (rc, err[:100]))
+rc, frag9, err = fragment_of(apk_tree("apk9", edit=drop_baselayout_inputs))
+check("items-apk: no inputs-manifest-baselayout.json beside the apks is refused, naming it",
+      rc == 1 and err.startswith("refused at build: missing: ") and "inputs-manifest-baselayout.json" in err, "exit %s %s" % (rc, err[:100]))
+check("items-apk: the fragment holds the base-layout apk by apk-tool digest (and no binary item for it)",
+      frag1 is not None and frag1["items"].get("apk-baselayout-x86_64") == h.apk_digest(h.apk_bytes("baselayout", "x86_64", "v0.3.0"))
+      and not [k for k in frag1["items"] if k.startswith("binary-baselayout")], "")
+
+
 # ---- items-merge ---------------------------------------------------------------------------------------------------------------------------
 def merge_tree(name, tag="v0.3.0"):
     d = "%s/%s" % (work, name)
@@ -363,10 +389,12 @@ rc, out, err = do_merge(d)
 expected_items, expected_digests = h.expected(d, "assemble", "items", "v0.3.0", vex=False), h.expected(d, "assemble", "digests", "v0.3.0", vex=False)
 got_items = json.load(open(d + "/items.json")) if os.path.exists(d + "/items.json") else None
 got_digests = json.load(open(d + "/digests.json")) if os.path.exists(d + "/digests.json") else None
-check("items-merge: items.json is exactly the oracle's 29 items",
-      rc == 0 and got_items == expected_items and len(expected_items) == 29, "exit %s %s" % (rc, err[:120]))
+check("items-merge: items.json is exactly the oracle's 32 items",
+      rc == 0 and got_items == expected_items and len(expected_items) == 32, "exit %s %s" % (rc, err[:120]))
 check("items-merge: digests.json is exactly the oracle's: 2 images, 4 apks, 4 archives, each equal to its item",
       rc == 0 and got_digests == expected_digests and len(expected_digests) == 10, "exit %s" % rc)
+check("items-merge: digests.json names no base-layout apk (assembled into the images only, not released: 0710)",
+      rc == 0 and got_digests is not None and not [k for k in got_digests if "baselayout" in k] and "apk-baselayout-x86_64" in (got_items or {}), "exit %s" % rc)
 
 
 # B1 (Codex B r2): Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text with printf '%s'. The file the
@@ -957,7 +985,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 206
+EXPECT = 211
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

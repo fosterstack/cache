@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SBOM-001-AC1, REQ-SBOM-001-AC2, REQ-SBOM-001-AC3, REQ-SBOM-001-AC4, REQ-SBOM-001-AC5, REQ-BUILDTOOLS-001-AC1, REQ-BUILDTOOLS-001-AC2, REQ-BUILDTOOLS-001-AC3, REQ-BUILDTOOLS-001-AC4, REQ-BUILDTOOLS-001-AC5, REQ-BUILDTOOLS-001-AC6, REQ-BUILDTOOLS-001-AC7, REQ-BUILDTOOLS-001-AC8, REQ-BUILDTOOLS-001-AC9, REQ-BUILDTOOLS-001-AC10, REQ-SUP-001-AC18
+# proves: REQ-SBOM-001-AC1, REQ-SBOM-001-AC2, REQ-SBOM-001-AC3, REQ-SBOM-001-AC4, REQ-SBOM-001-AC5, REQ-BUILDTOOLS-001-AC1, REQ-BUILDTOOLS-001-AC2, REQ-BUILDTOOLS-001-AC3, REQ-BUILDTOOLS-001-AC4, REQ-BUILDTOOLS-001-AC5, REQ-BUILDTOOLS-001-AC6, REQ-BUILDTOOLS-001-AC7, REQ-BUILDTOOLS-001-AC8, REQ-BUILDTOOLS-001-AC9, REQ-BUILDTOOLS-001-AC10, REQ-SUP-001-AC18, REQ-IMAGE-001-AC15
 # Tests of the PR: helpers: module SBOM tool, apk tool, recipe compare, tool installer, lock tool.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -9,7 +9,8 @@ NONROOT="p['SPDXID']!='SPDXRef-fscache'"      # a module package of a go-module-
 # ---- begin verbatim sections ----
 # ===== rule 21: bin/gen-recipes.py (both recipes are generated from one template; CI checks the committed files are exactly its output) =================
 gt="$fx/melange.yaml.tmpl"; ga="$fx/melange.yaml"; gb="$fx/melange-fips.yaml"
-GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt"   # the fixture data files
+gbt="$fx/melange-baselayout.yaml.tmpl"; gbl="$fx/melange-baselayout.yaml"
+GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt --baselayout-template $gbt --baselayout $gbl"   # the fixture data files and the third recipe
 GR_PROD="$GR"; GR="$fx/gen-recipes.py"; GRX=env   # the fixtures run a copy of the generator whose TEMPLATE_SHA256 line holds the fixture template's own pin (the real one is checked in build-apk-test.sh)
 t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
 t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
@@ -311,21 +312,27 @@ for mut in "variable:not literal" "repovar:not literal" "mismatch:versions do no
 done
 
 # ===== apko-lock.sh: compare / arch-check / verify-archive / evidence (rules 28 29 33 37) ================================
-BL="$fx/base.lock.json" FL="$fx/full.lock.json"
-t "rule 37" "compare: full lock = base + our apk (reordered, other urls, other config checksum) -> equal" "$LK" compare "$BL" "$FL" --apk fscache
+BL="$fx/base.lock.json" FL="$fx/full.lock.json" OWN=fscache,fscache-baselayout   # our two apks (0710)
+t "rule 37" "compare: full lock = base + our apk (reordered, other urls, other config checksum) -> equal" "$LK" compare "$BL" "$FL" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-urls.json" urls-only
-t "rule 37" "compare: ignores url and config checksum (package entries only)" "$LK" compare "$BL" "$work/f-urls.json" --apk fscache
+t "rule 37" "compare: ignores url and config checksum (package entries only)" "$LK" compare "$BL" "$work/f-urls.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-sum.json" datasum tzdata
-fails "rule 37" "compare: a changed checksum fails and names the package" 'tzdata' "$LK" compare "$BL" "$work/f-sum.json" --apk fscache
+fails "rule 37" "compare: a changed checksum fails and names the package" 'tzdata' "$LK" compare "$BL" "$work/f-sum.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-extra.json" extra bash
-fails "rule 37" "compare: an extra package in the full lock fails and names it" 'bash' "$LK" compare "$BL" "$work/f-extra.json" --apk fscache
+fails "rule 37" "compare: an extra package in the full lock fails and names it" 'bash' "$LK" compare "$BL" "$work/f-extra.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-drop.json" drop tzdata
-fails "rule 37" "compare: a base package missing from the full lock fails and names it" 'tzdata' "$LK" compare "$BL" "$work/f-drop.json" --apk fscache
+fails "rule 37" "compare: a base package missing from the full lock fails and names it" 'tzdata' "$LK" compare "$BL" "$work/f-drop.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-noapk.json" drop fscache
-fails "rule 37" "compare: a full lock without our apk fails and names it" 'fscache' "$LK" compare "$BL" "$work/f-noapk.json" --apk fscache
+fails "rule 37" "compare: a full lock without our apk fails and names it" 'fscache' "$LK" compare "$BL" "$work/f-noapk.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-oneapk.json" dropone fscache
-fails "rule 37" "compare: our apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-oneapk.json" --apk fscache
-t "rule 37" "compare: a base lock that already holds our apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk fscache >/dev/null 2>&1; test \$? -eq 2"
+fails "rule 37" "compare: our apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-oneapk.json" --apk "$OWN"
+python3 "$work/lib.py" mutate "$FL" "$work/f-nobase.json" drop fscache-baselayout
+fails "rule 37" "compare: a full lock without our base-layout apk fails and names it" 'fscache-baselayout' "$LK" compare "$BL" "$work/f-nobase.json" --apk "$OWN"
+python3 "$work/lib.py" mutate "$FL" "$work/f-onebase.json" dropone fscache-baselayout
+fails "rule 37" "compare: our base-layout apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-onebase.json" --apk "$OWN"
+fails "rule 37" "compare: naming only fscache leaves the base-layout apk an unexpected extra, named" 'fscache-baselayout' "$LK" compare "$BL" "$FL" --apk fscache
+python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x["contents"]["packages"]=[e for e in x["contents"]["packages"] if e["name"]=="fscache-baselayout"]; json.dump(x,open(sys.argv[2],"w"))' "$FL" "$work/f-baseonly.json"
+fails "rule 37" "compare: a base lock holding only our base-layout apk is refused, naming it" 'fscache-baselayout' "$LK" compare "$work/f-baseonly.json" "$FL" --apk "$OWN"
 t "rule 33" "arch-check: both archs resolve the same versions -> pass" "$LK" arch-check "$BL"
 python3 "$work/lib.py" mutate "$BL" "$work/b-arch.json" archver
 fails "rule 33" "arch-check: a package whose version differs between archs fails and names it" 'tzdata' "$LK" arch-check "$work/b-arch.json"
@@ -345,7 +352,7 @@ n = 0
 for l in sys.stdin:
     h, p = l.rstrip('\n').split('  ', 1)
     assert hashlib.sha256(open(p, 'rb').read()).hexdigest() == h, p; n += 1
-assert n >= 10, n\""
+assert n >= 6, n\""
 rm -rf "$work/ev2"; mkdir -p "$work/ev2"; "$LK" evidence --lock "$BL" --archive "$fx/archive" --out "$work/ev2" >/dev/null 2>&1
 t "rule 29" "evidence: deterministic (two runs, same list)" bash -c "cmp '$ev/archive-checksums.txt' '$work/ev2/archive-checksums.txt'"
 fails "rule 29" "evidence: a lock package missing from the archive fails and names it" 'tzdata' "$LK" evidence --lock "$BL" --archive "$work/arch-m" --out "$work/ev3"
@@ -532,8 +539,8 @@ open(d + "/ctrlsign.apk", "wb").write(ctrl_with_sign + data)
 # apko-lock fixtures
 lk = json.load(open(bl))
 def w_(name, doc): json.dump(doc, open("%s/%s" % (d, name), "w"))
-x = json.loads(json.dumps(lk))
-x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "wolfi-baselayout" and e["architecture"] == "aarch64")]
+x = json.load(open(fx + "/full.lock.json"))   # the base lock holds one package, so a package on one architecture only is made from the full lock
+x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "fscache-baselayout" and e["architecture"] == "aarch64")]
 w_("arch-missing-pkg.json", x)
 x = json.loads(json.dumps(lk)); x["contents"]["packages"] = [e for e in x["contents"]["packages"] if e["architecture"] == "x86_64"]; w_("arch-one.json", x)
 x = json.loads(json.dumps(lk)); e0 = dict(x["contents"]["packages"][0]); e0["architecture"] = "riscv64"; x["contents"]["packages"].append(e0); w_("arch-riscv.json", x)
@@ -558,7 +565,7 @@ r4="$work/r4"
 fails "rule 22" "apk-tool: stream 0 that holds a .PKGINFO and a .SIGN member is read as the CONTROL (first header), so a 'signed' mixed apk is not equal to the honest one" 'signature|control|stream' python3 "$AT" same "$r4/honest.apk" "$r4/mixed.apk"
 fails "rule 22" "apk-tool: a signature stream with any member besides the one .SIGN member is refused" 'signature' python3 "$AT" digest "$r4/sigextra.apk"
 fails "rule 22" "apk-tool: a control section that also holds a .SIGN member is refused" 'signature|\.SIGN' python3 "$AT" digest "$r4/ctrlsign.apk"
-fails "rule 33" "arch-check: a package present on one architecture only is refused" 'wolfi-baselayout' "$LK" arch-check "$r4/arch-missing-pkg.json"
+fails "rule 33" "arch-check: a package present on one architecture only is refused" 'fscache-baselayout' "$LK" arch-check "$r4/arch-missing-pkg.json"
 fails "rule 33" "arch-check: a lock with only x86_64 is refused (the set must be exactly x86_64 and aarch64)" 'architect' "$LK" arch-check "$r4/arch-one.json"
 fails "rule 33" "arch-check: a third architecture is refused" 'architect|riscv64' "$LK" arch-check "$r4/arch-riscv.json"
 fails "rule 37" "compare: a second entry for our apk (another version, other checksums) is refused" 'fscache' "$LK" compare "$BL" "$r4/full-dupe-ours.json" --apk fscache
@@ -919,9 +926,12 @@ fails "rule 22" "apk-tool: a directory header with a non-zero size (data hiding 
 # ---- ruling of review round 9 (P3 finding 1): the package pins and the FIPS module are DATA files the generator reads; the daily job edits only those ----------------
 rm -rf "$work/gd"; mkdir -p "$work/gd"
 gdata() { cp "$fx/melange.lock" "$work/gd/lock"; cp "$fx/fips-module.txt" "$work/gd/fips"; }
-gen_with() { $GRX python3 "$GR" --template "$gt" --regular "$work/gd/a.yaml" --fips "$work/gd/b.yaml" --melange-lock "$work/gd/lock" --fips-module "$work/gd/fips" "$@"; }
+gen_with() { $GRX python3 "$GR" --template "$gt" --regular "$work/gd/a.yaml" --fips "$work/gd/b.yaml" --baselayout-template "$gbt" --baselayout "$work/gd/c.yaml" --melange-lock "$work/gd/lock" --fips-module "$work/gd/fips" "$@"; }
 gdata; gen_with --write
 t "rule 21" "gen-recipes: the package pins in BOTH recipes are the lines of the melange lock, in the lock's order" bash -c "n=\$(grep -c . '$work/gd/lock'); test \"\$(grep -c '^      - [a-z0-9][^ ]*=[0-9]' '$work/gd/a.yaml')\" = \$n && test \"\$(grep -c '^      - [a-z0-9][^ ]*=[0-9]' '$work/gd/b.yaml')\" = \$n"
+gdata; gen_with --write; echo "# edited by hand" >>"$work/gd/c.yaml"
+fails "rule 21" "gen-recipes: a committed base-layout recipe that differs from its template makes --check fail and names the file" 'c\.yaml' gen_with --check
+gdata; gen_with --write
 gdata; printf 'newpkg=9.9-r0\n' >>"$work/gd/lock"
 fails "rule 21" "gen-recipes: a melange lock that gained a line makes --check fail until the recipes are regenerated (the recipes follow the data)" 'generator' gen_with --check
 gen_with --write; t "rule 21" "...after --write the new pin is in both recipes and --check passes" bash -c "grep -q 'newpkg=9.9-r0' '$work/gd/a.yaml' && grep -q 'newpkg=9.9-r0' '$work/gd/b.yaml'" ; t "rule 21" "...--check passes again" gen_with --check

@@ -449,11 +449,12 @@
         "bin/build-admit.py",
         "bin/build-version-check.py",
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "b2c906817f3613fa2551e1ebce396225b5ccafb16a87aef0e48e5a0a35c65c11",
+      "sha256": "0db49b1ee63163b4c4c78dfe7cfbe85f4325a3c7a5447ae9d9b5d7ccd8a75af7",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -484,11 +485,12 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "804157671c94fc7ddc0415688ff7f5b8c70c52774221ad8d94a28a683461427e"
+      "sha256": "ddfd6e5933efaac90464ea1bd9a3d9948467de7c80deadde698b44ae36c961e9"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -613,7 +615,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6"
+      "sha256": "efeca58af8a332042878efc6cfaf58825fc45f5f4a59ce7e3ef7d7ad99ea5b3c"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -625,11 +627,12 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
-      "sha256": "dc18aa249745dcfeb292420cb451cb8b0baa1e678dbcff905ad98560410f96fd",
+      "sha256": "66de628345f5f0b7e3e136054afd6cba8077638573ae8f9bba5501c6f56296d8",
       "exceptions": [
         {
           "rule": "deny",
@@ -674,11 +677,12 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
-      "sha256": "68d336c6ad6d4835b33e767e43a38c16b3c3ed3f575ada1c2b711dc4ac58126d",
+      "sha256": "e9d1ba7dd11f205262fc5faf3f0efa627a1b68f83934e8cc9d1438bf5294a19d",
       "exceptions": [
         {
           "rule": "deny",
@@ -2102,7 +2106,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
+      "sha256": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
       "exceptions": [
         {
           "rule": "deny",
@@ -2158,7 +2162,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
+      "sha256": "31c186347a439e1d3aa308569054f1f6fbeb7387aab676ce05f50e65d80467cc",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2232,6 +2236,57 @@
           "name": "PATH",
           "text": "child_env = {\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"}",
           "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-baselayout-apk.sh",
+      "tools": [
+        "sudo",
+        "env",
+        "at",
+        "python3",
+        "git",
+        "script",
+        "trap",
+        "sed",
+        "source",
+        "command"
+      ],
+      "runs": [
+        "bin/apk-tool.py",
+        "bin/build-apk-helper.py",
+        "bin/net-probe.py"
+      ],
+      "signs": false,
+      "reason": "0710: the fscache-baselayout apk built with melange in the same sealed call as the fscache apk (a file-only recipe, signed with the committed assembly key; assembled into the images only, not released)",
+      "sha256": "0335f85964a17fd45c47ebaa70b57116da3f74e6bd8cc7abf9a4ceb278e01ea8",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/build-baselayout-apk-test.sh",
+          "why": "a comment naming the test that runs a copy of this file with the TEST-SUBST lines replaced; prose, never run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -z \"$extra\" ] || { echo \"build-baselayout-apk.sh: the melange lock $mlock has lines the recipe does not pin\" \\",
+          "line_sha256": "31751fc5a876d02643595a24c2622e856d38503526e3b062f973847a8ffd0e97",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, the same reviewed form as in bin/build-apk.sh)"
+        },
+        {
+          "rule": "deny",
+          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --namespace fosterstack",
+          "line_sha256": "bad358b18787f3bfd4b0a6decc10904dd10afc992255517649def0771e4323ad",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; the same reviewed line as in bin/build-apk.sh)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${#sealed[@]}\" -ge 4 ] \\",
+          "line_sha256": "123fdb01407a8173fc9225f11028b8d3ec8fa5d5b133b29b1fe1017cf80d360b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (the line is one command of the exact-text helper, the same reviewed form as in bin/build-apk.sh)"
         }
       ]
     },
@@ -2330,7 +2385,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "4e00a9fae15ce5723a351ad627cd610d62fd78af07d9dc901298a510eda15a3a",
+      "sha256": "20cd77b65a3e0f397eb8a36bd74e8b7ac5961059a18a5d3a3422ff14e5b4dede",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2378,7 +2433,7 @@
       ],
       "signs": false,
       "reason": "the apko lock proof helper assemble-image.sh runs",
-      "sha256": "a12544cfdc722c24ddd257844ffe890a92d2be96cd8ac6dc6749a909852cd038"
+      "sha256": "dddb0bb7a8ee775c0607782a574d252365311f032bd62dcbc9bfbcff55bed6e6"
     },
     {
       "path": "bin/oci-digest.py",
@@ -2391,7 +2446,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "4619886c66e7ccb9d361e221748bb8c195c18fc8acb55c178b7321062361a081",
+      "sha256": "876eedcb5b1eb7fb0c98a68e3d984ae2221be4600ea8063b79f5b0177f5b38ec",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2470,7 +2525,7 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "ee65db258704b1a243eb01e9d500ebff5711df460180b7a376aa2e18b0466a38",
+      "sha256": "4f7f8c241643cbee959d8b8f7e5059491c3488d4ea529752f2cf109545a2e6c9",
       "tools": [
         "make"
       ],
