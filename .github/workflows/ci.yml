@@ -899,8 +899,11 @@ jobs:
   required-check-guard:
     name: required-check guard
     runs-on: ubuntu-latest
+    outputs:
+      drift_issue: ${{ steps.drift-issue.outputs.issue }}
     permissions:
       contents: read
+      issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -914,26 +917,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/required-check-guard.sh .github/policy/required-checks.json
 
-  # Row 76: on a push to main, drift between main's list and the ruleset opens (or updates) the `required-check drift`
-  # issue and dispatches the fixer in the ops repository. Only on push to main: the issue write and the App secrets (the
-  # main-only `agent` environment) are held by a job that runs main's own code, never by a job that runs a pull
-  # request's or a queue group's scripts. A drift first seen on a PR run stays a red check there and is picked up by the
-  # next push to main. Best effort: no token or a failed call is a warning; the issue is the record.
-  drift-fixer-dispatch:
-    name: dispatch the fixer for required-check drift
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    environment: agent
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # One open issue, updated in place, never duplicated.
+      # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
+      # first; one open issue, updated in place, never duplicated. Best effort: a
+      # Dependabot or fork run has no issues:write, and the red check above still stands.
       - name: open or update the `required-check drift` issue when main's list has drifted
         id: drift-issue
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
