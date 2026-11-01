@@ -93,6 +93,8 @@ and to anyone auditing the host, rather than being recoverable only from logs.
 Then point your build tool at it: [Gradle setup](gradle.md) ·
 [Maven setup](maven.md).
 
+To move to another version later, see [upgrading and pinning](upgrading.md).
+
 ## Verify what you downloaded
 
 Do this before you install it, not after. Every release ships a

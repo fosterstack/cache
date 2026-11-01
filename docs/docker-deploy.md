@@ -18,6 +18,7 @@ tool at it — [Gradle setup](gradle.md) / [Maven setup](maven.md) — and
 you're done.
 
 Pin a version tag for anything real; `:latest` is for a first look.
+How tags move, and how to upgrade, is on [upgrading and pinning](upgrading.md).
 
 ### Verify it is working
 
