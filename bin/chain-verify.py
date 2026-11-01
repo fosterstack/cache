@@ -61,7 +61,8 @@ def load_sibling(name):
 
 _common = load_sibling("chain_common")
 Refuse, b64d, b64e, load_json, refuse, ssl_done, strict_json = (
-    _common.Refuse, _common.b64d, _common.b64e, _common.load_json, _common.refuse, _common.ssl_done, _common.strict_json)
+    _common.Refuse, _common.b64d, _common.b64e, _common.load_json, _common.refuse, _common.ssl_done,
+    _common.strict_json)
 OPENSSL = _common.OPENSSL
 chain_hostile = load_sibling("chain_hostile")
 chain_items = load_sibling("chain_items")
@@ -131,13 +132,15 @@ def check_manifest(keys_dir):
         for name, data in (("root.pub", root_raw), ("manifest.json", body), ("manifest.sig", sig)):
             with open(os.path.join(tmp, name), "wb") as f:
                 f.write(data)
-        root_der = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-outform", "DER"], capture_output=True)
+        root_der = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-outform", "DER"],
+                                  capture_output=True)
         if root_der.returncode != 0 or not root_der.stdout:
             refuse("manifest", "the root key file is not a public key")
         if not is_p256_spki(root_der.stdout):
             refuse("manifest", "the root key file is not an ECDSA P-256 key")
         verified = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "root.pub"),
-                       "-signature", os.path.join(tmp, "manifest.sig"), os.path.join(tmp, "manifest.json")], capture_output=True)
+                       "-signature", os.path.join(tmp, "manifest.sig"), os.path.join(tmp, "manifest.json")],
+                      capture_output=True)
         if not sig or verified.returncode != 0:
             refuse("manifest", "the signature of the manifest does not verify with the root key")
         m = parse_manifest_body(body)
@@ -330,8 +333,8 @@ def check_signature(stage, pol, ptype, payload, sig, tmp):
                     ("sig.bin", sig)):
         with open(os.path.join(tmp, n), "wb") as f:
             f.write(data)
-    r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "release.pub"), "-signature", os.path.join(tmp, "sig.bin"),
-            os.path.join(tmp, "pae.bin")], capture_output=True)
+    r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "release.pub"), "-signature",
+                        os.path.join(tmp, "sig.bin"), os.path.join(tmp, "pae.bin")], capture_output=True)
     # the one pass is exit status 0; openssl exits 1 for a bad signature and for an error alike, so what it said is
     # appended, not matched
     if r.returncode != 0:
@@ -477,6 +480,13 @@ def check_record_type(stage, pol, ptype, payload):
     refuse(stage, "predicate type %s is not allowed for stage %s" % (pt, stage))
 
 
+def environment_ref(att):
+    """GITHUB_REF out of a Witness environment attestation, or None when the attestation is not an object or its variables are
+    not an object (a list or a string must be a refusal for the caller, never a traceback)."""
+    variables = att.get("variables") if isinstance(att, dict) else None
+    return variables.get("GITHUB_REF") if isinstance(variables, dict) else None
+
+
 def collection_ref(stage, pol, stmt):
     """Tag binding of a Witness collection: the environment attestor (the building job runs it under Witness) records
     GITHUB_REF, and it must be the policy's ref, so a collection made at another tag, an rc tag or a branch (same
@@ -486,7 +496,7 @@ def collection_ref(stage, pol, stmt):
     if len(envs) != 1:
         refuse(stage, "ref: the collection holds %d environment attestations, not exactly one" % len(envs))
     att = envs[0].get("attestation")
-    found = ((att.get("variables") or {}).get("GITHUB_REF") if isinstance(att, dict) else None)
+    found = environment_ref(att)
     if not isinstance(found, str) or found != pol.get("ref"):
         refuse(stage, "ref: the ref inside the collection (%s) is not the policy's ref %s"
                % (json.dumps(found), pol.get("ref")))
@@ -648,8 +658,8 @@ def check_inclusion(e, rekor_pem):
             for name, data in (("key.pem", rekor_pem.encode()), ("note.bin", text.encode()), ("note.sig", blob[4:])):
                 with open(os.path.join(d, name), "wb") as f:
                     f.write(data)
-            r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "note.sig"),
-                    os.path.join(d, "note.bin")], capture_output=True)
+            r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature",
+                                os.path.join(d, "note.sig"), os.path.join(d, "note.bin")], capture_output=True)
         if r.returncode == 0:
             return None
     return "rekor entry checkpoint is not signed by the policy's rekor key"
@@ -748,8 +758,8 @@ def rekor_with_retry(fetch, sleep):
             return fetch()
         except Exception:
             if wait is None:
-                refuse("release", "rekor did not answer after one try and six retries (63 seconds): the release stops here, "
-                                  "run it again when Rekor is back")
+                refuse("release", "rekor did not answer after one try and six retries (63 seconds): the release "
+                                  "stops here, run it again when Rekor is back")
             sleep(wait)
 
 
@@ -875,7 +885,8 @@ def _release_policy(a, stage):
 def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
-    product = (a.product if "product" in a else None) or "items.json"      # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
+    # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
+    product = (a.product if "product" in a else None) or "items.json"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
         refuse("build", "product: %r is not a plain file name" % product)
     want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
@@ -1172,7 +1183,8 @@ def check_build_record(a):
             d_bytes = f.read()
     except OSError:
         refuse("sign", "digest file is missing or unreadable (format)")
-    chain_items.check_digest_bytes("build", d_bytes)       # a snapshot version in the list: refused before any signature check, from the bytes read once (REQ-CHAIN-004-AC15)
+    # a snapshot version in the list: refused before any signature check, from the bytes read once (REQ-CHAIN-004-AC15)
+    chain_items.check_digest_bytes("build", d_bytes)
     # Build's record first, as stage build, under the policy's build identity (a dry-run policy is allowed for this)
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
@@ -1371,16 +1383,19 @@ def cmd_sign(a):
 
 # ---- sign-records (the Witness move; owner Oct 22): Sign's check-and-stage step for the building jobs' local records ---------------------------------------
 # Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This step is the check that comes before Sign re-signs the
-# payloads with the release key: it signs nothing, calls no tool and reads no token. A shell step of the Sign job signs each
-# staged payload and `verify` checks the result.
+# payloads with the release key: it signs nothing, calls no tool and reads no token. A shell step of the Sign job
+# signs each staged payload and `verify` checks the result.
 SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}
 SR_CHECK_FOLDER = {"witness-scanners": "scanners", "witness-acceptance": "acceptance", "witness-runtime": "runtime", "witness-arm64": "arm64"}     # Check's four record folders, each named for its one step
 SR_CHECK_GROUPS = (("check-results", ("witness-scanners", "witness-acceptance", "witness-runtime")), ("check-results-arm64", ("witness-arm64",)))     # (artifact folder under --artifacts-dir, the records whose products it carries)
 SR_CHECK_PREFIX = "check-results/"
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
-SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}   # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in witness-rebuild/; matched in full, never by basename
-# Witness 0.12.0 writes these five attestors and no other; command-run holds what ran, its stdout and stderr and its exit code
+# a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in
+# witness-rebuild/; matched in full, never by basename
+SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}
+# Witness 0.12.0 writes these five attestors and no other; command-run holds what ran, its stdout and stderr and its
+# exit code
 SR_ATTESTORS = ("environment", "git", "material", "command-run", "product")
 GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
 ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
@@ -1468,7 +1483,7 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     for att in atts:
         if ATTESTOR_URI.fullmatch(att["type"]).group(1) == "environment":
             ev = att.get("attestation")
-            found = ((ev.get("variables") or {}).get("GITHUB_REF") if isinstance(ev, dict) else None)
+            found = environment_ref(ev)
             if not isinstance(found, str) or found != ref:
                 refuse(stage, "ref: the ref inside %s/%s (%s) is not Sign's ref %s"
                               % (name, fname, json.dumps(found), ref))
