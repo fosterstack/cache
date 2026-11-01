@@ -77,8 +77,8 @@ if "concurrency" in d and d["concurrency"] != {
         "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}",
         "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
     bad.append("the workflow's concurrency is not the reviewed block")
-if d.get("permissions") != {"contents": "read"}:
-    bad.append("the workflow permissions are not exactly {contents: read}")
+if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
+    bad.append("the workflow permissions are not exactly {contents: read, pull-requests: read}")
 on = d.get("on", {})
 if "pull_request" not in on:
     bad.append("not triggered on pull_request")
@@ -136,12 +136,13 @@ risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
 def is_risky(k):
     return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
 steps_all = job.get("steps", [])
-# the two steps whose env is judged exactly below are exempt from the name list (BASE, GITHUB_HEAD_REPO)
+# the two steps whose env is judged exactly below are exempt from the name list
+# (BASE, GITHUB_HEAD_REPO, GITHUB_QUEUE_REF)
 for where, env in [("the workflow", d.get("env")), ("the allowlist job", job.get("env"))] + \
         [(f"step {i}", st.get("env")) for i, st in enumerate(steps_all)]:
     if isinstance(env, dict):
         for k in sorted(k for k in env if is_risky(k)):
-            if where == "step 2" and k == "GITHUB_HEAD_REPO":
+            if where == "step 2" and k in ("GITHUB_HEAD_REPO", "GITHUB_QUEUE_REF"):
                 continue
             bad.append(f"{where} sets env {k}")
 # nothing that reaches every step of the allowlist job from above
@@ -161,7 +162,8 @@ for st in job.get("steps", []):
 # first, then exactly the base-ref step and exactly the check step, in that order, nothing redirecting them
 if job.get("name") != "allowlist":
     bad.append("the allowlist job is not named `allowlist` (the required-check context)")
-FETCH_RUN = """if [ -n "${BASE}" ]; then
+FETCH_RUN = """BASE="${BASE#refs/heads/}"
+if [ -n "${BASE}" ]; then
   [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
   [[ "${BASE}" != *..* ]] || exit 1
   git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
@@ -194,8 +196,10 @@ else:
     for k in plain + ("env",):
         if k in steps_[0]:
             bad.append(f"the allowlist checkout has `{k}`")
-for name, want_env in (("fetch", {"BASE": "${{ github.base_ref }}"}),
-                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}"})):
+for name, want_env in (("fetch", {"BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"}),
+                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}",
+                                  "GITHUB_QUEUE_REF": "${{ github.event.merge_group.head_ref }}",
+                                  "GH_TOKEN": "${{ github.token }}"})):
     if len(idx[name]) != 1:
         bad.append(f"the allowlist job does not have exactly one {name} step with the exact command")
         continue
@@ -247,12 +251,14 @@ CHAIN_STEPS = {
 GUARD_STEPS = [
     {
         "name": "suite floors only rise (against the merge base on a pull request)",
-        "if": "${{ github.base_ref != '' }}",
+        "if": "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
         "env": {
-            "BASE": "${{ github.base_ref }}",
+            "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}",
             "PR_BODY": "${{ github.event.pull_request.body }}"
-        },
-        "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+          },
+          "run": "BASE=\"${BASE#refs/heads/}\"\n"
+                 "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n"
+                 "  test-evidence/suite-floors.json\n"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -342,10 +348,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -448,12 +454,12 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}",
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}",
     "PR_BODY": "${{ github.event.pull_request.body }}"
    },
-   "if": "${{ github.base_ref != '' }}",
+   "if": "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
    "name": "suite floors only rise (against the merge base on a pull request)",
-   "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n  test-evidence/suite-floors.json\n"
   },
   {
    "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
@@ -580,10 +586,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -622,10 +628,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -675,6 +681,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/audit-record-test.sh"
   },
   {
+   "name": "the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)",
+   "run": "bash .github/agent/tests/queue-gate-judge-test.sh"
+  },
+  {
+   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
    "name": "admission's tag signer \u2014 the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
@@ -1019,6 +1030,8 @@ case_ allowlist-shell-override  bad "$ck['shell'] = \"bash -c 'true' {0}\""
 case_ allowlist-workdir         bad "$ck['working-directory'] = 'bin'"
 case_ allowlist-env-removed     bad "$ck.pop('env')"
 case_ allowlist-env-changed     bad "$ck['env'] = {'GITHUB_HEAD_REPO': ''}"
+case_ allowlist-queue-ref-changed bad "$ck['env']['GITHUB_QUEUE_REF'] = 'other'"
+case_ allowlist-queue-token-gone  bad "$ck['env'].pop('GH_TOKEN')"
 case_ fetch-removed             bad "$steps[:] = [s for s in $steps if 'git fetch' not in (s.get('run') or '')]"
 case_ fetch-or-true             bad "$fe['run'] = $fe['run'].rstrip() + ' || true'"
 case_ fetch-if-false            bad "$fe['if'] = 'false'"
@@ -1346,6 +1359,9 @@ case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github
 case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
+case_ job-regains-a-block        bad \
+  "d['jobs']['allowlist']['permissions'] = {'contents': 'read', 'pull-requests': 'read'}"
+case_ wf-permissions-gains-write bad "d['permissions'] = {'contents': 'read', 'pull-requests': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"
 case_ runs-on-self-hosted        bad "d['jobs']['allowlist']['runs-on'] = 'self-hosted'"

@@ -52,6 +52,7 @@
  "pin-audit-test.sh": 173,
  "pin-wiring-test.sh": 654,
  "pip-pin-test.sh": 263,
+ "queue-gate-judge-test.sh": 58,
  "refresh-inputs-test.sh": 342,
  "release-notes-signed-test.sh": 11,
  "release-patch-wiring-test.sh": 196,

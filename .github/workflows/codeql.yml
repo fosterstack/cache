@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
   schedule:
     # Daily, so drift in CodeQL's own query packs still gets applied to
     # the current tree even on weeks with no code changes.

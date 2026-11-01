@@ -5,7 +5,7 @@
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
 # held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `image-signatures` (pull_request),
+#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request, merge_group), `image-signatures` (pull_request),
 #   `daily-audit` (schedule), `rerun-held` (schedule)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -38,24 +38,30 @@ CANONICAL_RUNS = {
     'pin-age':
         'set -uo pipefail\n'
         'status=0\n'
+        "# a pull request is read at its own base and head; the merge queue at the queue's "
+        '(REQ-DEP-005-AC2);\n'
+        '# an empty one fails\n'
+        'BASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"\n'
+        'HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"\n'
+        ': "${BASE_SHA:?no base commit to compare: this check fails}" \\\n'
+        '  "${HEAD_SHA:?no head commit to compare: this check fails}"\n'
         "# 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop\n"
-        'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ '
-        'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n'
+        'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \\\n'
+        '  --head "$HEAD_SHA" || status=1\n'
         "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
         'exceptions=trusted/.github/supply-chain-exceptions.json\n'
         'if [ ! -f "$exceptions" ]; then\n'
         '  exceptions="$RUNNER_TEMP/no-exceptions.json"\n'
         '  echo \'{"exceptions": []}\' > "$exceptions"\n'
         'fi\n'
-        'python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ '
-        'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions '
-        '"$exceptions" --report-only || status=1\n'
+        'python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head '
+        '"$HEAD_SHA" \\\n'
+        '  --exceptions "$exceptions" --report-only || status=1\n'
         'exit $status\n',
     'daily-audit':
         'python3 .github/agent/supply-chain/pin-audit.py --observations-out '
         '"$RUNNER_TEMP/tag-observations/state.json"',
-    'rerun-held':
-        'python3 .github/agent/supply-chain/pin-audit.py --rerun-held',
+    'rerun-held': 'python3 .github/agent/supply-chain/pin-audit.py --rerun-held',
 }
 
 
@@ -127,7 +133,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
         bad.append("pin-age stops at the first failure: the age check and the advisory audit must both run, and the job fails if either did")
-    if "${{ github.event.pull_request.base.sha }}" not in runs or "${{ github.event.pull_request.head.sha }}" not in runs:
+    if ("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" not in runs
+            or "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" not in runs):
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
     j = jobs["daily-audit"]
@@ -214,7 +221,11 @@ def judge_wf(d, real=False):
                     or set(pw) != {"path", "fetch-depth", "persist-credentials"}):
                 bad.append(f"{jn}'s checkouts take inputs other than the ratified ones "
                            "(e.g. sparse-checkout would empty the trusted checker)")
-            base_ok = (tw.get("ref") == "${{ github.event.pull_request.base.sha }}" and tw.get("path") == "trusted"
+            # pin-age also runs in the merge queue (REQ-DEP-005-AC2); image-signatures is a pull_request check only
+            ref = "${{ github.event.pull_request.base.sha }}"
+            if jn == "pin-age":
+                ref = "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
+            base_ok = (tw.get("ref") == ref and tw.get("path") == "trusted"
                        and str(tw.get("persist-credentials")).lower() == "false")
             if not base_ok:
                 bad.append(f"{jn}'s trusted checkout is not the BASE sha at path trusted "
@@ -233,7 +244,7 @@ def judge_wf(d, real=False):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
-    PR_IF = "github.event_name == 'pull_request'"
+    PR_IF = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
     for name, jj in jobs.items():
         for st in jj.get("steps", []):
             # a step may not be skipped, tolerated or cut short: the only conditions are the ratified ones
@@ -449,7 +460,10 @@ def live_pin_age(age_exit=None, bound="1"):
     steps = [x["run"] for x in real_wf["jobs"]["pin-age"]["steps"] if "pin-age-check" in str(x.get("run", ""))]
     if len(steps) != 1 or steps[0].count(AGE) != 1:
         return "the step does not hold `timeout -v 540 ` exactly once"
-    text = (steps[0].replace(AGE, f"timeout -v {bound} ").replace("${{ github.event.pull_request.base.sha }}", "b")
+    text = (steps[0].replace(AGE, f"timeout -v {bound} ")
+            .replace("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}", "b")
+            .replace("${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}", "h")
+            .replace("${{ github.event.pull_request.base.sha }}", "b")
             .replace("${{ github.event.pull_request.head.sha }}", "h"))
     with tempfile.TemporaryDirectory() as d:
         stub = os.path.join(d, "stub"); os.mkdir(stub)
