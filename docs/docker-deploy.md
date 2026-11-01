@@ -235,6 +235,8 @@ this project deliberately avoids.
 enabled. `/healthz` and `/metrics` stay open, so liveness probes and Prometheus
 scrapers need no credentials.
 
+What the landing page and `/statusz` show: [status page](status-page.md).
+
 ## Resetting the cache
 
 There is no purge endpoint and no admin UI, by design — see
