@@ -1109,8 +1109,9 @@ def body_of(f, rb, owner, ran, today):
 # ---------- history: what we ran in the last 90 days ----------
 # The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is
 # never read partially, pin-inventory MAX_LINE). A revision is skipped instead only when it is named below by its
-# FULL lowercase 40-hex sha with its own reason, and only when its pins are all in the readable revisions' items.
-# Each sits in a branch's history, so without the skip every audit would stop at it for the 90-day lookback.
+# FULL lowercase 40-hex sha with its reason. A revision is listed only after a check that its pins are all in the
+# readable revisions' items (the listing change quotes it); each sits in a branch's history, so without the skip
+# every audit would stop at it for the 90-day lookback.
 # Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
 # revision is added to this list only by a reviewed change that names it.
 P1P5_REASON = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
