@@ -90,6 +90,11 @@ import os, sys
 a = sys.argv[1:]
 log = os.environ["LOG"]
 open(log + "/cv.log", "a").write(" ".join(a) + "\n")
+if a[:1] == ["verify"]:
+    n = 0
+    for dp, dn, fn in os.walk(os.environ["RUNNER_TEMP"]):
+        n += len([f for f in fn if "token" in f])
+    open(log + "/verify.tokens", "a").write("%d\n" % n)
 if a[:2] == ["policy", "make"]:
     open(a[a.index("--out") + 1], "w").write("{}")
 if a[:1] == ["sign-record"]:
@@ -105,6 +110,14 @@ if a[:1] == ["sign-record"]:
     open(log + "/signrec.env", "a").write("ROLE=%s TOKFILE=%s TOKEXISTS=%s REQ=%s|%s|%s\n" % (
         os.environ.get("AWS_ROLE_ARN", "UNSET"), tf, "yes" if os.path.isfile(tf) else "no", os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "UNSET"),
         os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "UNSET"), os.environ.get("ACTIONS_RUNTIME_TOKEN", "UNSET")))
+    prior = ""
+    try:
+        for l in open(log + "/inner.log"):
+            if l.startswith("AWS_WEB_IDENTITY_TOKEN_FILE="):
+                prior = l.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    open(log + "/signrec.prior", "a").write("PRIOR=%s EXISTS=%s\n" % (prior or "none", os.path.exists(prior) if prior else "none"))
     open(log + "/signrec.payload", "wb").write(open(a[a.index("--payload") + 1], "rb").read())
     if os.environ.get("FAKE_SIGN_RC"):
         sys.exit(int(os.environ["FAKE_SIGN_RC"]))
@@ -248,6 +261,15 @@ def problems_witnessed(text):
         bad.append("release-sign: the order is not a token for its own signing script, Witness, a fresh token, sign-record: %r" % read(os.path.join(log2, "seq")).split())
     if "RTFILES 1" not in inner2:
         bad.append("release-sign: the token file does not exist while its script runs")
+    # A2 (#822 round 2): Witness's own environment holds no AWS variable and no token path for ANY step (the signing step's variables reach only its wrapped command); the token made for that
+    # command is removed before the fresh one for sign-record is fetched
+    if (lines(log2, "witness.log", "ROLE") or [""])[0] != "UNSET" or (lines(log2, "witness.log", "TOKFILE") or [""])[0] != "UNSET":
+        bad.append("release-sign: Witness itself sees AWS_ROLE_ARN or a token path: %r %r" % ((lines(log2, "witness.log", "ROLE") or [""])[0], (lines(log2, "witness.log", "TOKFILE") or [""])[0]))
+    pr2 = read(os.path.join(log2, "signrec.prior")).strip()
+    tf2 = re.search(r"TOKFILE=(\S+)", (read(os.path.join(log2, "signrec.env")).splitlines() or [""])[0])
+    mprior = re.fullmatch(r"PRIOR=(\S+) EXISTS=(\S+)", pr2)
+    if not mprior or mprior.group(1) == "none" or mprior.group(2) != "False" or (tf2 and mprior.group(1) == tf2.group(1)):
+        bad.append("release-sign: the token made for the wrapped script is not removed, as a separate file, before sign-record's fresh one: %r" % pr2)
     # a failing Witness: its exit status is kept and the token directory is gone
     t3, repo3, log3, runner3, r3 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_RC": "7"})
     d3 = ""
@@ -376,6 +398,9 @@ def problems_staged(text):
             bad.append("the token file is not under RUNNER_TEMP")
         if os.path.exists(os.path.dirname(tokfile)):
             bad.append("the token directory still exists after success")
+    vt = read(os.path.join(log, "verify.tokens")).split()
+    if vt != ["0"]:
+        bad.append("a token file is still on disk when the signed record is checked (each token is removed right after its sign call): %r" % vt)
     cv = read(os.path.join(log, "cv.log"))
     if "policy make" not in cv or not re.search(r"^verify --policy policy\.json --stage build --record .*build-collection\.json$", cv, re.M):
         bad.append("the signed record is not checked with the verifier under the policy made for the ref: %r" % cv[:200])
@@ -443,7 +468,109 @@ mutant2("no cleanup of the token directory", lambda s: re.sub(r"^trap .*\n", "",
 mutant2("the signed record not checked", lambda s: re.sub(r"^  python3 -I -B bin/chain-verify.py verify .*\n", "", s, flags=re.M))
 mutant2("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'))
 
-EXPECT = 31
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# bin/with-aws-token.sh CMD...: the one copy of the token fetch for a signing call of its own (A1, #822 round 2: the provenance signature of the Sign job)
+
+PROBE = r'''#!/usr/bin/env bash
+t="${AWS_WEB_IDENTITY_TOKEN_FILE-UNSET}"
+{
+  echo "TOKFILE $t"
+  if [ -f "$t" ]; then
+    echo "MODE $(stat -c %a "$t")"; echo "DIRMODE $(stat -c %a "$(dirname "$t")")"; echo "CONTENT $(cat "$t")"
+  fi
+  echo "REQ ${ACTIONS_ID_TOKEN_REQUEST_TOKEN-UNSET}|${ACTIONS_ID_TOKEN_REQUEST_URL-UNSET}|${ACTIONS_RUNTIME_TOKEN-UNSET}"
+  echo "ROLE ${AWS_ROLE_ARN-UNSET} ${AWS_REGION-UNSET} ${RELEASE_KMS_KEY_REF-UNSET}"
+  echo "ARGS $*"
+} >> "$LOG/probe.log"
+echo probe >> "$LOG/seq"
+exit "${FAKE_PROBE_RC:-0}"
+'''
+
+
+def run_wrapper(text, extra=None, drop=(), args=("bin/probe.sh", "a", "b")):
+    t, repo, log, runner, fakebin = tree("with-aws-token.sh", text)
+    sh(os.path.join(repo, "bin", "probe.sh"), PROBE)
+    e = env_of(t, log, runner, fakebin, extra, drop)
+    r = subprocess.run(["bash", "bin/with-aws-token.sh"] + list(args), cwd=repo, env=e, capture_output=True, text=True, timeout=60)
+    return t, repo, log, runner, r
+
+
+def problems_wrapper(text):
+    bad = []
+    t, repo, log, runner, r = run_wrapper(text)
+    pl = read(os.path.join(log, "probe.log"))
+    tf = (lines(log, "probe.log", "TOKFILE") or [""])[0]
+    if r.returncode != 0:
+        bad.append("exit %d: %s" % (r.returncode, r.stderr.strip()[:120]))
+    if (lines(log, "probe.log", "ARGS") or [""])[0] != "a b":
+        bad.append("the command is not run with its own arguments: %r" % pl[:200])
+    if "MODE 600" not in pl or "DIRMODE 700" not in pl or ("CONTENT " + TOKEN) not in pl:
+        bad.append("the command does not see a mode 0600 token file in a 0700 directory holding exactly the token: %r" % pl[:300])
+    if not tf or tf == "UNSET" or not os.path.realpath(tf).startswith(os.path.realpath(runner) + os.sep) or os.path.realpath(tf).startswith(os.path.realpath(repo) + os.sep):
+        bad.append("the token file is not under RUNNER_TEMP outside the repository: %r" % tf)
+    if (lines(log, "probe.log", "REQ") or [""])[0] != "UNSET|UNSET|UNSET":
+        bad.append("the command sees a request variable")
+    if not (lines(log, "probe.log", "ROLE") or [""])[0].startswith(ROLE + " us-east-1 " + KEY):
+        bad.append("the command does not keep the role, the region and the key reference: %r" % (lines(log, "probe.log", "ROLE") or [""])[0])
+    loops = read(os.path.join(log, "loop.log")).splitlines()
+    if len(loops) != 1 or not loops[0].endswith("&audience=sts.amazonaws.com"):
+        bad.append("the token is not asked for exactly once with audience sts.amazonaws.com: %r" % loops)
+    if tf and tf != "UNSET" and os.path.exists(os.path.dirname(tf)):
+        bad.append("the token directory still exists after the command")
+    if TOKEN in r.stdout.replace("::add-mask::" + TOKEN, "") or TOKEN in r.stderr:
+        bad.append("the token is in the output")
+    if read(os.path.join(log, "github_env")):
+        bad.append("something was written to GITHUB_ENV")
+    shutil.rmtree(t, ignore_errors=True)
+    t2, repo2, log2, runner2, r2 = run_wrapper(text, {"FAKE_PROBE_RC": "7"})
+    if r2.returncode != 7 or os.listdir(runner2):
+        bad.append("the command's exit status (7) is not kept or a token directory is left (exit %d, left %r)" % (r2.returncode, os.listdir(runner2)))
+    shutil.rmtree(t2, ignore_errors=True)
+    for label, extra, drop in (("an empty token", {"FAKE_TOKEN": ""}, ()), ("a null token", {"FAKE_TOKEN": "null"}, ()), ("a failed fetch", {"FAKE_FETCH_FAIL": "1"}, ()),
+                               ("no role", {}, ("AWS_ROLE_ARN",)), ("no region", {}, ("AWS_REGION",)), ("no key reference", {}, ("RELEASE_KMS_KEY_REF",)), ("no RUNNER_TEMP", {}, ("RUNNER_TEMP",))):
+        t3, repo3, log3, runner3, r3 = run_wrapper(text, extra, drop)
+        if r3.returncode == 0 or os.path.exists(os.path.join(log3, "probe.log")):
+            bad.append("%s: the command ran or the wrapper did not fail (exit %d)" % (label, r3.returncode))
+        if label != "no RUNNER_TEMP" and os.listdir(runner3):
+            bad.append("%s: a token directory is left behind" % label)
+        shutil.rmtree(t3, ignore_errors=True)
+    t4, repo4, log4, runner4, r4 = run_wrapper(text, args=())
+    if r4.returncode == 0:
+        bad.append("no command given: the wrapper did not fail")
+    shutil.rmtree(t4, ignore_errors=True)
+    return bad
+
+
+wp = os.path.join(root, "bin", "with-aws-token.sh")
+if not os.path.exists(wp):
+    check("with-aws-token.sh exists: the provenance signature and the staged records share one token fetch", False, "bin/with-aws-token.sh is missing")
+    src3 = None
+else:
+    src3 = open(wp).read()
+    b3 = problems_wrapper(src3)
+    check("with-aws-token.sh: a fresh token to a private file for one command, removed right after, nothing else sees it", not b3, "; ".join(b3))
+
+
+def mutant3(label, fn):
+    if src3 is None:
+        check("with-aws-token.sh mutant caught: %s" % label, False, "bin/with-aws-token.sh is missing")
+        return
+    text = fn(src3)
+    if text == src3:
+        check("mutant (%s) changed nothing: the mutation is wrong" % label, False)
+        return
+    check("with-aws-token.sh mutant caught: %s" % label, bool(problems_wrapper(text)), "caught nothing")
+
+
+mutant3("audience sigstore", lambda s: s.replace("audience=sts.amazonaws.com", "audience=sigstore"))
+mutant3("the token directory is not removed", lambda s: re.sub(r"^trap .*\n", "", s, flags=re.M).replace('rm -rf "$td"\n', ""))
+mutant3("the command's exit status lost", lambda s: s.replace('exit "$rc"', "exit 0"))
+mutant3("a null token accepted", lambda s: s.replace('[ -n "$tok" ] && [ "$tok" != null ] || ', "true || "))
+mutant3("the request variables stay in the command's environment", lambda s: re.sub(r"^unset ACTIONS_ID_TOKEN_REQUEST_TOKEN.*\n", "", s, flags=re.M))
+mutant3("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
+
+
+EXPECT = 38
 print("pass=%d fail=%d" % (passn, failn))
 if passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT))

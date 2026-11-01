@@ -147,6 +147,15 @@ def gate(label, mutate, word=None):
 gate("a complete release directory passes", lambda a: None)
 gate("a Witness record with no entries file beside it is refused, naming the missing file", lambda a: os.remove(a + "/build-collection.rekor.json"), "build-collection.rekor.json")
 gate("an entries file with no record beside it is refused, naming it", lambda a: open(a + "/other-collection.rekor.json", "w").write("{}"), "other-collection.rekor.json")
+# A3 (#822 round 2): the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or release-files.sha256 already covers
+def _sum_add(a, n):
+    open(a + "/checksums.txt", "a").write("%s  %s\n" % (hashlib.sha256(open(os.path.join(a, n), "rb").read()).hexdigest(), n))
+def _orphan_checksummed(a):
+    open(a + "/orphan-collection.rekor.json", "w").write("{}"); _sum_add(a, "orphan-collection.rekor.json")
+def _record_checksummed_no_entries(a):
+    open(a + "/lone-collection.json", "w").write("{}"); _sum_add(a, "lone-collection.json")
+gate("a checksummed entries file with no record beside it is refused, naming it", _orphan_checksummed, "orphan-collection.rekor.json")
+gate("a checksummed record with no entries file beside it is refused, naming the missing file", _record_checksummed_no_entries, "lone-collection.rekor.json")
 gate("an asset in neither checksums.txt nor release-files.sha256 nor with a bundle is refused, naming it", lambda a: open(a + "/stray.txt", "w").write("x"), "stray.txt")
 gate("a bundle whose signed file is not an asset is refused", lambda a: open(a + "/ghost.json.bundle", "w").write("{}"), "ghost.json.bundle")
 gate("a file listed in checksums.txt that is not an asset is refused", lambda a: open(a + "/checksums.txt", "a").write("%s  gone.tar.gz\n" % ("0" * 64)), "gone.tar.gz")
@@ -272,7 +281,7 @@ check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "109"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "111"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
