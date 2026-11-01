@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
 # evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
@@ -9,6 +9,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
+work_am=$work/am.out
 
 judge() { python3 - "$1" "$2" <<'PY'
 import re, sys, yaml
@@ -49,6 +50,15 @@ if kind == "reviewer":
             bad.append(f"{k} does not come from its environment secret")
     if re.search(r"\bclaude-[a-z0-9]|ANTHROPIC_API_KEY", open(path).read()):
         bad.append("a model id or an API key is written into the workflow")
+    # advisor Oct 12: the pinned tool module tools/govulncheck is held out of auto-merge and handled as a normal lane PR (both Codex seats review it, a lane merges it): a bump there is never armed, because its version is also written in ci.yml, which
+    # Dependabot cannot change (the PR's own files are read, so the hold does not depend on a metadata output)
+    cand = [s for s in job.get("steps", []) if s.get("id") == "candidates"]
+    cr = cand[0].get("run") or "" if cand else ""
+    hold = cr.find('startswith("tools/govulncheck/")')
+    if "(.files | length) >= 100" not in cr:
+        bad.append("a PR whose file list is at the API's cap of 100 is not held (it cannot be judged: the candidates step must hold >= 100 files)")
+    if hold < 0 or "--json number,title,body,headRefOid,files" not in cr or hold > cr.find("dependabot-reviewer.py updates") or "pr merge --disable-auto" not in cr[hold:cr.find("dependabot-reviewer.py updates")]:
+        bad.append("a PR that touches tools/govulncheck/ is not held (the candidates step must read the PR's files first, disarm it and skip it, never review or arm it)")
     # REQ-DEP-001-AC10: the candidate step and the hold issue select major OR flagged, never majors only
     cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
     if len(cand) != 1 or "select(.major or .flagged)" not in cand[0] or "select(.major)" in cand[0]:
@@ -176,6 +186,13 @@ elif kind == "automerge":
         bad.append("auto-merge is not bound to the head this run screened (--match-head-commit \"$HEAD_SHA\")")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
+    else:
+        ar = steps[arm[0]].get("run") or ""
+        hold, merge = ar.find('startswith("tools/govulncheck/")'), ar.find("gh pr merge --auto --squash")
+        if '-ge 100' not in ar[:merge]:
+            bad.append("auto-merge is armed for a PR whose file list is at the API's cap of 100 (it cannot be judged: the arming step must hold >= 100 files)")
+        if hold < 0 or hold > merge or "--json files" not in ar[:merge] or "exit 0" not in ar[hold:merge]:
+            bad.append("auto-merge is armed for a PR that touches tools/govulncheck/ (the arming step must read the PR's files and leave the PR out of auto-merge before it merges: a normal lane PR)")
     major = "${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}"
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
@@ -282,6 +299,63 @@ case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['ru
 case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
+
+# the pinned tool module is held out of auto-merge, a normal lane PR (advisor Oct 12); a list at the API's cap of 100 files cannot be judged and is held too
+case_ automerge $A automerge-hold-removed  bad "[s.__setitem__('run', s['run'].replace('startswith(\"tools/govulncheck/\")', 'startswith(\"tools/other/\")')) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ automerge $A automerge-hold-after    bad "[s.__setitem__('run', 'gh pr merge --auto --squash \"\$PR_URL\"\\n' + s['run']) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ reviewer  $R reviewer-hold-removed   bad "[s.__setitem__('run', s['run'].replace('startswith(\"tools/govulncheck/\")', 'startswith(\"tools/other/\")')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer  $R reviewer-hold-no-files  bad "[s.__setitem__('run', s['run'].replace('number,title,body,headRefOid,files', 'number,title,body,headRefOid')) for s in $rs if s.get('id') == 'candidates']"
+case_ automerge $A automerge-cap-widened   bad "[s.__setitem__('run', s['run'].replace('-ge 100', '-ge 101')) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ automerge $A automerge-cap-removed   bad "[s.__setitem__('run', s['run'].replace('-ge 100', '-ge 0 -a 1 -eq 2')) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ reviewer  $R reviewer-cap-widened    bad "[s.__setitem__('run', s['run'].replace('>= 100', '>= 101')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer  $R reviewer-cap-removed    bad "[s.__setitem__('run', s['run'].replace('(.files | length) >= 100', 'false')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer  $R reviewer-hold-no-disarm bad "[s.__setitem__('run', s['run'].replace('--disable-auto', '--help')) for s in $rs if s.get('id') == 'candidates']"
+
+# Codex 4b-5 r1 (A B4, B B3): the arming step is EXECUTED against a double of gh, not only read: held paths and the cap arm nothing, a lookalike directory and 99 files
+# arm against the head that was read, an unreadable PR stops the step, and the arm always carries --match-head-commit
+python3 - "$root/.github/workflows/$A" > "$work_am" 2>&1 <<'PY' && { pass=$((pass+1)); echo "PASS the arming step, executed against a gh double: held, lookalike, 99, 100, unreadable and head-bound cases"; } || { failn=$((failn+1)); echo "FAIL the arming step executed against a gh double: $(head -c 400 "$work_am")"; }
+import json, os, stat, subprocess, sys, tempfile, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+step = [s for s in d["jobs"]["auto-merge"]["steps"] if s.get("name") == "enable auto-merge"]
+assert len(step) == 1, "no single `enable auto-merge` step"
+run = step[0]["run"]
+HEAD = "a" * 40
+def case(files, view_rc=0, head=HEAD, screened=HEAD):
+    t = tempfile.mkdtemp()
+    os.makedirs(t + "/bin")
+    open(t + "/snap.json", "w").write(json.dumps({"files": [{"path": f} for f in files], "headRefOid": head}))
+    open(t + "/bin/gh", "w").write('#!/bin/sh\necho "gh $*" >> "$LOGF"\ncase "$1 $2" in\n  "pr view") [ "${VIEW_RC:-0}" = 0 ] || exit 1; cat "$SNAP" ;;\n  "pr merge") exit 0 ;;\n  *) exit 3 ;;\nesac\n')
+    os.chmod(t + "/bin/gh", 0o755)
+    open(t + "/step.sh", "w").write(run)
+    env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"], LOGF=t + "/log", SNAP=t + "/snap.json", VIEW_RC=str(view_rc),
+               GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x", HEAD_SHA=screened, **{"PR_URL": "https://github.com/o/r/pull/7"})
+    r = subprocess.run(["bash", t + "/step.sh"], env=env, capture_output=True, text=True)
+    log = open(t + "/log").read().splitlines() if os.path.exists(t + "/log") else []
+    return r.returncode, [l for l in log if l.startswith("gh pr merge")]
+bad = []
+rc, m = case(["tools/govulncheck/go.mod"])
+if rc != 0 or m: bad.append("a PR that touches tools/govulncheck/ was armed or the step failed: %s %s" % (rc, m))
+rc, m = case(["docs/a.md", "tools/govulncheck/go.sum", "go.mod"])
+if rc != 0 or m: bad.append("a mixed PR that touches tools/govulncheck/ was armed: %s %s" % (rc, m))
+rc, m = case(["tools/govulncheck-extra/a.go", "go.mod", "go.sum"])
+if rc != 0 or len(m) != 1 or "--match-head-commit " + HEAD not in m[0] or "--auto" not in m[0] or "--squash" not in m[0]:
+    bad.append("a lookalike directory was held, or the arm is not bound to the head that was read: %s %s" % (rc, m))
+rc, m = case(["f%d.md" % i for i in range(99)])
+if rc != 0 or len(m) != 1 or "--match-head-commit " + HEAD not in m[0]: bad.append("99 files were not armed against the head: %s %s" % (rc, m))
+rc, m = case(["f%d.md" % i for i in range(100)])
+if rc != 0 or m: bad.append("a list of 100 files was armed (it cannot be judged): %s %s" % (rc, m))
+rc, m = case(["go.mod"], view_rc=1)
+if rc == 0 or m: bad.append("an unreadable PR did not stop the step or was armed: %s %s" % (rc, m))
+rc, m = case(["go.mod"], head="")
+if rc == 0 or m: bad.append("a PR with no readable head was armed: %s %s" % (rc, m))
+# main's binding (REQ-DEP-001, cache#489 line): the arm is bound to the head THIS RUN SCREENED; a PR that has a newer head by now is not armed, and an unusable screened head stops the step
+rc, m = case(["go.mod"], head="b" * 40)
+if rc != 0 or m: bad.append("a PR with a newer head than the one the run screened was armed: %s %s" % (rc, m))
+rc, m = case(["go.mod"], screened="")
+if rc == 0 or m: bad.append("an empty screened head armed or did not stop the step: %s %s" % (rc, m))
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
 
 # REQ-DEP-003-AC2: the disarm step, run for real against a stub gh: armed with no verdict on the current head -> disarmed (the reviewer's
 # next pass puts the arm back if it had approved the head: its own test covers that side, from GitHub's event record); not armed -> nothing;

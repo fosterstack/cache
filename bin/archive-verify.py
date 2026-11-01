@@ -9,12 +9,13 @@
   archive-verify.py make-pointer --dir DIR --digest sha256:HEX --out FILE   write the pointer naming that artifact and DIR's files
 
 Exit codes: 0 ok, 1 verification failed (names the file), 2 refused (bad input).
-This file reads nothing from its caller's surroundings and runs no other program; it uses hashlib, json, os, re and sys only.
+This file reads nothing from its caller's surroundings and runs no other program; it uses hashlib, json, os, re, signal and sys only.
 """
 import hashlib
 import json
 import os
 import re
+import signal
 import sys
 
 REPO = "ghcr.io/fosterstack/cache-archive"
@@ -263,6 +264,10 @@ def cmd_unpack(a):
     stage = out + ".stage"
     if os.path.lexists(stage):
         die("%s exists" % stage)
+    # a terminating signal during the extraction must run the cleanup below: the default SIGTERM action ends the process without it
+    # (REQ-ARCHIVE-001-AC6: an interrupted pull leaves nothing at the output path or beside it)
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
     try:
         for L in layers:
             p = os.path.join(stage, L["annotations"][T_TITLE])
@@ -275,8 +280,19 @@ def cmd_unpack(a):
             die("the unpacked files do not match the pointer:\n  %s" % "\n  ".join(problems), 1)
         os.rename(stage, out)
     except BaseException:
+        _ignore_signals()           # whatever failed, the cleanup that follows is not interrupted by a signal
         remove_tree(stage)          # a failed or interrupted extraction leaves neither the stage nor the output behind
         raise
+
+
+def _stop(signum, frame):
+    _ignore_signals()          # a second signal must not interrupt the cleanup the first one starts
+    raise SystemExit(128 + signum)
+
+
+def _ignore_signals():
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def remove_tree(path):

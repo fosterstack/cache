@@ -8,11 +8,11 @@
 A self-hosted, drop-in remote build cache for **Gradle** — and for **Maven**
 through the Apache Maven Build Cache Extension (acceptance-tested on every
 push and release). Ships as
-a single static binary or a distroless container image, MIT-licensed, with
+a single static binary or a minimal container image (no shell, no base image), MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is keylessly signed (Sigstore); every binary archive is covered by a
-signed checksums file; both carry SLSA provenance naming the CI run that built
-them. ["Verifying a release"][releasing-verify] has the commands.
+signed checksums file; the release pipeline's Sign stage signs a SLSA
+provenance statement that names every image by digest. ["Verifying a release"][releasing-verify] has the commands.
 
 **Website:** [fosterstack.com](https://fosterstack.com) · **Docs:**
 [Install](docs/install.md) · [Docker](docs/docker-deploy.md) ·
@@ -23,10 +23,8 @@ them. ["Verifying a release"][releasing-verify] has the commands.
 
 ## Why this exists
 
-Gradle Inc. is discontinuing the free, standalone [Develocity Build Cache
-Node][bcn-eol] — no further distribution, support, or updates after
-**December 31, 2026**. Teams running the free cache node on open-source
-Gradle (no Develocity subscription) need a maintained, drop-in replacement.
+Teams that run a free, standalone build cache node for open-source Gradle need a
+maintained, drop-in replacement.
 FosterStack Cache speaks Gradle's documented [`HttpBuildCache`][gradle-http]
 protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
 Maven Build Cache Extension][maven-cache]'s remote HTTP mode
@@ -37,7 +35,6 @@ restores its second build from the remote cache with byte-identical jars,
 and wrong or missing credentials fail the documented way. The Maven suite is a
 release-blocking check.
 
-[bcn-eol]: https://docs.develocity.ai/bcn/21.2/
 [gradle-http]: https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote
 [maven-cache]: https://maven.apache.org/extensions/maven-build-cache-extension/
 
@@ -55,7 +52,7 @@ Shipped:
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
-  (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
+  (production and `-fips`) on GHCR, plus bare binaries and a signed
   checksums file. Every release is built only by CI, once. The images are assembled
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
@@ -108,8 +105,9 @@ withheld from the free tier for security.
 The security evidence itself is public and free: SBOMs, SLSA provenance,
 signatures, VEX statements, and the FIPS 140-3 module certificate number are
 published with every release and verifiable by anyone, with no account and
-no purchase. Scan verdicts are visible in the public CI logs; they are not
-yet attached to releases as durable, digest-bound evidence. The FIPS-mode image is publicly pullable too.
+no purchase. From v0.3.0 each release carries signed Check records that bind the <!-- pinned: historical -->
+scan results, by hash, to the image digests they cover; the results file itself
+is not attached. The FIPS-mode image is publicly pullable too.
 What the Compliance tier sells is the authored analysis, the vendor signature,
 and the hours — never access to the bytes or the evidence.
 
@@ -137,25 +135,22 @@ run — there is no primary platform.
 
 | Artifact | Platforms |
 |---|---|
-| Binaries (`fscache`) | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` |
+| Binaries (`fscache`) | `linux/amd64`, `linux/arm64` |
 | FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
-| Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
+| Container images (prod, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
 
 ### Image variants
 
 | Tag | Shell | Use |
 |---|---|---|
 | `X.Y.Z` | none | Production |
-| `X.Y.Z-debug` | busybox at `/busybox/sh` | Interactive troubleshooting |
 | `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
 
-Production and `-fips` are distroless: the `fscache` binary and nothing
-else, so there is no shell to exec into and no package manager to patch.
-`:debug` adds busybox for troubleshooting, and its shell is at
-**`/busybox/sh`** — distroless has no `/bin/sh`, unlike Debian, Alpine or
-Wolfi. See
-[the variant docs](docs/verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect)
-and [troubleshooting](docs/docker-deploy.md#troubleshooting-with-the-debug-image).
+Both images hold only the `fscache` binary and the few packages it needs
+(base layout, CA certificates, time zone data): there is no base image, no
+shell to exec into and no package manager. To troubleshoot, attach a second
+container from the outside ([below](#debugging-a-running-container)); see also
+[the variant docs](docs/verify-images.md).
 
 FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
 Linux, so a macOS FIPS build would double CI time for a configuration nobody
@@ -169,11 +164,10 @@ unit: **[docs/install.md](docs/install.md)**.
 
 ## Debugging a running container
 
-The production and `-fips` images contain only the `fscache` binary, with no
-shell, so you debug them from the outside by attaching a second container that
-carries the tools. Three ways below. The two Docker ones were run against this
-image on Oct 9 2026; `kubectl debug` was checked against the Kubernetes
-documentation only (details at the end of this section).
+The production and `-fips` images have no shell, so you debug them from the
+outside by attaching a second container that carries the tools. Three ways
+below. None of them has been run against a v0.3 image yet (details at the end
+of this section).
 
 **Kubernetes: `kubectl debug`.** An ephemeral debug container joins the running
 pod (stable since Kubernetes v1.25):
@@ -190,8 +184,8 @@ its processes (the container runtime has to support that). The pod's network is
 shared, so `127.0.0.1:8080` is the cache. Use any image that already has the
 tools you need. The debug container inherits the pod's security context: with
 the Deployment in [docs/kubernetes.md](docs/kubernetes.md) (`runAsNonRoot`, user
-65532) it runs as that non-root user, so it cannot install packages (an image
-such as `wolfi-base` with `apk add` needs a pod that allows root). An ephemeral container
+65532) it runs as that non-root user, so it cannot install packages (a tools
+image that installs packages needs a pod that allows root). An ephemeral container
 cannot be changed or removed once added; it goes away with the pod. To debug a
 modified copy instead, use `kubectl debug <pod> -it --copy-to=<new-name>
 --image=...`, and for the node itself `kubectl debug node/<node> -it
@@ -214,23 +208,18 @@ Desktop may still need one. See
 
 **Docker without `docker debug`** works on any Docker, with no plan or sign-in:
 start a tools container that shares the cache container's network and process
-namespaces. (This is the no-shell route; the `:debug` image variant and its
-`/busybox/sh` are described in the
-[troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image).)
+namespaces. (This is the no-shell route; the images have no shell of their own.)
 
 ```sh
 docker run --rm -it --network=container:<name> --pid=container:<name> \
-  cgr.dev/chainguard/wolfi-base sh
-# inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
+  busybox:1.37 sh
+# inside it: wget -qO- http://127.0.0.1:8080/healthz, then ps
 ```
 
-What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47 <!-- pinned: upstream -->) gave a
-root shell on a running `fscache` container; the plain-Docker command above
-reached `/healthz` (HTTP 200) on `127.0.0.1:8080` and listed `fscache` as PID 1;
-`wolfi-base` runs as root and `apk add curl` works in it; `busybox:1.37` run as user 65532 (as the pod's security context would) read `/healthz` with `wget` and listed `fscache`. The tool images in the
-examples are not pinned; pin them by digest in anything you automate.
-`kubectl debug` was checked against the Kubernetes documentation but not run
-against a cluster here.
+The tool images in the examples are not pinned; pin them by digest in anything
+you automate. These commands were written for the v0.3 images and have not been
+run against one here; `kubectl debug` was checked against the Kubernetes
+documentation only.
 
 ## Build and run from source
 
@@ -300,7 +289,8 @@ before implementation. CI fails if the matrix drifts from its sources.
 
 ## Security
 
-- Static binary, zero CGO, no OS package surface to patch.
+- Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
+  time zone data), patched by a new image, not on a running one.
 - Approved-only cryptography is enforced by the validated module itself, not
   by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
   Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A

@@ -150,14 +150,15 @@ def _handle(req, client):
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
-    cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
-                            "risk_acceptance") if c in text), "under_investigation")
-    ans = {"refused": "cannot" in text.lower() and cat == "under_investigation",
-           "category": cat, "proposed": True, "token_usage": _usage(msg)}
+    # the category and the refusal are read from the JSON answer's own keys, exact match (rc-5b R5): a substring of free text ("not a false_positive") is not a category, and
+    # a word in prose is not a refusal. No JSON, or a value outside the four = under_investigation, not refused.
+    p = _whole_answer(text)
+    refused = isinstance(p, dict) and p.get("refused") is True          # a refusal wins over any category beside it: it is never converted into a disposition
+    cat = p.get("category") if isinstance(p, dict) and not refused and p.get("category") in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance") else "under_investigation"
+    ans = {"refused": refused, "category": cat, "proposed": True, "token_usage": _usage(msg)}
     # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass
     # it through under "propose"; the driver delivers it in the draft PR and it takes effect only
     # after merge. The model never edits its own instructions or the live records here.
-    p = _extract_json(text)
     if isinstance(p, dict) and isinstance(p.get("propose"), dict):
         ans["propose"] = p["propose"]
     return ans
@@ -187,6 +188,23 @@ def main():
     except Exception as e:
         _fail("model-call", e)
     json.dump(ans, sys.stdout)
+
+
+def _whole_answer(text):
+    """The model's disposition answer: the WHOLE response must be exactly one JSON object (the prompt asks for nothing else). An object found inside prose, a second object, an array
+    or any other top-level value is not an answer (rc-5b R5): an example in the model's wording or an injected leading object can never choose the disposition."""
+    def _no_dup(pairs):
+        d = {}
+        for k, v in pairs:
+            if k in d:
+                raise ValueError("duplicate key")        # a repeated key would let the last value erase a refusal
+            d[k] = v
+        return d
+    try:
+        obj = json.loads(str(text or "").strip(), object_pairs_hook=_no_dup)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _extract_json(text):

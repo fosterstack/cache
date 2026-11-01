@@ -1,18 +1,12 @@
 name: Release
 
-# The release chain (release-chain-design.md): build once, verify by
-# digest, promote by digest. Each stage is a reusable workflow with its
-# own OIDC identity; one signed predicate per stage on exit, one
-# verification per stage on entry; subjects are sha256 digests emitted
-# by the stage that produced the bytes, never resolved from a registry
-# after the fact. Tag mode is the only path that pushes anything, and
-# promotion (the final stage) is the only path that can make anything
-# public — and only after the authorization stage has verified the
-# whole graph. Releases build ONLY here; `goreleaser release` (without
-# --snapshot) is never invoked anywhere else.
+# The release chain (release-chain-design.md; v0.3.0 rules 50 to 71): build once, verify by digest, publish by digest. Each stage is a reusable
+# workflow with its own OIDC identity; one signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
+# are sha256 digests emitted by the stage that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
+# pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
+# stage's record. Releases build ONLY here, by the chain below; nothing else builds or publishes a release.
 #
-# admission -> build -> image -> reproducibility -> { scans, acceptance }
-#           -> authorization -> promotion
+# build -> sign ; { build, sign } -> { rebuild, check } ; { build, rebuild } -> sign-rebuild ; { build, check } -> sign-check ; { check, sign, sign-rebuild, sign-check } -> release
 
 on:
   push:
@@ -24,18 +18,19 @@ on:
       - main
   schedule:
     - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
+  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch; the hostile Build step and its judges run on a push of a
+  # release-candidate tag, not here; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'run the hostile-step dry run (no tag, no publish)'
+        type: boolean
+        default: false
 
-# Caller grants must COVER every called job's requests, or the run is a
-# startup_failure with zero jobs. checks/statuses: read are for the
-# admission stage's required-check verification.
+# Every job asks for what it needs (v0.3.0 rule 56: only the Release job holds write access to packages and the repository's releases). The
+# workflow default is read-only; a caller's grants must COVER what the called stage requests, or the run is a startup_failure with zero jobs.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  packages: write
-  checks: read
-  statuses: read
-  pull-requests: read   # admission verifies pull_request-scoped checks on the merged-PR head (R01)
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
@@ -44,7 +39,7 @@ jobs:
   # a removed critical/high finding on push, else at most once a day, rule 2), signs the tag keylessly with gitsign under
   # THIS workflow's identity (rule 3), and pushes it with the auditor App's token, whose tag push starts the chain below.
   decide:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
     concurrency:
       group: patch-decide
@@ -64,6 +59,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # REQ-CHAIN-001-AC6: no patch decision proceeds unless the committed marker names a recorded green rc-tag run of exactly these chain files (a missing marker
+      # fails this step, so the job ends before anything is decided, scanned or tagged)
+      - name: the rc-proof marker validates for this commit
+        run: python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"
 
       - name: install the pinned tools (gitsign; grype)
         run: |
@@ -105,24 +105,20 @@ jobs:
           # every variant of the release must scan: one that cannot is "unknown" (no at-once cut), never an empty
           # release (Codex #159 r1, B2)
           ver="${SINCE#v}"; rel=(); ok=1
-          for t in "$ver" "$ver-debug" "$ver-fips"; do
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
             if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
             else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
           done
           # each scan goes to the decision on its own and is validated there — no aggregation that turns a malformed
           # document into an empty one; a base-image failure is the base's alone (Codex #159 r2, B2 / NEW-1)
           rel_args=(); for f in "${rel[@]}"; do rel_args+=(--release-grype "$f"); done
-          base_arg=(); base_ok=1
-          if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n "$bases" ]; then
-            for b in $bases; do
-              f="$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json"
-              if grype "$b" -o json > "$f"; then base_arg+=(--base-grype "$f"); else base_ok=0; fi
-            done
-            [ "$base_ok" = 1 ] || base_arg=()           # no base evidence: no deb finding counts as removed
-            [ "$base_ok" != 1 ] || touch "$RUNNER_TEMP/base-ok"
-          fi
+          # Rules 61 and 62: no base image exists (the image is assembled by apko from committed locks), so none is scanned and no distribution package
+          # finding counts as removed (unknown never counts). The base inputs are the committed locks and records of .github/policy/base-inputs.json; the
+          # ones that moved since the release are printed here, and bin/patch-decide.py classifies a commit from the same list (the base-input-changed signal).
+          python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE" > "$RUNNER_TEMP/base-moved.txt" || exit 1
+          cat "$RUNNER_TEMP/base-moved.txt" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed "${rel_args[@]}" --gomod go.mod \
-               "${base_arg[@]}" --out "$RUNNER_TEMP/removed.json"; then
+               --out "$RUNNER_TEMP/removed.json"; then
             touch "$RUNNER_TEMP/removed-unknown"
           fi
 
@@ -245,13 +241,14 @@ jobs:
             echo "::error::the latest release could not be scanned: its fixes cannot be listed, so no patch"; exit 1
           fi
           ver="${SINCE#v}"
-          var=(--variant-grype "=$RUNNER_TEMP/rel-${ver}.json" --variant-grype "debug=$RUNNER_TEMP/rel-${ver}-debug.json"
-               --variant-grype "fips=$RUNNER_TEMP/rel-${ver}-fips.json")
-          base=(); if [ -f "$RUNNER_TEMP/base-ok" ]; then for f in "$RUNNER_TEMP"/base-*.json; do base+=(--base-grype "$f"); done; fi
+          var=()
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
+            v="${t#"$ver"}"; var+=(--variant-grype "${v#-}=$RUNNER_TEMP/rel-${t}.json")   # "", "debug" or "fips": the variant name the notes use
+          done
           old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
             old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi
           { git for-each-ref 'refs/tags/v*' --format='%(contents)'; cat docs/quality/releases/CHANGELOG.md 2>/dev/null || true; } > "$RUNNER_TEMP/published.txt"
-          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${base[@]}" "${old[@]}" \
+          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${old[@]}" \
             --vex-new .vex/fosterstack-cache.openvex.json --next-notes docs/next-release-notes.md \
             --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
@@ -293,7 +290,7 @@ jobs:
   # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
   patch-notes:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -357,136 +354,371 @@ jobs:
             gh pr update-branch "$number" || true
           fi
 
-  admission:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    uses: ./.github/workflows/stage-admission.yml
-
+  # ---------------------------------------------------------------------------------------------------------------
+  # The v0.3.0 chain (PR 2: Build and Rebuild; REQ-CHAIN-004, REQ-CHAIN-005). Build, Sign and Rebuild carry the rules of
+  # bin/chain-build-wiring-test.sh (an exact grammar for this graph). The gate G is the same text on build and sign: the chain
+  # starts on a v* tag PUSH, or in a dry-run dispatch on any branch (a manual dispatch on an existing v* tag is not a release
+  # run). Rebuild has no `if`: it runs after Build through `needs`, and a skipped Build skips it.
+  # Check (PR 3) replaced the old scans, acceptance and authorization jobs; Release (PR 4) replaced the old promotion job.
   build:
-    needs: admission
-    uses: ./.github/workflows/stage-build.yml
-    with:
-      mode: release
-      admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
-
-  image:
-    needs: build
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: release
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-
-  reproducibility:
-    needs: [build, image]
-    uses: ./.github/workflows/stage-reproducibility.yml
-    with:
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      digests: ${{ needs.image.outputs.digests }}
-
-  scans:
-    needs: [build, image, reproducibility]
-    uses: ./.github/workflows/stage-verify.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-    secrets: inherit
-
-  acceptance-artifacts:
-    needs: [build, image, reproducibility]
-    uses: ./.github/workflows/stage-acceptance-artifacts.yml
-    with:
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      mode: candidates
-      digests: ${{ needs.image.outputs.digests }}
-
-  acceptance:
-    needs: [image, reproducibility]
-    uses: ./.github/workflows/acceptance.yml
-    with:
-      image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
-
-  acceptance-egress:
-    needs: [image, reproducibility]
-    uses: ./.github/workflows/stage-acceptance-egress.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-
-  acceptance-k8s:
-    needs: [image, reproducibility]
-    uses: ./.github/workflows/stage-acceptance-k8s.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-
-  acceptance-predicate:
-    needs: [admission, image, acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
-    uses: ./.github/workflows/stage-acceptance-predicate.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-      artifacts-results: ${{ needs.acceptance-artifacts.outputs.results }}
-      gradle-results: ${{ needs.acceptance.outputs.gradle-results }}
-      maven-results: ${{ needs.acceptance.outputs.maven-results }}
-      egress-results: ${{ needs.acceptance-egress.outputs.results }}
-      k8s-results: ${{ needs.acceptance-k8s.outputs.results }}
-      baseline-version: ${{ needs.admission.outputs.baseline }}
-
-  authorization:
-    needs: [admission, build, image, scans, acceptance-predicate]
-    # The caller grants what stage-authorize's `authorize` job needs (a reusable workflow cannot
-    # raise its caller's grant, R01): contents:read, id-token:write to sign the release-
-    # authorization predicate, and issues:read so it can read the owner-decision issue acceptance
-    # state (REQ-AUD-11). The workflow-level default omits issues:read, so declare it here.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     permissions:
       contents: read
-      packages: read
+      checks: read
+      statuses: read
+      pull-requests: read
+    uses: ./.github/workflows/stage-build.yml
+    with:
+      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}   # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
+
+  # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here, with the digests.json text Build wrote.
+  sign:
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
+    needs: build
+    permissions:
+      contents: read
       id-token: write
-      attestations: write
-      issues: read
-    uses: ./.github/workflows/stage-authorize.yml
+    uses: ./.github/workflows/stage-sign.yml
     with:
-      digests: ${{ needs.image.outputs.digests }}
-      admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
+      digests: ${{ needs.build.outputs.digests }}
+      stage: build
 
-  promotion:
-    needs: [admission, build, image, authorization]
+  # Rebuild (rule 54): fresh runners rebuild everything Build built and compare every item; its only output is the verdict. It starts from Build's SIGNED records
+  # (the building jobs hold no identity token; Sign signs what they recorded), so it needs Sign.
+  rebuild:
+    needs: [build, sign]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/stage-reproducibility.yml
+
+  # Sign's second call (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): the same file, the stage rebuild: it checks and signs Rebuild's records
+  # and receives no Rebuild apk or image. Its identity is the first call's (one workflow file, release.yml on top).
+  sign-rebuild:
+    needs: [build, rebuild]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: rebuild
+      records: ${{ needs.rebuild.outputs.records }}
+
+  # Check (rules 55, 58, 70; REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
+  # digests, as three Witness steps. It needs Build and Sign (it verifies Build's record, signed by Sign, on entry) and runs beside Rebuild, never after it.
+  check:
+    needs: [build, sign]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/stage-verify.yml
+
+  # Sign's third call (REQ-REL-011-AC1, cache#606): the same file, the stage check: it checks and signs the records of the Check jobs, which hold no identity token (their
+  # steps build tools and run workloads), against the results Check uploaded. Its identity is the first call's.
+  sign-check:
+    needs: [build, check]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: check
+      records: ${{ needs.check.outputs.records }}
+      records-arm64: ${{ needs.check.outputs.records-arm64 }}
+
+  # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
+  # releases. It needs exactly Check, Sign, Sign-rebuild and Sign-check (rule 70; it reaches Build and Rebuild through them), has no `if` that survives a failed or skipped predecessor
+  # (a dry run publishes nothing, a branch run is not a release, and a skipped Build skips it through `needs`), passes no secrets to the stage (the environment named release holds them)
+  # and creates no tag.
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [check, sign, sign-rebuild, sign-check]
+    # One publication at a time (release review R3, Oct 22): bin/release-publish.sh decides :X and :latest from the registry's tag list, so two
+    # release runs must not interleave. One fixed group for every v* run, release candidates included. A queued run waits and a running one is never
+    # cancelled (cancel-in-progress false). GitHub keeps one pending run per group: a second queued tag run replaces the first pending one, which ends
+    # cancelled; the patch-failed job below then opens an issue saying to publish that tag again (it is not re-run silently or by hand alone).
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     uses: ./.github/workflows/stage-promote.yml
-    with:
-      baseline-version: ${{ needs.admission.outputs.baseline }}
-      digests: ${{ needs.image.outputs.digests }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-    secrets: inherit
 
-  # Persona UAT (owner ratified Oct 3 and Oct 4; REQ-UAT-001): on a release-candidate tag only (v*-rc.*), after the image is built and
-  # the chain has promoted it, five personas follow the public docs against that exact image digest (bin/persona-uat.py, pinned CI
-  # tools by digest, a kind cluster made by the pinned kind binary). Results stay private: the driver opens no issue and prints only
-  # pass/fail lines; each persona's report and transcript are ONE artifact encrypted to the committed recipient certificate
-  # (bin/persona-uat-recipient.pem) that only the owner can open (bin/persona-uat-decrypt.sh <run id>). A blocking persona fails this
-  # job; no other job needs it, so a persona failure never starts the patch-failed issue. The model identities are environment
-  # SECRETS (masked), the token budget the one variable. The `persona-uat` environment holds them.
-  # GATE: the job runs only when the repository variable PERSONA_UAT_ENABLED is exactly 'true' (unset = off). The condition is on the JOB, so while it is off the
-  # persona-uat environment is never entered and no token is minted.
+  # Scanner-panel rule 12 (owner RATIFIED Oct 2; REQ-SCAN-012): on a release candidate (vX.Y.Z-rcN, nothing is published) the candidate images are pushed by digest
+  # from Build's artifacts to the dedicated test repositories and the page's load and removal commands run as written; the blocks that read a release or a
+  # registry run in live-test-release after publishing (docs/using-our-vex.cannot-run.json).
+  live-test:
+    needs: [check]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
+      group: vex-live-test
+      cancel-in-progress: false
+    environment: live-test   # holds the five LIVE_TEST_* identifiers (advisor 0078); its tag policy must admit rc and final v tags
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests
+          path: candidate
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: items
+          path: candidate
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: images
+          path: candidate/images
+      - name: install crane, Grype and cosign (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh crane
+          bash bin/install-scanner.sh cosign
+          mkdir -p "$RUNNER_TEMP/tools"
+          bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: install docker-scout (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
+          mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
+      - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.LIVE_TEST_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Google, as the live-test service account (federated; the test Artifact Registry repository and VEX notes)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.LIVE_TEST_GCP_PROVIDER }}
+          service_account: ${{ vars.LIVE_TEST_GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '587.0.0'
+      - name: the live test, every guide command as written, the fixture's finding shown before and gone after
+        env:
+          MODE: rc
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_DIR: ${{ github.workspace }}/candidate
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
+        run: bash bin/vex-live-run.sh run
+      - name: cleanup, delete every image, live-test filter and VEX note the run created
+        if: always()
+        env:
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+        run: bash bin/vex-live-run.sh cleanup
+
+  # The same live test, right after the final release is published, with every command block of the page as written (including the download, digest and verify blocks).
+  live-test-release:
+    needs: [release]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
+      group: vex-live-test
+      cancel-in-progress: false
+    environment: live-test   # holds the five LIVE_TEST_* identifiers (advisor 0078); its tag policy must admit rc and final v tags
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install crane, Grype and cosign (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh crane
+          bash bin/install-scanner.sh cosign
+          mkdir -p "$RUNNER_TEMP/tools"
+          bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: install docker-scout (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
+          mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
+      - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.LIVE_TEST_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Google, as the live-test service account (federated; the test Artifact Registry repository and VEX notes)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.LIVE_TEST_GCP_PROVIDER }}
+          service_account: ${{ vars.LIVE_TEST_GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '587.0.0'
+      - name: the live test, every guide command as written, the fixture's finding shown before and gone after
+        env:
+          MODE: release
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          GH_TOKEN: ${{ github.token }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
+        run: bash bin/vex-live-run.sh run
+      - name: cleanup, delete every image, live-test filter and VEX note the run created
+        if: always()
+        env:
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+        run: bash bin/vex-live-run.sh cleanup
+
+  # The hostile judges, run on a release-candidate tag push (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
+  # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be
+  # ACCEPTED by the same policy. The outcome of an attempt is the verifier's own exit code, captured per attempt, never a field
+  # the hostile step wrote. This job only judges; it publishes nothing.
+  hostile-verify:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hostile-attempts
+          path: attempts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: provenance
+          path: provenance
+      - name: make the policy for this run's own ref
+        run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
+      - name: attempt mint_sign_cert
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json --policy policy.json 2> /tmp/mint_sign_cert.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt mint_sign_cert --exit-code "$rc" --stderr /tmp/mint_sign_cert.err --out results/mint_sign_cert.json
+      - name: attempt read_sign_token
+        run: |
+          rc=0
+          python3 bin/chain-verify.py hostile-material --kind token --file attempts/read_sign_token.txt 2> /tmp/read_sign_token.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt read_sign_token --exit-code "$rc" --stderr /tmp/read_sign_token.err --out results/read_sign_token.json
+      - name: attempt read_sign_key
+        run: |
+          rc=0
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
+      - name: attempt hand_sign_code
+        run: |
+          rc=0
+          python3 bin/chain-verify.py check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json 2> /tmp/hand_sign_code.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "$rc" --stderr /tmp/hand_sign_code.err --out results/hand_sign_code.json
+      - name: attempt forge_provenance
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/forge_provenance.json --policy policy.json 2> /tmp/forge_provenance.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt forge_provenance --exit-code "$rc" --stderr /tmp/forge_provenance.err --out results/forge_provenance.json
+      - name: positive control (this run's genuine Sign output must be accepted)
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
+      - name: collect the rows
+        run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hostile-results
+          path: hostile-results.json
+
+  hostile-verdict:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hostile-results
+          path: hostile-results
+      - name: every hostile attempt refused with its own cause, the positive control accepted
+        run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
+
+  # Persona UAT, release-candidate leg (REQ-UAT-001-AC1; advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14): on a release candidate the three personas
+  # (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator) test the image Build made, BEFORE anything is released, and nothing is published. The job needs Build only.
+  # Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only; the pushed
+  # digest must equal Build's image-production digest. The job holds no registry credential and no write permission (contents read, id-token write for the federated model
+  # token only); the driver is told the registry's port (--allow-listen 5000) so its stray-listener guard accepts that one listener; the personas' containers are never on the host network and the token file is 0600. The image is unverified (no release-verify has run): that is what the personas test.
+  # GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off), on the JOB, so while off the persona-uat environment is never entered and no token is minted.
+  # compliance-reviewer and on-call-engineer run in the weekly job only (go-freshness.yml).
   persona-uat:
-    if: ${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}
-    needs: [image, promotion]
+    needs: [build]
+    if: ${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: persona-uat
     permissions:
       contents: read
       id-token: write
-      packages: read
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 127.0.0.1:5000:5000
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: install the pinned kind binary
-        run: ./bin/install-scanner.sh kind
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: images
+          path: candidate/images
+
+      - name: install the pinned crane binary
+        run: ./bin/install-scanner.sh crane
+
+      - name: load Build's production image into the registry on this runner, and check its digest
+        env:
+          DIGESTS: ${{ needs.build.outputs.digests }}
+        run: |
+          set -euo pipefail
+          want=$(jq -er '.["image-production"]' <<<"$DIGESTS")
+          crane push candidate/images/production localhost:5000/cache:rc
+          got=$(crane digest localhost:5000/cache:rc)
+          [ "$got" = "$want" ] || { echo "::error::the pushed digest ${got} is not the one Build attested (${want})"; exit 1; }
+
+      - name: kind from the runner image
+        run: kind version || { echo "::error::PIPELINE, no kind"; exit 1; }
 
       - name: pin pip (hash-checked)
         run: |
@@ -535,7 +767,7 @@ jobs:
           ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
           disown
 
-      - name: run the five personas
+      - name: run the three release-candidate personas against Build's image on the local registry
         env:
           PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
           PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
@@ -545,8 +777,8 @@ jobs:
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
-          PERSONA_UAT_IMAGE: ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}
-        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
+          PERSONA_UAT_IMAGE: localhost:5000/cache@${{ fromJSON(needs.build.outputs.digests)['image-production'] }}
+        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py" --allow-listen 5000
 
       - name: upload the encrypted reports and transcripts
         if: ${{ always() }}
@@ -560,12 +792,11 @@ jobs:
         if: ${{ always() }}
         run: python3 bin/persona-uat.py --remove-identity "${RUNNER_TEMP}/anthropic-identity-token" || rm -f "${RUNNER_TEMP}/anthropic-identity-token" "${RUNNER_TEMP}/anthropic-identity-token.tmp"
 
-  # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
-  # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:
-    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance,
-            acceptance-egress, acceptance-k8s, acceptance-predicate, authorization, promotion]
+    # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
+    # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
+    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -576,6 +807,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_RESULT: ${{ needs.release.result }}
         run: |
-          gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \
-            --body "The release run for ${GITHUB_REF_NAME} failed and is abandoned (no retry). The next daily run tries again once the cause is fixed. Run: ${RUN_URL}"
+          if [ "$RELEASE_RESULT" = cancelled ]; then
+            gh issue create --title "auditor: release ${GITHUB_REF_NAME} cancelled" \
+              --body "The release run for ${GITHUB_REF_NAME} was cancelled (replaced while pending in the release queue): it did not publish. Publish ${GITHUB_REF_NAME} again. Run: ${RUN_URL}"
+          else
+            gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \
+              --body "The release run for ${GITHUB_REF_NAME} failed and is abandoned (no retry). The next daily run tries again once the cause is fixed. Run: ${RUN_URL}"
+          fi
+# edited
+# edited

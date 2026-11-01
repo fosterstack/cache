@@ -1,0 +1,29 @@
+{
+ "records": [
+  {
+   "type": "https://slsa.dev/provenance/v1",
+   "claim": "how and from what the release was built, written and signed by the Sign job",
+   "consumer": "release"
+  },
+  {
+   "type": "https://witness.testifysec.com/attestation-collection/v0.1",
+   "claim": "what each Build, Rebuild, Check and Release step did and produced (apk, build, rapk, rebuild; scanners, acceptance, runtime: the scan, suite, FIPS and guide results for the exact candidate digests; release-verify to release-postverify: what Release verified, signed, published and attached), Build and Rebuild records are made under a throwaway key and re-signed keyless by Sign (stage-sign.yml), the others keyless under the stage's own identity; the next stage verifies each, and a customer can read Release's own as extra evidence",
+   "consumer": "release"
+  },
+  {
+   "type": "urn:cosign:signature",
+   "claim": "a signature on the public images in both registries and on the release files (SBOMs, lock files, dependency evidence, checksums and the release policy), each with a Rekor entry, and the dry run's forged material signed to prove it is refused",
+   "consumer": "customer"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/release-manifest/v1",
+   "claim": "the release manifest (images by digest in both registries, the VEX files' hashes, the requirements baseline and the test evidence, the archives and apks as Build attested them) attached to each public image digest as an OCI referrer, signed keyless with a Rekor entry; the GHCR referrer is required and the Docker Hub mirror is best-effort with a warning",
+   "consumer": "customer"
+  },
+  {
+   "type": "urn:gitsign:tag-signature",
+   "claim": "the keyless signature of the automatic patch tag, checked by admission",
+   "consumer": "build"
+  }
+ ]
+}

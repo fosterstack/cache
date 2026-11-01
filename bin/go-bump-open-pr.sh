@@ -16,9 +16,9 @@
 set -euo pipefail
 CURRENT="${1:?usage: go-bump-open-pr.sh <current> <latest>}"
 LATEST="${2:?usage: go-bump-open-pr.sh <current> <latest>}"
-# Both versions go into a sed expression and a branch name: only a Go version (1.27 or 1.27.3) is accepted, before any call is made.
+# both versions go into file names, a regular expression and a template: only the plain Go release form is taken
 for v in "$CURRENT" "$LATEST"; do
-  [[ "$v" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::not a Go version: ${v}" >&2; exit 2; }
+  [[ "$v" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::the Go versions must look like 1.27.3: '$CURRENT' '$LATEST'" >&2; exit 2; }
 done
 branch="chore/go-${LATEST}"
 
@@ -52,25 +52,110 @@ if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   fresh=0; expected_head="$tip_sha"
 fi
 if [ "$fresh" = 1 ]; then
-  echo "creating ${branch}: bumping the go directive in both modules"
+  echo "creating ${branch}: bumping the go directive in both modules and the installer's Go pin (GO_VER and both checksums)"
+  # the installer pin first, so that any doubt fails closed before a file changes or a branch exists: the two linux tarballs are downloaded over HTTPS from
+  # go.dev, their sha256 computed here and compared with the checksum go.dev publishes for them (https://go.dev/dl/?mode=json); the computed values are written
+  die() { echo "::error::$1" >&2; exit "${2:-1}"; }
+  dl="$(mktemp -d)"; trap 'rm -rf "$dl"' EXIT
+  jsonq='?mode=json&include=all'
+  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1
+  published="$(cat "${dl}/published.json")"
+  sum_amd64=""; sum_arm64=""
+  for arch in amd64 arm64; do
+    tarball="go${LATEST}.linux-${arch}.tar.gz"
+    want="$(jq -r --arg v "go${LATEST}" --arg f "$tarball" '.[] | select(.version==$v) | .files[] | select(.filename==$f) | .sha256' <<<"$published" 2>/dev/null | head -1)"
+    [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::go.dev publishes no valid sha256 for ${tarball}" >&2; exit 1; }
+    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1
+    got="$(sha256sum "${dl}/${tarball}" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "::error::${tarball} is ${got}, go.dev publishes ${want}" >&2; exit 1; }
+    printf -v "sum_${arch}" '%s' "$got"
+  done
+  # the sealed compiler (rc-3 item 6): the recipe template pins the same two tarballs (uri + expected-sha256) and the compiler it builds with is that one, so a
+  # bump that leaves them behind is red at the sealed build. Checked BEFORE any file changes: each pin must be at the version being left and appear exactly once.
+  tmpl=build/melange.yaml.tmpl; gen=bin/gen-recipes.py
+  # the same pattern bump_template substitutes (the uri line followed directly by its expected-sha256 line), applied to the text in memory: a template that would
+  # not take the substitution is refused here, before any file changes
+  env -u GH_TOKEN /usr/bin/python3 -I -B - "$tmpl" "$CURRENT" "$gen" <<'PY' || die "${tmpl} does not pin go${CURRENT}.linux-amd64.tar.gz and go${CURRENT}.linux-arm64.tar.gz exactly once each, each uri followed by its expected-sha256 line: the template is not at the version being bumped" 1
+import hashlib, re, sys
+tmpl, cur, gen = sys.argv[1:4]
+t = open(tmpl).read()
+for arch in ("amd64", "arm64"):
+    if len(re.findall(r"uri: https://go\.dev/dl/go" + re.escape(cur) + r"\.linux-" + arch + r"\.tar\.gz\n\s+expected-sha256: [0-9a-f]{64}", t)) != 1:
+        sys.exit(1)
+# the pin must already equal the template's bytes: a bump re-pins reviewed bytes, never unreviewed ones
+pin = re.findall(r'^TEMPLATE_SHA256 = "([0-9a-f]{64})"', open(gen).read(), re.M)
+if pin != [hashlib.sha256(t.encode()).hexdigest()]:
+    sys.exit(1)
+PY
+  [ "$(grep -c '^TEMPLATE_SHA256 = "[0-9a-f]\{64\}"' "$gen" 2>/dev/null)" = 1 ] || die "${gen} does not have exactly one TEMPLATE_SHA256 pin" 1
+  bump_template() {
+    env -u GH_TOKEN /usr/bin/python3 -I -B - "$tmpl" "$gen" "$CURRENT" "$LATEST" "$sum_amd64" "$sum_arm64" <<'PY' || { echo "::error::failed to move the recipe template's Go pins" >&2; exit 1; }
+import hashlib, re, sys
+tmpl, gen, cur, new, amd, arm = sys.argv[1:7]
+t = open(tmpl).read()
+for arch, want in (("amd64", amd), ("arm64", arm)):
+    pat = re.compile(r"(uri: https://go\.dev/dl/go)" + re.escape(cur) + r"(\.linux-" + arch + r"\.tar\.gz\n\s+expected-sha256: )[0-9a-f]{64}")
+    t, n = pat.subn(lambda m: m.group(1) + new + m.group(2) + want, t)
+    if n != 1:
+        sys.exit(1)
+open(tmpl, "w").write(t)
+h = hashlib.sha256(t.encode()).hexdigest()
+g = open(gen).read()
+g, n = re.subn(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"', 'TEMPLATE_SHA256 = "' + h + '"', g, count=1, flags=re.M)
+sys.exit(1) if n != 1 else open(gen, "w").write(g)
+PY
+    # no token for the generator (this step holds the App's; the wiring test pins this script's bytes, not the generator's), and the interpreter without site or cwd imports, as the refresh job runs it
+    env -u GH_TOKEN /usr/bin/python3 -I -B bin/gen-recipes.py --write >/dev/null || { echo "::error::bin/gen-recipes.py --write failed after the template changed" >&2; exit 1; }
+    env -u GH_TOKEN /usr/bin/python3 -I -B bin/gen-recipes.py --check >/dev/null || { echo "::error::bin/gen-recipes.py --check fails after the bump" >&2; exit 1; }
+  }
+  bump_installer() {
+    local f=bin/install-scanner.sh
+    [ "$(grep -c '^GO_VER=' "$f")" = 1 ] && [ "$(grep -c 'go:x86_64|go:amd64) SUM=' "$f")" = 1 ] && [ "$(grep -c 'go:aarch64|go:arm64) SUM=' "$f")" = 1 ] \
+      || { echo "::error::${f} does not have exactly one Go pin (GO_VER and the two per-arch sums)" >&2; exit 1; }
+    sed -i.bak -E "s/^GO_VER=[0-9.]+/GO_VER=${LATEST}/; s/(go:x86_64[|]go:amd64[)] SUM=)[0-9a-f]{64}/\1${sum_amd64}/; s/(go:aarch64[|]go:arm64[)] SUM=)[0-9a-f]{64}/\1${sum_arm64}/" "$f"; rm -f "${f}.bak"      # -i.bak: portable between GNU and BSD sed
+    # the installer is a listed script of the release chain: its sha256 row in the policy follows its bytes, in the same commit (the policy validator
+    # refuses a row that differs from the file)
+    env -u GH_TOKEN /usr/bin/python3 -I -B - "$f" .github/policy/chain-scripts.json <<'PY' || { echo "::error::failed to update the installer's sha256 row in .github/policy/chain-scripts.json" >&2; exit 1; }
+import hashlib, re, sys
+inst, pol = sys.argv[1:3]
+h = hashlib.sha256(open(inst, "rb").read()).hexdigest()
+t = open(pol).read()
+t2, n = re.subn(r'("path": "bin/install-scanner\.sh",\s*"sha256": ")[0-9a-f]{64}(")', lambda m: m.group(1) + h + m.group(2), t)
+if n != 1:
+    t2, n = re.subn(r'("path": "bin/install-scanner\.sh",(?:(?!"path").)*?"sha256": ")[0-9a-f]{64}(")', lambda m: m.group(1) + h + m.group(2), t, count=1, flags=re.S)
+sys.exit(1) if n != 1 else open(pol, "w").write(t2)
+PY
+    grep -q "^GO_VER=${LATEST}\$" "$f" && grep -q "SUM=${sum_amd64} ;;" "$f" && grep -q "SUM=${sum_arm64} ;;" "$f" \
+      || { echo "::error::failed to bump the Go pin in ${f}" >&2; exit 1; }
+  }
   for f in go.mod tools/requirements/go.mod; do
     sed -i -E "s/^go ${CURRENT//./\\.}$/go ${LATEST}/" "$f"
     grep -q "^go ${LATEST}$" "$f" || { echo "::error::failed to bump go directive in $f" >&2; exit 1; }
   done
   # No `git commit` here: main requires signed commits and a commit made in the runner is unsigned (cache#464 sat BLOCKED on one). The branch
   # is pushed at the commit this job started from (nothing new to sign) and the one commit is made through the API, which GitHub signs for the
-  # App's token (the same mechanism as bin/refresh-inputs.sh; REQ-REL-004-AC8). Any failure removes the branch and opens no pull request.
+  # App's token (the same mechanism as bin/refresh-inputs.sh; REQ-REL-004-AC9). Any failure removes the branch and opens no pull request.
+  bump_installer
+  bump_template
   base="$(git rev-parse HEAD)"
   case "$base" in *[!0-9a-f]*|'') echo "::error::could not read the commit the job started from" >&2; exit 1;; esac
   [ "${#base}" -eq 40 ] || { echo "::error::could not read the commit the job started from" >&2; exit 1; }
   marker="go-bump-run: ${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"   # unique to this run: two overlapping runs of one bump share parent and headline
-  input="$(mktemp)"
+  input="$(mktemp)"; enc="$(mktemp -d)"
+  # each file's contents are encoded into a file of its own, every encoding checked (a failing encoder must not become an empty file in a signed commit), and the
+  # request is built from those files with --rawfile: the policy's base64 alone is over Linux's 128 KiB limit for one argument
+  for pair in go.mod:r tools/requirements/go.mod:t bin/install-scanner.sh:i .github/policy/chain-scripts.json:c build/melange.yaml.tmpl:m bin/gen-recipes.py:g build/melange.yaml:y build/melange-fips.yaml:z; do
+    { base64 < "${pair%:*}" | tr -d '\n' > "${enc}/${pair##*:}"; } || { echo "::error::could not encode ${pair%:*}; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
+    [ -s "${enc}/${pair##*:}" ] || { echo "::error::the encoding of ${pair%:*} is empty; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
+  done
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
         --arg head "$headline" --arg mark "$marker" \
-        --arg r "$(base64 < go.mod | tr -d '\n')" --arg t "$(base64 < tools/requirements/go.mod | tr -d '\n')" \
+        --rawfile r "${enc}/r" --rawfile t "${enc}/t" --rawfile i "${enc}/i" --rawfile c "${enc}/c" \
+        --rawfile m "${enc}/m" --rawfile g "${enc}/g" --rawfile y "${enc}/y" --rawfile z "${enc}/z" \
     '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
       variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head, body: $mark}, expectedHeadOid: $base,
-                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}]}}}}' > "$input"
+                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}, {path: "bin/install-scanner.sh", contents: $i}, {path: ".github/policy/chain-scripts.json", contents: $c}, {path: "build/melange.yaml.tmpl", contents: $m}, {path: "bin/gen-recipes.py", contents: $g}, {path: "build/melange.yaml", contents: $y}, {path: "build/melange-fips.yaml", contents: $z}]}}}}' > "$input"
+  rm -rf "$enc"
   # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
   # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
   owned="$base"
@@ -114,7 +199,19 @@ if [ "$fresh" = 1 ]; then
 fi
 
 body="$(cat <<EOF
-Automated Go-toolchain freshness bump: \`go ${CURRENT}\` -> \`go ${LATEST}\` in both modules (root and \`tools/requirements\`).
+Automated Go-toolchain freshness bump: \`go ${CURRENT}\` -> \`go ${LATEST}\`. Eight files change together (the installer checks that go.mod and its pin agree; the sealed build compiles with the template's pinned compiler):
+
+| file | change |
+| --- | --- |
+| \`go.mod\` | \`go ${CURRENT}\` -> \`go ${LATEST}\` |
+| \`tools/requirements/go.mod\` | \`go ${CURRENT}\` -> \`go ${LATEST}\` |
+| \`bin/install-scanner.sh\` | \`GO_VER\` and the sha256 of go${LATEST}.linux-amd64 and linux-arm64 tarballs, computed from the downloads and equal to go.dev's published checksums |
+| \`.github/policy/chain-scripts.json\` | the sha256 row of \`bin/install-scanner.sh\` (a listed script: the row follows the file's bytes) |
+| \`build/melange.yaml.tmpl\` | the two go.dev pins (uri and expected-sha256 of go${LATEST}.linux-amd64 and linux-arm64), the same checksums as the installer's |
+| \`bin/gen-recipes.py\` | \`TEMPLATE_SHA256\`, the sha256 of the template's new bytes |
+| \`build/melange.yaml\`, \`build/melange-fips.yaml\` | regenerated by \`bin/gen-recipes.py --write\` (and \`--check\` passes) |
+
+One step is not part of this pull request, and it has no automation yet: the archive. \`build/archive.json\` and the two tarballs \`go/go${LATEST}.linux-amd64.tar.gz\` and \`go/go${LATEST}.linux-arm64.tar.gz\` are not pushed here. The sealed build of this pull request reads its own unchanged \`build/archive.json\`, so it stays red until a person archives the two tarballs and moves \`build/archive.json\` in this pull request; the daily refresh reads the Go pins of main, so on its own it archives them only after this pull request has merged (REQ-REFRESH-001-AC33). Do not merge this pull request until the sealed build is green.
 
 This tracks the newest patch of a supported Go minor, so it may be a patch bump within the current line or a move to a newer supported minor (the case that let CVE-2026-46600 be fixed — no 1.25.x carried the fix). Merging keeps the shipped binary off disclosed stdlib CVEs — the failure mode that broke the v0.2.0 release scan.
 

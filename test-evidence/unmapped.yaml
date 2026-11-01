@@ -13,34 +13,16 @@ unmapped:
   - ac: REQ-DEPLOY-001-AC1
     reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-SCAN-011-AC1
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-011-AC2
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-011-AC3
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-011-AC4
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-012-AC1
-    reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-SCAN-012-AC2
-    reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-SCAN-012-AC3
-    reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-SCAN-012-AC4
-    reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-SCAN-012-AC5
-    reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
+    reason: "docs/using-our-vex.md exists and ships with the rule-10 files; that it is never in a release before them is read at each release cut (inspection); no test names it"
   - ac: REQ-REL-009-AC7
     reason: "proven by the first real patch release (the full chain and identical GHCR/Docker Hub digests)"
   - ac: REQ-REL-009-AC9
     reason: "proven by the first real patch release; the customer suppression files depend on scanner-panel rule 10, a later PR"
   - ac: REQ-REL-009-AC12
     reason: "the lane's process rule (both step-8 records say no behavior change before it applies patch-fix): CI cannot tell the owner's label from the lane's, since both act through the owner's account; each application is recorded in the lane's report with both reviewers' findings"
-  - ac: REQ-REL-010-AC2
-    reason: "Build and Rebuild belong to chain-v030; main has neither, and the daily rescan builds each candidate once. Evidenced where the chain lands (bin/chain-build-wiring-test.sh)"
-  - ac: REQ-REL-010-AC4
-    reason: "Sign and Release belong to chain-v030; releases cut from main are unchanged by the rescan's use of bin/vex-index.py. Evidenced where the chain lands (bin/chain-build-wiring-test.sh)"
-  - ac: REQ-REL-010-AC5
-    reason: "the patch-release rule for a changed VEX belongs to the chain's pipeline; main's releases are unchanged. Evidenced where the chain lands (bin/chain-build-wiring-test.sh)"
   - ac: REQ-REL-010-AC6
-    reason: "a live check: Docker Scout scans an attested index by tag and by exact digest with our author and applies our VEX. On main it is proven by the daily rescan's Scout self-check on an attested fixture and its scan of the six attested candidates; on our real published image it can run only after the first release candidate with the attestation children exists, and the customer guide's Scout claim waits for that"
+    reason: "a live check: Docker Scout scans an attested index by tag and by exact digest with our author and applies our VEX. On main it is proven by the daily rescan's Scout self-check on an attested fixture and its scan of the four attested candidates; on our real published image it can run only after the first release candidate with the attestation children exists, and the customer guide's Scout claim waits for that"
+# The -debug clauses of REQ-PLAT-002-AC1 and REQ-PLAT-003-AC1 have no subject - owner Oct 9: drop debug; AC text is in the owner wording batch.
+# They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).
+  - ac: REQ-GUIDE-001-AC8
+    reason: "manual acceptance not done yet: the owner's cold reading, the second reader on a clean machine, and pipeline's AC7 run executing every command against a candidate; recorded as manual evidence in mappings.yaml when each is done"

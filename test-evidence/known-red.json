@@ -1,0 +1,12 @@
+{
+ "_note": "Expected-red cases of the release chain's integration branch chain-v030 (advisor, #299). A chain suite listed here passes its CI step only when its red cases equal these entries exactly (bin/chain-known-red.py judge). An entry is removed in the PR that turns its case green; an added entry must be named in the PR body by a line `known-red-add: <id>`. The cutover pull request needs every entry but KR-CUTOVER gone (`chain-known-red.py empty-except KR-CUTOVER`); the pull request that commits the rc-proof marker needs the list empty (`empty`).",
+ "entries": [
+  {
+   "id": "KR-CUTOVER",
+   "suite": "bin/chain-build-wiring-test.sh",
+   "case": "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case",
+   "reason": "the cutover pull request (chain-v030 to main) needs every other entry of this list gone AND every hosted check green on hosted runners, not only the suite cases: build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; this entry alone stays after the cutover and means 'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, which changes exactly the marker file and the removal of this one entry, and until then no final or patch tag runs the chain",
+   "green_by": "the pull request that commits the rc-proof marker (REQ-CHAIN-001-AC6)"
+  }
+ ]
+}

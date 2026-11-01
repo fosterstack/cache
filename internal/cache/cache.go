@@ -1,9 +1,5 @@
 // Package cache wires the blob store and metadata index together and
-// enforces a size cap with least-recently-used eviction. This is the
-// "eviction policies, size limits" layer the product brief calls out as
-// what a paid customer got from the deprecated Build Cache Node beyond a
-// dumb HTTP endpoint — it lives in the MIT core (Community tier: "full
-// cache server"), not behind a license key.
+// enforces a size cap with least-recently-used eviction.
 package cache
 
 import (
@@ -25,13 +21,10 @@ var ErrNotFound = blobstore.ErrNotFound
 // ErrInvalidKey is returned when a key fails validation.
 var ErrInvalidKey = blobstore.ErrInvalidKey
 
-// blobStore and metaStore name the operations Cache needs from its two
-// backing stores. They are interfaces (satisfied by *blobstore.Store and
-// *metadata.Store, the only production implementations, which New still
-// takes concretely) purely as a testability seam: tests wrap the real
-// stores to inject failures the filesystem and bbolt cannot produce on
-// demand — a Close or Delete error, a metadata write that fails
-// mid-reconcile. Behavior is unchanged.
+// blobStore and metaStore name what Cache needs from its two stores. They are
+// interfaces only so tests can wrap the real stores to inject failures the
+// filesystem and bbolt cannot produce on demand (a Close or Delete error, a
+// metadata write that fails mid-reconcile); New takes the concrete types.
 type blobStore interface {
 	Put(key string, r io.Reader) (int64, error)
 	Get(key string) (io.ReadCloser, int64, error)
@@ -63,22 +56,16 @@ type Cache struct {
 	log      *slog.Logger
 	onEvict  func(key string, size int64)
 
-	// evictMu serializes eviction passes. Without it, concurrent Puts each
-	// read a stale total, all select overlapping LRU candidates, and all
-	// "successfully" delete the same already-deleted (idempotent) entries
-	// — correctness of the cap survives, but onEvict fires many times over
-	// for a single real eviction and every extra pass is wasted I/O.
-	// Serializing only the evict-and-recheck loop (not the blob write
-	// itself) keeps writes concurrent while making eviction bookkeeping
-	// exact.
+	// evictMu serializes eviction passes. Without it concurrent Puts each read
+	// a stale total and select the same LRU candidates, repeating the candidate
+	// selection and lookups for one real eviction. Only the evict-and-recheck
+	// loop is serialized, not the blob write.
 	evictMu sync.Mutex
 
-	// keyMu guards keys, the per-key locks that order a key's blob replace
-	// and its index record (REQ-STORE-001-AC2): two concurrent Puts of one
-	// key otherwise finish their record steps in either order, and the one
-	// that replaced the blob first can record last, leaving the index with
-	// a size the retrievable bytes do not have. Only same-key Puts wait for
-	// each other; Puts of different keys stay concurrent.
+	// keyMu guards keys, the per-key locks that order a key's blob replace and
+	// its index record (REQ-STORE-001-AC2): without them two Puts of one key
+	// can record in the opposite order to their replaces, leaving a size the
+	// retrievable bytes do not have. Puts of different keys stay concurrent.
 	keyMu sync.Mutex
 	keys  map[string]*keyLock
 }
@@ -91,10 +78,9 @@ type keyLock struct {
 }
 
 // lockKey takes key's lock and returns the function that releases it. The lock
-// is named by the key folded to lower case: keys that differ only in case can
-// name one blob on a case-insensitive filesystem (REQ-PROTO-003-AC4), so their
-// replace-and-record steps must exclude each other too. (On a case-sensitive
-// filesystem this only serializes Puts of two distinct blobs, which is harmless.)
+// is named by the lower-cased key: keys differing only in case can name one
+// blob on a case-insensitive filesystem (REQ-PROTO-003-AC4). On a
+// case-sensitive one this merely serializes two distinct blobs.
 func (c *Cache) lockKey(key string) func() {
 	key = strings.ToLower(key)
 	c.keyMu.Lock()
@@ -109,8 +95,10 @@ func (c *Cache) lockKey(key string) func() {
 	return c.unlocker(key, kl)
 }
 
-// tryLockKey takes key's lock only if no Put holds it or waits for it; ok is false otherwise. Eviction uses it: a Put holds the lock for the whole upload
-// of its body, and eviction must never wait for a client (a key being rewritten is recent anyway, so skipping it is right).
+// tryLockKey takes key's lock only if no Put holds it or waits for it; ok is
+// false otherwise. Eviction uses it: a Put holds the lock for its whole upload,
+// eviction must never wait for a client, and a key being rewritten is recent
+// anyway.
 func (c *Cache) tryLockKey(key string) (release func(), ok bool) {
 	key = strings.ToLower(key)
 	c.keyMu.Lock()
@@ -178,9 +166,9 @@ type ReconcileStats struct {
 // unclean shutdown (REQ-STORE-005): blobs are truth, the index is
 // rebuildable. Blobs with no record are adopted (size from disk, recency
 // now); records whose size differs from the blob's are corrected; records
-// with no blob are dropped; stale temp files from
-// interrupted writes are removed. Totals correct themselves because
-// Record and Delete maintain them.
+// with no blob are dropped; stale temp files from interrupted writes are
+// removed. Nothing keeps a running total: TotalSize and EntryCount are
+// computed from the index on each call, so correcting the index corrects them.
 func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
 	var stats ReconcileStats
 
@@ -259,16 +247,10 @@ func (c *Cache) Close() error {
 	return nil
 }
 
-// Put stores payload under key, records it in the metadata index, and — if
-// a size cap is configured and now exceeded — evicts least-recently-used
-// entries until back under the cap. Eviction failures are logged, not
-// returned: a failed eviction pass must never fail the write that
-// triggered it (writes fail safe; the cache degrades toward "too big",
-// never toward "lost the client's data").
-// ErrEntryTooLarge reports a PUT whose entry exceeds the configured
-// cache cap (REQ-EVICT-002): the entry can never live in the cache, so
-// it is rejected up front - nothing stored, nothing evicted - instead
-// of being written and then churning every resident entry out.
+// ErrEntryTooLarge reports a PUT whose entry exceeds the configured cache cap
+// (REQ-EVICT-002). The entry can never live in the cache, so it is rejected up
+// front (nothing stored, nothing evicted) rather than written and then
+// churning every resident entry out.
 var ErrEntryTooLarge = errors.New("cache: entry exceeds the configured cache cap")
 
 // capReader fails the read with ErrEntryTooLarge once more than limit
@@ -289,6 +271,11 @@ func (cr *capReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Put stores r under key, records it in the metadata index, and, if a size cap
+// is set and now exceeded, evicts least-recently-used entries until back under
+// it. Eviction failures are logged, never returned: a failed eviction must not
+// fail the write that triggered it (the cache degrades toward "too big", never
+// toward losing the client's data).
 func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error) {
 	if c.maxBytes > 0 {
 		r = &capReader{r: r, limit: c.maxBytes}
@@ -312,14 +299,13 @@ func (c *Cache) putLocked(key string, r io.Reader) (int64, error) {
 		return 0, err
 	}
 	if err := c.meta.Record(key, n); err != nil {
-		// REQ-STORE-004: a cache that says "stored" has stored it. An
-		// unindexed blob is invisible to eviction and totals, so the write
-		// is undone and the client told the truth: the blob AND the record
-		// the key had before this overwrite (the blob it described is gone).
-		// The deletes are best-effort — if one also fails, startup
-		// reconciliation adopts the orphan blob or drops the dangling record
-		// later, which is the recovery path for exactly this. The undo is part
-		// of this key's replace-and-record: another Put of the key waits for it.
+		// REQ-STORE-004: a cache that says "stored" has stored it. An unindexed
+		// blob is invisible to eviction and totals, so the write is undone (the
+		// blob and the record the key had before this overwrite, whose blob is
+		// gone) and the client is told the truth. The deletes are best-effort:
+		// if one fails, reconciliation after an unclean shutdown adopts the
+		// orphan blob or drops the dangling record. A clean shutdown does not
+		// reconcile, so until then an orphan blob counts toward nothing.
 		if delErr := c.blobs.Delete(key); delErr != nil {
 			c.log.Error("cache: blob cleanup after metadata failure also failed; startup reconciliation will adopt it",
 				"key", key, "record_error", err, "delete_error", delErr)
@@ -345,24 +331,20 @@ func (c *Cache) Get(ctx context.Context, key string) (io.ReadCloser, int64, erro
 	return rc, size, nil
 }
 
-// Stat reports whether key exists and its size, without touching recency
-// (used for HEAD requests — the Maven remote-cache existence check — which
-// should not count as cache usage for eviction purposes).
+// Stat reports whether key exists and its size, without touching recency: HEAD
+// requests (the Maven remote-cache existence check) are not cache usage.
 func (c *Cache) Stat(key string) (int64, error) {
 	return c.blobs.Stat(key)
 }
 
-// maxFailedEvictionBatches bounds how many consecutive all-failed batches
-// evictToFit tolerates before giving up. Without this, a persistent
-// failure (e.g. a read-only data directory) turns "evict until under cap"
-// into an unbounded busy loop for the lifetime of the triggering request's
-// context — a resource-exhaustion path, not just a cosmetic bug.
+// maxFailedEvictionBatches bounds consecutive all-failed batches in evictToFit.
+// Without it a persistent failure (a read-only data directory) turns "evict
+// until under cap" into a busy loop for the life of the request's context.
 const maxFailedEvictionBatches = 3
 
-// evictToFit removes least-recently-used entries until total recorded size
-// is at or under maxBytes, or there is nothing left to evict. Callers must
-// hold no other lock on c; evictToFit takes evictMu itself so concurrent
-// Puts serialize here rather than each acting on a stale size snapshot.
+// evictToFit removes least-recently-used entries until the recorded total is at
+// or under maxBytes, or nothing is left to evict. It takes evictMu itself, so
+// callers must hold no other lock on c.
 func (c *Cache) evictToFit(ctx context.Context) {
 	c.evictMu.Lock()
 	defer c.evictMu.Unlock()
@@ -428,16 +410,18 @@ func (c *Cache) evictToFit(ctx context.Context) {
 	}
 }
 
-// errEntryChanged reports that the entry selected for eviction no longer is what was selected (replaced by a Put, or already gone).
+// errEntryChanged reports that the entry selected for eviction is no longer
+// what was selected (replaced by a Put, or already gone).
 var errEntryChanged = errors.New("cache: entry changed since it was selected for eviction")
 
-// evictOne removes entry's blob and record under the key's lock, the one a Put of the key holds between its blob replace and its record, and only if the
-// record still is the one that was selected: a Put that replaced the key meanwhile made it recent, and its new blob and record are not evicted
-// (REQ-STORE-001-AC2, REQ-EVICT-001-AC1).
+// evictOne removes entry's blob and record under the key's lock (the one a Put
+// holds between its blob replace and its record), and only if the record is
+// still the one selected: a Put that replaced the key made it recent, so its
+// new blob and record are kept (REQ-STORE-001-AC2, REQ-EVICT-001-AC1).
 func (c *Cache) evictOne(entry metadata.Entry) error {
 	release, ok := c.tryLockKey(entry.Key)
 	if !ok {
-		return errEntryChanged // a Put holds the key's lock: it is being rewritten, so it is recent, and eviction never waits for a client's upload
+		return errEntryChanged // a Put holds the key's lock: it is being rewritten, so it is recent
 	}
 	defer release()
 	cur, ok, err := c.meta.Lookup(entry.Key)

@@ -1,0 +1,6 @@
+{
+ "_note": "Sigstore public-good trust material copied from the TUF-verified trusted_root.json (tuf-repo-cdn.sigstore.dev, as cached by cosign in ~/.sigstore/root on 2026-10-09): fulcio-chain.pem = Fulcio root (CN=sigstore, sha256 3ba7b6cc...80c1, the fingerprint the Oct 9 spike recorded) then its intermediate; tsa-chain.pem = the Sigstore TSA root (CN=sigstore-tsa-selfsigned, sha256 2aca8fea...d633) then the TSA certificate; rekor.pub = the public key of the log https://rekor.sigstore.dev (sha256 of the DER key c0d23d6a...801d). The newer log https://log2025-1.rekor.sigstore.dev has its own key (b54813cb...0690) and is NOT in this file: one Rekor key per policy; the first real dry run decides which log cosign v3 writes to. Refresh from trusted_root.json (the TUF root) on a schedule and update the three hashes in the same PR.",
+ "fulcio_root_sha256": "3ba7b6cc4e95469d4d334b49cb257ad8537076fa84b0ca87ff4ecfe6a54680c1",
+ "tsa_root_sha256": "2aca8fea5d3ce48b01cc77076293c280e6c23ffe44034757ee7833ca9f45d633",
+ "rekor_sha256": "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d"
+}

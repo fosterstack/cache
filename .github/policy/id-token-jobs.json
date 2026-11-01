@@ -1,0 +1,115 @@
+{
+ "_note": "The CLOSED list of the jobs that may hold id-token: write (their own permissions, or the workflow's when they set none). Keyless signing needs the job's OIDC token, so bin/chain-sign-wiring-test.sh fails for any job holding it that is not listed, and for a listed job that no longer holds it (REQ-CHAIN-001-AC1). The list is data: review of a change to it is the control.",
+ "jobs": [
+  {
+   "workflow": "auditor.yml",
+   "job": "audit",
+   "reason": "mints a federated OIDC identity token for the auditor's model vendor (github-script getIDToken); signs nothing"
+  },
+  {
+   "workflow": "auditor.yml",
+   "job": "panel-probe",
+   "reason": "the scanner panel's probe: keyless federation to the panel's vendors, publishes nothing"
+  },
+  {
+   "workflow": "dependabot-reviewer.yml",
+   "job": "review",
+   "reason": "the Dependabot reviewer's OIDC federation to its model vendor; signs nothing"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-inspector",
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-google",
+   "reason": "google-github-actions/auth: OIDC federation to Google for the scanner panel"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "decide",
+   "reason": "the CI patch tag: runs gitsign inline (keyless tag signature, listed in chain-signers.json); calls no stage file"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign",
+   "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-rebuild",
+   "reason": "calls stage-sign.yml a second time, for the Rebuild records: Sign's second call, which checks and signs them keyless and receives no Rebuild apk or image (REQ-CHAIN-005-AC4)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-check",
+   "reason": "calls stage-sign.yml a third time, for the Check records: Sign's third call, which checks and signs them keyless (REQ-REL-011-AC1)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "release",
+   "reason": "calls stage-promote.yml: Release, whose Witness steps and keyless cosign signatures mint the signing identity (REQ-CHAIN-007)"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "inspector",
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "scorecard.yml",
+   "job": "analysis",
+   "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
+  },
+  {
+   "workflow": "stage-promote.yml",
+   "job": "verify",
+   "reason": "Release, job verify (REQ-CHAIN-007-AC1, Astra R6): release-verify runs under Witness, whose wrapper fetches the identity token for the keyless record; contents read and id-token write only, no environment, no secret, no packages write; signs no provenance"
+  },
+  {
+   "workflow": "go-freshness.yml",
+   "job": "persona-uat",
+   "reason": "Persona UAT, weekly run (REQ-UAT-001, owner ratified Oct 3 and Oct 4): behind the PERSONA_UAT_ENABLED gate (off unless the repository variable is exactly 'true'), the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, packages read"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "persona-uat",
+   "reason": "Persona UAT, release-candidate run (REQ-UAT-001-AC1; advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14): needs Build only, behind the PERSONA_UAT_ENABLED gate and only on an rc tag; the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no packages, no registry credential; Build's image reaches only a registry on the runner's loopback"
+  },
+  {
+   "workflow": "stage-promote.yml",
+   "job": "release",
+   "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
+  },
+  {
+   "workflow": "stage-sign.yml",
+   "job": "sign",
+   "reason": "Sign: the one provenance signer (REQ-CHAIN-001), and the signer of the Build records (owner Oct 22)"
+  },
+  {
+   "workflow": "stage-sign.yml",
+   "job": "sign-rebuild",
+   "reason": "Sign: the signer of the Rebuild records (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md); receives no Rebuild apk or image"
+  },
+  {
+   "workflow": "stage-sign.yml",
+   "job": "sign-check",
+   "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them keyless"
+  },
+  {
+   "workflow": "ci.yml",
+   "job": "live-test",
+   "reason": "the rule-12 live test of our VEX files (REQ-SCAN-012): OIDC federation into the dedicated live-test AWS account and Google project only (environment live-test); signs and publishes nothing"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "live-test",
+   "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "live-test-release",
+   "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
+  }
+ ]
+}

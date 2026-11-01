@@ -283,7 +283,7 @@ class Handle(Base):
         self.assertEqual(client.messages.calls[1]["model"], "claude-primary-x1")
 
     def test_disposition_context_prompt_and_category(self):
-        client = FakeClient([Msg("I judge this false_positive because ...", usage=(7, 3))])
+        client = FakeClient([Msg('{"category": "false_positive"}', usage=(7, 3))])
         req = {"finding_id": "CVE-2024-1", "package": "zlib", "installed_version": "1.2",
                "severity": None, "scanners": ["grype", "trivy"]}
         ans = C._handle(req, client)
@@ -301,7 +301,7 @@ class Handle(Base):
             self.assertNotIn(ph, p)
 
     def test_disposition_rephrase_and_knowledge_passthrough(self):
-        client = FakeClient([Msg("not_affected_unreachable")])
+        client = FakeClient([Msg('{"category": "not_affected_unreachable"}')])
         ans = C._handle({"finding_id": "X", "attempt": "rephrase",
                          "knowledge": "KNOWN: grype misreads zlib"}, client)
         p = client.messages.calls[0]["messages"][0]["content"]
@@ -311,22 +311,34 @@ class Handle(Base):
         self.assertEqual(ans["category"], "not_affected_unreachable")
 
     def test_category_priority_order(self):
-        # both appear: the tuple order decides (false_positive wins over risk_acceptance)
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("risk_acceptance or false_positive")]))
-        self.assertEqual(ans["category"], "false_positive")
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("risk_acceptance")]))
+        # rc-5b R5: the category is the JSON key, exact; two words in one value, or words in prose, are not a category
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "risk_acceptance or false_positive"}')]))
+        self.assertEqual(ans["category"], "under_investigation")
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('This is not a false_positive, it is risk_acceptance')]))
+        self.assertEqual(ans["category"], "under_investigation")
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "risk_acceptance"}')]))
         self.assertEqual(ans["category"], "risk_acceptance")
 
     def test_refusal_only_when_no_category(self):
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("I CANNOT decide this.")]))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"refused": true}')]))
         self.assertEqual((ans["refused"], ans["category"]), (True, "under_investigation"))
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("cannot be reached: not_affected_unreachable")]))
-        self.assertEqual((ans["refused"], ans["category"]), (False, "not_affected_unreachable"))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("I CANNOT decide this.")]))               # a word in prose is not a refusal (rc-5b R5)
+        self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"refused": true, "category": "not_affected_unreachable"}')]))
+        self.assertEqual((ans["refused"], ans["category"]), (True, "under_investigation"))                  # a refusal is never converted into a disposition
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg("unclear")]))
         self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
 
+    def test_the_whole_response_must_be_one_json_object(self):
+        for text in ('example {"category": "false_positive"} final {"category": "real_fixable"}', 'Example only: {"category":"false_positive"}. I decline: {"refused":true}',
+                     '[{"category": "real_fixable"}]', '{"category": "real_fixable"} {"category": "false_positive"}', 'Analysis: {"category": "real_fixable"}', '"real_fixable"', ''):
+            ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
+            self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"), text)
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('  {"category": "real_fixable"}\n')]))
+        self.assertEqual(ans["category"], "real_fixable")
+
     def test_propose_passthrough_only_when_dict(self):
-        text = 'real_fixable\n```json\n{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}\n```'
+        text = '{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}'
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
         self.assertEqual(ans["propose"], {"kind": "defect", "evidence": "a}b"})
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('real_fixable {"propose": "free text"}')]))
@@ -364,7 +376,7 @@ class ExtractJson(unittest.TestCase):
 # ---------------------------------------------------------------- main()
 class Main(Base):
     def test_one_shot_success(self):
-        sdk = fake_sdk([Msg("real_fixable", usage=(2, 2))])
+        sdk = fake_sdk([Msg('{"category": "real_fixable"}', usage=(2, 2))])
         code, out, err = self.run_main([], json.dumps({"finding_id": "CVE-1"}), sdk)
         self.assertIsNone(code)
         self.assertEqual(json.loads(out), {"refused": False, "category": "real_fixable",
@@ -393,7 +405,7 @@ class Main(Base):
         self.assertEqual((code, out, sdk.constructed), (3, "", []))
 
     def test_serve_one_client_many_requests_errors_do_not_exit(self):
-        sdk = fake_sdk([Msg("false_positive", usage=(1, 1)),
+        sdk = fake_sdk([Msg('{"category": "false_positive"}', usage=(1, 1)),
                         SDKError("rate limited Bearer abcdefghij", status_code=429),
                         SDKError("forbidden", status=403),
                         Msg("All good", usage=(3, 0))])
@@ -420,7 +432,7 @@ class Main(Base):
         self.assertEqual(len(sdk.constructed[0][2].messages.calls), 4)
 
     def test_run_as_script(self):
-        sdk = fake_sdk([Msg("risk_acceptance", usage=(1, 2))])
+        sdk = fake_sdk([Msg('{"category": "risk_acceptance"}', usage=(1, 2))])
         code, out, _err = self.run_main([], json.dumps({"finding_id": "Z"}), sdk, as_script=True)
         self.assertIsNone(code)
         self.assertEqual(json.loads(out)["category"], "risk_acceptance")

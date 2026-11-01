@@ -19,6 +19,9 @@
 .github/agent/bin/tests/test_cov_decisions.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_manifest.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_run.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_reviewed_inputs.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_nochange.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_images_tar.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_check_action_pins.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_pin_plain_forms.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel_sdk_probe.py  unit test (test code — the Go gate does not measure _test.go either)
@@ -27,6 +30,8 @@
 .github/agent/bin/tests/test_panel.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel_io.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel_verdict.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_vendor_records.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_vendor_records_cli.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/verdict_fixture.py  test helper (test code — the Go gate does not measure _test.go either); its adapter has unit tests in test_cov_small and runs in the matrix suite
 .github/agent/bin/tests/test_signed_commit.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_signed_commit_cli.py  unit test (test code — the Go gate does not measure _test.go either)

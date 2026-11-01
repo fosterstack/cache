@@ -22,7 +22,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 tree = sys.argv[2]
 bad = []
 # Codex #157 r2 (SEC-157-02 A): the pin also binds what the privileged step EXECUTES — the bump script's bytes.
-REVIEWED_BUMP_SCRIPT = "48cc68169f6454f4b0e4891c7cad87e844c3ee4f75342402ae0143166c2067e5"
+REVIEWED_BUMP_SCRIPT = "2f1e4a49909da5af5e1e6db4e47f0134d2e7e7e98336bad5343dbaebfb5baf3c"
 got_script = hashlib.sha256(open(os.path.join(tree, "bin/go-bump-open-pr.sh"), "rb").read()).hexdigest()
 if got_script != REVIEWED_BUMP_SCRIPT:
     bad.append("bin/go-bump-open-pr.sh (run with the App token) differs from its reviewed form (%s)" % got_script[:12])
@@ -31,7 +31,7 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("agent-review-gate.yml", "record"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
            ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
-           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion"),
+           ("main-candidate-rescan.yml", "panel-google"),  # the release.yml promotion job (scans) is gone: Check holds no secret (PR 3), Release is the release job (PR 4)
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
            # panel-scout/panel-google above; it never mints or uses the auditor App's token
            ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),
@@ -40,7 +40,11 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # token (contents + pull-requests) to open the changelog PR after that tag — both deliberate, reviewed
            # consumers of that credential (Sonnet #158 r3, REL-DECIDE-01: the earlier comment wrongly said decide
            # never touches the App's secrets)
-           ("release.yml", "decide"), ("release.yml", "patch-notes")}
+           ("release.yml", "decide"), ("release.yml", "patch-notes"),
+           # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
+           # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
+           # on main
+           ("dependabot-reviewer.yml", "vendor-records")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)
@@ -182,6 +186,17 @@ if not re.search(r"(^|\s)\./bin/archive-pull\.sh --pointer build/archive\.json -
 if "./bin/refresh-inputs.sh refresh " not in run_of(ORDER[1]) or "./bin/refresh-inputs.sh fips-module " not in run_of(ORDER[2]) \
         or "--plan-dir" not in run_of(ORDER[1]) or "--plan-dir" not in run_of(ORDER[2]):
     bad.append("AC26: the refresh steps do not call refresh-inputs.sh refresh and fips-module with --plan-dir (the pull request is opened after the archive is stored)")
+# rc-3 R5: the certified-module check asks about OUR toolchain, so it reads the checksum-pinned one (bin/install-scanner.sh go), never the floating setup-go
+GO_NAME = "install the pinned Go toolchain"
+GO_ROOT = "/usr/local/bin/fscache-go"
+if GO_NAME not in rnames or ORDER[2] not in rnames or rnames.index(GO_NAME) > rnames.index(ORDER[2]) or rnames.index(GO_NAME) < 2:
+    bad.append("AC26: the pinned Go toolchain is not installed (after the key check, before the certified-module check)")
+elif run_of(GO_NAME).strip().splitlines() != ["set -euo pipefail", "./bin/install-scanner.sh go"] or any(x.get("if") for x in rsteps if x.get("name") == GO_NAME):
+    bad.append("AC26: the pinned Go toolchain step does not run bin/install-scanner.sh go unconditionally")
+if not re.search(r"--go-root " + re.escape(GO_ROOT) + r"(\s|$)", run_of(ORDER[2])) or "go env" in run_of(ORDER[2]):
+    bad.append("AC26: the certified-module check does not read the pinned toolchain (--go-root %s), or asks `go env`" % GO_ROOT)
+if [x for x in rsteps if str(x.get("uses", "")).startswith("actions/setup-go@")]:
+    bad.append("AC26: the refresh job installs a floating Go with setup-go; the toolchain it reads is the pinned one")
 if "./bin/refresh-inputs.sh open-pr " not in run_of(ORDER[4]) or "--plan-dir" not in run_of(ORDER[4]):
     bad.append("AC29: the pull requests are not opened by refresh-inputs.sh open-pr from the plan")
 boot = [s for s in rsteps if s.get("name") == BOOT]
@@ -320,6 +335,13 @@ case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in 
 case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
 case_ refresh-bootstrap-always bad "[s.pop('if', None) for s in $R['steps'] if s.get('name') == 'bootstrap the archive from the pinned Wolfi key']"
 case_ refresh-keycheck-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pinned one']"
+case_ refresh-go-root-floating bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '\$(go env GOROOT)')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-pinned-go-or-true bad "[s.__setitem__('run', s['run'].rstrip() + ' || true\\n') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
+case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '/usr/local/bin/fscache-go2')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-pinned-go-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'install the pinned Go toolchain']"
+case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer certified crypto module') + 1, a.pop(n.index('install the pinned Go toolchain')))"
+case_ refresh-setup-go-back bad "$R['steps'].insert(2, {'uses': 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'with': {'go-version': '1.27'}})"
+case_ refresh-pinned-go-unlisted-install bad "[s.__setitem__('run', 'tar -xzf \"\$RUNNER_TEMP/go.tgz\" -C /usr/local/bin') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
 case_ refresh-keycheck-late bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('check the live Wolfi key against the pinned one'); a.insert(n.index('pull the archive by its recorded digest'), a.pop(i))"
 case_ refresh-keycheck-if bad "[s.__setitem__('if', 'always()') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pinned one']"
 case_ refresh-bootstrap-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'bootstrap the archive from the pinned Wolfi key']"

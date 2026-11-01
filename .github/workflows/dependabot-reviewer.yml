@@ -1,7 +1,7 @@
 name: Dependabot reviewer
 
 # Register row 75: three dependency lanes. The auditor (cron) opens CVE bumps; Dependabot opens
-# "latest" bumps; THIS workflow judges Dependabot MAJORS so the owner never reads a major again.
+# "latest" bumps; THIS workflow judges Dependabot MAJORS (and updates FLAGGED by their release notes) so the owner never reads a major again.
 # Patch and minor bumps are untouched (dependabot-auto-merge.yml arms them on green).
 #
 # Why hourly-from-main and never on a PR event: GitHub gives a Dependabot-triggered run no
@@ -31,7 +31,14 @@ name: Dependabot reviewer
 # (the App has no Issues permission). No vendor or model name appears anywhere here, in the
 # check, or in the issue (row 48); model ids live only in the `agent` environment's secrets.
 #
-# `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on majors, and a
+# The second job, `vendor-records`, finishes a Go dependency bump nobody has to finish by hand: for every open
+# dependabot/go_modules/* and auditor/bump-* branch it regenerates the vendored tree and the provenance records and
+# adds ONE App-signed commit holding only those (vendor/, dependency-provenance.json, the reviewed licences). It runs
+# here for the same reason as the review: a run Dependabot's own push starts holds no secrets, so a scheduled sweep
+# from main's copy is the only way to hold the App key. Branches are fetched as data and never run
+# (.github/agent/bin/auditor-vendor-records.py).
+#
+# `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on majors and flagged updates, and a
 # required check would block every human PR.
 
 on:
@@ -45,6 +52,10 @@ on:
         default: ''
       force:
         description: 'Re-review even if the head already carries a dependabot-reviewer check'
+        type: boolean
+        default: false
+      records_dry_run:
+        description: 'Records sweep: say what it would commit, commit nothing'
         type: boolean
         default: false
 
@@ -113,11 +124,23 @@ jobs:
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
           gh pr list --base main --state open --author 'app/dependabot' --limit 100 \
-            --json number,title,body,headRefOid > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
+            --json number,title,body,headRefOid,files > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
           : > "$RUNNER_TEMP/work/candidates.txt"
           while read -r pr; do
             n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
             [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
+            # held out of auto-merge, handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): the pinned tool module (go.mod and go.sum under
+            # tools/govulncheck/, whose version ci.yml repeats by hand, so a Dependabot bump alone cannot be right), and any PR whose file list is at the API's cap of
+            # 100 (it may be cut, so it cannot be judged). Never reviewed or armed here, an arm made earlier is turned off; a lookup or a disarm that fails skips it and fails the step
+            if [ "$(jq '[.files[]?.path | select(startswith("tools/govulncheck/"))] | length' <<<"$pr")" != 0 ] || [ "$(jq '(.files | length) >= 100' <<<"$pr")" = true ]; then
+              if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
+                echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
+              fi
+              if [ "$armed" != false ] && ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
+                echo "::error::PR #$n: held out of auto-merge and could not be disarmed — skipped this hour"; lookup_failed=1; continue
+              fi
+              echo "PR #$n: touches tools/govulncheck/ or lists 100+ files — held out of auto-merge (a normal lane PR), never reviewed or armed here"; continue
+            fi
             jq -r '.body // ""' <<<"$pr" > "$RUNNER_TEMP/work/body-$n.txt"
             if ! python3 bin/dependabot-reviewer.py updates --title "$(jq -r .title <<<"$pr")" \
                    --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
@@ -485,3 +508,39 @@ jobs:
           name: dependabot-reviewer-${{ github.run_id }}
           path: ${{ runner.temp }}/work
           if-no-files-found: ignore
+
+  vendor-records:
+    name: records sweep
+    # The `agent` environment is limited to branch main, so a run from any other ref fails before the App key exists:
+    # the environment is the boundary here, not a condition inside this file (a hostile ref would just omit it).
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      # the full history of main: the sweep fetches each bump branch into this clone as data and finds its merge base
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: mint the App token for the records commits (contents:write, this repository only)
+        id: app-records
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+
+      # the build's pinned Go toolchain at its fixed install path: go mod vendor and the records step both run it
+      - name: install the pinned Go toolchain
+        run: bash bin/install-scanner.sh go
+
+      - name: regenerate the records of every dependency-bump branch
+        env:
+          GH_TOKEN: ${{ steps.app-records.outputs.token }}
+          DRY_RUN: ${{ inputs.records_dry_run && '--dry-run' || '' }}
+        run: |
+          python3 -I .github/agent/bin/auditor-vendor-records.py --repo "$GITHUB_REPOSITORY" \
+            --workspace "$GITHUB_WORKSPACE" $DRY_RUN

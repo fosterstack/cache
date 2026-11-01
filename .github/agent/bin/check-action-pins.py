@@ -44,12 +44,12 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Script-text inputs: an input an action executes as a command (github-script `script`,
              golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
              a `run:` block — outside this check, covered by the review pass (see ACTIONS).
-  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (skopeo from the runner's
-             signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
+  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (PyYAML for this checker)
+             are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while cache PR #316 is bootstrapped; a later change leaves one)
+             frozen set of exactly two digests while the passed-audit record judge (cache#669) is bootstrapped; a later change leaves one)
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the independent
              second review: the enforcement cannot be removed from its caller by an ordinary merge either.
@@ -167,8 +167,6 @@ Outside this check, each a documented exclusion with its reason (row 78):
     --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
-  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md
-    (committed, reviewed), written by the step's own python heredoc; they assert against the kind cluster;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -310,7 +308,7 @@ class GitTree:
 
     def __init__(self, commit):
         out = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", commit],
-                             capture_output=True, check=True).stdout.decode("utf-8", "replace")
+                             capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")   # distinct bytes stay distinct names (rc-5b R10c)
         self.entries, self.blobs = {}, {}
         for rec in filter(None, out.split("\0")):
             meta, path = rec.split("\t", 1)
@@ -2220,6 +2218,17 @@ def daemon_redirects(text):
 # test, never a container. They are committed files, and every diff that adds or changes one gets both reviewers.
 TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)$")   # exactly these roots (Codex r2, R03)
 
+# Documented exclusion (the same charter): the sandbox-wall probe is a dry-run-only step of Build that runs the sealed
+# melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
+# TEST-SUBST), the one form the chain judge (bin/chain-test-signers.py) admits, while this check reads a variable
+# program as unreadable. It installs nothing, pulls no image and starts only the pinned tools at fixed paths. It is
+# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; it is held whole by
+# sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
+# listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
+# exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
+# every script is.
+SEALED_PROBE = frozenset({"bin/chain-sandbox-probe.sh"})
+
 
 HEREDOC = re.compile(r"(?<!<)<<(-?)(?!<)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 
@@ -2297,18 +2306,12 @@ def _drop_foreign_heredocs(text):
     return "\n".join(out)
 
 
-# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023):
-# Fenced (advisor 0084 (4)): exactly these two files of that one workflow; bin/k8s-harness-fence-test.sh proves both
-# are written only from docs/kubernetes.md at the checked-out commit (no env, no network, no other input), and any
-# other eval of a variable, anywhere, is refused by the variable-program rule.
-GENERATED_OK = {
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
-        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
-        "heredoc; they assert against the kind cluster and fetch nothing",
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
-        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
-        "because rule 12 tests the customer's commands exactly as published",
-}
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): none now. The two generated scripts of the
+# Kubernetes harness (/tmp/pf-forward, /tmp/smoke-assert; advisor 0084 (4)) were excluded while the harness was a workflow step; it is now Check's
+# listed scripts (bin/acceptance-k8s.sh runs them, bin/acceptance-k8s-smoke.py writes them), which are judged by the chain judges, and the fence
+# facts are proven there by .github/agent/tests/k8s-harness-fence-test.sh. Any other eval of a variable, anywhere, is refused by the
+# variable-program rule; the branch below stays and is proven with an injected entry in that test.
+GENERATED_OK = {}
 
 
 BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"
@@ -2331,13 +2334,18 @@ def _resolve_script(path, text, entries, bases=()):
         # the pull request's base sha is main's copy; the script runs from it at a literal path. Nothing else in the job may write under it.
         d = re.escape(mb.group(1))
         for ln in re.sub(r"\\\n", " ", text).splitlines():
-            if re.search(r"(?<![\w.-])" + d + r"/", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
+            if re.search(r"(?<![\w.-])" + d + r"(?:/|[\"']|\s|$)", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
                 return None
         return mb.group(2)
     m = re.match(r"^(\$\{?RUNNER_TEMP\}?|/tmp(?:/[\w.-]+)*)/([\w.-]+)$", path)
     if not m:
         return None
     d, base = m.group(1), m.group(2)
+    dn = "$RUNNER_TEMP" if d.startswith("$") else d
+    for wm_ in re.finditer(r"tar -x -C '([^']*)'", text):    # a writer step (or an extraction) into the copy's directory or a parent of it
+        w_ = "$RUNNER_TEMP" + wm_.group(1)[len("$RUNNER_TEMP"):] if wm_.group(1).startswith("$RUNNER_TEMP") else wm_.group(1)
+        if w_ == "." or dn == w_ or dn.startswith(w_.rstrip("/") + "/"):
+            return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
     writes = len(re.findall(dst + r"\"?", text))
@@ -2521,8 +2529,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("runs %s from a working directory this check cannot place; refused" % path)
             continue
         READ_SCRIPTS.append((rel, tree.read(rel)))       # bound to its committed bytes after inlining (check_runs)
-        if TEST_HARNESS.search(rel):
-            continue                                     # a test harness: its probes are fixture data (documented)
+        if TEST_HARNESS.search(rel) or rel in SEALED_PROBE:
+            continue                                     # a test harness (its probes are fixture data) or the sealed probe: documented exclusions
         if depth >= 4:
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
@@ -2702,7 +2710,7 @@ def _unsafe_downloads(text):
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+    (".github/workflows/auditor.yml", "audit", 10, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
@@ -2775,10 +2783,12 @@ def check_runs(where_job, scripts, bad, tree=None):
         # what writes it before it runs: the job's own text or ANOTHER script it runs (its own later writes do not count)
         # a harness's own text is fixture data here as everywhere (documented); a write TO a harness still counts
         others = [read(c) for r, c in read_scripts.items() if r != rel and not TEST_HARNESS.search(r)]
-        lines = job0.split("\n")                        # only what runs before the script's first RUN
+        lines = job0.split("\n")                        # only what runs before the script's last RUN
         norm = lambda p: re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", p)
-        k = next((n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel
-                                                          for t in _commands(ln))), len(lines))
+        runs = [n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel for t in _commands(ln))]
+        via_other = any(any(t[0] in ("__script__", "__exec__") and (norm(t[1]) == rel or _base(t[1]) == _base(rel)) for t in _commands(ln))
+                        for src in others for ln in src.split("\n"))
+        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job           
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
         if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
@@ -2917,6 +2927,58 @@ def _default_shell(node):
     return sh.value if isinstance(sh, yaml.ScalarNode) else None
 
 
+def _writer_dir(value):
+    """The directory that a step's `path:` fills: relative to the workspace, or an absolute directory ("/tmp/x", "$RUNNER_TEMP/x", written from the ${{ runner.temp }}/x expression only,
+    "~/.cache/x") that is provably not the workspace. Anything this check cannot place by reading it writes everywhere, written ".",
+    fail closed: "${{ }}", a "$", a quote, "..", the workspace's own absolute path and every parent of it ("/", "/home", "/home/runner",
+    "/github", "~", "~/work/..."). Outside means exactly /tmp, runner.temp and ~/<anything but work> (rc-5b 618 fix, Fable ruling)."""
+    v = str(value).strip().strip("\"'")           # an empty path normalises to "." below (the checkout's own directory)
+    m = re.match(r"\$\{\{\s*runner\.temp\s*\}\}(/.*)?$", v)      # only the expression: the runner does not expand $RUNNER_TEMP in a with: value, so that is a relative directory
+    if m:
+        rest = m.group(1) or ""
+        if "${{" in rest or "$" in rest or ".." in rest or "'" in rest or '"' in rest:
+            return "."                                   # an expression or a variable after the prefix can resolve to anything
+        return "$RUNNER_TEMP" + (os.path.normpath(rest) if rest.strip("/") else "")
+    if "${{" in v or "$" in v or "'" in v or '"' in v or ".." in v:
+        return "."
+    if v == "/tmp" or v.startswith("/tmp/") or re.match(r"~/(?!work(/|$))[^/]", v):
+        return os.path.normpath(v)                       # outside the workspace: still a directory a /tmp copy of a script can live in
+    if v.startswith(("/", "~")):
+        return "."                                       # the workspace, a parent of it, or somewhere this check cannot place
+    return os.path.normpath(v)
+
+
+def _uses_writes(uses, with_node, key_of):
+    """rc-5b B2 (handoff 0663): the directories a `uses:` step fills, from a CLOSED list of writers; [] for any other action.
+    actions/checkout with `repository`, `path`, a `ref` or `lfs` other than false (the plain default checkout and the base-sha fence
+    form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions write
+    nothing into the tree). The action name is read in any letter case. A `with:` that is not a mapping writes everywhere. Every
+    cache step writes everywhere: a cache entry's own paths are not read (618 fix, Fable ruling)."""
+    name = uses.strip().split("@")[0].lower()
+    if name not in ("actions/checkout", "actions/download-artifact", "actions/cache", "actions/cache/restore"):
+        return []
+    empty = with_node is None or (isinstance(with_node, yaml.ScalarNode) and with_node.value.strip() in ("", "~", "null"))
+    if not empty and not isinstance(with_node, yaml.MappingNode):
+        return ["."]                                     # GitHub rejects it, but this check does not read it as "no inputs"
+    if isinstance(with_node, yaml.MappingNode) and len({key_of(k) for k, _ in with_node.value}) != len(with_node.value):
+        return ["."]                                     # path / Path / "path " name one input after case and space are folded: which copy the runner reads is not read here
+    wm = {key_of(k): v for k, v in with_node.value} if isinstance(with_node, yaml.MappingNode) else {}
+    val = lambda k: wm[k].value if isinstance(wm.get(k), yaml.ScalarNode) else ("${{" if k in wm else None)
+    if name == "actions/checkout":
+        ref, pth, lfs = val("ref"), val("path"), val("lfs")
+        lfs_on = lfs is not None and lfs.strip().strip("\"'").lower() != "false"
+        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() == BASE_SHA_REF and \
+                re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
+            return []                                    # the base-sha fence: main's copy, handled as a base directory
+        if "repository" in wm or ref is not None or pth is not None or lfs_on:
+            return [_writer_dir(pth if pth is not None else ".")]
+        return []
+    if name == "actions/download-artifact":
+        pth = val("path")
+        return [_writer_dir(pth if pth is not None else ".")]
+    return ["."]
+
+
 def run_scripts(doc):
     """{job or composite: [(path, run text, shell)]} for every step run: GitHub executes, in order; shell is the
     step's own `shell:`, else its job's then its workflow's defaults.run.shell, else None (bash)."""
@@ -2941,12 +3003,23 @@ def run_scripts(doc):
                         groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft,
                                                               ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
                     uses, w = m.get("uses"), m.get("with")
-                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip()):
+                    if isinstance(uses, yaml.ScalarNode):
+                        wdirs = _uses_writes(uses.value, w, key_of)
+                        if wdirs:                        # rc-5b B2: a step that puts bytes into the tree is a writer, in step order
+                            groups.setdefault(group, []).append((f"{base}[{i}].uses", "\n".join(f"tar -x -C '{d_}'" for d_ in wdirs),
+                                                                  None, None, "if" in m, "", tuple(base_dirs)))
+                            for d_ in list(base_dirs):   # a LATER writer into (or over) a base-sha directory: it is no longer main's copy
+                                if any(w_ == "." or w_ == d_ or w_.startswith(d_ + "/") or d_.startswith(w_ + "/") for w_ in wdirs):
+                                    base_dirs.remove(d_)
+                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip(), re.I):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
                         pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
+                        dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
+                        lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
+                        lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
                         if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
-                                and re.fullmatch(r"[\w][\w-]*", pdir)):
+                                and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
                         else:
@@ -3169,6 +3242,15 @@ def check_file(tree, rel, pins, bad):
             check_image(where, node, bad)
 
 
+def _utf8(name):
+    """True when the name is valid UTF-8 (a str that holds surrogate escapes is not)."""
+    try:
+        name.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def main():
     argv = sys.argv[1:]
     verify = "--verify-tags" in argv
@@ -3183,6 +3265,11 @@ def main():
         sys.exit("check-action-pins: no .github/workflows/ — nothing checked")
     bad, pins, files = [], [], []
     for rel, kind in sorted(tree.entries.items()):
+        if rel.startswith(".github/") and not _utf8(rel):
+            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed
+            bad.append(f"{rel.encode('utf-8', 'surrogateescape').decode('ascii', 'backslashreplace')}: a name under .github/ that is not "
+                       f"valid UTF-8; refused (the file would otherwise go unread)")
+            continue
         parts = rel.split("/")
         in_wf = parts[:2] == [".github", "workflows"]
         name = parts[-1]
@@ -3208,7 +3295,7 @@ def main():
     if verify:
         bad += verify_pins(pins)
     for b in bad:
-        print(b)
+        print(b.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace"))   # a name that is not UTF-8 prints escaped, never a traceback
     print(f"check-action-pins: {len(files)} YAML file(s), {len(pins)} pinned action(s)"
           f"{' verified against their tags' if verify else ''}, {len(bad)} finding(s)")
     sys.exit(1 if bad else 0)

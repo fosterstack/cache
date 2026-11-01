@@ -10,19 +10,12 @@
 # probe. Pure python3 + json — no PyYAML, no network, no gh, no scanners —
 # so it runs identically in CI and locally.
 #
-# Three audit defects this encodes the fix for:
-#
-#   B04d  Snyk places OS findings at top-level `.vulnerabilities` AND
-#         application-dependency findings under `.applications[]
-#         .vulnerabilities` (each carrying project context, e.g.
-#         `.targetFile`). Both are normalized, and each finding keeps its
-#         platform + project so an arm64 application-only finding still
-#         reaches the statement and the notification.
+# Audit defects this encodes the fix for:
 #
 #   B04e  Completeness is classified from each scanner's OWN exit-code
 #         contract, INDEPENDENTLY of whether the JSON parsed. A child that
-#         exits with an operational-failure code (Snyk 2/3; Trivy/Grype any
-#         nonzero that is not the configured finding code) makes the run
+#         exits with an operational-failure code (any nonzero that is not
+#         the scanner's configured finding code) makes the run
 #         incomplete (verdict=error) even when its JSON is well-shaped and
 #         even when another child legitimately found a CVE — the finding is
 #         still notified, and the run still fails.
@@ -53,17 +46,12 @@ _spec.loader.exec_module(_gate)
 # ANY other nonzero exit is an operational failure, independent of whether
 # the tool also managed to emit parseable JSON.
 #
-#   snyk container test : 0 clean, 1 findings, 2/3 operational failure.
-#     https://docs.snyk.io/developer-tools/snyk-cli/commands/container-test
-#   trivy image --exit-code 1 : 0 clean, 1 findings, other nonzero = error.
 #   grype --fail-on negligible : 0 clean, 2 findings, 1 (and other
 #     nonzero) = operational error. Grype returns 2 for a
 #     vulnerability-match failure and 1 for a runtime error - the
 #     opposite of the misleading --help text; confirmed against
 #     cmd/grype/cli/cli.go, verified unchanged at the pinned v0.118.0.
 CONTRACTS = {
-    "snyk": {"clean": {0}, "finding": {1}},
-    "trivy": {"clean": {0}, "finding": {1}},
     "grype": {"clean": {0}, "finding": {2}},
     # osv-scanner scan image/source : 0 clean, 1 findings, 127/128 (and any
     #   other nonzero) = operational failure (no packages / general error).
@@ -72,11 +60,12 @@ CONTRACTS = {
 }
 
 
-# Rule 4 (ratified scanner-panel rules): the published OpenVEX file is the only exception. A scanner that reads it itself (Grype --vex, Trivy --vex) has already
-# applied it; every other scanner of .github/policy/scanners.json has its findings filtered HERE, against the same document. A scanner in neither list
-# cannot be classified, so it cannot bypass the VEX by omission: `classify` (and the test over scanners.json) fail for it.
-NATIVE_VEX = ("grype", "trivy")
-PIPELINE_FILTERED = ("osv-scanner", "snyk")
+# Rule 4 (ratified scanner-panel rules): the published OpenVEX file is the only exception. A scanner that reads it
+# itself (Grype --vex) has already applied it; every other scanner of .github/policy/scanners.json has its findings
+# filtered HERE, against the same document. A scanner in neither list cannot be classified, so it cannot bypass the
+# VEX by omission: `classify` (and the test over scanners.json) fail for it.
+NATIVE_VEX = ("grype",)
+PIPELINE_FILTERED = ("osv-scanner",)
 
 
 def vex_class(scanner):
@@ -141,7 +130,7 @@ def cmd_find_issue(args):
 
 
 OUR_OCI_REPOS = ("ghcr.io/fosterstack/cache", "ghcr.io/fosterstack/cache-candidates")
-VEX_VARIANTS = ("production", "debug", "fips")
+VEX_VARIANTS = ("production", "fips")   # v0.3.0 ships no :debug image (rc-5a H)
 VEX_ARCHS = ("amd64", "arm64")
 _PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")
 _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
@@ -170,8 +159,9 @@ def _sub_purl(sid):
 
 def _same_package(name, version, sub_name, sub_version):
     """namespace-preserving: the finding's full package name (namespace included) equals the subcomponent's, case-sensitively, and the versions are equal.
+    A subcomponent that names NO version stands for every version of that package (the same reading as the generated Inspector rule).
     busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg."""
-    return name == sub_name and version == sub_version
+    return name == sub_name and (not sub_version or version == sub_version)
 
 
 def _parse_product(pid):
@@ -180,6 +170,9 @@ def _parse_product(pid):
     could parse as unscoped or as another product makes the whole document unreadable. Otherwise ("go",), ("go-versioned",) or ("oci", repository, variant|None, arch|None)."""
     if not isinstance(pid, str):
         raise ValueError("a product identifier that is not a string")
+    go = "pkg:golang/github.com/fosterstack/cache"
+    if pid.startswith(go) and pid[len(go):len(go) + 1] in ("/", "#", "&", "\n"):
+        raise ValueError("the Go product %r has a suffix (another module's name or a part these readers cannot place): the exact product only" % pid)
     if not _gate.OUR_PRODUCTS.match(pid):
         return None
     base, _, query = pid.partition("?")
@@ -188,6 +181,8 @@ def _parse_product(pid):
             raise ValueError("a qualifier on the Go product %r" % pid)
         if "@" in base:
             return ("go-versioned",)   # a version-pinned module cannot be tied to the release being scanned: it never applies
+        if pid != "pkg:golang/github.com/fosterstack/cache":
+            raise ValueError("the Go product %r has a suffix (another module's name, a trailing newline): the exact product only" % pid)
         return ("go",)
     names = {"pkg:oci/cache": OUR_OCI_REPOS[0], "pkg:oci/cache-candidates": OUR_OCI_REPOS[1]}
     if base not in names:
@@ -228,9 +223,9 @@ def _vex_validate(doc):
             idf = p.get("identifiers", {})
             if not isinstance(idf, dict) or ("purl" in idf and not isinstance(idf["purl"], str)):
                 raise ValueError("product identifiers that are not an object with a string purl")
-            if "@id" in p and "purl" in idf and p["@id"] != idf["purl"]:
+            if p.get("@id") is not None and "purl" in idf and p["@id"] != idf["purl"]:
                 raise ValueError("a product whose @id and identifiers.purl differ")
-            pid = p.get("@id") if "@id" in p else idf.get("purl")
+            pid = p.get("@id") if p.get("@id") is not None else idf.get("purl")
             _parse_product(pid)
             subs = p.get("subcomponents", [])
             if not isinstance(subs, list) or not all(isinstance(x, dict) and isinstance(x.get("@id"), str) for x in subs):
@@ -270,15 +265,18 @@ def _vex_match(doc, finding, variant, image_repo):
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
-    for st in doc["statements"]:
+    dead = _gate.superseded(doc["statements"])
+    for si, st in enumerate(doc["statements"]):
         if st["status"] not in _gate.SUPPRESSING:
             continue
         v = st["vulnerability"]
         if not ({v["name"]} | set(v.get("aliases", []))) & ids:
             continue
-        for p in st["products"]:
+        for pi, p in enumerate(st["products"]):
+            if (si, pi) in dead:   # a later statement of the same vulnerability, product and subcomponents replaces this one
+                continue
             idf = p.get("identifiers", {})
-            pp = _parse_product(p.get("@id") if "@id" in p else idf.get("purl"))
+            pp = _parse_product(p.get("@id") if p.get("@id") is not None else idf.get("purl"))
             if pp is None or pp[0] == "go-versioned":
                 continue
             if pp[0] == "go" and image_repo is None:
@@ -352,7 +350,7 @@ def cmd_enumerate(args):
             "inventory" % args.index)
         return 1
     except json.JSONDecodeError:
-        err("imagetools inspect for %s did not return valid JSON — refusing "
+        err("the manifest of %s did not return valid JSON — refusing "
             "to guess the platform inventory" % args.ref)
         return 1
 
@@ -420,14 +418,9 @@ def cmd_enumerate(args):
 def _shape_ok(scanner, report):
     if not isinstance(report, dict):
         return False
-    if scanner == "trivy":
-        return isinstance(report.get("Results"), list) \
-            or report.get("SchemaVersion") is not None
     if scanner == "grype":
         return isinstance(report.get("matches"), list) \
             and report.get("descriptor") is not None
-    if scanner == "snyk":
-        return isinstance(report.get("vulnerabilities"), list)
     if scanner == "osv-scanner":
         return isinstance(report.get("results"), list)
     return False
@@ -437,19 +430,7 @@ def _normalize(scanner, report, platform, bad=None):
     """Normalize a single child's report into a flat finding list, keeping
     the platform and project (targetFile / Target) context on each one."""
     out = []
-    if scanner == "trivy":
-        for res in report.get("Results") or []:
-            target = res.get("Target")
-            for v in res.get("Vulnerabilities") or []:
-                out.append({
-                    "id": v.get("VulnerabilityID"),
-                    "severity": (v.get("Severity") or "").lower(),
-                    "package": v.get("PkgName"),
-                    "fixed_in": v.get("FixedVersion") or None,
-                    "platform": platform,
-                    "target": target,
-                })
-    elif scanner == "grype":
+    if scanner == "grype":
         for m in report.get("matches") or []:
             vuln = m.get("vulnerability") or {}
             out.append({
@@ -460,26 +441,6 @@ def _normalize(scanner, report, platform, bad=None):
                 "platform": platform,
                 "target": None,
             })
-    elif scanner == "snyk":
-        # OS/distro findings live at the top level.
-        for v in report.get("vulnerabilities") or []:
-            _guard(out, bad, lambda: _snyk_finding(v, platform, target=None, pkg_mgr=None))
-        # Application-dependency findings live under applications[]; each app
-        # entry carries its own project context (targetFile / packageManager)
-        # — B04d: these were previously dropped entirely. The container is a
-        # LIST of project objects, each with a vulnerabilities LIST: any other
-        # shape is a malformed entry (operational error), never skipped.
-        apps = report.get("applications", [])
-        if not isinstance(apps, list):
-            apps = _bad(bad) or []
-        for app in apps:
-            if not isinstance(app, dict) or not isinstance(app.get("vulnerabilities"), list):
-                _bad(bad)
-                continue
-            target = app.get("targetFile") or app.get("path")
-            pkg_mgr = app.get("packageManager")
-            for v in app["vulnerabilities"]:
-                _guard(out, bad, lambda: _snyk_finding(v, platform, target, pkg_mgr))
     elif scanner == "osv-scanner":
         # OSV.dev JSON: results[] -> source.path, packages[] ->
         # {package:{name,...}, vulnerabilities:[{id, aliases, ...}]}.
@@ -548,56 +509,24 @@ def _osv_severity(v):
     return "unknown"
 
 
-def _snyk_finding(v, platform, target, pkg_mgr):
-    idf = v.get("identifiers", {})
-    if not isinstance(idf, dict) or not isinstance(v.get("id"), str):
-        raise ValueError("an entry whose id is not a string or whose identifiers are not an object")
-    cve, alt = idf.get("CVE", []), idf.get("ALTERNATIVE", [])
-    if not all(isinstance(x, list) and all(isinstance(i, str) for i in x) for x in (cve, alt)):
-        raise ValueError("CVE or ALTERNATIVE identifiers that are not a list of strings")
-    ident = cve[0] if cve else v["id"]
-    f = {
-        "id": ident,
-        "ids": list(cve) + list(alt) + [v["id"]],
-        "version": v.get("version"),
-        "severity": (v.get("severity") or "").lower(),
-        "package": v.get("packageName"),
-        "fixed_in": v.get("nearestFixedInVersion") or None,
-        "platform": platform,
-        "target": target,
-    }
-    if pkg_mgr:
-        f["package_manager"] = pkg_mgr
-    return f
-
-
 def _merge_raw(scanner, valid_reports):
     """Merge the valid per-child reports into one scanner-shaped aggregate
-    for the retained raw-report evidence. For Snyk, BOTH the OS-level
-    vulnerabilities AND the application sections are carried through."""
-    if scanner == "trivy":
-        results = []
-        for r in valid_reports:
-            results.extend(r.get("Results") or [])
-        return {"Results": results}
+    for the retained raw-report evidence."""
     if scanner == "grype":
         matches = []
         for r in valid_reports:
             matches.extend(r.get("matches") or [])
         return {"matches": matches}
-    if scanner == "snyk":
-        vulns, apps = [], []
-        for r in valid_reports:
-            vulns.extend(r.get("vulnerabilities") or [])
-            a = r.get("applications")
-            apps.extend(a if isinstance(a, list) else [] if a is None else [a])
-        return {"vulnerabilities": vulns, "applications": apps}
     return {}
 
 
 # --------------------------------------------------------------------------
 # B04d + B04e — statement assembly and classification.
 # --------------------------------------------------------------------------
+
+# the scanners whose workflow step records each child's package count (the ones scanners.json lists)
+COUNTED = ("grype", "osv-scanner")
+
 
 def cmd_statement(args):
     scanner = args.scanner
@@ -613,11 +542,16 @@ def cmd_statement(args):
             if line:
                 children.append(json.loads(line))
 
+    op_fail = False
+    if args.expect_children is not None and len(children) != args.expect_children:
+        # a child's record is written after its scan: a scan that died before writing its line leaves a manifest shorter than the enumeration
+        err("the manifest holds %d child record(s) but %d child(ren) were enumerated; the rescan is incomplete, never clean" % (len(children), args.expect_children))
+        op_fail = True
+
     findings = []
     consistent = True   # every child exited clean, or exited with the findings code AND the report really held findings
     valid_reports = []
     scanned_platforms = []
-    op_fail = False
     max_rc = 0
 
     for child in children:
@@ -652,6 +586,12 @@ def cmd_statement(args):
             op_fail = True
             continue
         valid_reports.append(report)
+        pk = child.get("packages")
+        if scanner in COUNTED and (isinstance(pk, bool) or not isinstance(pk, int) or pk <= 0):
+            # Register row 53 (zero packages = did not run): a scanner that completed but inventoried no package looked at nothing, so `no findings` proves
+            # nothing. The workflow records each child's package count; a missing, zero, negative or non-numeric one is an error, never clean.
+            err("the %s report of %s completed but the scan inventoried no package (packages=%r); the rescan is incomplete, never clean" % (scanner, platform, pk))
+            op_fail = True
         bad = []
         got = _normalize(scanner, report, platform, bad)
         if bad:
@@ -804,6 +744,7 @@ def main(argv):
     ps.add_argument("--meta")
     ps.add_argument("--vex")
     ps.add_argument("--scope-file")
+    ps.add_argument("--expect-children", type=int, help="how many children the workflow enumerated; fewer records than that is an incomplete rescan")
     ps.add_argument("--release", default="")
     ps.add_argument("--variant", default="")
     ps.add_argument("--digest", default="")

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC34
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE] [--rerun-held]
@@ -20,7 +20,48 @@ ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
+# The three long cases (about 130 of 146 seconds) start in the background at once; bg_collect prints each one's
+# line, in launch order, before the summary. <&0 keeps the heredoc a background check is given (a background job
+# would otherwise read /dev/null).
+BG_N=0
+check_bg() {
+  local n=$((BG_N+1))
+  BG_N=$n; BG_CASE[$n]=$CASE
+  ( "$@" >/dev/null 2>&1; echo $? >"$work/bg.$n.rc.tmp" && mv "$work/bg.$n.rc.tmp" "$work/bg.$n.rc" ) <&0 &
+  BG_PID[$n]=$!
+}
+bg_collect() {
+  local i
+  for ((i = 1; i <= BG_N; i++)); do
+    wait "${BG_PID[$i]}" 2>/dev/null || true
+    if [ "$(cat "$work/bg.$i.rc" 2>/dev/null)" = 0 ]; then ok "${BG_CASE[$i]}"; else bad "${BG_CASE[$i]}"; fi
+  done
+}
 none_match() { local fl=-E; if [ "$1" = -i ]; then fl=-iE; shift; fi; local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -r -q $fl "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
+# --- the background helper (CI speed, advisor 0693): check_bg starts a check, bg_collect prints its line later ---
+bgprobe() { # runs the helper in a subshell so its counters and output are the probe's own
+  ( BG_N=0
+    CASE="p1"; check_bg true
+    CASE="p2"; check_bg false
+    CASE="p3"; check_bg sh -c 'sleep 1; exit 0'
+    CASE="p4"; check_bg sh -c 'kill -9 $$'
+    CASE="p5"; check_bg bash -s <<'X'
+exit 3
+X
+    CASE="p6"; check_bg bash -s <<'X'
+exit 0
+X
+    bg_collect )
+}
+bgout=$(bgprobe 2>/dev/null) || true
+CASE="background checks: one line each in launch order; exit 0 is ok, any other exit (failure, killed) is FAIL"
+want=$(printf 'ok   p1\nFAIL p2\nok   p3\nFAIL p4\nFAIL p5\nok   p6')
+check test "$bgout" = "$want"
+CASE="background checks: a heredoc given to the check reaches it (a script that exits 3 is FAIL, not /dev/null)"
+check grep -qx 'FAIL p5' <<<"$bgout"
+CASE="background checks: a check that never reports is FAIL, not skipped (one line per launch)"
+check test "$(printf '%s\n' "$bgout" | grep -c '^\(ok  \|FAIL\) p')" -eq 6
+
 NOW="2026-10-05T12:00:00Z"
 dago() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40))
@@ -338,6 +379,21 @@ run heldunprov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": 
 CASE="a held PR whose age cannot be proven is not re-run (it stays red)"
 check bash -c "! grep -q 'rerun' '$work/heldunprov.gh'"
 
+# --- REQ-SUP-001-AC34: a held file-pin update is re-run once the base branch's file_pins row is old enough (the same proof the age check takes) ---
+FPP=.github/policy/gradle-wrapper-jar-sha256.txt; FPT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
+FPH=$(python3 -c "import hashlib;print(hashlib.sha256(('$FPP' + chr(0) + '$FPT\n').encode()).hexdigest())")
+fpex() { printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [{"file": "%s", "content": "%s", "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "%s"}]}' "$FPP" "$FPH" "$1" >"$work/fpex-$2.json"; }
+fpheld() { echo "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 11, \"title\": \"jar sum\", \"run_id\": 77, \"moved\": [\"tool:file:$FPP@(file)#content:$1\"]}], \"times\": {}}"; }
+fpex "$(dago 8)" old; run fpheld "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
+CASE="AC34: a held PR whose file pin is dated by a base-branch row 8 days old is RE-RUN (gh run rerun 77)"
+check grep -q '"rerun", "77"' "$work/fpheld.gh"
+fpex "$(dago 2)" young; run fpheld2 "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-young.json"
+CASE="AC34: the same row 2 days old: not re-run"
+check bash -c "! grep -q 'rerun' '$work/fpheld2.gh'"
+run fpheld3 "$(fpheld $(printf 'b%.0s' $(seq 64)))" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
+CASE="AC34: a file pin whose content differs from the row's is not re-run"
+check bash -c "! grep -q 'rerun' '$work/fpheld3.gh'"
+
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
 check python3 - "$aud" <<'PY'
@@ -364,7 +420,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 net = pa.LiveNet([sys.argv[2]], ".")
 try:
-    net._gh_json("advisories/GHSA-x")
+    net._gh_json("advisories/GHSA-x", need=())
 except pa.Fail as e:
     assert "rate limit" in str(e)
 else:
@@ -711,10 +767,10 @@ N.versions_of = lambda self, i: ["v3.30.0", "v3.31.0"]
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "pass"
 # a moving tag resolves to its current commit (annotated tags peeled)
 net = pa.LiveNet(["false"], ".")
-net._gh_json = lambda path, strict=False: {"repos/o/r/git/ref/tags/v4": {"object": {"type": "tag", "sha": "t" * 40}}, "repos/o/r/git/tags/" + "t" * 40: {"object": {"type": "commit", "sha": "c" * 40}}}.get(path)
+net._gh_json = lambda path, need=None, rows=None, strict=False: {"repos/o/r/git/ref/tags/v4": {"object": {"type": "tag", "sha": "t" * 40}}, "repos/o/r/git/tags/" + "t" * 40: {"object": {"type": "commit", "sha": "c" * 40}}}.get(path)
 assert net.resolve_ref("o/r", "v4") == "c" * 40
 # unreadable PR listing fails loudly
-pa.age._gh_pages = lambda path: None
+pa.age._gh_pages = lambda path, rows: None
 os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
 try:
     net.open_pr_items()
@@ -940,6 +996,252 @@ PY
 else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
+# --- cache#455 follow-up (handoff 0496 step 2): the 90-day history reads one inventory per DISTINCT set of files the inventory reads, not one per commit ---
+r="$work/r-histmemo"; mkrepo "$r" "100:$CLEANSHA" "40:$SHA1" "30:$SHA2"
+mkdir -p "$r/.github/agent/tests" "$r/docs"
+for n in 1 2 3 4 5 6; do   # commits that touch .github but nothing the inventory reads (.github/agent/ and docs are outside tree_files)
+  printf 'x%s\n' "$n" >"$r/.github/agent/tests/noise.txt"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="$(dago $((20 - n)))" GIT_COMMITTER_DATE="$(dago $((20 - n)))" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "noise $n"
+done
+CASE="history memo: the same items as one inventory per commit (the verdicts do not change)"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+assert set(got) == set(ref) and len(ref) > 0, (sorted(got), sorted(ref))
+PY
+rr="$work/r-histrevert"; mkrepo "$rr" "100:$CLEANSHA"
+for spec in "40:v3.0.0" "20:v4.1.0"; do   # same pin, a label that changes and then reverts: the same key at two trees, a different label in between
+  sed -i.bak "s|^\(      - uses: actions/checkout@[0-9a-f]*\) # .*|\1 # ${spec#*:}|" "$rr/.github/workflows/ci.yml"; rm -f "$rr/.github/workflows/ci.yml.bak"; git -C "$rr" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$rr" -c user.name=t -c user.email=t@x commit -q -m "label ${spec#*:}"
+done
+CASE="history memo: the VALUES match one inventory per commit, not only the keys (a label that reverts: the oldest occurrence still wins, as before; seat A of cache#456)"
+check python3 - "$aud" "$rr" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+f = lambda d: {k: (i.label, i.src, i.step, i.raw, i.version, i.path) for k, i in d.items()}
+assert f(got) == f(ref), (f(got), f(ref))
+assert any(i.label == "v4.1.0" for k, i in ref.items() if "checkout" in k), "the probe did not exercise a revert"
+PY
+CASE="history memo: commits that changed nothing the inventory reads cost no inventory (calls < commits) and the timing line is printed"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+calls = [0]; real = pa.inv.inventory
+def counting(files):
+    calls[0] += 1
+    return real(files)
+pa.inv.inventory = counting
+t = time.time()
+pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
+assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
+# --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
+# new tree re-reads only the files that changed. The verdicts must not move: byte-identical items, a changed callee invalidates its caller, a raise is never cached. ---
+CASE="file memo: over a real slice of this repository's history the memoised inventories equal the unmemoised ones, field for field, in history order and in a scrambled order"
+check_bg python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, random, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+for order in (list(reversed(revs)), random.Random(7).sample(revs, len(revs))):   # oldest first, then scrambled
+    inv._FILE_MEMO.clear()
+    for r in order:
+        assert dump(inv.load_at(root, r)) == ref[r], r
+assert any(len(v) > 2 for v in ref.values()), "the slice held no items"
+PY
+CASE="file memo: a changed callee invalidates its caller (the same caller blob, a local reusable workflow gaining then losing workflow_call)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+keys = lambda files: sorted(inv.inventory(files))
+inv._MEMO_ON[0] = False
+plain = {c: keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) == plain[c]
+# the callee leaves the tree altogether: the caller's items follow it
+alone = {".github/workflows/caller.yml": caller}
+got = keys(alone); inv._MEMO_ON[0] = False
+assert got == keys(alone)
+PY
+CASE="file memo: a file that does not parse raises every time (a raise is never remembered) and one file is read once per distinct blob across a history scan"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+bad = {".github/workflows/x.yml": "on: [\n  broken: : :\n"}
+for _ in range(2):
+    try:
+        inv.inventory(dict(bad)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+calls = [0]; real = inv._file_found
+def counting(path, text):
+    calls[0] += 1
+    return real(path, text)
+inv._file_found = counting
+inv._FILE_MEMO.clear()
+files = {".github/workflows/a.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n", "bin/install-scanner.sh": "TRIVY_VER=0.74.0\n"}
+for n in range(5):
+    inv.inventory(dict(files, **{".github/workflows/b%d.yml" % n: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %d\n" % n}))
+assert calls[0] == 2 + 5, calls[0]    # a.yml and the script once, each b file once
+PY
+
+# --- cache#693 first look (advisor ruling Oct 24): the memo revalidates the callees the walk actually READ, the context is neutral for every file, and the oracle is the parent ---
+CASE="file memo: a caller whose callee is spelled with YAML escapes (\\x2e) is re-read when the callee changes: the memo decides on the reads the walk made, not on a regex of the text"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = 'on: pull_request\njobs:\n  c:\n    uses: "\\x2e/.github/workflows/c\\x61llee.yml"\n'
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda c: {".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(c))) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the escaped callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert sorted(inv.inventory(files(c))) == plain[c]
+PY
+CASE="file memo: a caller with TWO local callees is re-read when either one changes, and only then (each call records its own read)"
+check python3 - "$aud" <<'PY'
+import importlib.util, itertools, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  a:\n    uses: ./.github/workflows/one.yml\n  b:\n    uses: ./.github/workflows/two.yml\n"
+ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda one, two: {".github/workflows/caller.yml": caller, ".github/workflows/one.yml": one, ".github/workflows/two.yml": two}
+combos = list(itertools.product((ok, no), repeat=2))
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(*c))) for c in combos}
+assert len({tuple(v) for v in plain.values()}) == 4, "the probe does not tell the four outcomes apart"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in combos + combos[::-1] + combos:
+    assert sorted(inv.inventory(files(*c))) == plain[c], c
+# "and only then": count the walks of the caller (the callees are walked when their own text is new)
+walks = []; real = inv._file_found
+inv._file_found = lambda p, x: (walks.append(p), real(p, x))[1]
+caller_path = ".github/workflows/caller.yml"
+inv._FILE_MEMO.clear(); inv.inventory(files(ok, ok)); walks.clear()
+inv.inventory(files(ok, ok)); assert caller_path not in walks, "an unchanged tree re-walked the caller"
+inv.inventory(files(no, ok)); assert walks.count(caller_path) == 1, "callee one changed: the caller is walked once"
+walks.clear(); inv.inventory(files(no, ok)); assert caller_path not in walks, "nothing changed: not walked"
+walks.clear(); inv.inventory(files(no, no)); assert walks.count(caller_path) == 1, "callee two changed: the caller is walked once"
+inv._file_found = real
+PY
+CASE="file memo: the context is neutral for every file: a workflow that raises in the middle of a job leaves nothing for the next file (a script read after it equals a neutral run, memo cold and warm)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+bad = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: echo " + "0123456789abcdef" * 4 + "\n      - run: " + "x" * 4500 + "\n"
+script = "#!/usr/bin/env bash\npip install missingversion\ncurl -L -o /tmp/t https://example.org/releases/download/v${VER}/tool-${VER}.tgz\n"
+dump = lambda d: sorted((k, i.step, i.path, i.src) for k, i in d.items())
+inv._MEMO_ON[0] = False
+neutral = dump(inv.inventory({"bin/x.sh": script}))
+assert neutral, "the probe has no items"
+many = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: |\n" + "".join("          pip install p%d==1.0\n" % i for i in range(600))
+for memo, poison in ((m, p) for m in (False, True) for p in (bad, many)):
+    inv._MEMO_ON[0] = memo; inv._FILE_MEMO.clear()
+    for _ in range(2):    # cold, then warm
+        try:
+            inv.inventory({".github/workflows/bad.yml": poison}); raise SystemExit("the limit did not raise")
+        except RuntimeError:
+            pass
+        assert dump(inv.inventory({"bin/x.sh": script})) == neutral, ("memo", memo)
+        for v in (inv._ENV_CTX[0], inv._INPUT_CTX[0]): assert v == "", v
+        assert inv._ENV_PRESENT[0] is False and inv._JOB_RUNS[0] == [] and inv._JOB_SUMS[0] == []
+PY
+CASE="file memo: a returned item can be changed without reaching the memo or a later inventory; a file that breaks a limit raises on every use"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+wf = ".github/workflows/a.yml"
+files = {wf: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n      - run: curl -L https://example.org/x/${V}/t.tgz\n", "bin/a.sh": "curl -L https://example.org/x/${V}/t.tgz\n"}
+dump = lambda d: sorted((k, i.step, i.label, i.version) for k, i in d.items())
+first = inv.inventory(dict(files)); pristine = dump(first)
+for it in first.values():
+    it.step = "changed"; it.label = "changed"; it.version = "changed"
+assert dump(inv.inventory(dict(files))) == pristine
+callee_bad = {".github/workflows/caller.yml": "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n", ".github/workflows/callee.yml": "on: [\n  broken: : :\n"}
+callee_ok = dict(callee_bad, **{".github/workflows/callee.yml": "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"})
+for files_ in (callee_ok, callee_bad, callee_ok, callee_bad):      # a warm caller whose callee becomes unreadable raises, every time
+    try:
+        inv.inventory(dict(files_)); assert files_ is callee_ok
+    except RuntimeError:
+        assert files_ is callee_bad
+long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
+for _ in range(3):
+    try:
+        inv.inventory(dict(long_line)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+PY
+CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
+check_bg python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, subprocess, sys, tempfile, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+ipath = ".github/agent/supply-chain/pin-inventory.py"
+intro = subprocess.run(["git", "-C", root, "log", "-S_FILE_MEMO", "--reverse", "--format=%H", "HEAD", "--", ipath], capture_output=True, text=True).stdout.split()
+assert intro, "the commit that introduced the memo is not in this checkout's history"
+src = subprocess.run(["git", "-C", root, "show", intro[0] + "^:" + ipath], capture_output=True, text=True)      # the file as it was before the memo existed, whatever the parents of HEAD are
+assert src.returncode == 0, src.stderr[:200]
+assert "_FILE_MEMO" not in src.stdout, "the oracle is the memoising implementation"
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
+    ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+def run(mod, r):
+    try:
+        return dump(mod.load_at(root, r))
+    except RuntimeError as e:
+        return "raise:" + str(e)
+want = {r: run(parent, r) for r in revs}
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for r in revs + list(reversed(revs)):
+    assert run(inv, r) == want[r], r
+PY
+
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
@@ -1030,14 +1332,17 @@ items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B"
 assert err is None, err
 assert sys.argv[6] in " ".join(repr(k) for k in items)
 PY
-CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 (full lowercase 40-hex shas), each with a reason that names bin/chain-sign-wiring-test.sh"
+CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 and the Oct 23 #597 fix-round-3 commit (full lowercase 40-hex shas), each with a reason that names its file"
 check python3 - "$aud" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
+want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b", "6b8c70df66651667e530748db9bc22462e307bee"}
 assert set(pa.SKIP_UNREADABLE) == want, sorted(pa.SKIP_UNREADABLE)
 for k, why in pa.SKIP_UNREADABLE.items():
     assert re.fullmatch(r"[0-9a-f]{40}", k), k
+    if k == "6b8c70df66651667e530748db9bc22462e307bee":     # #597 fix round 3 (Oct 23 2026): a 4103-character command line in bin/chain-check-scripts-test.sh, since removed
+        assert isinstance(why, str) and "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
+        continue
     assert isinstance(why, str) and "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
 PY
 CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
@@ -1058,5 +1363,604 @@ else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
 PY
 
+# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key. A skipped revision must never be remembered under that key (seat A and
+# seat B of cache#520: the cases above never share a tree, so a memo that stored skipped revisions as empty passed them all).
+r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
+oversize_ci "$SHA1" 0;    SH_M=$(commit_at 40 "readable M")
+oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
+oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
+oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
+oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
+CASE="oversize history, shared tree: listing one of two revisions that share an unreadable tree never lets the other, unlisted one pass (a skip is not remembered under the tree key), in both orders"
+check python3 - "$aud" "$r" "$SH_X" "$SH_Y" <<PY
+$OVPY
+for listed in (sys.argv[3], sys.argv[4]):
+    items, err = hist({listed: "only one of the pair"})
+    assert items is None and "command line of" in err, (listed, items, err)
+items, err = hist({sys.argv[3]: "x", sys.argv[4]: "y"})
+assert err is None, err
+PY
+CASE="oversize history, shared tree: a listed revision whose tree was already read from a readable revision is read normally, in both orders (the list never hides a readable revision's pins)"
+check python3 - "$aud" "$r" "$SH_M" "$SH_R1" "$SH_R2" "$SH_X" "$SH_Y" "$SHA1" <<PY
+$OVPY
+both = {sys.argv[6]: "x", sys.argv[7]: "y"}
+for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
+    items, err = hist({**both, listed: "readable but listed"})
+    assert err is None, err
+    assert sys.argv[8] in " ".join(repr(k) for k in items)
+PY
+
+# --- rc-5b item 7 (R9a, R9b): a proxy failure is CouldNotLook, never "not checked"; an advisory for our package with no readable range is a hit under its GHSA id ---------------------------------
+CASE="proxy: a Go proxy outage (network error or a 5xx) while resolving a go install module is CouldNotLook (exit 2, no 'as of' sentence); a plain 404 only means a shorter path is tried"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.error, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+it = pa.inv.Item("gotool", "github.com/o/r/cmd/x", "v1.0.0")
+net = pa.LiveNet(["false"], ".")
+def boom(exc):
+    def f(*a, **k): raise exc
+    return f
+for exc in (urllib.error.URLError("down"), urllib.error.HTTPError("u", 503, "unavailable", {}, io.BytesIO(b"")), TimeoutError("slow")):
+    urllib.request.urlopen = boom(exc)
+    try:
+        net._query(it, "v1.0.0")
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", exc))
+urllib.request.urlopen = boom(urllib.error.HTTPError("u", 404, "not found", {}, io.BytesIO(b"")))
+assert net._query(it, "v1.0.0") is None          # every prefix is a plain 404: the module is not found, as before
+assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None)   # the age check keeps its non-strict behaviour
+PY
+GHSA_N=GHSA-nnnn-nnnn-nnnn
+CASE="null range: a GitHub-only advisory whose entry for our package has a null, empty or missing vulnerable_version_range is a HIT under its GHSA id (an entry for another package changes nothing)"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+def lists(vulns):
+    adv = [{"ghsa_id": "GHSA-nnnn-nnnn-nnnn", "updated_at": "2026-01-01T00:00:00Z", "vulnerabilities": vulns}]
+    json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": adv, "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+    net = pa.LiveNet([work + "/ghmap"], "."); net._osv_post = lambda q: []; net._osv_get = lambda i: None
+    return net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+for vulns in ([{"package": {"name": "o/r"}, "vulnerable_version_range": None}], [{"package": {"name": "o/r"}, "vulnerable_version_range": ""}], [{"package": {"name": "o/r"}}]):
+    gh, osv = lists(vulns)
+    assert [g["id"] for g in gh] == ["GHSA-nnnn-nnnn-nnnn"] and gh[0]["affected"], (vulns, gh)
+assert lists([{"package": {"name": "other/pkg"}, "vulnerable_version_range": None}]) == ([], [])
+gh, _ = lists([{"package": {"name": "o/r"}, "vulnerable_version_range": ">= 2.0, < 3.0"}])
+assert gh == [], gh        # a readable range that excludes the version is still not a hit
+PY
+CASE="null range: an OSV record that is itself a GHSA id whose GitHub entry for our package has no readable range is a hit"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+json.dump({"advisories/GHSA-aaaa-bbbb-cccc": {"ghsa_id": "GHSA-aaaa-bbbb-cccc", "updated_at": "2026-01-01T00:00:00Z", "vulnerabilities": [{"package": {"name": "o/r"}, "vulnerable_version_range": None}]},
+           "advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": [], "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+net = pa.LiveNet([work + "/ghmap"], ".")
+net._osv_records = lambda q, paths, strict=False: {"k": [{"id": "GHSA-aaaa-bbbb-cccc", "aliases": [], "modified": "2026-01-01T00:00:00Z"}]}
+net._osv_says = lambda *a, **k: False
+net._osv_get = lambda i: None
+gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+assert [g["id"] for g in gh] == ["GHSA-aaaa-bbbb-cccc"] and gh[0]["affected"], gh
+PY
+
+CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, null or empty Version) is CouldNotLook, never 'module not found' (strict mode only)"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+for body in (b"[]", b"null", b"{}", b"[1]", b'{"Version": null}', b'{"Version": ""}', b'{"Version": 3}', b"not json"):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    try:
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", body))
+urllib.request.urlopen = lambda *a, **k: R(b'{"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"}')
+mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+assert info["Version"] == "v1.0.0", (mod, info)
+urllib.request.urlopen = lambda *a, **k: R(b"[1]")
+try:
+    age._go_module("github.com/o/r/cmd/x", "v1.0.0")      # the age check's lenient mode: a list answer is a wrong shape, CouldNotLook, no crash
+except age.CouldNotLook:
+    pass
+else:
+    raise AssertionError("lenient proxy skipped a wrong shape")
+PY
+CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is CouldNotLook in strict mode and no crash in lenient mode; a missing Time or a null Time never crashes the go-index proof; a bad answer reaches covered() as CouldNotLook"
+check python3 - "$aud" <<'PY'
+import http.client, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def boom(exc):
+    def f(*a, **k): raise exc
+    return f
+for exc in (http.client.IncompleteRead(b'{"Ver'), http.client.BadStatusLine("x"), http.client.LineTooLong("status line")):
+    urllib.request.urlopen = boom(exc)
+    try:
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", exc))
+    assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None), exc      # lenient: no traceback, no proof
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+it = pa.inv.Item("gotool", "github.com/o/r/cmd/x", "v1.0.0")
+net = pa.LiveNet(["false"], ".")
+for body in (b'{"Time": "2020-01-01T00:00:00Z"}', b"{}", b"[]", b"null", b'{"Version": null, "Time": null}'):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    try:
+        net.covered(it)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("covered() read an unreadable answer as an answer", body))
+for info in ({"Version": "v1.0.0"}, {"Version": "v1.0.0", "Time": None}, {"Version": "v1.0.0", "Time": 5}):
+    age._go_module = lambda path, version, strict=False, _i=info: ("github.com/o/r", _i)
+    age._pr_clock = lambda *a, **k: None
+    assert age.live_proofs(it, ".") == [], info      # no go-index proof, no crash: the pin then fails as unprovable
+PY
+CASE="shapes (round 3 findings): a wrong-shaped but valid answer is CouldNotLook, never a traceback or 'nothing there' - one case per consumer (go index rows, PyPI release files, Docker Hub tags, the advisory tool's PyPI info and release list)"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, json, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def must_refuse(label, fn):
+    try:
+        fn()
+    except age.CouldNotLook:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:80]))
+    raise AssertionError((label, "no CouldNotLook"))
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+# 1. go index rows
+for body in (b"[]\n", b"null\n", b'{"Path":null,"Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n', b'{"Path":"github.com/o/r","Version":"v1.0.0"}\n', b'{"Path":"github.com/o/r","Version":"v1.0.0","Timestamp":5}\n'):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+# 2. PyPI release files (age proof)
+pkg = pa.inv.Item("package", "pypi/p", "1.0")
+for ans in ([], {"urls": 5}, {"urls": [1]}, {"urls": [{"upload_time_iso_8601": 7}]}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    age._pr_clock = lambda *a, **k: None
+    must_refuse(("pypi", ans), lambda: age.live_proofs(pkg, "."))
+# 3. Docker Hub tags
+img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
+for ans in ([], {"results": 5}, {"results": [1]}, {"results": [{"digest": "x", "images": 5}]}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    must_refuse(("hub", ans), lambda: age._registry_push(img))
+# 4. the advisory tool's PyPI info (published name) and release list
+net = pa.LiveNet(["false"], ".")
+for ans in ([], {"info": []}, {"info": 5}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    net._osv_records = lambda *a, **k: {}
+    net._gh_json = lambda *a, **k: []
+    must_refuse(("pypi info", ans), lambda: net._lists_for(pkg, "1.0"))
+for ans in ([], {"releases": []}, {"releases": {"1.0": 5}}, {"releases": {"1.0": [1]}}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    must_refuse(("releases", ans), lambda: net.versions(pkg))
+PY
+CASE="absence (round 4 rulings): a malformed index line, a valid match followed by a bad row, a JSON null body (PyPI, Docker Hub, the lenient proxy) and a Docker Hub next link that is not a hub URL are CouldNotLook, never 'nothing there'"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def must_refuse(label, fn):
+    try:
+        fn()
+    except age.CouldNotLook:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:80]))
+    raise AssertionError((label, "no CouldNotLook"))
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+good = b'{"Path":"github.com/o/r","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n'
+for body in (b"{not-json}\n", good + b"null\n", good + b'{"Path":"x"}\n', b'{"Path":"a","Version":"v","Timestamp":"t"}\n' + good + b"[]\n"):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+pkg = pa.inv.Item("package", "pypi/p", "1.0")
+img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
+age._pr_clock = lambda *a, **k: None
+urllib.request.urlopen = lambda *a, **k: R(b"null")
+must_refuse("pypi null", lambda: age.live_proofs(pkg, "."))
+must_refuse("hub null", lambda: age._registry_push(img))
+must_refuse("proxy null (lenient)", lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+for body in (b"{}", b'{"info": {}}'):      # round 5: an object without the list the check reads is an answer we cannot read, never 'no files / no tags'
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("pypi no urls", body), lambda: age.live_proofs(pkg, "."))
+    must_refuse(("hub no results", body), lambda: age._registry_push(img))
+for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
+    urllib.request.urlopen = lambda *a, _n=nxt, **k: R(__import__("json").dumps({"results": [], "next": _n}).encode())
+    must_refuse(("hub next", nxt), lambda: age._registry_push(img))
+PY
+CASE="structural closure: an unexpected AttributeError/KeyError/TypeError/IndexError/ValueError while reading an answer ends the daily audit with exit 2, 'cannot do its job' and no 'as of' sentence"
+check_bg python3 - "$aud" "$root" "$work" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+fx = sys.argv[3] + "/struct-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    pa.FixtureNet.lists = boom
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
+    assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+CASE="error lines: a path with line breaks, escapes or ##[ in an error prints as one stderr line, no workflow command"
+check python3 - "$aud" "$root" "$work" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1])
+pa = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pa)
+fx = sys.argv[3] + "/errline-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
+def boom(*a, **k):
+    raise RuntimeError("a\n::warning::x\n\x1b[31m##[warning]y/requirements.txt is too large to read safely")
+pa.inv.load_at = boom      # the tree reader's error carries a path of the pull request
+out, err = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
+lines = err.getvalue().split("\n")
+ok = rc == 2 and len(lines) == 2 and lines[1] == "" and not any(l.startswith("::") for l in lines)
+assert ok, (rc, err.getvalue())
+for word in ("cannot do its job", "::warning::x", "too large to read safely"):
+    assert word in lines[0], err.getvalue()
+assert "\x1b" not in lines[0] and "##[" not in lines[0], err.getvalue()
+PY
+CASE="structural closure (Fable ruling, round 6): every reader takes a mandatory need/rows with no default, and EVERY site that reads an answer (AST-enumerated in both programs: _http_dict, _gh_api, _gh_list, _gh_pages, _gh_json, _fetch_json, json.load/loads) has a {} / [{}] / null case that is refused; the optional keys are named (OSV vulns and next_page_token, a commit committer date, a Docker digest/images/push time, a PyPI file upload time, a release date on a draft) and accepted when absent; local policy and fixture files are covered too"
+check python3 - "$aud" <<'PY'
+import ast, collections, importlib.util, inspect, io, json, os, subprocess, sys, tempfile, urllib.request
+aud = sys.argv[1]
+spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age, inv = pa.age, pa.inv
+chk = os.path.join(os.path.dirname(aud), "pin-age-check.py")
+REFUSE = (age.CouldNotLook, pa.Fail)
+tmp = tempfile.mkdtemp()
+
+# ---- 1. no reader has a default: the caller must say what it reads
+for fn, name in ((age._http_dict, "need"), (age._http_json_strict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
+    assert inspect.signature(fn).parameters[name].default is inspect.Parameter.empty, (fn.__name__, name, "has a default")
+net0 = pa.LiveNet(["false"], ".")
+for kw in ({}, {"need": (), "rows": ()}):
+    try:
+        net0._gh_json("x", **kw)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError(("_gh_json accepted", kw))
+
+# ---- 2. every site that reads an answer is in the table below, and every site has its case
+READERS = {"_http_dict", "_http_json_strict", "_gh_json_raw", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
+def sites(path):
+    tree = ast.parse(open(path).read()); parents = {}
+    for n in ast.walk(tree):
+        for c in ast.iter_child_nodes(n): parents[c] = n
+    found = collections.Counter()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call): continue
+        c = n.func; name = c.attr if isinstance(c, ast.Attribute) else getattr(c, "id", None)
+        if name not in READERS: continue
+        if name in ("load", "loads") and not (isinstance(c, ast.Attribute) and getattr(c.value, "id", "") == "json"): continue
+        p = n
+        while p in parents:
+            p = parents[p]
+            if isinstance(p, ast.FunctionDef): break
+        found[(os.path.basename(path), p.name if isinstance(p, ast.FunctionDef) else "<module>", name)] += 1
+        # a reader call names what it reads (a shape argument), never a bare read
+        if name == "_http_json_strict": assert len(n.args) + len(n.keywords) >= 2, ("_http_json_strict without need", n.lineno)
+        if name == "_http_dict": assert len(n.args) + len(n.keywords) >= 2, ("_http_dict without need", n.lineno)
+        if name in ("_gh_api", "_gh_pages", "_gh_list"): assert len(n.args) + len(n.keywords) >= 2, (name + " without a shape", n.lineno)
+        if name == "_gh_json": assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
+    return found
+actual = sites(chk) + sites(aud)      # a Counter: how many calls of each reader sit in each function
+
+class P:
+    def __init__(self, out, rc=0): self.stdout, self.stderr, self.returncode = out, "", rc
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+def http(body):
+    urllib.request.urlopen = lambda *a, _b=body if isinstance(body, bytes) else json.dumps(body).encode(), **k: R(_b)
+def gh(answers):
+    """gh api answers by substring of the path (the first key contained in the command line); anything else is a 404."""
+    def run(cmd, **k):
+        line = " ".join(map(str, cmd))
+        for key, val in answers.items():
+            if key in line:
+                return P(val if isinstance(val, str) else json.dumps(val))
+        return P("", 1) if False else _miss()
+    def _miss():
+        p = P("", 1); p.stderr = "HTTP 404"; return p
+    age._gh_run = run; pa._run = run
+def refuse(label, fn):
+    try:
+        fn()
+    except REFUSE:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:100]))
+    raise AssertionError((label, "no refusal"))
+def accepts(label, fn):
+    try:
+        return fn()
+    except BaseException as e:
+        raise AssertionError((label, "refused a legitimate answer", type(e).__name__, str(e)[:100]))
+
+OBJ, ROWS = (("k", str),), (("k", str),)
+pk = inv.Item("package", "pypi/p", "1.0"); img = inv.Item("image", "ns/repo", "sha256:" + "a" * 64); gimg = inv.Item("image", "ghcr.io/o/p", "sha256:" + "a" * 64)
+tool = inv.Item("tool", "trivy", "0.75.0"); act = inv.Item("action", "o/r", "a" * 40, "v1")
+net = pa.LiveNet(["gh"], ".")
+os.environ["GITHUB_REPOSITORY"] = "o/r"
+
+def c_gh_pages():
+    gh({"api": "{}\n"}); refuse("pages {}", lambda: age._gh_pages("repos/x", ROWS))
+    gh({"api": "not json\n"}); refuse("pages text", lambda: age._gh_pages("repos/x", ROWS))
+def c_gh_api():
+    for body in ("{}", "null", "not json", "[]"):
+        gh({"api": body}); refuse(("api", body), lambda: age._gh_api("repos/x", OBJ))
+def c_gh_list():
+    for body in ("[{}]", "{}", "null", "not json"):
+        gh({"api": body}); refuse(("list", body), lambda: age._gh_list("repos/x", ROWS))
+def c_fetch_and_dict():
+    for body in (b"{}", b"null", b"[]", b"[{}]"):
+        http(body); refuse(("http_dict", body), lambda: age._http_dict("https://h.example/x", OBJ))
+def c_http_strict():
+    for body in (b"{}", b"null", b"[]", b"[{}]"):
+        http(body); refuse(("http_json_strict", body), lambda: age._http_json_strict("https://h.example/x", OBJ))
+    def err(code):
+        def f(*a, **k): raise urllib.error.HTTPError("https://h.example/x", code, "x", {}, None)
+        return f
+    for code in (404, 410):
+        urllib.request.urlopen = err(code); assert accepts(("strict", code), lambda: age._http_json_strict("https://h.example/x", OBJ)) is None
+    for code in (500, 403):
+        urllib.request.urlopen = err(code); refuse(("strict http", code), lambda: age._http_json_strict("https://h.example/x", OBJ))
+    for body in (b"{}", b"null", b"[{}]"):
+        http(body); refuse(("go strict", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True))
+def c_go_lenient():
+    for body in (b"{}", b"null", b"[{}]"):
+        http(body); refuse(("go lenient", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+def c_go_index():
+    for body in (b"{}\n", b"[{}]\n", b"null\n"):
+        http(body); refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+def c_release_time():
+    gh({"releases/tags": "{}"}); refuse("release_time {}", lambda: age._release_time("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z"}}); refuse("release_time no draft", lambda: age._release_time("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": None, "draft": True}}); assert accepts("release_time draft", lambda: age._release_time("o/r", ["v1"])) is None
+def c_release_assets():
+    gh({"releases/tags": "{}"}); refuse("assets {}", lambda: age._release_with_assets("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False, "assets": [{}]}}); assert accepts("assets [{}] (name and times are optional)", lambda: age._release_with_assets("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False, "assets": [5]}}); refuse("assets [5]", lambda: age._release_with_assets("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False}}); refuse("assets absent", lambda: age._release_with_assets("o/r", ["v1"]))
+def c_commit_date():
+    gh({"commits/": "{}"}); refuse("commit {}", lambda: age._commit_date("o/r", "a" * 40))
+    gh({"commits/": {"commit": {"committer": {"date": 7}}}}); refuse("commit date 7", lambda: age._commit_date("o/r", "a" * 40))
+    gh({"commits/": {"commit": {"committer": {}}}}); assert accepts("committer {} (optional date)", lambda: age._commit_date("o/r", "a" * 40)) is None
+def c_observed():
+    age._OBS.clear(); age.tobs.accept_run = lambda r: True
+    gh({"supply-chain.yml/runs": "{}"}); refuse("runs {}", age.observed)
+    age._OBS.clear(); gh({"supply-chain.yml/runs": {"workflow_runs": [{}]}}); refuse("runs [{}]", age.observed)
+    age._OBS.clear(); gh({"supply-chain.yml/runs": {"workflow_runs": [{"id": 1}]}, "/artifacts": "{}"}); refuse("artifacts {}", age.observed)
+    age._OBS.clear(); gh({"supply-chain.yml/runs": {"workflow_runs": [{"id": 1}]}, "/artifacts": {"artifacts": [{}]}}); refuse("artifacts [{}]", age.observed)
+    age._OBS.clear()
+def c_pr_clock():
+    inv_load = age.inv.load_at; age.inv.load_at = lambda root, c: {pk.key: pk}; age._INV_CACHE.clear()
+    base_run = age._gh_run
+    def mk(answers):
+        def run(cmd, **k):
+            if cmd[0] == "git": return P("c1\n")
+            return gh_run(cmd, **k)
+        gh(answers); gh_run = age._gh_run; age._gh_run = run
+    try:
+        mk({"actions/runs": "{}"}); refuse("clock runs {}", lambda: age._pr_clock(pk, ".", "base"))
+        mk({"actions/runs": {"workflow_runs": [{}]}}); refuse("clock runs [{}]", lambda: age._pr_clock(pk, ".", "base"))
+        mk({"actions/runs": {"workflow_runs": []}, "check-suites": "{}\n"}); refuse("clock suites {}", lambda: age._pr_clock(pk, ".", "base"))
+        mk({"actions/runs": {"workflow_runs": []}, "check-suites": "not json\n"}); refuse("clock suites text", lambda: age._pr_clock(pk, ".", "base"))
+    finally:
+        age.inv.load_at = inv_load; age._INV_CACHE.clear()
+def c_live_pypi():
+    for body in (b"{}", b'{"urls": [1]}', b'{"urls": [{"upload_time_iso_8601": 7}]}', b"null"):
+        http(body); age._pr_clock = lambda *a, **k: None; refuse(("pypi", body), lambda: age.live_proofs(pk, "."))
+def c_registry():
+    gh({"packages/container": "[{}]"}); refuse("ghcr [{}]", lambda: age._registry_push(gimg))
+    gh({"packages/container": "{}"}); refuse("ghcr {}", lambda: age._registry_push(gimg))
+    for body in (b"{}", b'{"results": [1]}', b'{"results": [{"images": 5}]}', b'{"results": [{"digest": "%s", "tag_last_pushed": 7}]}' % img.version.encode(), b'{"results": [], "next": 7}'):
+        http(body); refuse(("hub", body), lambda: age._registry_push(img))
+    http(b'{"results": [{"images": [{}]}]}'); assert accepts("hub optional digest", lambda: age._registry_push(img)) is None
+def c_main_fixtures():
+    # --fixtures is the tests' own input, not an answer: a file that is not a JSON object ends both programs in exit 2 (cannot run), before any work
+    import contextlib
+    for body in ("not json", "null", "[]"):
+        fx = os.path.join(tmp, "fx.json"); open(fx, "w").write(body)
+        for main, args in ((pa.main, ["--root", tmp, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"]), (age.main, ["--root", tmp, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                rc = main(args)
+            assert rc == 2, (main.__module__, body, rc, out.getvalue()[:160])
+def c_local_files():
+    f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
+    refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
+    assert accepts("ruled text {} (nothing ruled)", lambda: age.load_ruled_text(f, True)) == {}      # "unmeasured_text" is optional: an absent list rules nothing, which only fails more
+    refuse("exceptions {}", lambda: pa.load_exceptions(f, True))
+    # file_pins (REQ-SUP-001-AC34): {} holds no rows (the key is optional); a file that is not an object, a null, a file_pins that is not a list and a row that is not an object are unreadable, never "nothing ruled"
+    assert accepts("file_pins {} (no rows)", lambda: _runtime(lambda: age.load_file_pins(f, True))) is None
+    for body in ("[]", "null", '{"file_pins": 5}', '{"file_pins": {}}', '{"file_pins": [5]}', '{"file_pins": [[]]}', "not json"):
+        open(f, "w").write(body); refuse(("file_pins", body), lambda: _runtime(lambda: age.load_file_pins(f, True)))
+def _runtime(fn):
+    try:
+        fn()
+    except RuntimeError as e:
+        raise age.CouldNotLook(str(e))
+def c_gh_json_raw():
+    for body in ("null", "not json"):
+        gh({"api": body}); refuse(("gh_json", body), lambda: net._gh_json("repos/x", need=()))
+    gh({"api": "{}"}); refuse("gh_json {} need", lambda: net._gh_json("repos/x", need=OBJ))
+    gh({"api": "[{}]"}); refuse("gh_json [{}] rows", lambda: net._gh_json("repos/x?p=1", rows=ROWS))
+def c_osv_post():
+    http(b"{}"); assert accepts("osv {} (no vulns)", lambda: net._osv_post({"package": {"name": "p"}})) == []      # OSV answers {} for no vulnerabilities: vulns is optional
+    for body in (b'{"vulns": {}}', b'{"vulns": [{}]}', b'{"vulns": [], "next_page_token": 7}', b"[]", b"null"):
+        http(body); refuse(("osv", body), lambda: net._osv_post({"package": {"name": "p"}}))
+def c_osv_get():
+    for body in (b"{}", b"[]", b"null"):
+        http(body); refuse(("osv_get", body), lambda: net._osv_get("GHSA-x"))
+def c_resolve_ref():
+    gh({"git/ref/tags": "{}"}); refuse("ref {}", lambda: net.resolve_ref("o/r", "v1"))
+    gh({"git/ref/tags": {"object": {}}}); refuse("ref object {}", lambda: net.resolve_ref("o/r", "v1"))
+    gh({"git/ref/tags": {"object": {"type": "tag", "sha": "t" * 40}}, "git/tags/": "{}"}); refuse("tag {}", lambda: net.resolve_ref("o/r", "v1"))
+def c_live_ranges():
+    gh({"advisories/": "{}"}); refuse("advisory {}", lambda: net.live_ranges(pk, "github", "GHSA-x"))
+    gh({"advisories/": {"vulnerabilities": [{}]}}); net._query = lambda *a, **k: None
+    # a vulnerability entry without a package or a range is read fail closed (unreadable), not skipped: checked through _ranges_of
+    assert pa.LiveNet._ranges_of({"vulnerabilities": [{}]}, {"p"}) == ([], False)      # no package: not ours
+    refuse("vulnerabilities 5", lambda: pa.LiveNet._ranges_of({"vulnerabilities": [5]}, {"p"}))
+    # live_ranges reads the same list the same way (round 7): a non-object entry is refused, and an entry for our package with a null, empty or missing range makes the answer unreadable (None: the dispute stays), never a narrower list
+    net._version_of = lambda i: "1.0"
+    net._memo.clear(); gh({"advisories/": {"vulnerabilities": [5]}}); refuse("live_ranges vulnerabilities 5", lambda: net.live_ranges(pk, "github", "GHSA-x"))
+    for rng in (None, "", " ", 7):
+        net._memo.clear(); gh({"advisories/": {"vulnerabilities": [{"package": {"name": pk.name}, "vulnerable_version_range": "< 1.0"}, {"package": {"name": pk.name}, "vulnerable_version_range": rng}]}})
+        assert net.live_ranges(pk, "github", "GHSA-x") is None, ("an unreadable range beside a readable one was dropped", rng)
+    net._memo.clear(); gh({"advisories/": {"vulnerabilities": [{"package": {"name": pk.name}, "vulnerable_version_range": "< 1.0"}, {"package": {"name": "other"}, "vulnerable_version_range": None}]}})
+    assert net.live_ranges(pk, "github", "GHSA-x") == ["< 1.0"], "an entry for another package must not hide ours"
+def c_lists_for():
+    net._osv_records = lambda *a, **k: {}
+    http(b"{}"); gh({"advisories?": "[]"}); refuse("pypi info {}", lambda: net._lists_for(pk, "1.0"))
+    http(b'{"info": {"name": 7}}'); refuse("pypi name 7", lambda: net._lists_for(pk, "1.0"))
+    http(b'{"info": {"name": "p"}}'); gh({"advisories?": "[{}]"}); refuse("advisory list [{}]", lambda: net._lists_for(pk, "1.0"))
+    gh({"advisories?": "{}"}); refuse("advisory list {}", lambda: net._lists_for(pk, "1.0"))
+    # the GHSA-alias lookup (the first _gh_json call of _lists_for): an alias answered {} is refused, and a failure that is not a 404 is a Fail, never 'no advisory'
+    net._osv_records = lambda *a, **k: {"k": [{"id": "GHSA-aaaa-bbbb-cccc", "aliases": [], "affected": []}]}
+    http(b'{"info": {"name": "p"}}')
+    net._memo.clear(); gh({"advisories/GHSA-aaaa-bbbb-cccc": "{}"}); refuse("alias {}", lambda: net._lists_for(pk, "1.0"))
+    def run500(cmd, **k):
+        r = P("", 1); r.stderr = "HTTP 500: Server Error"; return r
+    net._memo.clear(); pa._run = run500; age._gh_run = run500; refuse("alias 500", lambda: net._lists_for(pk, "1.0"))
+def c_upstream():
+    def run(cmd, **k):
+        line = " ".join(map(str, cmd))
+        if ".default_branch" in line: return P("main\n")
+        if "compare/" in line: return P("diverged\n")
+        if "branches" in line: return P("[{}]")
+        return P("", 1)
+    pa._run = run
+    refuse("branches [{}]", lambda: net.upstream(act))
+def c_nested():
+    gh({"contents/": "{}"}); refuse("contents {}", lambda: net.nested(act))
+    gh({"contents/": "[]"}); refuse("contents []", lambda: net.nested(act))
+def c_versions():
+    http(b"{}"); refuse("pypi versions {}", lambda: net.versions(pk))
+    http(b'{"info": {}, "releases": {"1": 5}}'); refuse("pypi files 5", lambda: net.versions(pk))
+    http(b'{"info": {}, "releases": []}'); refuse("pypi releases []", lambda: net.versions(pk))
+    http(b'{"info": {}, "releases": {"1": [{}]}}'); assert accepts("pypi file optional fields", lambda: net.versions(pk)) == []
+    gh({"releases?": "[{}]"}); refuse("releases [{}]", lambda: net.versions(act))
+    gh({"releases?": "{}"}); refuse("releases {}", lambda: net.versions(act))
+    rel = [{"tag_name": "v1", "draft": False, "prerelease": False, "published_at": "2026-01-01T00:00:00Z"}]
+    gh({"releases?": rel, "git/ref/tags": "{}"}); refuse("ref {} in versions", lambda: net.versions(act))
+    gh({"releases?": rel, "git/ref/tags": {"object": {"type": "tag", "sha": "t" * 40}}, "git/tags/": "{}"}); refuse("tag {} in versions", lambda: net.versions(act))
+def c_open_pr_items():
+    for body in ("{}\n", '{"number": 1, "base": {}, "head": {}}\n', '{"number": 1, "base": {"ref": "main"}, "head": {}}\n'):
+        gh({"pulls?": body}); refuse(("pulls", body), net.open_pr_items)
+def c_prs():
+    for body in ("[{}]", "{}", "null"):
+        pa._run = lambda cmd, _b=body, **k: P(_b); refuse(("pr list", body), net.prs)
+    gh({"actions/runs": "{}"})
+    def run(cmd, **k):
+        line = " ".join(map(str, cmd))
+        if "pr list" in line: return P(json.dumps([{"number": 1, "title": "t", "headRefOid": "a" * 40, "baseRefName": "main"}]))
+        if "actions/runs" in line: return P("{}")
+        return P("")
+    pa._run = run
+    inv_load, inv_moved = inv.load_at, inv.moved; inv.load_at = lambda r, c: {}; inv.moved = lambda a, b: []
+    try:
+        # the runs answer of a pull request is read fail closed: the PR is reported as not read (information), never as 'no failed run'
+        import contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            net.prs()
+        assert "could not be read" in out.getvalue(), out.getvalue()
+    finally:
+        inv.load_at, inv.moved = inv_load, inv_moved
+def c_tag_map():
+    for body in ("{}\n", '{"name": "v1", "commit": {}}\n'):
+        gh({"tags?": body}); refuse(("tags", body), lambda: net.tag_map([act]))
+def c_modified():
+    gh({"advisories/": "{}"}); refuse("modified ghsa {}", lambda: net.modified("GHSA-x"))
+    for body in (b"{}", b"[]"):
+        http(body); refuse(("modified osv", body), lambda: net.modified("GO-x"))
+def c_file_issues():
+    class G:
+        def run(self, *a, **k): return P("[{}]" if a[:2] == ("issue", "list") else "")
+    refuse("issues [{}]", lambda: pa.file_issues(G(), [], "2026-10-05"))
+    class G2(G):
+        def run(self, *a, **k): return P("{}" if a[:2] == ("issue", "list") else "")
+    refuse("issues {}", lambda: pa.file_issues(G2(), [], "2026-10-05"))
+
+def c_json_object():
+    for body in (b"{}", b"null", b"[]", b"[{}]", b"not json", b'{"other": 1}'):
+        refuse(("json_object", body), lambda: age._json_object(body, ("k",)))
+    refuse(("json_object empty", "{}"), lambda: age._json_object(b"{}"))
+    assert accepts(("json_object", "good"), lambda: age._json_object(b'{"k": 1}', ("k",))) == {"k": 1}
+def c_json_file():
+    bad = os.path.join(tmp, "not-json.txt"); open(bad, "w").write("not json")
+    for path in (bad, os.path.join(tmp, "absent.json")):
+        try:
+            age._json_file(path)
+        except (ValueError, OSError):
+            pass
+        else:
+            raise AssertionError(("json_file accepted", path))
+    good = os.path.join(tmp, "good.json"); open(good, "w").write('{"k": 1}')
+    assert accepts(("json_file", "good"), lambda: age._json_file(good)) == {"k": 1}
+CASES = {
+    ("pin-age-check.py", "_json_object", "loads"): c_json_object, ("pin-age-check.py", "_json_file", "load"): c_json_file,
+    ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, ("pin-age-check.py", "_gh_api", "loads"): c_gh_api, ("pin-age-check.py", "_gh_list", "loads"): c_gh_list,
+    ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
+    ("pin-age-check.py", "_http_json_strict", "_http_dict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_json_strict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_dict"): c_go_lenient,
+    ("pin-age-check.py", "_go_index_time", "loads"): c_go_index, ("pin-age-check.py", "_release_time", "_gh_api"): c_release_time,
+    ("pin-age-check.py", "_commit_date", "_gh_api"): c_commit_date, ("pin-age-check.py", "observed", "_gh_api"): c_observed,
+    ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
+    ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
+    ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
+    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+    ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
+    ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
+    ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
+    ("pin-audit.py", "upstream", "_gh_json"): c_upstream, ("pin-audit.py", "nested", "_gh_json"): c_nested,
+    ("pin-audit.py", "versions", "_http_dict"): c_versions, ("pin-audit.py", "versions", "_gh_json"): c_versions,
+    ("pin-audit.py", "open_pr_items", "_gh_pages"): c_open_pr_items, ("pin-audit.py", "prs", "loads"): c_prs, ("pin-audit.py", "prs", "_gh_json"): c_prs,
+    ("pin-audit.py", "tag_map", "_gh_pages"): c_tag_map, ("pin-audit.py", "modified", "_gh_json"): c_modified, ("pin-audit.py", "modified", "load"): c_modified,
+    ("pin-audit.py", "load_exceptions", "load"): c_local_files, ("pin-audit.py", "file_issues", "loads"): c_file_issues, ("pin-audit.py", "main", "load"): c_main_fixtures,
+}
+# a function with more than one call of the same reader lists how many; each call has its probe in the named case (a new call in a known function changes the count and fails here)
+CALLS = {("pin-age-check.py", "observed", "_gh_api"): 2, ("pin-audit.py", "_lists_for", "_gh_json"): 2, ("pin-audit.py", "resolve_ref", "_gh_json"): 2, ("pin-audit.py", "versions", "_gh_json"): 3}
+# raw decoding is private: _fetch_json has exactly one caller, _http_dict, and _gh_json_raw exactly one, _gh_json; each of them shapes the answer before anyone else sees it
+for raw, only in (("_fetch_json", ("pin-age-check.py", "_http_dict")), ("_gh_json_raw", ("pin-audit.py", "_gh_json"))):
+    callers = {k: v for k, v in actual.items() if k[2] == raw}
+    assert callers == {(only[0], only[1], raw): 1}, (raw + " must have exactly one caller, which shapes the answer", callers)
+expect = collections.Counter({k: CALLS.get(k, 1) for k in CASES})
+assert not set(CALLS) - set(CASES), ("CALLS names a site with no case", sorted(set(CALLS) - set(CASES)))
+missing, stale = set(actual) - set(CASES), set(CASES) - set(actual)
+assert not missing, ("a site that reads an answer has no case: add it to CASES with its {} / [{}] case", sorted(missing))
+assert not stale, ("a case names a site that no longer exists", sorted(stale))
+assert actual == expect, ("the number of calls of a reader in a function changed: probe the new call and update CALLS", {k: (actual[k], expect[k]) for k in expect if actual[k] != expect[k]})
+for fn in dict.fromkeys(CASES.values()):
+    net = pa.LiveNet(["gh"], ".")      # a fresh object per case: no stub leaks from one to the next
+    fn()
+PY
+bg_collect
+CASE="background checks: the three long cases were each started once and each reported once"
+check test "$BG_N" -eq 3
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
