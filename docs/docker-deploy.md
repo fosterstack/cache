@@ -114,9 +114,9 @@ latency; a colocated 1 vCPU box beats a cross-region 8 vCPU one. Put the
 server in the same region — ideally the same VPC — as the runners that
 hammer it.
 
-**It runs as nonroot (uid 65532) by default**, inherited from the
-`gcr.io/distroless/static:nonroot` base — there is no root process in the
-container and no shell to become one with. Whatever storage you attach has
+**It runs as nonroot (uid 65532) by default**, set in the
+image — there is no root process in the container and no shell to become one
+with. Whatever storage you attach has
 to be writable by uid 65532; see the mount note above, and
 [`securityContext`](kubernetes.md#securitycontext) on Kubernetes.
 
@@ -146,14 +146,14 @@ volumes:
 ```
 
 **No Docker-native `HEALTHCHECK` in the compose file above, on purpose:**
-the image is `FROM scratch`-class distroless — no shell, no `curl`/`wget`,
+the image has no shell, no `curl`/`wget`,
 no second binary inside the container to run a healthcheck command with.
 A container-internal `HEALTHCHECK: [...]` directive would have nothing
 valid to execute. Probe `/healthz` from *outside* the container instead —
 your orchestrator's own HTTP healthcheck (Kubernetes `livenessProbe` with
 `httpGet`, an external monitoring check, or `curl -f
 http://localhost:8080/healthz` from the host/CI runner). This is a direct
-consequence of the zero-CVE-surface design — see
+consequence of the minimal-image design — see
 [Scanning FosterStack in your compliance pipeline](scanning.md) for why
 there's no shell in the image in the first place.
 
@@ -315,15 +315,16 @@ You can confirm that rather than take our word for it:
 
 ```sh
 docker manifest inspect ghcr.io/fosterstack/cache:latest \
-  | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"'
+  | jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"'
 # linux/amd64
 # linux/arm64
 ```
 
-Exactly two entries, both real platforms. Signatures and SBOM/provenance are
-stored as separate artifacts against each digest rather than as extra
-entries in this index, so nothing else should appear here — see
-[Verify our images](verify-images.md).
+Exactly two runnable platforms. The index also holds one VEX attestation child
+per platform; it lists as `unknown/unknown`, which the filter above leaves out.
+The image signature and the release-manifest attestation are stored against
+each digest rather than as entries in this index. The SBOMs and provenance are
+files on the GitHub release — see [Verify our images](verify-images.md).
 
 There are no darwin or windows images: containers on those platforms run a
 Linux VM, and it pulls `linux/*` like any other Linux host. There is no native

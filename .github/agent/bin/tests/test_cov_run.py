@@ -64,10 +64,12 @@ OLDHEAD = "c" * 40
 GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": True, "state": "VALID"}}}}})
 
 
-def head_lookup(verified=True, parent=SHA, parents=None, files=(("go.mod", "modified"),)):
-    """GitHub's answer for a commit: its parents, its changed files and whether it is verified."""
+def head_lookup(verified=True, parent=SHA, parents=None, files=(("go.mod", "modified"),), author="app[bot]",
+                committer="web-flow"):
+    """GitHub's answer for a commit: its parents, its changed files, who made it and whether it is verified."""
     return (0, json.dumps({"parents": [{"sha": x} for x in (parents if parents is not None else [parent])],
                            "files": [{"filename": f[0], "status": f[1], **(f[2] if len(f) > 2 else {})} for f in files],
+                           "author": {"login": author}, "committer": {"login": committer},
                            "commit": {"verification": {"verified": verified}}}), "")
 
 
@@ -1294,8 +1296,11 @@ class FixPR(Base):
     ROW = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v1.0.0", "to": "v1.1.0"}}
     BR = "auditor/bump-example.com-m-1.1.0"       # keyed by TARGET, never by CVE or commit (LR-32)
 
-    def real(self, rules, automerge=False, api=None, repo="o/r", row=None):
+    def real(self, rules, automerge=False, api=None, repo="o/r", slug="app", row=None):
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY=repo)
+        os.environ.pop("AUDITOR_APP_SLUG", None)
+        if slug:
+            os.environ["AUDITOR_APP_SLUG"] = slug
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "1"
@@ -1447,6 +1452,13 @@ class FixPR(Base):
         self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
 
     REUSE = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+
+    def test_a_bump_branch_is_reused_only_when_the_app_made_its_commit(self):
+        for kw in (dict(api={"lookup": head_lookup(True, SHA, author="someone")}), dict(api={"lookup": head_lookup(True,
+            SHA)}, slug=None)):
+            res, fr = self.real(self.REUSE, **kw)
+            # rebuilt through the API, not left as it was
+            self.assertNotEqual(fr.ref_writes(), [])
 
     def test_an_existing_bump_branch_is_reused_only_for_one_reviewed_bump_commit_on_main_with_the_same_bytes(self):
         # one verified commit on the CURRENT main, changing only go.mod, with the same bytes: reused, no write at all

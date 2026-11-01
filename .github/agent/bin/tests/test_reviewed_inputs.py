@@ -50,6 +50,11 @@ EXEMPT = {n: _RUN_INTERNAL for n in (
     "votes.json", "verdict.json", "triggers.json", "syft.json", "stop.json", "still-present.json", "still-active.json", "scanner-calls.json", "run-state.json", "rule0.json",
     "result.json", "refusal-log.json", "probe.json", "pr.json", "plan.json", "parity.json", "package.json", "note.json", "leak.json", "govulncheck.json", "consumed.json",
     "budget.json", "adjudication.json", "accepted-item.json", ".status.json", ".json", "*.json")}
+_SWEEP_FILE = ("a file of the records sweep (auditor-vendor-records.py): made and read by "
+    "bin/vendor-provenance*.py inside one sweep run, not an input of the "
+    "auditor")
+for _n in ("dependency-provenance.json", "licenses.json", "origins.json", "provenance.json", "sumdb.json"):
+    EXEMPT[_n] = _SWEEP_FILE
 EXEMPT["openvex-schema.json"] = "the JSON schema the VEX documents are validated against: a checked-in constant, not an input of a run"
 EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py with its own strict loader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
 
@@ -80,6 +85,7 @@ _SITES = {
     "auditorlib/vex.py": (1, "the checked-in VEX schema"),
     "auditorlib/cli.py": (1, "the model client's reply"),
     "auditorlib/signed_commit.py": (1, "the GitHub API reply"),
+    "auditorlib/vendor_records.py": (1, "the base commit's reviewed licences file, read from git by the records sweep"),
 }
 
 

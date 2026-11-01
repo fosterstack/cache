@@ -693,7 +693,9 @@ def _walk(node, out, labels, path="", in_step=False):
                         else:
                             out.append(_image_item(svc["image"]))
             if k == "jobs" and isinstance(v, dict):
-                top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
+                # the triggers count (rule 1), except the paths filters
+                top_env = (json.dumps(node.get("env"), sort_keys=True, default=str)
+                           + json.dumps(_on_key(node.get("on")), sort_keys=True, default=str))
                 try:
                     for job in v.values():
                         _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
@@ -921,6 +923,25 @@ def moved(base_items, head_items):
     return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]   # the pinned checksum is part of the identity: the same version with a new sum is a moved item
 
 
+def _on_key(on):
+    """What of a workflow's `on:` is part of a step's identity: all of it except the `paths` and `paths-ignore`
+    filters under each event.
+    Owner rule 1 (Oct 5): no NEW version of what a workflow downloads until it has been public 7 days. A trigger
+    can change what a step downloads (the event name, the ref, a schedule and the event payload all reach steps;
+    a called workflow's inputs and outputs select what is fetched), so triggers stay in the key. A changed set of
+    changed-file paths only chooses WHETHER a run happens, never what it fetches. A scalar or list `on`
+    (`on: push`, `[push, merge_group]`) is unchanged."""
+    if not isinstance(on, dict):
+        return on
+    out = {}
+    for ev, body in on.items():
+        if isinstance(body, dict):
+            # the loader reads a bare event as "": an event with only a paths filter is the bare event
+            body = {k: v for k, v in body.items() if k not in ("paths", "paths-ignore")} or ""
+        out[str(ev)] = body
+    return out
+
+
 def load_at(root, rev):
     return inventory(tree_files(root, rev))
 
@@ -996,6 +1017,10 @@ def _line_ids(text):
 # FILE-LEVEL rule, not by reading commands: a non-comment line of a scanned file outside vendor/ that names the vendored folder (a path under vendor/, a bare vendor
 # word; `go mod vendor` and -mod=vendor are the tool's own words) is an unmeasured occurrence unless the file is one of these exact paths. A new workflow or script that
 # names vendor/ is therefore refused until a security-tier change lists it here: a human gate on every new consumer, with no shell syntax to spell around.
+# bin/check-no-outbound.py and its test are listed because they are ours: the check skips vendor/ by name and
+# the test builds a vendor/ fixture to prove it.
+# bin/build-apk-helper.py holds the "$src/vendor is missing" refusal that moved out of bin/build-apk.sh;
+# bin/chain-test-shape.py holds, as exact text, the build-apk.sh line that names $src/vendor/modules.txt.
 _VENDOR_NAMING_FILES = frozenset("""
 .github/workflows/ci.yml
 .github/workflows/release.yml
@@ -1023,8 +1048,12 @@ bin/chain-check-scripts-test.sh
 bin/chain-install-witness-test.sh
 bin/chain-release-scripts-test.sh
 bin/check-govulncheck.py
+bin/check-no-outbound-test.sh
+bin/check-no-outbound.py
 bin/install-scanner.sh
 bin/release-metadata.py
+bin/build-apk-helper.py
+bin/chain-test-shape.py
 """.split())
 _VENDOR_LETTER = lambda c: r"(?:" + c + r"|\[[^\]]*" + c + r"[^\]]*\]|\?|\*)"
 _VENDOR_SPELLING = r"(?:[\"'\\]|\*)*".join(_VENDOR_LETTER(c) for c in "vendor")       # ven""dor, ven\dor, vendo[r], v*ndor, vend?r

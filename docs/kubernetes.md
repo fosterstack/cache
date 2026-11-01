@@ -201,8 +201,8 @@ spec:
 here; the `requests` reserve what the server needs and the memory limit is
 the guard that matters.
 
-**The probes are `httpGet`, not `exec`.** The image is distroless — no
-shell, no `curl` — so an `exec` probe has nothing to run. Same reason the
+**The probes are `httpGet`, not `exec`.** The image has no
+shell and no `curl` — so an `exec` probe has nothing to run. Same reason the
 [Docker deploy doc](docker-deploy.md) ships no container `HEALTHCHECK`.
 
 Point liveness and readiness probes at `/healthz`. Every path other than the
@@ -309,7 +309,7 @@ not assumed:
 | Setting | Supported | Why |
 |---|---|---|
 | `runAsNonRoot: true` | yes | image `User` is the numeric uid `65532`, which the kubelet can verify as nonroot without resolving a name |
-| `runAsUser` / `runAsGroup: 65532` | yes | matches the `gcr.io/distroless/static:nonroot` base |
+| `runAsUser` / `runAsGroup: 65532` | yes | matches the numeric uid and gid the image runs as |
 | `fsGroup: 65532` | **required** | a freshly provisioned PVC is `root`-owned; without `fsGroup` the nonroot process cannot create the blob store and the pod crash-loops |
 | `readOnlyRootFilesystem: true` | yes | the server writes only inside its data directory — no temp files elsewhere, no `/tmp` use |
 | `capabilities: drop: ["ALL"]` | yes | it binds `:8080`, an unprivileged port, so it needs none |

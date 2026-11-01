@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build's Linux archives (PROPOSED/UNVERIFIED layout, REQ-PLAT-001): the four tar.gz files Release publishes, made from the melange repo's apks.
+"""Build's Linux archives (REQ-PLAT-001): the four tar.gz files Release publishes, made from the melange repo's apks.
 
   build-archives.py --melange-repo DIR --version V --out DIR      (V is the tag minus the leading v; SOURCE_DATE_EPOCH is read from the environment)
 
@@ -36,7 +36,8 @@ def find_apk(repo, arch, pattern):
 
 
 def read_binary(apk):
-    r = subprocess.run([sys.executable, "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], stdout=subprocess.PIPE)
+    r = subprocess.run([sys.executable, "-I", "-B", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"],
+        stdout=subprocess.PIPE)
     if r.returncode != 0 or not r.stdout:
         refuse("reading usr/bin/fscache from %s failed (exit %d)" % (apk, r.returncode))
     return r.stdout

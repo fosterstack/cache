@@ -58,8 +58,10 @@ record of every earlier stage, and only the steps after that one read the
 registry and signing secrets; they push the same image bytes by digest to the
 public registries and read each registry back, and the release stops if a digest read back differs
 from the attested one. The scan verdict attaches to the published digests because they are the
-scanned digests. Each scanner's verdict is a signed, digest-bound statement (see
-[docs/verify-images.md](docs/verify-images.md)), and the daily rescan
+scanned digests. From v0.3.0 the release's signed Check records bind the scan results file (`scan-results.json`, one file for <!-- pinned: historical -->
+all scanners), by hash, to the image digests (see
+[the signed evidence files](docs/verify-images.md#the-signed-evidence-files)); the results file
+itself is not attached to the release. The daily rescan
 re-checks the current release's published digests against newly disclosed CVEs.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
@@ -150,6 +152,17 @@ There is no request access log. The only per-request logging is on failure — a
 store error or a short write to the client — and those lines carry the HTTP
 method and the cache key, never the request body, never credentials, and never a
 client address.
+
+## The apk release key
+
+The apks of a release are signed with one release key; its public half will be committed at
+[`build/keys/release.rsa.pub`](build/keys/release.rsa.pub) once the key is set
+(the file there today is a placeholder, not a key).
+
+- The key is rotated every year.
+- A suspected leak is not waited out: the key is rotated at once.
+- A retired key's public half stays published, so the apks it signed stay verifiable.
+- A leak is disclosed when the key is rotated, in the security advisory for the affected releases.
 
 ## Supported versions
 

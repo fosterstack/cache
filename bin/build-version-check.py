@@ -3,7 +3,7 @@
 
   build-version-check.py (--binary PATH | --apk-dir DIR --variant standard|fips) --tag TAG --sha SHA
 
-With --apk-dir the ONE apk of the variant is found in DIR (standard fscache-<ver>-r0.apk, fips fscache-fips-<ver>-r0.apk; PROPOSED/UNVERIFIED,
+With --apk-dir the ONE apk of the variant is found in DIR (standard fscache-<ver>-r0.apk, fips fscache-fips-<ver>-r0.apk,
 cache-3f), usr/bin/fscache is extracted with `python3 bin/apk-tool.py cat APK usr/bin/fscache` to a temporary file, and that file is checked
 exactly as --binary is. The build info is read with `go version -m PATH` by the pinned toolchain at its fixed path, in a closed environment (the binary is never executed).
 Exit 0: version == tag, vcs.revision == SHA, tree not modified. Exit 1: "version check refused at <what>: <why>". Exit 2: usage error.
@@ -62,7 +62,8 @@ def find_apk(apk_dir, variant):
 
 
 def extract_binary(apk, dest):
-    r = subprocess.run([sys.executable, "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    r = subprocess.run([sys.executable, "-I", "-B", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if r.returncode != 0 or not r.stdout:
         raise Refusal("apk", "reading usr/bin/fscache from %s failed (exit %d)" % (apk, r.returncode))
     with open(dest, "wb") as f:
