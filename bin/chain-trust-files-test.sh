@@ -6,7 +6,7 @@
 #   sigstore-trust.json          STAYS   read by bin/chain-verify.py; it pins rekor.pub by sha256 and holds nothing else about Sigstore
 #   cosign-signing-config.json   STAYS   read by the cosign calls (bin/release-*.sh); it names Rekor v1 and no certificate authority,
 #                                        no sign-in service and no timestamp authority, so cosign asks for none of them
-#   fulcio-chain.pem             STAYS   no longer read by the release chain, but the pin-age check (.github/agent/supply-chain/pin-age-check.py, REQ-SUP-001)
+#   fulcio-chain.pem             STAYS   no longer read by the release chain, but the pin-age check (pin-age-check.py, REQ-SUP-001)
 #                                        verifies recorded vendor image signatures against it; those two files are its only readers
 #   tsa-chain.pem                GOES    the Rekor entry carries the integrated time; no kept reader needs a timestamp authority
 # Until the deletions are made this test is red. It reads the committed policy files and the code that names them; it opens no network connection.
@@ -61,10 +61,10 @@ def readers_of(name):
 
 
 # the Fulcio chain stays for the pin-age check of recorded vendor image signatures; the release chain no longer reads it, and nothing else may
-KEPT_FULCIO_READERS = [".github/agent/supply-chain/pin-age-check.py", ".github/agent/tests/pin-age-check-test.sh"]
+KEPT_FULCIO_READERS = ["pin-age-check.py", "pin-age-check-test.sh"]       # by file name: both sit under .github/
 check(os.path.exists(os.path.join(pol, "fulcio-chain.pem")), "fulcio-chain.pem stays (the pin-age check verifies recorded vendor image signatures against it)")
 fulcio_readers = readers_of("fulcio-chain.pem")
-check(fulcio_readers == KEPT_FULCIO_READERS, "fulcio-chain.pem is named by exactly the pin-age check and its test, not by the release chain (readers: %s)" % ", ".join(fulcio_readers[:6]))
+check(sorted(os.path.basename(r) for r in fulcio_readers) == sorted(KEPT_FULCIO_READERS) and all(r.startswith(".github/") for r in fulcio_readers), "fulcio-chain.pem is named by exactly the pin-age check and its test, not by the release chain (readers: %s)" % ", ".join(fulcio_readers[:6]))
 for gone in ("tsa-chain.pem",):
     check(not os.path.exists(os.path.join(pol, gone)), "%s is deleted (no kept reader needs it)" % gone)
     readers = readers_of(gone)

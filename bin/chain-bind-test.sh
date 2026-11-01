@@ -625,7 +625,7 @@ def run_env(args, cwd, env):
 SR_REF = "refs/tags/v0.3.0"        # the ref the environment attestor of a made record carries (Sign's own, unless a case sets another)
 
 
-def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False, ref=None, stdout="built\n"):
+def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False, ref=None, stdout="built\n", env_raw=None):
     """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
     ref = ref or SR_REF
     subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
@@ -633,6 +633,8 @@ def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
         subs.append({"name": "https://witness.dev/attestations/git/v0.1/commithash:" + commit, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + commit}})
     def attestation(k):
         if k == "environment":
+            if env_raw is not None:      # variables that are not an object (a list or a string): the check must refuse, never fail with a traceback
+                return {"variables": env_raw}
             return {"variables": dict({"GITHUB_REF": ref}, **(env_vars or {}))}
         if k == "command-run":      # the real shape (pinned Witness 0.12.0): the command, its whole output and its exit code
             return {"cmd": ["bash", "bin/build-stage.sh"], "stdout": stdout, "stderr": "", "exitcode": 0}
@@ -806,8 +808,42 @@ d, _ = sr_tree("sr6b"); coll_record(d + "/witness-build/build-collection.local.j
 sr("sign-records build: a record without the material attestor is refused (the attestors are exactly the five)", d, "build", 1, ["material"])
 d, _ = sr_tree("sr6d"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), stdout="log line\nGITHUB_TOKEN=ghp_" + "a" * 36 + "\n")
 sr("sign-records build: a GitHub token printed in command-run's stdout is refused (the record scan covers the new attestor)", d, "build", 1, ["env"])
+# the REAL records: made by the pinned Witness 0.12.0 through bin/witnessed-local.sh (steps build and apk, one commit, GITHUB_REF refs/tags/v0.3.0, a clean
+# environment), committed under test-evidence/witness-real/; their products are the bytes of the fixture tree (BUILD_DATA, BUILD_ART, the apk leg)
+REAL_SHA = "5a3e9d23730aaa052794e767258134daba956e54"
+def write_real(step, dest):
+    """Rebuild the DSSE envelope of a committed real record (test-evidence/witness-real/<step>-collection.real.txt: header lines, then the base64 payload wrapped)."""
+    fields, payload, in_payload = {}, [], False
+    for line in open(REPO_ROOT + "/test-evidence/witness-real/%s-collection.real.txt" % step).read().split("\n"):
+        if line.startswith("#") or not line:
+            continue
+        if line == "payload:":
+            in_payload = True
+        elif in_payload:
+            payload.append(line)
+        else:
+            key, _, value = line.partition(": ")
+            fields[key] = value
+    json.dump({"payload": "".join(payload), "payloadType": fields["payloadType"], "signatures": [{"keyid": fields["keyid"], "sig": fields["sig"]}]}, open(dest, "w"))
+
+
+def real_tree(name):
+    d, _ = sr_tree(name)
+    write_real("build", d + "/witness-build/build-collection.local.json")
+    write_real("apk", d + "/witness-apk-ubuntu-24.04/apk-collection.local.json")
+    return d
+d = real_tree("srreal1")
+sr("sign-records build: the records the pinned Witness really writes (environment, git, material, command-run, product) are accepted", d, "build", 0, env={"GITHUB_SHA": REAL_SHA})
+d = real_tree("srreal2")
+sr("sign-records build: the same real records at another tag (GITHUB_REF refs/tags/v0.3.1) are refused by the ref in their environment attestor", d, "build", 1, ["ref"], env={"GITHUB_SHA": REAL_SHA, "GITHUB_REF": "refs/tags/v0.3.1"})
+d = real_tree("srreal3")
+sr("sign-records build: the same real records at another commit than Sign's are refused", d, "build", 1, ["commit"], env={"GITHUB_SHA": "e" * 40})
 d, _ = sr_tree("sr7"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_vars={"GITHUB_TOKEN": "x"})
 sr("sign-records build: a record that names a token variable is refused (record-env)", d, "build", 1, ["env", "GITHUB_TOKEN"])
+d, _ = sr_tree("sr7l"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_raw=["GITHUB_REF=refs/tags/v0.3.0"])
+sr("sign-records build: environment variables that are a list are refused (no traceback)", d, "build", 1, ["ref"])
+d, _ = sr_tree("sr7s"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_raw="GITHUB_REF=refs/tags/v0.3.0")
+sr("sign-records build: environment variables that are a string are refused (no traceback)", d, "build", 1, ["ref"])
 d, _ = sr_tree("sr8"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/snapshot-apk-collection.local.json")
 sr("sign-records build: a snapshot step file name is refused", d, "build", 1, ["snapshot"])
 d, _ = sr_tree("sr9"); coll_record(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", "build", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "out/x86_64/APKINDEX.tar.gz": b"idx"})
@@ -1009,7 +1045,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 216
+EXPECT = 221
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

@@ -61,7 +61,7 @@
 set -euo pipefail
 # the runner's own GITHUB_REF / GITHUB_EVENT_NAME (refs/pull/N/merge, pull_request ...) must never leak into a case: every case that
 # needs them sets both itself (Opus r5 N-b, Sonnet r5 finding 4)
-unset GITHUB_REF GITHUB_EVENT_NAME
+unset GITHUB_REF GITHUB_EVENT_NAME GITHUB_WORKFLOW_REF
 root=$(cd "$(dirname "$0")/.." && pwd)
 cv="$root/bin/chain-verify.py"
 work=$(mktemp -d); trap 'rm -rf "$work" 2> /dev/null || sudo -n rm -rf "$work"' EXIT
@@ -426,6 +426,8 @@ add("build_coll_noenv", COLL, None, stmt="v0.1", coll_file="digests.json", coll_
 add("build_coll_twoenv", COLL, None, stmt="v0.1", coll_file="digests.json",
     coll_env=[{"os": "linux", "variables": {"GITHUB_REF": T}}, {"os": "linux", "variables": {"GITHUB_REF": T2}}])
 add("build_coll_refnotstr", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": {"GITHUB_REF": [T]}}])
+add("build_coll_varlist", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": ["GITHUB_REF=" + T]}])
+add("build_coll_varstr", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": "GITHUB_REF=" + T}])
 for k in FMT: add("build_coll_" + k, COLL, None, stmt="v0.1", coll_file="digests-%s.json" % k)
 add("check_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
 add("rebuild_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
@@ -1051,7 +1053,7 @@ for c in other:"a digest that differs" extra:"an extra entry" subset:"a missing 
 done
 expect_refuse "001-AC2 Build's record for a different file than the one given (extra entries attested) is refused" "digest" $(S build_coll_plus) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record for the swapped file is refused against the real list" "digest" $(S build_coll_swapped) --digests "$work/digests.json"
-for c in rcref:"the rc tag (same digests, other ref)" otherref:"another tag" branchref:"a branch named like the tag" novar:"no GITHUB_REF" noenv:"no environment attestor" twoenv:"two environment attestors" refnotstr:"a GITHUB_REF that is not a string"; do
+for c in rcref:"the rc tag (same digests, other ref)" otherref:"another tag" branchref:"a branch named like the tag" novar:"no GITHUB_REF" noenv:"no environment attestor" twoenv:"two environment attestors" refnotstr:"a GITHUB_REF that is not a string" varlist:"environment variables that are a list" varstr:"environment variables that are a string"; do
   expect_refuse "004-AC1 a Witness collection whose ref is not the policy's (${c#*:}) is refused" "ref" $(S build_coll_${c%%:*}) --digests "$work/digests.json"
 done
 for v in wrongname:"file:digests.json carries the wrong hash while file:other carries the right one" dup:"two subjects named file:digests.json (wrong first)" dup2:"two subjects named file:digests.json (right first)" \
@@ -1495,6 +1497,34 @@ pol, obj, _stmt = m.check_build_record(ns)
 builtins.open = real_open
 assert len(opened) == 1, "digest file opened %d times" % len(opened)
 assert obj == json.load(open(w + "/digests.json")), "the digest object does not match the attested file"
+PY
+# the REAL record: test-evidence/witness-real/build-collection.real.txt was written by the pinned Witness 0.12.0 (bin/witnessed-local.sh, step build, GITHUB_REF refs/tags/v0.3.0);
+# its environment attestor is the real shape, and the tag binding (collection_ref) and the variables guard (environment_ref) are run against it
+python3 - "$root" 2>&1 <<'PY' && ok "004-AC1 the environment attestor of a real Witness record binds the tag: it passes at its own ref, is refused at another, and variables that are not an object give a refusal, never a traceback" || bad "004-AC1 real Witness record: tag binding"
+import base64, importlib.util, json, sys
+root = sys.argv[1]; sys.path.insert(0, root + "/bin")
+spec = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+text = [l for l in open(root + "/test-evidence/witness-real/build-collection.real.txt").read().split("\n") if l and not l.startswith("#")]
+payload = "".join(text[text.index("payload:") + 1:])          # the base64 payload, wrapped in the file
+stmt = json.loads(base64.b64decode(payload))
+kinds = [a["type"].split("/")[-2] for a in stmt["predicate"]["attestations"]]
+assert kinds == ["environment", "git", "material", "command-run", "product"], kinds
+env = stmt["predicate"]["attestations"][0]["attestation"]
+assert m.environment_ref(env) == "refs/tags/v0.3.0", env
+m.collection_ref("build", {"ref": "refs/tags/v0.3.0"}, stmt)                       # no refusal at its own ref
+def refused(call):
+    try:
+        call()
+    except m.Refuse:
+        return True
+    return False
+assert refused(lambda: m.collection_ref("build", {"ref": "refs/tags/v0.3.1"}, stmt)), "another tag was accepted"
+for bad_vars in (["GITHUB_REF=refs/tags/v0.3.0"], "GITHUB_REF=refs/tags/v0.3.0", None, 7):
+    assert m.environment_ref({"variables": bad_vars}) is None, bad_vars
+    forged = json.loads(json.dumps(stmt)); forged["predicate"]["attestations"][0]["attestation"] = {"variables": bad_vars}
+    assert refused(lambda: m.collection_ref("build", {"ref": "refs/tags/v0.3.0"}, forged)), bad_vars
+for not_obj in (None, [], "x", 3):
+    assert m.environment_ref(not_obj) is None
 PY
 python3 - "$root" 2>&1 <<'PY' && ok "N-4 the DSSE pre-authentication length counts BYTES of the payload type, not characters" || bad "N-4 pae() counts characters"
 import importlib.util, sys
@@ -2031,7 +2061,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=775
+EXPECT=778
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
