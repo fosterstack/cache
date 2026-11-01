@@ -164,13 +164,11 @@ alerting examples in [Kubernetes](kubernetes.md)).
 
 ## Configuration
 
-All configuration is environment variables (see the main
-[README](../README.md#build-and-run-from-source) for the full table):
-`FSCACHE_ADDR`, `FSCACHE_DATA_DIR` (defaults to `./data`, which resolves to
-`/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
-`FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
+All configuration is environment variables. The full table, with defaults, is in the main
+[README](../README.md#build-and-run-from-source). In the image `FSCACHE_DATA_DIR` defaults to
+`./data`, which resolves to `/home/nonroot/data`.
 
-Four more:
+Four settings that need more than a table row:
 
 - **Read-only credentials** — `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`, an
   optional second username/password pair that can read cache entries but not
