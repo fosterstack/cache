@@ -547,7 +547,7 @@ def baselayout_line_ok(words):
         return len(words) >= 3 and bool(BASELAYOUT_MODE.fullmatch(words[1])) and all(baselayout_destination(w) for w in words[2:])
     sources = words[1:-1]
     return len(words) >= 3 and words[-1] == DESTDIR_TOKEN + "/etc/" and all(
-        BASELAYOUT_SOURCE.fullmatch(w) and not w.endswith(("/.", "/..")) for w in sources)
+        BASELAYOUT_SOURCE.fullmatch(w) and w.split("/")[-1] not in (".", "..") for w in sources)
 
 
 def baselayout_step_lines(step, recipe):
@@ -561,7 +561,7 @@ def baselayout_step_lines(step, recipe):
         if line == "":
             continue
         if not BASELAYOUT_LINE_CHARS.fullmatch(line.replace(DESTDIR_TOKEN, "")):
-            raise Refused("the recipe %s has a line with a character that chains or expands a command, or a separator the "
+            raise Refused("the recipe %s has a line with a character that chains or expands (a shell word), or a separator the "
                 "shell does not split on (only letters, digits, . _ - / and single spaces are allowed): %r" % (recipe, line))
         words = line.split(" ")
         if "" in words:
