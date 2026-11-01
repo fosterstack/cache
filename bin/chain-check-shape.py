@@ -61,7 +61,7 @@ GV_IDS = "${{ needs.govulncheck-build.outputs.artifact-id }}"
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # the keyless helper keeps only Release's six; Check's steps run under the local helper (REQ-REL-011-AC1)
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
 
 
 def witnessed_lines():

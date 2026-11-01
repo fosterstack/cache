@@ -218,7 +218,7 @@ for drv in "$BA" "$AI" "$SP" "$LP"; do
 done
 
 t "rule 20" "no scanner (syft, trivy, grype, bomber, scout) makes or gates an SBOM in the drivers or the module tool" bash -c "test -f '$BA' && test -f '$AI_PROD' && test -f '$GS' && ! grep -Eqi '\\b(syft|trivy|grype|bomber|cyclonedx|scout)\\b' '$BA' '$AI_PROD' '$GS'"
-nogrep "rule 17" "image assembly and lock tooling never reference the release key" 'APK_RELEASE_SIGNING_KEY|release\.rsa( |$|")' "$AI_PROD" "$LK"
+nogrep "rule 17" "image assembly and lock tooling never reference the release key" 'RELEASE_KMS_KEY_REF|release\.rsa( |$|")' "$AI_PROD" "$LK"
 
 # ===== rule 19: signatures are always checked ============================================================================
 nogrep "rule 19" "the skip-signatures switches appear in no workflow, recipe, config or driver" 'ignore-signatures|allow-untrusted|--insecure' $root/.github/workflows/*.yml "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/apko.yaml" "$root/build/apko-fips.yaml" "$BA" "$AI_PROD" "$LK"   # melange pkg/cli/build.go:86, apko internal/cli/build.go:143 and lock.go:115

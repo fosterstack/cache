@@ -18,14 +18,14 @@
 #        apk-ubuntu-24.04 -> x86_64 and apk-ubuntu-24.04-arm -> aarch64), rapks/<runner>/... (Rebuild's, same layout), dist/*, policy.json
 #   out: release-apks/<apk arch>/*.apk, release-evidence/ (bundles, vendor-evidence.json, release-policy.bundle)
 # Registries: ghcr.io/fosterstack/cache and docker.io/fosterstack/cache; tags 0.3.0 and 0.3.0-fips (a final release also floating tags: PROPOSED).
-# The fake tools' command lines are PROPOSED/UNVERIFIED: crane push of an OCI tarball, melange sign --key FILE, cosign sign-blob --bundle.
+# The fake tools' command lines are PROPOSED/UNVERIFIED: crane push of an OCI tarball, cosign sign-blob --bundle.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
 python3 - "$@" <<'PY'
 import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
-SENT = {"APK_RELEASE_SIGNING_KEY": "SENTINEL-APK-KEY-7f3a", "DOCKERHUB_USERNAME": "sentinel-user-91", "DOCKERHUB_TOKEN": "SENTINEL-HUB-TOKEN-5c2e", "GH_TOKEN": "SENTINEL-GH-TOKEN-b814"}
+SENT = {"DOCKERHUB_USERNAME": "sentinel-user-91", "DOCKERHUB_TOKEN": "SENTINEL-HUB-TOKEN-5c2e", "GH_TOKEN": "SENTINEL-GH-TOKEN-b814"}
 passn, failn = 0, 0
 def ok(l): global passn; passn += 1; print("ok   " + l)
 def bad(l): global failn; failn += 1; print("FAIL " + l)
@@ -105,14 +105,6 @@ if os.environ.get("VEXFORMS_FAIL"): print("vex-forms: image digests missing", fi
 ver = a[a.index("--version") + 1]; out = a[a.index("--out-dir") + 1]
 json.load(open(a[a.index("--images") + 1]))
 open(os.path.join(out, "fosterstack-cache-%s.csaf.json" % ver), "w").write("{}"); open(os.path.join(out, "fosterstack-cache-%s.inspector-filters.json" % ver), "w").write("{}")''',
- "melange": r'''#!/usr/bin/env bash
-echo "melange $*" >> "$LOG"
-[ -z "${MELANGE_FAIL:-}" ] || exit 1
-[ "$1" = sign ] || exit 2
-shift; [ "$1" = --signing-key ] && key=$2 && shift 2
-echo "mode=$(stat -c %a "$key" 2>/dev/null || stat -f %Lp "$key") content=$(cat "$key")" >> "$LOG.key"; echo "$key" > "$LOG.keypath"
-signer="$(basename "$key").pub"   # MEASURED with melange v0.61.2: the signer is named after the key FILE (k.rsa -> k.rsa.pub)
-for a in "$@"; do [ -n "${MELANGE_BREAK:-}" ] || sed -i.bak "s/^signer: .*/signer: $signer/" "$a"; rm -f "$a.bak"; done''',
  "bin/apk-tool.py": r'''import hashlib, sys
 cmd, f = sys.argv[1], sys.argv[2]
 lines = open(f).read().split("\n")
@@ -121,14 +113,15 @@ elif cmd == "signer": print(lines[1].split(": ", 1)[1])
 elif cmd == "same": sys.exit(0 if open(f).read().split("\n")[2:] == open(sys.argv[3]).read().split("\n")[2:] else 1)
 else: sys.exit(2)''',
  "bin/release-sign-apks.sh": r'''#!/usr/bin/env bash
-# a model of cache's bin/release-sign-apks.sh (P4, measured; the owner's rule of Oct 21 2026 took --rebuild-dir away): --build-dir A --key K; the key is copied to a
-# private file NAMED release.rsa (melange names the signer after the key file); each apk of A is re-signed in place with `melange sign --signing-key`
+# a model of cache's bin/release-sign-apks.sh (P11): --build-dir A only; the key is RELEASE_KMS_KEY_REF from the environment (awskms:///<name>), no key file;
+# each apk of A gets the release signature and its Rekor bundle <apk>.bundle beside it (cosign sign-blob on the control section in the real script)
 echo "release-sign-apks $*" >> "$LOG"
 set -euo pipefail
-while [ $# -gt 0 ]; do case $1 in --build-dir) a=$2;; --key) k=$2;; *) echo "release-sign-apks.sh: unknown argument: $1" >&2; exit 2;; esac; shift 2; done
-[ "$(basename "$k")" = release.rsa ] || { echo "release-sign-apks.sh: the key file must be named release.rsa" >&2; exit 2; }   # measured: line 123 of cache's script
-t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; umask 077; cp "$k" "$t/release.rsa"
-for f in "$a"/*/*.apk; do melange sign --signing-key "$t/release.rsa" "$f"; done''',
+while [ $# -gt 0 ]; do case $1 in --build-dir) a=$2;; *) echo "release-sign-apks.sh: unknown argument: $1" >&2; exit 2;; esac; shift 2; done
+[ -n "${RELEASE_KMS_KEY_REF:-}" ] || { echo "release-sign-apks.sh: RELEASE_KMS_KEY_REF is unset" >&2; exit 2; }
+echo "ref=$RELEASE_KMS_KEY_REF" >> "$LOG.ref"
+[ -z "${SIGN_FAIL:-}" ] || exit 1
+for f in "$a"/*/*.apk; do [ -n "${SIGN_BREAK:-}" ] || sed -i.bak "s/^signer: .*/signer: release.rsa.pub/" "$f"; rm -f "$f.bak"; [ -n "${SIGN_NOBUNDLE:-}" ] || echo '{"verificationMaterial":{"tlogEntries":[{}]}}' > "$f.bundle"; done''',
  "bin/vendor-provenance.py": r'''import json, os, sys
 open(os.environ["LOG"], "a").write("vendor-provenance %s\n" % " ".join(sys.argv[1:]))
 if os.environ.get("EVIDENCE_FAIL"): sys.exit(1)
@@ -260,7 +253,7 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     LAST[0] = 0
     e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
-    if script == "release-sign" and "RELEASE_KMS_KEY_REF" not in e and not (env or {}).get("NO_KMS_REF"): e["RELEASE_KMS_KEY_REF"] = KMS
+    if script in ("release-sign", "release-apks") and "RELEASE_KMS_KEY_REF" not in e and not (env or {}).get("NO_KMS_REF"): e["RELEASE_KMS_KEY_REF"] = KMS
     e.pop("NO_KMS_REF", None)
     r = subprocess.run(["bash", path], cwd=t, env=e, capture_output=True, text=True)
     LAST[0] = r.returncode if r.returncode == 127 else 0
@@ -271,7 +264,7 @@ def tree_text(t):
     out = ""
     for dp, dn, fn in os.walk(t):
         for f in fn:
-            if f in ("calls.log.key", "calls.log.keypath"): continue   # the fake signer's own capture of the key file it was handed
+            if f in ("calls.log.ref",): continue   # the fake signer's own capture of the key reference it was handed
             try: out += open(os.path.join(dp, f), errors="replace").read()
             except Exception: pass
     return out
@@ -307,29 +300,26 @@ t = tree(); rc, so, se = run(t, "release-verify", env={"POLICY_FAIL": "1"}); che
 t = tree(); rc, so, se = run(t, "release-verify", creds=list(SENT))
 check(rc == 0 and not [l for l in log(t) if l.split(" ")[0] in ("crane", "cosign", "gh", "melange")], "AC5 the verify script calls no registry, signing or release tool")
 # ---- AC6: release-apks.sh (maps Build's names through the fixed table, checks the four attested digests, then calls cache's release-sign-apks.sh) ---------------
-KEY = ["APK_RELEASE_SIGNING_KEY"]
+KEY = []   # release-apks reads no stored secret: its one input is RELEASE_KMS_KEY_REF, which run() sets for it as for release-sign
 ALLAPKS = [(archdir, name) for _r, archdir, _s in RUNNERS for _v, name in APKS]
 def signers(t):
     return [subprocess.run(["python3", os.path.join(t, "bin/apk-tool.py"), "signer", os.path.join(t, "release-apks", a, n)], capture_output=True, text=True).stdout.strip()
             for a, n in ALLAPKS if os.path.exists(os.path.join(t, "release-apks", a, n))]
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY)
-check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4, "AC6 all four apks (standard and fips, x86_64 and aarch64) come out signed by the release key, laid out as release-apks/<apk arch>/<file>", "rc=%s %s %s" % (rc, signers(t), first(se)))
+check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4 and all(os.path.isfile(os.path.join(t, "release-apks", a, n + ".bundle")) for a, n in ALLAPKS), "AC6 all four apks (standard and fips, x86_64 and aarch64) come out signed by the release key with their Rekor bundle beside them, laid out as release-apks/<apk arch>/<file>", "rc=%s %s %s" % (rc, signers(t), first(se)))
 cs = [l for l in log(t) if l.startswith("release-sign-apks")]
-check(len(cs) == 1 and "--build-dir" in cs[0] and "--rebuild-dir" not in cs[0] and "--key" in cs[0] and not [l for l in log(t) if l.startswith("melange") and "release-sign" not in l and "--signing-key" not in l], "AC6 cache's bin/release-sign-apks.sh is called once with --build-dir --rebuild-dir --key (Release does not call melange itself)", str(cs))
-check(len([l for l in log(t) if l.startswith("melange")]) == 4 and all("--signing-key" in l for l in log(t) if l.startswith("melange")), "AC6 melange is reached only through that script, with --signing-key (measured: --key is not a melange flag)")
-kp = open(os.path.join(t, "calls.log.keypath")).read().strip() if os.path.exists(os.path.join(t, "calls.log.keypath")) else ""
-kl = open(os.path.join(t, "calls.log.key")).read() if os.path.exists(os.path.join(t, "calls.log.key")) else ""
-check("mode=600" in kl and ("content=" + SENT["APK_RELEASE_SIGNING_KEY"]) in kl, "AC6 the key reached the signer as a private (0600) file holding the key", kl)
-check(kp != "" and os.path.basename(kp) == "release.rsa" and not os.path.exists(kp), "AC6 the signer's key file is named release.rsa (melange names the signer after the key file) and is removed after the run", kp)
-check(SENT["APK_RELEASE_SIGNING_KEY"] not in "\n".join(log(t)) + so + se, "AC6 the key is never on a command line, in the output or in a log")
-check(not any(SENT["APK_RELEASE_SIGNING_KEY"] in open(os.path.join(dp, f), errors="replace").read() for dp, dn, fn in os.walk(os.path.join(t, "release-apks")) for f in fn) and not os.path.exists(os.path.join(t, "release-evidence")), "AC6 the key is in no output file")
-for label, env in (("missing", {}), ("empty", {"APK_RELEASE_SIGNING_KEY": ""})):
+check(len(cs) == 1 and "--build-dir" in cs[0] and "--rebuild-dir" not in cs[0] and "--key" not in cs[0], "AC6 cache's bin/release-sign-apks.sh is called once with --build-dir only (no --key, no --rebuild-dir)", cs)
+ref = open(os.path.join(t, "calls.log.ref")).read().split() if os.path.exists(os.path.join(t, "calls.log.ref")) else []
+check(ref == ["ref=" + KMS], "AC6 the signer received the release key's reference from RELEASE_KMS_KEY_REF, once", ref)
+check(not [os.path.join(dp, f) for dp, dn, fn in os.walk(t) for f in fn if f == "release.rsa" or f.endswith(".rsa")], "AC6 no key file of any name exists in the tree or its temporary files")
+check(not any(open(os.path.join(dp, f), errors="replace").read().find("PRIVATE KEY") >= 0 for dp, dn, fn in os.walk(os.path.join(t, "release-apks")) for f in fn) and not os.path.exists(os.path.join(t, "release-evidence")), "AC6 no private key text is in any output file")
+for label, env in (("missing", {"NO_KMS_REF": "1"}), ("empty", {"RELEASE_KMS_KEY_REF": ""})):
     t = tree(); rc, so, se = run(t, "release-apks", env=env)
-    check(rc == 2 and "APK_RELEASE_SIGNING_KEY" in se and not [l for l in log(t) if l.startswith(("melange", "release-sign-apks"))], "AC6 a %s key is refused at once with exit 2, naming the variable, before any signing" % label, "rc=%s %s" % (rc, first(se)))
+    check(rc == 2 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(t) if l.startswith("release-sign-apks")], "AC6 a %s key reference is refused at once with exit 2, naming the variable, before any signing" % label, "rc=%s %s" % (rc, first(se)))
 for key in ("apk-standard-amd64", "apk-standard-arm64", "apk-fips-amd64", "apk-fips-arm64"):   # each row of the digest table is tested
     t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d[key] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
     rc, so, se = run(t, "release-apks", creds=KEY)
-    check(rc != 0 and "differs" in se and not [l for l in log(t) if l.startswith(("melange", "release-sign-apks"))] and not os.path.exists(os.path.join(t, "release-apks")), "AC6 the attested digest %s not matching its apk stops before anything is signed" % key, "rc=%s %s" % (rc, first(se)))
+    check(rc != 0 and "differs" in se and not [l for l in log(t) if l.startswith("release-sign-apks")] and not os.path.exists(os.path.join(t, "release-apks")), "AC6 the attested digest %s not matching its apk stops before anything is signed" % key, "rc=%s %s" % (rc, first(se)))
 t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); del d["apk-fips-arm64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
 rc, so, se = run(t, "release-apks", creds=KEY); check(rc != 0 and "apk-fips-arm64" in se and not log(t), "AC6 a missing attested digest key is refused, naming it")
 t = tree(); os.makedirs(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64")); open(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: other\n")
@@ -337,10 +327,13 @@ rc, so, se = run(t, "release-apks", creds=KEY)
 check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4 and "rapks" not in " ".join(log(t)), "AC6 Rebuild's apks are never read by release-apks (a differing file under rapks/ changes nothing: the comparison is the compare job's, in a job without the key)", "rc=%s %s" % (rc, first(se)))
 RA = open(os.path.join(BIN, "release-apks.sh")).read()
 check("rapks" not in RA and "rebuild-dir" not in RA and "release-apks-rebuild" not in RA, "AC6 release-apks.sh names neither rapks/ nor --rebuild-dir nor a rebuild staging directory")
-t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"MELANGE_BREAK": "1"})
+t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_BREAK": "1"})
 check(rc != 0 and "release" in se.lower() and "signed" in se.lower(), "AC6 an apk the signer left signed by another key is refused ('not signed by the release key')", "rc=%s %s" % (rc, first(se)))
-t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"MELANGE_FAIL": "1"}); kp = open(os.path.join(t, "calls.log.keypath")).read().strip() if os.path.exists(os.path.join(t, "calls.log.keypath")) else ""
-check(rc != 0, "AC6 a failing signer fails the script"); check(not os.path.exists(os.path.join(t, "calls.log.keypath")) or not os.path.exists(kp), "AC6 the key file is removed on a failing run too")
+t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_FAIL": "1"})
+check(rc != 0, "AC6 a failing signer fails the script")
+check(not os.path.exists(os.path.join(t, "release-apks")), "AC6 a failing signer leaves nothing in release-apks")
+t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_NOBUNDLE": "1"})
+check(rc != 0 and "bundle" in se.lower() and not os.path.exists(os.path.join(t, "release-apks")), "AC6 a signed apk with no Rekor bundle beside it is refused and nothing is laid out", "rc=%s %s" % (rc, first(se)))
 t = tree(); shutil.rmtree(os.path.join(t, "apks")); os.makedirs(os.path.join(t, "apks")); rc, so, se = run(t, "release-apks", creds=KEY)
 check(rc != 0 and "no apk" in se.lower(), "AC6 no apks to sign is an error, not a success")
 t = tree(); os.remove(os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-0.3.0-r0.apk")); rc, so, se = run(t, "release-apks", creds=KEY)
@@ -610,7 +603,8 @@ def full_assets():
     t = tree(); rc_, so_, se_ = run(t, "release-sign", creds=REG)
     os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64"))
     for arch in ("x86_64", "aarch64"):
-        for name in ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk"): open(os.path.join(t, "release-apks", arch, name), "w").write(arch + name)
+        for name in ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk"):
+            open(os.path.join(t, "release-apks", arch, name), "w").write(arch + name); open(os.path.join(t, "release-apks", arch, name + ".bundle"), "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
     # the four Linux archives Build recorded (its digests.json holds sha256 of the item name as each archive's bytes)
     arcs = (("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
             ("fscache-fips_0.3.0_linux_amd64.tar.gz", b"archive-fips-linux-amd64"), ("fscache-fips_0.3.0_linux_arm64.tar.gz", b"archive-fips-linux-arm64"))
@@ -618,6 +612,9 @@ def full_assets():
     return t
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
+check(all(("release-upload/%s-%s.bundle" % (sh, nm)) in L for sh in ("amd64", "arm64") for nm in ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk")), "AC9 each apk is attached with its Rekor bundle beside it, under the same architecture name (Oct 29 rule 1)")
+tnb = full_assets(); os.remove(os.path.join(tnb, "release-apks/aarch64/fscache-fips-0.3.0-r0.apk.bundle")); rcnb, sonb, senb = run(tnb, "release-assets", creds=["GH_TOKEN"])
+check(rcnb != 0 and "bundle" in senb and not [l for l in log(tnb) if l.startswith("gh release")], "AC9 an apk with no Rekor bundle beside it stops the step before a release is created or anything is uploaded", "rc=%s %s" % (rcnb, first(senb)))
 for what in ("release upload v0.3.0", "release-upload/amd64-fscache-0.3.0-r0.apk", "release-upload/arm64-fscache-fips-0.3.0-r0.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
              "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json", "release-upload/provenance.json", "release-upload/provenance.rekor.json", "release-upload/provenance.bundle.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
@@ -929,7 +926,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "405"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "406"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

@@ -74,7 +74,7 @@
   {
    "workflow": "stage-promote.yml",
    "job": "release",
-   "reason": "Release (REQ-CHAIN-007): the Witness steps and the cosign signatures of release-sign.sh are made with the release key through the job's OIDC token; the one job with a registry credential, the apk signing key and packages: write"
+   "reason": "Release (REQ-CHAIN-007): the Witness steps and the cosign signatures of release-sign.sh are made with the release key through the job's OIDC token; the one job with a registry credential, the release key (KMS, for the apks too) through that token, and packages: write"
   },
   {
    "workflow": "stage-sign.yml",

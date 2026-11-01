@@ -426,7 +426,7 @@ jobs:
       records: ${{ needs.check.outputs.records }}
       records-arm64: ${{ needs.check.outputs.records-arm64 }}
 
-  # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
+  # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, a release-key role or write access to packages and
   # releases. It needs exactly Check, Sign, Sign-rebuild and Sign-check (rule 70; it reaches Build and Rebuild through them), has no `if` that survives a failed or skipped predecessor
   # (a dry run publishes nothing, a branch run is not a release, and a skipped Build skips it through `needs`), passes no secrets to the stage (the environment named release holds them)
   # and creates no tag.

@@ -58,7 +58,6 @@ witness run --step "$step" --signer-file-key-path "$td/key.pem" \
   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \
   --env-add-sensitive-key GH_TOKEN \
   --env-add-sensitive-key GITHUB_TOKEN \
-  --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \
   --env-add-sensitive-key DOCKERHUB_USERNAME \
   --env-add-sensitive-key DOCKERHUB_TOKEN \
   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE \

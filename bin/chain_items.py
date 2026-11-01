@@ -29,7 +29,7 @@ ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architectu
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
 TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
                "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
-               "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "APK_RELEASE_SIGNING_KEY")      # rc-2 R4 (Fable): Release's own three credentials, which its six Witness records could carry
+               "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN")      # rc-2 R4 (Fable): Release's own credentials, which its six Witness records could carry
 
 
 # ---- the names a record may carry (REQ-CHAIN-004-AC13 and AC15; REQ-CHAIN-005-AC7) ----------------------------------------------------------

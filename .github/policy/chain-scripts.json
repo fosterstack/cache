@@ -321,10 +321,9 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN unless the step is release-sign; a Witness collection is not a provenance statement",
-      "sha256": "153f438027fbddfd9d523fdb22af25b51748d4ad059732216d485ecae0042915",
+      "sha256": "dfad3b2645fb2422bfa9112f18c7f11ce7a360e9143a0b17e6e396d5679aa315",
       "reads_env": [
         "GH_TOKEN",
-        "APK_RELEASE_SIGNING_KEY",
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
         "AWS_ROLE_ARN",
@@ -370,10 +369,9 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "33bafd785c9e646f6a530bfd15f286be7063a4e239f9cfbe293fa55104684fc5",
+      "sha256": "be4c8cdcf99c8f47ecc8659f1776034eb5df9725fb0ded860c06e929f2eecb08",
       "reads_env": [
         "GH_TOKEN",
-        "APK_RELEASE_SIGNING_KEY",
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN"
       ],
@@ -621,7 +619,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "d34f6c9c5f6d79b97e3ea29bfdc0704c687e87b05cd7b2e93b2f3ae873baa49b"
+      "sha256": "7cdd3d57bef8c0a452db2c295a4582577ea49394d90da329072122efcde8793b"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -1598,24 +1596,23 @@
       "tools": [
         "bash",
         "jq",
-        "python3",
-        "trap"
+        "python3"
       ],
       "runs": [
         "bin/apk-tool.py",
         "bin/release-sign-apks.sh"
       ],
       "signs": "other",
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (melange sign of Build's apks only; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
-      "sha256": "bb859d4254e1d4cced43922b4c381be86e6a723fd4ef3bb515b496bec2e4828f",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (cosign signs each apk's control section with the release KMS key named by RELEASE_KMS_KEY_REF; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
+      "sha256": "29fc6f44658e2243d51b9118d6cf50c3839e892ccc4ff6d6564b04fde38e8b15",
       "reads_env": [
-        "APK_RELEASE_SIGNING_KEY"
+        "RELEASE_KMS_KEY_REF"
       ],
       "exceptions": [
         {
           "rule": "deny",
-          "line": "if [ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ]; then echo \"release-apks: APK_RELEASE_SIGNING_KEY is unset\" >&2; exit 2; fi",
-          "line_sha256": "b2768dc581254bd195b47373c7599227b761f888db2b03a64d8e9294f56ffdbb",
+          "line": "if [ -z \"${RELEASE_KMS_KEY_REF:-}\" ]; then echo \"release-apks: RELEASE_KMS_KEY_REF is unset\" >&2; exit 2; fi",
+          "line_sha256": "55301f2b6fd02ac18652a24c1c62f82e6723be5b539ec9e8be9598bd68fade4d",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1750,7 +1747,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "b46bbe571ce4a4146cb3ae2a846e44230f05cf875e88546d4f918e9bbf6c579f",
+      "sha256": "e909714631ce5492623233de30c8c75be8aecde498b701d1d9cd12c65fd857c3",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -2110,7 +2107,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
+      "sha256": "97dfdd9d627cff866d215039a243a18c2ed4853e96354b9d04b2b7957653b7c2",
       "exceptions": [
         {
           "rule": "deny",
@@ -2166,7 +2163,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
+      "sha256": "cb55298df999a01445692f6c7aa8818dee0389a99a30811296c600c79defae85",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2188,8 +2185,8 @@
         "bin/apk-tool.py"
       ],
       "signs": "other",
-      "reason": "cache P4's release signing: re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "ba3c434fe1d2162e61a797907e487fe9f31fcbfe237cc0e9f4e7599efee6876f",
+      "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) through cosign sign-blob on each apk's control section, checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "796afe4cd54d58f42b0f2262dceb7508f697e8dbcb174e00b5807d301ef61f8b",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2198,20 +2195,8 @@
         },
         {
           "rule": "script-name",
-          "text": "bin/install-build-tools.sh",
-          "why": "prose naming the installer: the error message that tells the operator how to install melange; never run from here (the script names it once since cache#349 and the one exception waives it)"
-        },
-        {
-          "rule": "script-name",
           "text": "build-apk.sh",
           "why": "a comment naming the sibling script whose way of naming its helpers this file follows (repo-relative literal paths); prose, never run from here"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] ||",
-          "line_sha256": "8edde846c25cb6d9bdc4d9a3363070a5509b1e5b2a8a9689dfc27e7017734d39",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
@@ -2233,13 +2218,34 @@
           "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
-        }
-      ],
-      "env_mentions": [
+        },
         {
-          "name": "PATH",
-          "text": "child_env = {\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"}",
-          "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
+          "rule": "deny",
+          "line": "[ -n \"${RELEASE_KMS_KEY_REF:-}\" ] || die \"RELEASE_KMS_KEY_REF is unset\"",
+          "line_sha256": "3e23d106068d1d4d456cf029404aa906be4c5f81b2a11d4c4910d189d566142a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -s \"$w/sig.bin\" ] && [ -s \"$w/sig.bundle\" ] || die \"cosign left no signature or no bundle for ${rel#./}; $kept\" 1",
+          "line_sha256": "443f87d4870b6f4c803f8835c76872affc164d47d093c4171eecdca48075708d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py digest \"$copy/$rel\")\" = \"$want\" ] ||",
+          "line_sha256": "d91dab191e1259a85fa3e890d695087c7df14c5ae1b92a501340e86f8bc5b268",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py digest \"$build_dir/$rel\")\" = \"$want\" ] ||",
+          "line_sha256": "2f2b1f1c0f5a4c6ce331069ff0d8ac06809093b5bfa1949e8868312073bdb81d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
         }
       ]
     },
@@ -2268,7 +2274,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "f93baf43ec082446bd19ef51194a52becc006e054d66236e6ee05fec977050be",
+      "sha256": "829c74ce946f6af03f8313e116486d34e539543809abd77d13ee026c71ddc731",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2595,20 +2601,6 @@
       "name": "GH_TOKEN",
       "script": "bin/release-postverify.sh",
       "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "APK_RELEASE_SIGNING_KEY",
-      "script": "bin/witnessed.sh",
-      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret APK_RELEASE_SIGNING_KEY from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "APK_RELEASE_SIGNING_KEY",
-      "script": "bin/release-apks.sh",
-      "why": "Release (rule 56, advisor 0386 J): the stored secret APK_RELEASE_SIGNING_KEY, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
       "file": ".github/workflows/stage-promote.yml",
       "job": "release"
     },

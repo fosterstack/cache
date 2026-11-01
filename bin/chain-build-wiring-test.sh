@@ -41,7 +41,7 @@
 #
 # CACHE'S INTERFACE (ops/handoffs/outbox/2026-10-09-cache-pipeline-interface.md; [F] = fixed by a cache test, [P] = PROPOSED/UNVERIFIED):
 #   build-apk.sh --print-source-date-epoch --source-dir DIR [F]; --variant standard|fips --arch A --version V --source-dir DIR --repo DIR --keyring FILE
-#   --go-archive DIR --melange-lock FILE --out DIR [F]; refuses (exit 2) APK_RELEASE_SIGNING_KEY, GOPROXY other than off, HTTPS_PROXY, --signing-key [F];
+#   --go-archive DIR --melange-lock FILE --out DIR [F]; refuses (exit 2) RELEASE_KMS_KEY_REF, GOPROXY other than off, HTTPS_PROXY, --signing-key [F];
 #   exit 4 = a network attempt in the sealed call [F]. assemble-image.sh --variant production|fips --version V --archive DIR --melange-repo DIR
 #   --keyring-dir DIR --out DIR [F]; the config defaults to build/apko.yaml | build/apko-fips.yaml, so NO --apko-config is ever passed (AC11 B); outputs
 #   OUT/V.digest (the OCI index digest), V.manifests, V.tar, V.full.lock.json [F]. The scripts do their own sudo and unshare [F]; the stage does not.
@@ -771,7 +771,7 @@ probe apk "AC6 the stage runs the sysctl itself (cache's scripts do)" \
        'L[:4] + ["sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"] + L[4:]'
 probe assemble         "AC6 the stage wraps cache's script in unshare"              'L[:-3] + ["sudo unshare -n " + L[-3]] + L[-2:]'
 probe apk              "AC6 GOPROXY set (cache's script refuses anything but off)"  'L[:1] + ["export GOPROXY=off"] + L[1:]'
-probe apk              "AC6 the release signing key variable (rule 23)"             'L[:1] + ["export APK_RELEASE_SIGNING_KEY=x"] + L[1:]'
+probe apk              "AC6 the release signing key variable (rule 23)"             'L[:1] + ["export RELEASE_KMS_KEY_REF=x"] + L[1:]'
 probe apk              "AC6 --signing-key passed"                                   'L[:5] + [L[5] + " --signing-key k"] + L[6:]'
 probe apk              "AC6 the build date is the wall clock, not the tagged commit" 'L[:3] + ["export SOURCE_DATE_EPOCH=\"$(date +%s)\""] + L[5:]'
 probe apk              "AC6 SOURCE_DATE_EPOCH assigned and exported in ONE line (it masks a failing print)" 'L[:3] + ["export " + L[3]] + L[5:]'
@@ -1363,7 +1363,7 @@ for sec in DOCKERHUB_USERNAME DOCKERHUB_TEST_USERNAME DOCKERHUB_TEST_PUSH_TOKEN 
   lj "da-$sec" "REQ-SCAN-012-AC1 live-test may use secrets.$sec (a Docker Hub test credential of the live-test environment)" "      - run: echo rc" "      - run: echo rc\n        env:\n          X: \${{ secrets.$sec }}" ok ""
   lj "db-$sec" "REQ-SCAN-012-AC1 live-test-release may use secrets.$sec" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets.$sec }}" ok ""
 done
-for sec in DOCKERHUB_TOKEN DOCKERHUB_TEST_TOKEN DOCKERHUB_USERNAME2 DOCKERHUB_SCOUT_TOKEN_X APK_RELEASE_SIGNING_KEY GH_TOKEN AUDITOR_APP_PRIVATE_KEY; do
+for sec in DOCKERHUB_TOKEN DOCKERHUB_TEST_TOKEN DOCKERHUB_USERNAME2 DOCKERHUB_SCOUT_TOKEN_X RELEASE_KMS_KEY_REF GH_TOKEN AUDITOR_APP_PRIVATE_KEY; do
   lj "dc-$sec" "REQ-SCAN-012-AC1 live-test may not use secrets.$sec (the publish credentials and every other name stay refused)" "      - run: echo rc" "      - run: echo rc\n        env:\n          X: \${{ secrets.$sec }}" caught "may not use secrets"
   lj "dd-$sec" "REQ-SCAN-012-AC1 live-test-release may not use secrets.$sec" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets.$sec }}" caught "may not use secrets"
 done
@@ -1517,7 +1517,7 @@ beh_apk() { # beh_apk TAGNAME SCRIPT MODE VERSIONTAG
   else
     bad "AC6 $t apk $v: SOURCE_DATE_EPOCH not exported to both builds"
   fi
-  if [ -f "$d/env-apk.txt" ] && ! grep -Eq '^(GH_TOKEN|APK_RELEASE_SIGNING_KEY|GOPROXY|HTTPS_PROXY|HTTP_PROXY|https_proxy)=' "$d/env-apk.txt" \
+  if [ -f "$d/env-apk.txt" ] && ! grep -Eq '^(GH_TOKEN|RELEASE_KMS_KEY_REF|GOPROXY|HTTPS_PROXY|HTTP_PROXY|https_proxy)=' "$d/env-apk.txt" \
      && ! grep -q 'SENTINEL-GH-TOKEN' "$d/env-apk.txt"; then
     ok "AC6 $t apk $v: cache's script sees no GH_TOKEN (not the name, not the value) and none of the variables it refuses"
   else
@@ -1823,7 +1823,7 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   fi
   tag_cases snapshot-apk AC12 "$t" "$s" "$mode" "$d"
   mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
-  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" APK_RELEASE_SIGNING_KEY=SENTINEL-RELEASE-KEY)
+  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" RELEASE_KMS_KEY_REF=SENTINEL-RELEASE-KEY)
   if [ "$rc" != 0 ] && [ ! -e "$d/out/items-apk.json" ]; then
     ok "AC12 $t snapshot-apk: a runner that holds the release signing key makes cache's driver refuse (exit 2): the stage never passes or uses it"
   else

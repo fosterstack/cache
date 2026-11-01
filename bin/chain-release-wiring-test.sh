@@ -12,7 +12,7 @@
 # WHAT IS FIXED BY AN EXISTING FILE and what is PROPOSED/UNVERIFIED:
 #   [F] the old stage-promote.yml (crane copy by digest to ghcr.io and docker.io, cosign sign in BOTH registries, the environment named release,
 #       DOCKERHUB_USERNAME and DOCKERHUB_TOKEN as environment secrets) and apk-tool.py signer (assembly.rsa.pub | release.rsa.pub | unsigned)
-#       and the name APK_RELEASE_SIGNING_KEY (cache-3f's interface note: build-apk.sh refuses it).
+#       (the apk step reads no secret: it signs through the release KMS key reference, which build-apk.sh refuses in a build).
 #   [P] the five script names and their command lines, `melange sign` as the re-signing tool, `crane` as the copy tool, the artifact names, the
 #       witnessed helper (bin/witnessed.sh STEP SCRIPT is PR 2's seam; here it is only called), the --rekor-stub flag on stage-start.
 set -euo pipefail
@@ -84,7 +84,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + inst("witness") + inst("cosign") + inst("crane") + inst_m("melange")
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
-         + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
+         + wit("release-verify", {}) + wit("release-apks", {})
          + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
          + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"))      # rc-2 R4: the six records are checked for a token before any upload
          + up("release-evidence") + up("witness-release"))
@@ -152,13 +152,13 @@ os.makedirs(w + "/s/bin", exist_ok=True); os.makedirs(w + "/s/.github/policy", e
 BODY = {
  "release-verify": "set -euo pipefail\npython3 bin/chain-verify.py verify --stage build\n",
  "release-compare": "set -euo pipefail\npython3 -I -B bin/release-compare.py\n",
- "release-apks": 'set -euo pipefail\nkeyfile=$(mktemp)\ntrap \'rm -f "$keyfile"\' EXIT\nprintf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"\npython3 bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b --key "$keyfile"\n',
+ "release-apks": 'set -euo pipefail\npython3 bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b\n',
  "release-publish": 'set -euo pipefail\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
  "release-sign": 'set -euo pipefail\ndate=$(git log -1 --format=%ct "$GITHUB_SHA")\npython3 bin/vendor-provenance.py evidence --out evidence\ncosign sign --yes "ghcr.io/x@$digest"\ncosign sign-blob --yes --bundle policy.bundle policy.json\njq . policy.bundle\n',
  "release-postverify": 'set -euo pipefail\npython3 bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
-ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3", "trap"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
+ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "trap"], "other", ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
         "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
@@ -181,7 +181,7 @@ col = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://w
        "attestation": {"os": "linux", "variables": {"HOME": "/home/runner", "CI": "true"}}}]}}
 def env(c): return {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(c).encode()).decode(), "signatures": [{"sig": "AAAA"}]}
 json.dump(env(col), open(w + "/record.json", "w"))
-for name, add in (("r_name", {"GH_TOKEN": "x"}), ("r_dh", {"DOCKERHUB_TOKEN": "x"}), ("r_apk", {"APK_RELEASE_SIGNING_KEY": "x"}),
+for name, add in (("r_name", {"GH_TOKEN": "x"}), ("r_dh", {"DOCKERHUB_TOKEN": "x"}),
                   ("r_idt", {"ACTIONS_ID_TOKEN_REQUEST_URL": "u"}), ("r_rt", {"ACTIONS_RUNTIME_TOKEN": "t"}),
                   ("r_val", {"X": "SENTINEL-VALUE-123"}), ("r_jwt", {"X": "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"})):
     c = json.loads(json.dumps(col)); c["predicate"]["attestations"][0]["attestation"]["variables"].update(add)
@@ -356,13 +356,13 @@ c c_chk     'persist-credentials: false'                   'persist-credentials:
 c c_chkr    '(environment: release\n    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n      - uses: [^\n]*\n        with:\n          persist-credentials: false)' '\1\n        env:\n          GH_TOKEN: ${{ github.token }}' 'up to release-verify' "AC2 the token on the release job's checkout step"
 c c_dlsec   'name: images\n          path: images'        'name: images\n          path: images\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 a secret in a download"
 c c_vfy     '      - name: release-verify\n'               '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'up to release-verify' "AC2 any env on the verify step"
-c c_apkpub  '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-publish' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n          APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n        run: bash bin/witnessed.sh release-publish' 'release-publish' "AC2 the apk signing key in the publish step"
-c c_hubapk  '=APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}' 'APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}' 'release-apks' "AC2 a registry token in the apk step"
+c c_apkpub  '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-publish' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n          OTHER_KEY: ${{ secrets.OTHER_KEY }}\n        run: bash bin/witnessed.sh release-publish' 'release-publish' "AC2 a secret that no row names in the publish step"
+c c_hubapk  '=      - name: release-apks\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' '      - name: release-apks\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n' 'release-apks' "AC2 a registry token in the apk step"
 c c_assets  '=      - name: release-assets\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-assets\n' 'release-assets' "AC2 the assets step without its token"
 c c_assreg  '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ github.token }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed.sh release-assets' 'release-assets' "AC2 a registry token in the assets step"
 c c_ghsec   '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ secrets.OTHER }}\n        run: bash bin/witnessed.sh release-assets' 'whole read' "AC2 GH_TOKEN from another secret"
 c c_part    '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}x\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'whole read' "AC2 a credential read in part"
-c c_foo     '=APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}' 'APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n          FOO: bar' 'release-apks' "AC2 an extra variable in the apk step"
+c c_foo     '=      - name: release-apks\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' '      - name: release-apks\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          FOO: bar\n' 'release-apks' "AC2 an extra variable in the apk step"
 c c_upenv   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence' '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        env:\n          GH_TOKEN: ${{ github.token }}\n        with:\n          name: release-evidence' 'only the witnessed' "AC2 an env on an upload step"
 c c_pvnone  '=      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-postverify\n' 'release-postverify' "AC2 (rule 79) the post-publish step without its read token"
 c c_pvreg   '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify' '          GH_TOKEN: ${{ github.token }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed.sh release-postverify' 'release-postverify' "AC2 (rule 79, rule 66) a registry credential in the post-publish step, which needs read access only"
@@ -375,7 +375,6 @@ PY
 o o_pkg   stage-build.yml '      packages: write'               'packages write'      "AC3 packages write in another stage"
 o o_sec   stage-verify.yml '      - run: echo ${{ secrets.X }}'  'packages write or a secret' "AC3 a secret in another stage"
 o o_dh    stage-sign.yml   '      - run: echo DOCKERHUB_TOKEN'   'a release credential' "AC3 a registry credential in Sign"
-o o_apk   stage-reproducibility.yml '# APK_RELEASE_SIGNING_KEY'   'a release credential' "AC3 the apk signing key named in Rebuild (even in a comment)"
 o o_env   stage-build.yml  '    environment: release'            'release environment' "AC3 the release environment in Build"
 o o_rdh   release.yml      '# DOCKERHUB_TOKEN'                   'release credential'  "AC3 release.yml names a registry credential"
 rm -rf "$work/o_wf"; cp -r "$work/o" "$work/o_wf"; python3 - "$work/o_wf/.github/workflows/release.yml" <<'PY'
@@ -470,7 +469,7 @@ sm x_ghref   release-assets  'gh api repos/x/y/git/refs -f ref=refs/tags/v9'    
 sm x_gcr     release-assets  'gh release create "$GITHUB_REF_NAME" --draft'     "creates a tag"     "AC9 a release created without --verify-tag (it would create the tag)"
 sm x_path    release-apks    'PATH=./bin melange sign a'                         "PATH-like"         "AC6 PATH set in the apk script"
 sm x_benv    release-publish 'BASH_ENV=evil.sh crane digest x'                   "PATH-like"         "AC7 BASH_ENV set"
-sm x_echo    release-apks    'echo "$APK_RELEASE_SIGNING_KEY"'                   "prints a credential" "AC6 the apk key printed"
+sm x_echo    release-apks    'echo "$DOCKERHUB_TOKEN"'                           "prints a credential" "AC6 a credential printed in the apk script"
 sm x_echot   release-publish 'printf %s "$DOCKERHUB_TOKEN"'                      "prints a credential" "AC7 the registry token printed"
 sm x_xtrace  release-publish 'set -x'                                            "tracing"           "AC10 set -x (it would print every credential)"
 sm x_other   release-sign    'bash bin/release-publish.sh'                       "starts another script" "AC10 one release script starting another"
@@ -510,7 +509,6 @@ expect caught "AC10 a listed script that does not exist" "missing" listed "$work
 rec() { expect caught "$3" "$2" record "$work/$1.json" SENTINEL-VALUE-123; }
 rec r_name "GH_TOKEN"                    "AC12 the job token variable named in the record (inside the base64 payload)"
 rec r_dh   "DOCKERHUB_TOKEN"             "AC12 the registry token variable named in the record"
-rec r_apk  "APK_RELEASE_SIGNING_KEY"     "AC12 the apk signing key variable named in the record"
 rec r_idt  "ACTIONS_ID_TOKEN_REQUEST_URL" "AC12 the identity token request in the record"
 rec r_rt   "ACTIONS_RUNTIME_TOKEN"       "AC12 the runtime token in the record"
 rec r_val  "credential value"            "AC12 a credential value in the record"
@@ -585,7 +583,7 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-EXPECT=283
+EXPECT=281
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -19,6 +19,9 @@ for arch in x86_64 aarch64; do
   [ "${#fips[@]}" = 1 ] || { echo "release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the list is incomplete" >&2; exit 1; }
   [ "${#all[@]}" = 2 ] || { echo "release-assets: release-apks/$arch holds ${#all[@]} apks, exactly the two Build attested are attached" >&2; exit 1; }
 done
+for f in release-apks/*/*.apk; do
+  [ -f "$f.bundle" ] && [ ! -L "$f.bundle" ] || { echo "release-assets: $f has no Rekor bundle beside it: the list is incomplete" >&2; exit 1; }
+done
 for n in scanners acceptance runtime arm64; do
   [ -f "witness-check/witness-$n/$n-collection.json" ] || { echo "release-assets: the Check record witness-check/witness-$n/$n-collection.json is missing: the list is incomplete" >&2; exit 1; }
 done
@@ -44,6 +47,7 @@ for f in release-apks/*/*.apk; do
   arch="${arch%%/*}"
   case "$arch" in x86_64) short=amd64 ;; aarch64) short=arm64 ;; *) echo "release-assets: the apk architecture $arch is not in the table" >&2; exit 1 ;; esac
   stage "$f" "$short-${f##*/}"
+  stage "$f.bundle" "$short-${f##*/}.bundle"   # the apk's Rekor bundle sits beside it (Oct 29 rule 1)
 done
 for v in production fips; do
   for kind in "$v.full.lock.json:images/$v.full.lock.json" "$v.sbom.json:images/$v-sbom/sbom.json"; do

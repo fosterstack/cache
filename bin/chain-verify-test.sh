@@ -1454,7 +1454,7 @@ leak("jwt", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4eHh4eHh4In0.c2lnbmF0dXJlLXh4eA")
 leak("pat", "github_pat_" + "A" * 30)
 leak("dhu", {"DOCKERHUB_USERNAME": "x"})
 leak("dht", {"DOCKERHUB_TOKEN": "x"})
-leak("apk", {"APK_RELEASE_SIGNING_KEY": "x"})
+leak("arn", {"AWS_ROLE_ARN": "x"})
 leak("rt", {"ACTIONS_RUNTIME_FOO": "x"})
 leak("pem", "-----BEGIN " + "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END " + "PRIVATE KEY-----\n")      # assembled here, so no tracked file holds a private-key block (persona-uat-test: a private key never touches the tree)
 leak("dckr", "dckr_pat_" + "B" * 30)
@@ -1466,7 +1466,7 @@ expect_refuse "R4 record-env refuses a Witness record that holds a compact JWT" 
 expect_refuse "R4 record-env refuses a Witness record that holds a github_pat_ token value" "env|token" record-env --record "$work/renv_pat.json"
 expect_refuse "R4 record-env refuses a Witness record that names DOCKERHUB_USERNAME" "env|dockerhub_username" record-env --record "$work/renv_dhu.json"
 expect_refuse "R4 record-env refuses a Witness record that names DOCKERHUB_TOKEN" "env|dockerhub_token" record-env --record "$work/renv_dht.json"
-expect_refuse "R4 record-env refuses a Witness record that names APK_RELEASE_SIGNING_KEY" "env|apk_release_signing_key" record-env --record "$work/renv_apk.json"
+expect_refuse "R4 record-env refuses a Witness record that names AWS_ROLE_ARN" "env|aws_role_arn" record-env --record "$work/renv_arn.json"
 expect_refuse "R4 record-env refuses any ACTIONS_RUNTIME_ variable (a prefix, not two names)" "env|actions_runtime_foo" record-env --record "$work/renv_rt.json"
 expect_refuse "R4 record-env refuses a Witness record that holds a private key block" "env|private key" record-env --record "$work/renv_pem.json"
 expect_refuse "R4 record-env refuses a Witness record that holds a Docker Hub token value" "env|docker hub token" record-env --record "$work/renv_dckr.json"

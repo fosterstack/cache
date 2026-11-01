@@ -3284,7 +3284,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='eab709fa838ce979dcaa8e78bb9a08aeb159895cf76699d3392d824ff510c285'
+FX_PIN='1201f966b0a69df8939a21773e63355ad4c66aa1d84147ae24219a5d68923042'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4838,10 +4838,10 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 # ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
-# ONE closed list, five rows: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
-# pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) APK_RELEASE_SIGNING_KEY -> release-apks.sh,
-# (3) DOCKERHUB_USERNAME and (4) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (5) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh, release-assets.sh,
-# release-postverify.sh. bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the three secrets in Release. Every other name, place or script is refused.
+# ONE closed list, four rows: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
+# pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN
+# -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh, release-assets.sh,
+# release-postverify.sh. bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the secrets in Release. Every other name, place or script is refused.
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 RCIF="if: \${{ !contains(github.ref_name, '\\''-'\\'') }}"
 for f in stage-sign stage-reproducibility stage-verify stage-build; do
@@ -4857,10 +4857,10 @@ probe perm_gh_release "must hold exactly the permissions" "the run's token with 
   "repl .github/workflows/stage-promote.yml '      packages: write\n      id-token: write\n    steps:' '      packages: write\n      id-token: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
   "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        $RCIF\n        env:\n' '      - name: release-sign under Witness\n        $RCIF\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
-probe apk_wrong_step "not in the closed secret list" "the apk signing key on the publish step" \
-  "repl .github/workflows/stage-promote.yml '      - name: release-publish under Witness\n        $RCIF\n        env:\n' '      - name: release-publish under Witness\n        $RCIF\n        env:\n          APK_RELEASE_SIGNING_KEY: \${{ secrets.APK_RELEASE_SIGNING_KEY }}\n'"
+probe apk_wrong_step "not in the closed secret list" "a secret that no row names on the publish step" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-publish under Witness\n        $RCIF\n        env:\n' '      - name: release-publish under Witness\n        $RCIF\n        env:\n          OTHER_KEY: \${{ secrets.OTHER_KEY }}\n'"
 probe token_unlisted_script "not in the closed secret list" "DOCKERHUB_TOKEN bound to release-apks.sh (an unlisted script)" \
-  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"DOCKERHUB_TOKEN\",\"script\":\"bin/release-apks.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});[r.__setitem__(\"reads_env\",[\"APK_RELEASE_SIGNING_KEY\",\"DOCKERHUB_TOKEN\"]) for r in d[\"scripts\"] if r[\"path\"]==\"bin/release-apks.sh\"];json.dump(d,open(p,\"w\"))'"
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"DOCKERHUB_TOKEN\",\"script\":\"bin/release-apks.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});[r.__setitem__(\"reads_env\",[\"RELEASE_KMS_KEY_REF\",\"DOCKERHUB_TOKEN\"]) for r in d[\"scripts\"] if r[\"path\"]==\"bin/release-apks.sh\"];json.dump(d,open(p,\"w\"))'"
 probe name_twice "listed twice" "the same name listed twice at one place" \
   "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));e=[x for x in d[\"ambient_env\"] if x[\"name\"]==\"GH_TOKEN\" and x[\"script\"]==\"bin/release-assets.sh\"][0];d[\"ambient_env\"].append(dict(e));json.dump(d,open(p,\"w\"))'"
 probe sixth_row "not in the closed secret list" "a sixth row: SIXTH_SECRET bound to release-sign.sh in Release" \

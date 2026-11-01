@@ -25,7 +25,7 @@ fixtures); PR 1's chain-scripts.json rows (tools, runs, signs)."""
 import base64, hashlib, json, os, re, sys, yaml
 
 # a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
-CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB|APK_RELEASE", re.I)
+CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB", re.I)
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
@@ -42,9 +42,9 @@ UP = {"release-evidence", "witness-release", "witness-release-verify"}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
-WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
+WHO = {"release-apks": set(), "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
-CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+CREDS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
@@ -72,7 +72,7 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
     "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
-    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
+    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
     "bin/release-compare.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-compare.py"]},   # the compare job's one plain step: a wrapper around the Python file
     "bin/release-compare.py": {"tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"]},   # no key, no signing, no network: it reads the two apk trees, binds Rebuild's apks to the signed rapk records (chain-verify.py verify and bind) and writes the result file; `make` is the word of `policy make`
     "bin/release-publish.sh": {"tools": ["crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py"]},   # round 1 B4: the layout is checked first
@@ -85,7 +85,6 @@ ROWS = {
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
         "python python3 perl ruby node npm yarn pnpm go apko melange cosign crane gh witness jq skopeo oras ko goreleaser tar").split()
-KEYWRITE = r'printf %s "\$APK_RELEASE_SIGNING_KEY" > "\$keyfile"'   # the one place the key is written: to a private file, never printed
 OLD = ["bin/authorize-acceptance-check.py", "bin/authorize-acceptance-check-test.sh"]
 
 
@@ -376,7 +375,7 @@ def others(root):
         if not f.endswith((".yml", ".yaml")) or f == "stage-promote.yml":
             continue
         t = open(os.path.join(wd, f)).read()
-        for pat, what in ((r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY", "a release credential"), (r"environment:\s*release\b", "the release environment")):
+        for pat, what in ((r"DOCKERHUB_TOKEN\b", "a release credential"), (r"environment:\s*release\b", "the release environment")):
             if re.search(pat, t):
                 bad.append("%s names %s" % (f, what))
         if f.startswith("stage-") and re.search(r"packages:\s*write|secrets\.|secrets:\s*inherit", t):
@@ -394,7 +393,7 @@ def others(root):
             p = j.get("permissions") or {}
             if "stage-" in uses and not uses.endswith("stage-promote.yml") and isinstance(p, dict) and p.get("packages") == "write":
                 bad.append("job %s grants packages write: only the release job may" % n)
-        if re.search(r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY", open(rp).read()):
+        if re.search(r"DOCKERHUB_TOKEN\b", open(rp).read()):
             bad.append("release.yml names a release credential")
     return bad
 
@@ -477,7 +476,7 @@ def scan(path, jsonpath):
             bad.append("%s:%d sets a PATH-like variable" % (os.path.basename(path), n))
         if re.search(r"\bset\s+-\w*x|xtrace", l):
             bad.append("%s:%d turns on tracing (it would print credentials)" % (os.path.basename(path), n))
-        if re.search(r"\b(echo|printf|cat|tee)\b[^;&|]*\$\{?(%s)\b" % "|".join(sorted(CREDS)), l) and not re.fullmatch(KEYWRITE, l.strip()):
+        if re.search(r"\b(echo|printf|cat|tee)\b[^;&|]*\$\{?(%s)\b" % "|".join(sorted(CREDS)), l):
             bad.append("%s:%d prints a credential" % (os.path.basename(path), n))
         if re.search(r"melange\s+build|apko\s+build|go\s+build|docker\s+build|buildx", l):
             bad.append("%s:%d is a build command: Release builds nothing" % (os.path.basename(path), n))

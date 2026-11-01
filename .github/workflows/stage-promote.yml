@@ -1,6 +1,6 @@
 # The Release stage of the v0.3.0 release chain (rules 5, 17, 29, 50, 52, 53, 56, 57, 60, 61, 63, 64, 65, 69, 70, 71, 79; REQ-CHAIN-007). Called only from release.yml, after Check,
 # Sign and Sign-rebuild (it needs exactly those three; it reaches Build and Rebuild through them). This is the ONLY file of the repository that holds a registry credential,
-# the apk signing key or packages: write, and the release job binds the secrets only in the Witness steps that need them (the environment named release holds them; the job's write permissions exist from its start, which is why it needs the verify job).
+# a release-key role (the apks are signed in KMS, too) or packages: write, and the release job binds the secrets only in the Witness steps that need them (the environment named release holds them; the job's write permissions exist from its start, which is why it needs the verify job).
 # It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68) and the pinned melange (for the apk re-signing, REQ-CHAIN-007-AC1), the earlier stages' artifacts, then six Witness steps through the one helper,
 # each a committed script: release-verify (no credential is bound to this step: the tag, the release policy, every earlier stage's record in rule 69's order),
 # release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
@@ -202,8 +202,6 @@ jobs:
         run: bash bin/witnessed.sh release-verify bin/release-verify.sh
       - name: release-apks under Witness
         if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}
         run: bash bin/witnessed.sh release-apks bin/release-apks.sh
       - name: release-publish under Witness
         if: ${{ !contains(github.ref_name, '-') }}

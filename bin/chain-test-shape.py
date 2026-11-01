@@ -505,7 +505,7 @@ STEPS = ("apk", "build", "rapk", "rebuild",
 # Handoff 0713: Witness signs with the release KMS key by its alias. The identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 # file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; every step but
 # release-sign runs its script under `env -u` of both variables; both are sensitive keys of the record.
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
 
 
 def witnessed_lines():
@@ -795,11 +795,11 @@ NS_KNOWN_LINES = (      # the two physical lines of the admission step's go run
     '        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))')
 NS_SHA = {
     "bin/admission-tag-signer.py": "03b66ea50f873de93047bfb4becd305ba6c81fcb1506584990ade81bd16bab40",
-    "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
+    "bin/apk-tool.py": "97dfdd9d627cff866d215039a243a18c2ed4853e96354b9d04b2b7957653b7c2",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
-    "bin/build-apk-helper.py": "c3e04e80dfd88e34d0c16cc41e5e889129d682997af80eac3452deba874fe0dc",
+    "bin/build-apk-helper.py": "cb55298df999a01445692f6c7aa8818dee0389a99a30811296c600c79defae85",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
@@ -807,7 +807,7 @@ NS_SHA = {
     "bin/chain-verify.py": "0631cb29e883e8a9e19898c7a253bf7696037cca6a91cc70a03b7e8a8d1240e6",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
-    "bin/chain_items.py": "d34f6c9c5f6d79b97e3ea29bfdc0704c687e87b05cd7b2e93b2f3ae873baa49b",
+    "bin/chain_items.py": "7cdd3d57bef8c0a452db2c295a4582577ea49394d90da329072122efcde8793b",
     "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
     "bin/install-host-bwrap.py": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",

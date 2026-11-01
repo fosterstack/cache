@@ -12,9 +12,9 @@
 # Run it from the repository root: it names its helpers (bin/apk-tool.py, bin/go-module-sbom.py, bin/net-probe.py,
 # bin/build-apk-helper.py) by literal repo-relative paths and refuses (exit 2) anywhere else.
 #
-# Environment: SOURCE_DATE_EPOCH (digits) is required. Refused: APK_RELEASE_SIGNING_KEY defined (a build never holds
-# the release key), GOPROXY other than off, HTTP(S)_PROXY / ALL_PROXY defined. There is no --signing-key: the apk is
-# signed with the committed, non-secret assembly key build/keys/assembly.rsa (rule 22) and nothing else.
+# Environment: SOURCE_DATE_EPOCH (digits) is required. Refused: RELEASE_KMS_KEY_REF defined (a build never holds
+# the release key's reference), GOPROXY other than off, HTTP(S)_PROXY / ALL_PROXY defined. There is no --signing-key:
+# the apk is signed with the committed, non-secret assembly key build/keys/assembly.rsa (rule 22) and nothing else.
 #
 # In this order (the tests fix it):
 #   1. refusals, before any build tool runs (exit 2, the message names the thing);

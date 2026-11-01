@@ -40,7 +40,7 @@
 #  I3 bin/build-apk.sh --variant standard|fips --arch x86_64|aarch64 --version X.Y.Z --source-dir DIR --repo DIR --keyring FILE
 #        --go-archive DIR --melange-lock FILE --out DIR [--recipe FILE] [--render-dir DIR] [--apk-cache-dir DIR]
 #     and  --print-source-date-epoch --source-dir DIR.  Env required: SOURCE_DATE_EPOCH (digits). Refused: --signing-key,
-#     APK_RELEASE_SIGNING_KEY in the environment, GOPROXY other than off, HTTP(S)_PROXY. It runs, in this order,
+#     RELEASE_KMS_KEY_REF in the environment, GOPROXY other than off, HTTP(S)_PROXY. It runs, in this order,
 #       sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 #       sudo [env SOURCE_DATE_EPOCH=..] unshare -n melange build ... (the only network cut; melange called directly on the VM)
 #     signs with the committed assembly key build/keys/assembly.rsa, then writes OUT/<arch>/*.apk, OUT/fscache-modules.spdx.json

@@ -242,8 +242,8 @@ if [ "${1:-}" = --print-source-date-epoch ]; then
 fi
 echo "apk $* SDE=${SOURCE_DATE_EPOCH:-unset}" >> calls.log
 env | sort > env-apk.txt
-# cache's driver refuses the release signing key and --signing-key (rule 23, exit 2 [F]): Build never holds it
-[ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || { echo "refusal: APK_RELEASE_SIGNING_KEY" >&2; exit 2; }
+# cache's driver refuses the release key's reference and --signing-key (rule 23, exit 2 [F]): Build never holds it
+[ -z "${RELEASE_KMS_KEY_REF:-}" ] || { echo "refusal: RELEASE_KMS_KEY_REF" >&2; exit 2; }
 case " $* " in *" --signing-key "*) echo "refusal: --signing-key" >&2; exit 2;; esac
 variant=standard; arch=x86_64; out=out; version=0.3.0
 while [ $# -gt 0 ]; do
