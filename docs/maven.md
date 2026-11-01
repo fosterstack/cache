@@ -128,3 +128,5 @@ subscription. If you're
 already running FosterStack Cache for Gradle, pointing Maven modules at
 the same server (mixed Gradle+Maven shops, one deploy) is the whole
 pitch: "one self-hosted cache server for Gradle **and** Maven."
+
+What the server answers to each request, and why a request is refused: [server responses](server-responses.md).
