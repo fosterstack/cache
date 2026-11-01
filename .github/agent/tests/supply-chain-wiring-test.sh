@@ -22,11 +22,15 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
 
-# AUDIT_DEADLINE is assumed, not read: pin-audit.py's --base deadline (cache#788), not in chain-v030's pin-audit.py yet
-# (until then the audit half is unbounded; PRs into chain-v030 take 77-174 s). SETUP: two checkouts, measured <= 8 s.
+# AUDIT_DEADLINE is read from pin-audit.py's deadline_for (the --base number): a changed deadline turns this fit red.
+# SETUP: two checkouts, measured <= 8 s.
 # BOUND + AUDIT_DEADLINE + SETUP must fit timeout-minutes, so a slow age check ends with a line, not a silent cancel.
 BOUND = 540
-AUDIT_DEADLINE = 600
+_audit_src = open(os.path.join(root, ".github/agent/supply-chain/pin-audit.py")).read()
+_m = re.search(r"return (\d+) if \(a\.rerun_held or a\.base\) else \d+", _audit_src)
+if not _m:
+    sys.exit("supply-chain-wiring-test: deadline_for's --base number not found in pin-audit.py")
+AUDIT_DEADLINE = int(_m.group(1))
 SETUP = 60
 
 CANONICAL_RUNS = {
@@ -38,7 +42,7 @@ CANONICAL_RUNS = {
     'pin-age':
         'set -uo pipefail\n'
         'status=0\n'
-        "# 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop\n"
+        "# 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop\n"
         'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ '
         'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n'
         "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
@@ -116,7 +120,7 @@ def judge_wf(d, real=False):
     if f"timeout -v {BOUND} python3 trusted/.github/agent/supply-chain/pin-age-check.py" not in runs:
         bad.append("pin-age's age check has no time bound: a slow check ends in a silent cancel")
     if BOUND + AUDIT_DEADLINE + SETUP > 60 * int(str(j.get("timeout-minutes", "0"))):
-        bad.append("the age check's bound and pin-audit's 600 s (cache#788) do not fit the job")
+        bad.append(f"the age check's bound and pin-audit's {AUDIT_DEADLINE} s (deadline_for) do not fit the job")
     for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
             bad.append(f"pin-age does not run {prog} {flag} (the age check and the audit of what the PR moves)")

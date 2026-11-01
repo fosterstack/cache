@@ -1962,5 +1962,206 @@ PY
 bg_collect
 CASE="background checks: the three long cases were each started once and each reported once"
 check test "$BG_N" -eq 3
+
+# --- the total deadline and the phase markers (cache supply-chain.yml timed out at 15 and 20 minutes with an empty log: no scheduled run since Oct 7) --------------
+# A hanging gh: every call sleeps. With --deadline 2 the audit must end by itself: exit 2 within seconds, stderr naming the phase it was in, and the phase
+# lines it had printed must have reached the file. A rate limit is not this case: gh answers at once and the audit fails at once (the "rate-limited GitHub
+# API" case above), so no retry and no sleep is added anywhere.
+# The cases below are offline: a git shim first on PATH answers `git ls-remote` with an empty list (the tag reads would otherwise reach GitHub before the
+# hang) and runs every other git command for real.
+REALGIT=$(command -v git); mkdir -p "$work/shim"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim/git"; chmod +x "$work/shim/git"
+printf '#!/bin/sh\nsleep 60\n' >"$work/gh-hang"; chmod +x "$work/gh-hang"
+mkrepo "$work/r-hang" "5:$CLEANSHA"
+start=$(date +%s); rc=0
+( cd "$work" && PATH="$work/shim:$PATH" timeout 40 python3 "$aud" --root "$work/r-hang" --now "$NOW" --gh "$work/gh-hang" --deadline 2 >"$work/hang.out" 2>"$work/hang.err" ) || rc=$?
+elapsed=$(( $(date +%s) - start ))
+CASE="deadline: a hanging gh ends the audit by itself with exit 2 in seconds, not at the job timeout"
+check test "$rc" -eq 2 -a "$elapsed" -le 15 -a "$(grep -c '^audit: phase: ' "$work/hang.out")" -ge 1
+CASE="deadline: stderr names the phase it was in and the deadline: 'audit: could not finish: still in judging after 2 s'"
+check grep -qx 'audit: could not finish: still in judging after 2 s' "$work/hang.err"
+CASE="deadline: the phase lines printed before the kill are in the file, in order"
+check python3 - "$work/hang.out" <<'PY'
+import sys
+lines = [l.strip() for l in open(sys.argv[1]) if l.startswith("audit: phase: ")]
+assert lines == ["audit: phase: history", "audit: phase: judging"], lines
+PY
+CASE="deadline: defaults are 900 s for the daily run and 600 s for --rerun-held and for pull request mode; --deadline overrides"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys, argparse
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+ns = lambda **k: argparse.Namespace(**{"deadline": None, "rerun_held": False, "base": None, **k})
+assert pa.deadline_for(ns()) == 900
+assert pa.deadline_for(ns(rerun_held=True)) == 600
+assert pa.deadline_for(ns(base="abc")) == 600
+assert pa.deadline_for(ns(deadline=7, base="abc")) == 7 and pa.deadline_for(ns(deadline=7)) == 7
+PY
+echo "$CLEAN" >"$work/clean.fx.json"
+BIGDIGITS=$(python3 -c "print('9' * 5000)")
+for bad in 0 -3 86401 9223372037 abc 1.5 "$BIGDIGITS"; do
+  rc=0; ( cd "$work" && python3 "$aud" --root "$work/r-clean" --now "$NOW" --gh "$work/gh" --fixtures "$work/clean.fx.json" --deadline "$bad" >"$work/dl.out" 2>"$work/dl.err" ) || rc=$?
+  CASE="deadline: --deadline ${bad:0:12} is refused with exit 2, nothing is audited, and nothing is a traceback"
+  check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a -s "$work/dl.err" -a "$(grep -c Traceback "$work/dl.err")" -eq 0
+done
+CASE="deadline: the values 1 and 86400 (one day, the largest) are accepted and the run is audited as before"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+for v in ("1", "86400"):
+    r = subprocess.run([sys.executable, aud, "--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--deadline", v], capture_output=True, text=True)
+    assert r.returncode == 0 and "audit: phase: history" in r.stdout, (v, r.returncode, r.stderr)
+PY
+# a run that finishes cannot also report the deadline: cancel() does not stop a callback that has already started, so the end of main waits for it (join)
+CASE="deadline: a callback already running when the run finishes decides the exit: 2, not a 0 that carries the deadline line"
+rc=0; python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" >/dev/null 2>&1 <<'PY' || rc=$?
+import importlib.util, sys, threading, time
+aud, repo, fx, now, gh = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+started, original = threading.Event(), pa._deadline_passed
+def slow_callback(seconds):
+    started.set()
+    time.sleep(0.5)       # the callback is mid-way when main reaches its end
+    original(seconds)
+pa._deadline_passed = slow_callback
+pa.FixtureNet.prs = lambda self: (started.wait(10), [])[1]   # the run finishes only after the callback has started
+sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--rerun-held", "--deadline", "1"]))
+PY
+check test "$rc" -eq 2
+# a deadline in the middle of the observations write must not leave a half-written state.json at the published path
+CASE="observations: a deadline during the write leaves no partial file at the published path (a temp file, then os.replace)"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" "$work/obs-partial" <<'PY'
+import os, subprocess, sys
+aud, repo, fx, now, gh, out = sys.argv[1:7]
+code = """
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+def partial(obj, f, **kw):
+    f.write('{"first_seen": {"half')
+    f.flush()
+    time.sleep(30)
+pa.json.dump = partial
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--observations-out", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh, out + "/state.json")
+r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=25)
+assert r.returncode == 2, (r.returncode, r.stdout[-300:], r.stderr[-300:])
+assert not os.path.exists(out + "/state.json"), "a partial state.json is at the published path"
+PY
+# the deadline must not depend on stdout: with the pipe full and nobody reading, the callback still ends the run
+CASE="deadline: stdout full and undrained does not stop the callback: exit 2 within seconds, the diagnostic on stderr"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+code = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+def noisy(*a, **k):
+    print("x" * 1000000)     # a megabyte into a pipe nobody drains: this print blocks
+    return {}
+pa.history_items = noisy
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh)
+p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=6)
+except subprocess.TimeoutExpired:
+    p.kill()
+    raise SystemExit("the run was still alive after 6 s: the callback waited on stdout")
+err = p.stderr.read().decode()
+assert p.returncode == 2 and "could not finish" in err, (p.returncode, err)
+PY
+# the same for stderr: with fd 2 a pipe that is full and never read, the one write of the diagnostic must not wait either
+CASE="deadline: stderr full and never read does not stop the callback: exit 2 within seconds"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+code = """
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+os.set_blocking(2, False)
+try:
+    while True:
+        os.write(2, b"x" * 4096)      # fill the pipe: nobody reads it
+except BlockingIOError:
+    pass
+os.set_blocking(2, True)              # as the step has it: a write now waits
+pa.history_items = lambda *a, **k: time.sleep(30)
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh)
+p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=6)
+except subprocess.TimeoutExpired:
+    p.kill()
+    raise SystemExit("the run was still alive after 6 s: the callback waited on a full stderr")
+assert p.returncode == 2, p.returncode
+PY
+# stdout is a pipe under Actions: without line buffering a run killed from OUTSIDE (the job timeout's SIGKILL) loses what it printed since its last full
+# buffer. The audit is killed here by the test, not by its own deadline (--deadline 60); the information line it prints after the judging marker must
+# have reached the pipe by then. Removing sys.stdout.reconfigure(line_buffering=True) from main makes this case fail.
+CASE="output: a run killed from outside (SIGKILL) with stdout on a pipe has delivered every line it printed (line-buffered stdout)"
+check python3 - "$aud" "$work/gh-hang" "$work/r-hang" "$NOW" "$work/shim" <<'PY'
+import os, select, signal, subprocess, sys, time
+aud, gh, repo, now, shim = sys.argv[1:6]
+env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"])
+p = subprocess.Popen([sys.executable, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+got, end = b"", time.time() + 20
+while time.time() < end and b"not checked against the advisory lists" not in got:
+    if select.select([p.stdout], [], [], 0.5)[0]:
+        chunk = os.read(p.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        got += chunk
+os.kill(p.pid, signal.SIGKILL)
+p.wait()
+got += p.stdout.read()
+text = got.decode()
+assert "audit: phase: judging" in text and "not checked against the advisory lists" in text, text
+PY
+# the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
+phases() { python3 - "$1" <<'PY'
+import sys
+print(",".join(l.strip()[len("audit: phase: "):] for l in open(sys.argv[1]) if l.startswith("audit: phase: ")))
+PY
+}
+run phclean "$CLEAN" "$work/r-clean"
+CASE="markers: a clean daily run prints history, judging, open pull requests, open pull request pins, nested references, exceptions, in that order; exit 0 as before"
+check test "$rc" -eq 0 -a "$(phases "$work/phclean.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions"
+run phobs "$CLEAN" "$work/r-clean" --observations-out "$work/obs/state.json"
+CASE="markers: with --observations-out the tag observations phase comes after history and before judging"
+check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,judging,open pull requests,open pull request pins,nested references,exceptions"
+run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
+CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
+check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
+run phrh "$CLEAN" "$work/r-clean" --rerun-held
+CASE="markers: --rerun-held prints its own phase and exits 0 as before"
+check test "$rc" -eq 0 -a "$(phases "$work/phrh.out")" = "re-run of held pull requests"
+run phrh2 '{"lists": {}, "upstream": {}, "nested": {}, "versions": {}, "prs": [{"number": 7, "title": "t", "run_id": 5, "moved": []}, {"number": 9, "title": "u", "run_id": 6, "moved": []}]}' "$work/r-clean" --rerun-held
+CASE="markers: --rerun-held prints one line per held pull request, so a slow one is named"
+check test "$rc" -eq 0 -a "$(phases "$work/phrh2.out")" = "re-run of held pull requests,pull request #7,pull request #9"
+run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only
+CASE="markers: pull request mode (--base) prints history, judging, nested references and exceptions, never the daily-only phases"
+check test "$(phases "$work/phbase.out")" = "history,judging,nested references,exceptions"
+# one line per pull request in both live walks: the PR walk is the lead suspect of the hang
+CASE="markers: both live open-pull-request walks print 'audit: phase: pull request #N' for every PR before they fetch it"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, subprocess, sys, contextlib, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+os.environ["GITHUB_REPOSITORY"] = "o/r"
+def fail_fetch(cmd, **kw):
+    if cmd[:2] == ["gh", "pr"] or (len(cmd) > 2 and cmd[1:3] == ["pr", "list"]):
+        return subprocess.CompletedProcess(cmd, 0, stdout='[{"number": 7, "title": "a", "headRefOid": "a", "baseRefName": "main"}, {"number": 9, "title": "b", "headRefOid": "b", "baseRefName": "main"}]', stderr="")
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no")   # every fetch fails: the PR is skipped, after its marker
+pa._run = fail_fetch
+pa.age._gh_pages = lambda path, rows=None: [{"number": 7, "base": {"ref": "main"}, "head": {"sha": "a"}},
+                                              {"number": 9, "base": {"ref": "main"}, "head": {"sha": "b"}}]
+net = pa.LiveNet(["gh"], ".")
+for walk in (net.open_pr_items, net.prs):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        walk()
+    got = [l for l in buf.getvalue().splitlines() if l.startswith("audit: phase: pull request")]
+    assert got == ["audit: phase: pull request #7", "audit: phase: pull request #9"], (walk.__name__, got)
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

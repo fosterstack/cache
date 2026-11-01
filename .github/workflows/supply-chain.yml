@@ -55,7 +55,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          # 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop
+          # 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop
           timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1
           # the advisor's rulings come from the base branch too: a pull request must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
