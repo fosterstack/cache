@@ -28,7 +28,7 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
 TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
-               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN",
+               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
                "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "APK_RELEASE_SIGNING_KEY")      # rc-2 R4 (Fable): Release's own three credentials, which its six Witness records could carry
 
 

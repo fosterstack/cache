@@ -50,7 +50,7 @@
 #       to the current UTC time like `sign`'s, so no job-level env or step feeds it, round 6):
 #         mint_sign_cert    verify --stage sign --record attempts/mint_sign_cert.json --policy policy.json
 #         read_sign_token   hostile-material --kind token --file attempts/read_sign_token.txt
-#         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json
+#         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json
 #         hand_sign_code    check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json
 #                           (the same refusals as `sign --check`, with no signer in it: this job holds no id-token and installs no cosign, step-8 SF4)
 #         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json   (must be ACCEPTED;
@@ -89,7 +89,7 @@
 #           FILE's first line is `refused at <stage>: <reason>` (stage one of runner|build|sign|rebuild|check|release); outcome
 #           accepted when N == 0; exit 1 (no row) for a traceback, an empty or unparsable stderr with N != 0, or an unknown attempt.
 #       chain-verify.py hostile-collect DIR --out F      merges the six rows (five attempts + positive_control); exit 1 naming a missing, duplicate or extra one.
-#       chain-verify.py hostile-material --kind token|key --file F [--sign-record provenance.json]
+#       chain-verify.py hostile-material --kind token|key --file F [--policy policy.json]
 #           exit 0 when F holds a transcript line and usable material (a token whose claims line says job_workflow_ref is stage-sign.yml; a key file whose public key is the key of Sign's certificate: the step lists `pubkey-sha256: <hex>` per key file found and `searched: <N> files`, N above zero), exit 1 with
 #           `refused at runner: nothing usable` when F has the transcript line and no material (the runner VM was isolated, the
 #           attempt got nothing); exit 2 with `error: ...` when F is missing, unreadable, empty or has no transcript line (no
@@ -113,9 +113,9 @@ attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_prov
 python3 - "$work" $attempts <<'PY'
 import copy, json, sys
 w, att = sys.argv[1], sys.argv[2:]
-DEF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
+DEF = {"mint_sign_cert": ("sign", "signature is not the manifest key's (manifest key)"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
-       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
+       "forge_provenance": ("release", "provenance signature is not the manifest key's (manifest key)")}
 def row(a, **k):
     r = {"attempt": a, "outcome": "refused", "stage": DEF.get(a, ("release", "x"))[0], "reason": DEF.get(a, ("release", "identity is stage-build.yml"))[1], "judged_by": "verifier", "exit_code": 1}
     r.update(k); return r
@@ -139,12 +139,12 @@ mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
 mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
 mut("ctl_refused", 5, outcome="refused", stage="sign", reason="identity is stage-build.yml", exit_code=1)
-mut("stage_sign_forge", 4, stage="sign", reason="provenance signed by stage-build.yml, not stage-sign.yml")
+mut("stage_sign_forge", 4, stage="sign", reason="provenance signature is not the manifest key's (manifest key)")
 mut("cross_mint_buildconfig", 0, reason="build config URI is scan.yml; release.yml required")
 mut("forge_provdigest", 4, reason="provenance digest mismatch")
 mut("forge_provrekor", 4, reason="provenance: rekor entry missing")
 mut("forge_sig", 4, reason="signature does not verify")
-mut("forge_root", 4, reason="certificate does not chain to the policy root")
+mut("forge_manifest", 4, reason="the signing key is not the manifest's release key (manifest key)")
 mut("missing_and_cause", 0, reason="no such file attempts/mint_sign_cert.json (expected identity stage-sign.yml)")
 mut("unreadable_and_cause", 4, reason="cannot read attempts/forge_provenance.json: provenance identity")
 m = copy.deepcopy(good); del m["attempts"][5]; save("nocontrol", m)
@@ -178,7 +178,7 @@ expect ok     "verdict: forge_provenance refused AT STAGE sign (the pinned comma
 expect refuse "verdict: a forged provenance refused with only the bare word 'provenance' (digest mismatch) does not count (round 6)" forge_provdigest "cause"
 expect refuse "verdict: a forged provenance refused 'provenance: rekor entry missing' does not count" forge_provrekor "cause"
 expect ok     "verdict: a forged provenance refused for its signature is a fine reason for forge_provenance" forge_sig
-expect ok     "verdict: a forged provenance refused for its root is a fine reason for forge_provenance" forge_root
+expect ok     "verdict: a forged provenance refused because its signing key is not the manifest's release key is a fine reason for forge_provenance" forge_manifest
 expect refuse "verdict: the positive control REFUSED (a policy that refuses everything proves nothing) fails the test" ctl_refused "positive_control"
 expect refuse "verdict: no positive control row" nocontrol "positive_control"
 expect refuse "verdict: mint_sign_cert refused with a 'build config'-only reason does not count" cross_mint_buildconfig "cause"
@@ -259,12 +259,11 @@ printf '%s\ncurl: (6) could not resolve host\n' "$TR" > "$work/tok_none.txt"
 printf '# transcript: tried\nclaims: %s\n' "$TS" > "$work/tok_shorttr.txt"
 printf '%s\n' "$TR" > "$work/tok_tronly.txt"
 # KEY material (step-8 SF-3): the step records the sha256 of the PUBLIC key of every key file it found and how many files it searched;
-# the verifier compares them with the public key in the certificate of Sign's own provenance (never by the words PRIVATE KEY)
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$work/signk.key" -out "$work/signk.pem" -subj /CN=sign -days 1 2> /dev/null
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$work/otherk.key" -out "$work/otherk.pem" -subj /CN=other -days 1 2> /dev/null
-kh() { openssl x509 -in "$1" -pubkey -noout | openssl pkey -pubin -outform DER | shasum -a 256 | cut -d' ' -f1; }
+# the verifier compares them with the manifest key of the policy (the one release key Sign signs with) (never by the words PRIVATE KEY)
+for k in signk otherk; do openssl ecparam -name prime256v1 -genkey -noout -out "$work/$k.key" 2> /dev/null; openssl ec -in "$work/$k.key" -pubout -out "$work/$k.pem" 2> /dev/null; done
+kh() { openssl pkey -pubin -in "$1" -outform DER | shasum -a 256 | cut -d' ' -f1; }
 H1=$(kh "$work/signk.pem"); H2=$(kh "$work/otherk.pem")
-python3 -c 'import base64,json,sys; json.dump({"signatures":[{"certificate": base64.b64encode(open(sys.argv[1],"rb").read()).decode()}]}, open(sys.argv[2],"w"))' "$work/signk.pem" "$work/signrec.json"
+python3 -c 'import json,sys; json.dump({"release_key": {"public_key": open(sys.argv[1]).read()}}, open(sys.argv[2],"w"))' "$work/signk.pem" "$work/keypol.json"
 KR='# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one public key'
 printf '%s\nsearched: 42 files\npubkey-sha256: %s\n' "$KR" "$H1" > "$work/key_yes.txt"
 printf '%s\nsearched: 42 files\npubkey-sha256: %s\n' "$KR" "$H2" > "$work/key_other.txt"
@@ -340,29 +339,43 @@ fi
 mkdir -p "$work/stepsign" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepsign/fns.sh"
 printf 'attempt_mint_sign_cert\nattempt_forge_provenance\n' >> "$work/stepsign/fns.sh"
 (cd "$work/stepsign" && env -i PATH="$PATH" HOME="$work" bash fns.sh > /dev/null 2>&1)
-(cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$root/.github/policy/release-policy.template.json" --ref refs/tags/v0.3.0-rc1 --out policy.json > /dev/null 2>&1)
+# the policy needs a key manifest (handoff 0713): made here with a throwaway root key and release key, since the committed manifest is the owner's
+mkdir -p "$work/keys"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/root.key" 2> /dev/null && openssl pkey -in "$work/keys/root.key" -pubout -out "$work/keys/release-key-root.pub" \
+  && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/rel.key" 2> /dev/null && openssl pkey -in "$work/keys/rel.key" -pubout -out "$work/keys/rel.pub" \
+  && python3 - "$work/keys" <<'PY' && openssl dgst -sha256 -sign "$work/keys/root.key" -out "$work/keys/sig.der" "$work/keys/release-key-manifest.json" \
+  && python3 -c 'import base64,sys; sys.stdout.write(base64.b64encode(open(sys.argv[1], "rb").read()).decode() + "\n")' "$work/keys/sig.der" > "$work/keys/release-key-manifest.sig" \
+  || { bad "hostile step (Sign refusals): the throwaway key manifest could not be made"; }
+import hashlib, json, subprocess, sys
+d = sys.argv[1]
+der = subprocess.run(["openssl", "pkey", "-pubin", "-in", d + "/rel.pub", "-outform", "DER"], capture_output=True, check=True).stdout
+json.dump({"public_key": open(d + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, open(d + "/release-key-manifest.json", "w"), sort_keys=True, indent=1)
+PY
+for f in release-policy.template.json sigstore-trust.json rekor.pub; do cp "$root/.github/policy/$f" "$work/keys/$f"; done
+prc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" policy make --template "$work/keys/release-policy.template.json" --ref refs/tags/v0.3.0-rc1 --out policy.json 2> policy-make.err > /dev/null) || prc=$?
+[ "$prc" = 0 ] && [ -s "$work/stepsign/policy.json" ] || bad "hostile step (Sign refusals): policy make failed (exit $prc: $(head -c 200 "$work/stepsign/policy-make.err" 2> /dev/null | tr '\n' ' '))"
 for a in mint_sign_cert forge_provenance; do
   vrc=0; (cd "$work/stepsign" && python3 "$root/bin/chain-verify.py" verify --stage sign --record "attempts/$a.json" --policy policy.json 2> "$a.err") || vrc=$?
   hrc=0; (cd "$work/stepsign" && mkdir -p results && python3 "$root/bin/chain-verify.py" hostile-row --attempt "$a" --exit-code "$vrc" --stderr "$a.err" --out "results/$a.json" > /dev/null 2>&1) || hrc=$?
-  if [ -s "$work/stepsign/attempts/$a.json" ] && [ "$vrc" = 1 ] && grep -q "refused at sign" "$work/stepsign/$a.err" && grep -q "stage-sign.yml" "$work/stepsign/$a.err" && [ "$hrc" = 0 ] && [ -s "$work/stepsign/results/$a.json" ]; then ok "hostile step: the real $a attempt leaves a throwaway-key record without any token, the real verifier refuses it at sign naming stage-sign.yml, and hostile-row counts the refusal"; else bad "hostile step: $a material and refusal" "verify rc $vrc, row rc $hrc, $(head -c 200 "$work/stepsign/$a.err" 2>&1)"; fi
+  if [ -s "$work/stepsign/attempts/$a.json" ] && [ "$vrc" = 1 ] && grep -q "refused at sign" "$work/stepsign/$a.err" && grep -q "manifest key" "$work/stepsign/$a.err" && [ "$hrc" = 0 ] && [ -s "$work/stepsign/results/$a.json" ]; then ok "hostile step: the real $a attempt leaves a throwaway-key record without any token, the real verifier refuses it at sign naming stage-sign.yml, and hostile-row counts the refusal"; else bad "hostile step: $a material and refusal" "verify rc $vrc, row rc $hrc, $(head -c 200 "$work/stepsign/$a.err" 2>&1)"; fi
 done
-xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
-xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
-xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --sign-record "$work/signrec.json"
-xexpect refuse "hostile-material: the TEXT 'PRIVATE KEY' proves nothing: text of a key block with no matching public key hash is refused" "refused at runner" -- hostile-material --kind key --file "$work/key_text.txt" --sign-record "$work/signrec.json"
+xexpect ok "hostile-material: a key found on the runner whose public key IS the policy's release key means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --policy "$work/keypol.json"
+xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --policy "$work/keypol.json"
+xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --policy "$work/keypol.json"
+xexpect refuse "hostile-material: the TEXT 'PRIVATE KEY' proves nothing: text of a key block with no matching public key hash is refused" "refused at runner" -- hostile-material --kind key --file "$work/key_text.txt" --policy "$work/keypol.json"
 xexpect refuse "hostile-material: an unknown kind" kind -- hostile-material --kind password --file "$work/tok_none.txt"
 for f in mat_empty tok_notranscript tok_noclaim tok_shorttr tok_tronly tok_none; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
   if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, or a JWT without job_workflow_ref) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 done
 for f in key_zero key_nocount mat_empty; do
-  mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --sign-record "$work/signrec.json" || mrc=$?
+  mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --policy "$work/keypol.json" || mrc=$?
   if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: key file $f (a search of zero files, no count of files searched, or an empty file) is an ERROR (exit 2): an empty search proves nothing"; else bad "hostile-material: key file $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 done
 mrc=0; cvx hostile-material --kind key --file "$work/key_yes.txt" || mrc=$?
-if [ "$mrc" = 2 ] && grep -F -q "sign-record" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: a key cannot be graded without Sign's record (--sign-record): an error, exit 2"; else bad "hostile-material: key without --sign-record must exit 2, got $mrc"; fi
-mrc=0; cvx hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/does-not-exist.json" || mrc=$?
-if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: an unreadable Sign record is an error (exit 2), never a refusal"; else bad "hostile-material: unreadable sign record must exit 2, got $mrc"; fi
+if [ "$mrc" = 2 ] && grep -F -q "policy" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: a key cannot be graded without the policy (--policy): an error, exit 2"; else bad "hostile-material: key without --policy must exit 2, got $mrc"; fi
+mrc=0; cvx hostile-material --kind key --file "$work/key_yes.txt" --policy "$work/does-not-exist.json" || mrc=$?
+if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: an unreadable policy is an error (exit 2), never a refusal"; else bad "hostile-material: unreadable sign record must exit 2, got $mrc"; fi
 mrc=0; cvx hostile-material --kind token --file "$work/does-not-exist.txt" || mrc=$?
 if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: a MISSING file is an error (exit 2, no 'refused at' line), never a refusal"; else bad "hostile-material: missing file must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 printf 'error: cannot read attempts/read_sign_token.txt\n' > "$work/e_err.txt"; printf 'usage: chain-verify.py hostile-material [-h] --kind {token,key} --file FILE\n' > "$work/e_usage.txt"
@@ -399,7 +412,7 @@ ATT = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "
 PIN = {
  "mint_sign_cert": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/mint_sign_cert\.json --policy policy\.json',
  "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
- "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt --sign-record provenance/provenance\.json',
+ "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt --policy policy\.json',
  "hand_sign_code": r'python3 bin/chain-verify\.py check-build-record --digests attempts/hand_sign_code\.json --build-record witness-build/build-collection\.json --policy policy\.json',
  "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json',
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
@@ -704,7 +717,7 @@ EOF
           python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "\$rc" --stderr /tmp/hand_sign_code.err --out results/hand_sign_code.json
 EOF
     for a in read_sign_token read_sign_key; do
-      kind=token; extra=; [ "$a" = read_sign_key ] && { kind=key; extra=" --sign-record provenance/provenance.json"; }
+      kind=token; extra=; [ "$a" = read_sign_key ] && { kind=key; extra=" --policy policy.json"; }
       cat <<EOF
       - run: |
           rc=0
@@ -1122,7 +1135,7 @@ d=$(mk w_hostileold); pymut "$(rel "$d")" "github.event_name == 'push' && starts
 d=$(mk w_hostiletag); pymut "$(rel "$d")" " && contains(github.ref_name, '-rc')" ""; wexpect caught "wiring: the hostile input is not limited to an rc tag: a push of a FINAL tag would run the hostile step under the release identity (step-8 SF-4)" "$d"
 d=$(mk w_hostilebranch); pymut "$(rel "$d")" "hostile: \"\${{ github.event_name == 'push'" "hostile: \"\${{ inputs.dry-run == true || github.event_name == 'push'"; wexpect caught "wiring: the hostile input also runs in a dry-run dispatch (a branch never runs the hostile step)" "$d"
 d=$(mk w_hostilepush); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}" "startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}"; wexpect caught "wiring: the hostile input without the push event (a dispatch on an rc tag would run it)" "$d"
-d=$(mk w_nosignrec); pymut "$(rel "$d")" " --sign-record provenance/provenance.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"
+d=$(mk w_nosignrec); pymut "$(rel "$d")" " --policy policy.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"
 d=$(mk w_handsign); pymut "$(rel "$d")" "check-build-record --digests" "sign --check --signer cosign --digests"; wexpect caught "wiring: the hand-code attempt runs sign --check again (a signer in a job that must hold no signing right)" "$d"
 d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_provenance" "--stage build --record attempts/forge_provenance"; wexpect caught "wiring: the forge attempt is verified as stage build, not as the Sign stage (pinned invocation)" "$d"
 d=$(mk w_pinrec); pymut "$(rel "$d")" "--record attempts/mint_sign_cert.json --policy" "--record attempts/forge_provenance.json --policy"; wexpect caught "wiring: a case verifies another attempt's material (pinned --record)" "$d"
@@ -1147,7 +1160,7 @@ open(sys.argv[1],"w").write(t[:i]+t[j:])
 PY2
 wexpect caught "wiring: dropping the mint_sign_cert step from the verify job is refused (only the sixth may go, by name)" "$d"
 d=$(mk w_pinpol); pymut "$(rel "$d")" "--stage sign --record attempts/mint_sign_cert.json --policy policy.json" "--stage sign --record attempts/mint_sign_cert.json --policy /dev/null"; wexpect caught "wiring: an attempt is verified against a different policy than the tag's" "$d"
-d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json" "--kind token --file attempts/read_sign_key.txt"; wexpect caught "wiring: the key attempt is judged with the token kind (pinned hostile-material)" "$d"
+d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key.txt --policy policy.json" "--kind token --file attempts/read_sign_key.txt"; wexpect caught "wiring: the key attempt is judged with the token kind (pinned hostile-material)" "$d"
 d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr /tmp/mint_sign_cert.err" "--stderr /tmp/other.err"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
 d=$(mk w_other); python3 - "$(rel "$d")" <<'PY'
 import sys
