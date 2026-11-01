@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 102 |
-| Acceptance criteria | 511 |
+| Active requirements | 101 |
+| Acceptance criteria | 509 |
 | Release-blocking ACs | 132 |
-| ACs with mapped evidence | 501 |
+| ACs with mapped evidence | 499 |
 | Release-blocking ACs with mapped evidence | 132 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 49 |
-| Confidence: implementation-only | 52 |
+| Confidence: implementation-only | 51 |
 
 ## Cache protocol
 

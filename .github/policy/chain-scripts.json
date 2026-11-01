@@ -83,7 +83,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "d4e5b713dc74880d1a03eefc651bb48a4e14d6718cbdb0fc2939766115e147a6",
+      "sha256": "1a513a40dda87d4c8cf09d0c2070e433b27fcdc33117ab6412ca3156f2d8286a",
       "tools": [
         "at",
         "curl",
@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "9efc9ad8b061414ec0ea50c51249f6fdbba04094a8541fc2c312c8f7a0ac1a05",
+      "sha256": "0d8a8273d334bcf90e64bec45aa5d469e152cc2b24e0a7b517fec18a6c226f8f",
       "reads_env": [
         "GH_TOKEN"
       ],
