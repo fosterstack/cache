@@ -1441,6 +1441,7 @@ mappings:
   - ac: REQ-CHAIN-007-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/witness-kms-test.sh" }
   - ac: REQ-CHAIN-007-AC16
     evidence:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }

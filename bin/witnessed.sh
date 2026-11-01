@@ -11,8 +11,8 @@
 #    job's identity token for short-lived credentials: the token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 #    file in a private directory under RUNNER_TEMP, outside the repository tree, and AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN point the SDK
 #    at it. They are never written to GITHUB_ENV. The directory is removed when Witness returns or the shell gets EXIT, HUP, INT or TERM.
-#  - Both variables are removed (env -u) from the wrapped script of every step except release-sign, the one script that signs
-#    with the key itself (cosign); they are sensitive keys, so no record holds them. The request variables are unset, so no script can ask
+#  - Witness itself runs without either variable (env -u), for every step. Only the wrapped command of release-sign and release-apks, the two
+#    scripts that sign with the key itself (cosign), is handed both (env VAR=value in front of the script); they are sensitive keys, so no record holds them. The request variables are unset, so no script can ask
 #    for a second token.
 #  - The AWS role, region and key reference come from the job (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); a job that lacks one stops here, before any token is asked for.
 #    The key reference is not written in this file: a KMS key's name form contains a word the script scan of the release chain refuses, so the workflow pins it.
@@ -43,15 +43,14 @@ echo "::add-mask::$tok"
 export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
-if [ "$step" = release-sign ]; then
-  wrap=()
-else
-  wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)
-fi
+case "$step" in
+  release-sign|release-apks) wrap=(env "AWS_ROLE_ARN=$AWS_ROLE_ARN" "AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE") ;;
+  *) wrap=() ;;
+esac
 openssl genpkey -algorithm ed25519 -out "$td/key.pem"
 local_record="$td/$step-collection.json"
 rc=0
-witness run --step "$step" --signer-file-key-path "$td/key.pem" \
+env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step "$step" --signer-file-key-path "$td/key.pem" \
   -a environment,git,material,product \
   --env-filter-sensitive-vars \
   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' \

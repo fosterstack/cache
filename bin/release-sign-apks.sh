@@ -8,7 +8,8 @@
 # (the Rekor-only signing config of the chain), the signature is checked as RSA PKCS#1 v1.5 SHA-256 against the
 # committed build/keys/release.rsa.pub (a key that lists a PSS algorithm first would sign PSS, which apk-tools rejects:
 # that fails here, closed), and the apk tool puts it in front of the unchanged control and data streams as the one
-# .SIGN.RSA256.release.rsa.pub member. The Rekor bundle of each signature is kept beside the apk as <apk>.bundle.
+# .SIGN.RSA256.release.rsa.pub member. cosign v3.1.3 ignores --output-signature: the signature is taken from the bundle (messageSignature, strict
+# base64, its messageDigest the SHA2_256 of the signed control stream). The Rekor bundle of each signature is kept beside the apk as <apk>.bundle.
 # Nothing a customer trusts is ever signed with the assembly key.
 # Rebuild's apks never reach this job (owner's rule of Oct 21 2026,
 # ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: the job that holds the signing role receives no build
@@ -113,24 +114,47 @@ for rel in "${apks[@]}"; do
   cp .github/policy/cosign-signing-config.json "$w/signing-config.json" || die "cannot copy the signing config; $kept" 1
   # run in the private directory with literal file names: the chain's records judge needs every argument of the signing call to be a literal (its blob, and so its type, must be known)
   cd "$w"
-  "$COSIGN" sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config signing-config.json --output-signature sig.bin --bundle sig.bundle control.gz ||
+  # cosign v3.1.3 writes the signature into the bundle (messageSignature) and ignores --output-signature, so none is passed and none is read from a file
+  "$COSIGN" sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config signing-config.json --bundle sig.bundle control.gz ||
     die "signing the control stream failed for ${rel#./}; $kept" 1
   cd "$root_dir"
-  [ -s "$w/sig.bin" ] && [ -s "$w/sig.bundle" ] || die "cosign left no signature or no bundle for ${rel#./}; $kept" 1
+  [ -s "$w/sig.bundle" ] || die "cosign left no signature or no bundle for ${rel#./}; $kept" 1
+  # the signature is taken from the bundle, strictly: messageSignature.signature is base64 and messageSignature.messageDigest is the SHA2_256 of exactly these control bytes;
+  # anything absent, undecodable or different stops the apk (exit 1, no .SIGN written)
+  rc=0; "$PY3" -I -B - "$w/sig.bundle" "$w/control.gz" "$w/sig.bin" <<'PY' || rc=$?
+import base64, binascii, hashlib, json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+    ms = doc["messageSignature"]
+    sig = base64.b64decode(ms["signature"], validate=True)
+    if not sig:
+        raise ValueError("empty")
+except (OSError, ValueError, KeyError, TypeError, AttributeError, binascii.Error):
+    sys.exit(11)
+try:
+    md = ms["messageDigest"]
+    want = base64.b64decode(md["digest"], validate=True)
+    ok = md["algorithm"] == "SHA2_256" and want == hashlib.sha256(open(sys.argv[2], "rb").read()).digest()
+except (OSError, ValueError, KeyError, TypeError, AttributeError, binascii.Error):
+    ok = False
+if not ok:
+    sys.exit(12)
+entries = doc.get("verificationMaterial", {}).get("tlogEntries") if isinstance(doc.get("verificationMaterial"), dict) else None
+if not (isinstance(entries, list) and len(entries) == 1):
+    sys.exit(13)
+fd = open(sys.argv[3], "xb"); fd.write(sig); fd.close()
+PY
+  case $rc in
+    0) ;;
+    11) die "the bundle of ${rel#./} holds no messageSignature signature that decodes as base64; $kept" 1;;
+    12) die "the messageDigest of the bundle of ${rel#./} is not the SHA2_256 of the control stream that was signed; $kept" 1;;
+    13) die "the bundle of ${rel#./} does not hold exactly one tlogEntries item (Rekor entry); $kept" 1;;
+    *) die "cannot read the bundle of ${rel#./}; $kept" 1;;
+  esac
   # RSA PKCS#1 v1.5 SHA-256 only: a signature of another form (PSS, from a key that lists PSS first) is refused, no .SIGN is written
   "$OPENSSL" dgst -sha256 -verify "$KEYS_DIR/release.rsa.pub" -signature "$w/sig.bin" "$w/control.gz" >/dev/null ||
     die "the KMS signature of ${rel#./} is not RSA PKCS#1 v1.5 SHA-256 under build/keys/release.rsa.pub (a PSS key, another key, "\
 "or a bad signature); $kept" 1
-  # the bundle carries exactly one Rekor entry (release refuses a signature that has none)
-  "$PY3" -I -B - "$w/sig.bundle" <<'PY' || die "the bundle of ${rel#./} does not hold exactly one tlogEntries item (Rekor entry); $kept" 1
-import json, sys
-try:
-    doc = json.load(open(sys.argv[1]))
-    entries = doc.get("verificationMaterial", {}).get("tlogEntries")
-except (OSError, ValueError, AttributeError):
-    sys.exit(1)
-sys.exit(0 if isinstance(entries, list) and len(entries) == 1 else 1)
-PY
   "$PY3" -I -B bin/apk-tool.py attach-signature "$copy/$rel" "$w/sig.bin" "$w/signed.apk" ||
     die "cannot attach the signature to ${rel#./}; $kept" 1
   mv -f "$w/signed.apk" "$copy/$rel" || die "cannot place the signed ${rel#./}; $kept" 1

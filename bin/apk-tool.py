@@ -35,6 +35,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import posixpath
 import re
 import sys
@@ -252,7 +253,6 @@ def cmd_same(a):
 
 
 def _write_new(path, data):
-    import os
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except OSError as e:
@@ -282,7 +282,7 @@ def cmd_attach_signature(a):
         t.addfile(i, io.BytesIO(sig))
     gz = io.BytesIO()
     with gzip.GzipFile(fileobj=gz, mode="wb", mtime=0) as g:
-        g.write(tar.getvalue())
+        g.write(tar.getvalue()[:512 + (len(sig) + 511) // 512 * 512])   # header and data blocks only: apk reads the three streams as ONE tar, so an end-of-archive block here would hide .PKGINFO
     _write_new(a[2], gz.getvalue() + ctrl[0] + data[0])
 
 
@@ -302,7 +302,6 @@ def cmd_signer(a):
 
 def _openssl():
     """The OpenSSL this check trusts: a fixed location, never whatever the caller's search path holds (REQ-BUILDAPK-001-AC4)."""
-    import os
     for p in ("/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"):
         if os.access(p, os.X_OK):
             return p
@@ -312,9 +311,11 @@ def _openssl():
 def cmd_verify(a):
     """The signer command reads a NAME; this checks the bytes: openssl dgst verifies the member's RSA signature over the control stream exactly as
     stored (REQ-BUILDAPK-001-AC4, AC7). PUBKEY may carry comment lines before its PEM block; the first PUBLIC KEY block is the key."""
-    import os, subprocess, tempfile
+    import subprocess, tempfile
     sig, ctrl, data = sections(a[0])
     names = list(members(sig[1])) if sig else []
+    if sig and len(sig[1]) != 512 + (int(sig[1][124:136].rstrip(b"\0 ") or b"0", 8) + 511) // 512 * 512:
+        refuse("%s: the signature segment has bytes after its one member (end-of-archive blocks): apk-tools reads the signature, control and data streams as one tar and would stop before .PKGINFO; refusing" % a[0], 1)
     if len(names) != 1:
         refuse("%s is %s: nothing to verify" % (a[0], "unsigned" if not names else "signed by %d members" % len(names)), 1)
     m = re.fullmatch(r"\.SIGN\.(RSA|RSA256)\.(.+)", names[0])

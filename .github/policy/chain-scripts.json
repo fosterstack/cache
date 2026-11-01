@@ -320,8 +320,8 @@
         "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN unless the step is release-sign; a Witness collection is not a provenance statement",
-      "sha256": "dfad3b2645fb2422bfa9112f18c7f11ce7a360e9143a0b17e6e396d5679aa315",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN unless the step is release-sign or release-apks (the two scripts that sign with the key through cosign); a Witness collection is not a provenance statement",
+      "sha256": "37521d2d20fa46b93d7c997aee6fce53ebd0f29df914fc7238c4f78533afab66",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -341,8 +341,13 @@
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN",
-          "why": "handoff 0713 R2: the wrapped script of every step but release-sign runs without the two AWS variables, so only the one script that signs with the key itself can reach AWS; env is given exactly this text and nothing else"
+          "text": "env \"AWS_ROLE_ARN=$AWS_ROLE_ARN\" \"AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE\"",
+          "why": "K2 (P11 round 1): the wrapped command of release-sign and release-apks, the two scripts that sign with the key itself through cosign, is handed AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE; env is given exactly this text and nothing else"
+        },
+        {
+          "rule": "launcher",
+          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step \"$step\" --signer-file-key-path \"$td/key.pem\"   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE   --env-add-sensitive-key AWS_ROLE_ARN   -o \"$local_record\" -- ${wrap[@]+\"${wrap[@]}\"} bash \"$@\"",
+          "why": "Witness itself runs without the two AWS variables for every step (env -u of exactly those two names), so only the wrapped command above can reach AWS; env is given exactly this text, the one Witness command"
         },
         {
           "rule": "witness-target",
@@ -2107,7 +2112,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "97dfdd9d627cff866d215039a243a18c2ed4853e96354b9d04b2b7957653b7c2",
+      "sha256": "c394ca362da33d798358e497012804d44caf0b9d766a5ee0684fa90e260cfc42",
       "exceptions": [
         {
           "rule": "deny",
@@ -2186,7 +2191,7 @@
       ],
       "signs": "other",
       "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) through cosign sign-blob on each apk's control section, checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "796afe4cd54d58f42b0f2262dceb7508f697e8dbcb174e00b5807d301ef61f8b",
+      "sha256": "69596c64e7af29d5f9268f2c9605519baad90a39d2f673dc7942523d73241dc5",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2228,8 +2233,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ -s \"$w/sig.bin\" ] && [ -s \"$w/sig.bundle\" ] || die \"cosign left no signature or no bundle for ${rel#./}; $kept\" 1",
-          "line_sha256": "443f87d4870b6f4c803f8835c76872affc164d47d093c4171eecdca48075708d",
+          "line": "  [ -s \"$w/sig.bundle\" ] || die \"cosign left no signature or no bundle for ${rel#./}; $kept\" 1",
+          "line_sha256": "0d7c90ccc0aafbfcf6253a43eb1459260e37194f431d05da7cd83142741c61f0",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
         },

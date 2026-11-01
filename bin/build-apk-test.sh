@@ -298,7 +298,7 @@ mkdir -p "$work/rsA/x86_64" "$work/rsB/x86_64" "$work/rsC/x86_64"
 cp "$pr/a.apk" "$work/rsA/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsB/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/c.apk" "$work/rsC/x86_64/fscache-0.3.0-r0.apk"
 mkrsa() { openssl genrsa 2048 2>/dev/null >"$1.raw"; if grep -q 'BEGIN PRIVATE KEY' "$1.raw"; then openssl rsa -traditional -in "$1.raw" -out "$1" 2>/dev/null; else mv "$1.raw" "$1"; fi; rm -f "$1.raw"; }
 mkrsa "$work/release.rsa"
-# release signing compares the key's public half with build/keys/release.rsa.pub: tests use a fixture keys dir (test mode only; recorded in the script's own test-mode gate)
+# the signer checks the fake cosign's signature against build/keys/release.rsa.pub: the tests run a copy whose KEYS_DIR line (TEST-SUBST) names a fixture keys dir holding the public half of the suite-made key
 mkdir -p "$work/keysfx"; cp "$root/build/keys/assembly.rsa" "$root/build/keys/assembly.rsa.pub" "$work/keysfx/"; openssl rsa -in "$work/release.rsa" -pubout -out "$work/keysfx/release.rsa.pub" 2>/dev/null
 RS_REAL=$RS; RS="$work/rs-copy.sh"
 # ---- P11: the apks are signed by the release KMS key through cosign sign-blob (the one-key rule); the stub cosign signs with a suite-made RSA key ----
@@ -323,9 +323,9 @@ if [ -n "${STUB_COSIGN_PSS:-}" ]; then @OPENSSL@ dgst -sha256 -sign "$STUB_COSIG
 elif [ -n "${STUB_COSIGN_GARBAGE:-}" ]; then head -c 256 /dev/zero | tr '\0' 'x' >"$sigf"
 else @OPENSSL@ dgst -sha256 -sign "$STUB_COSIGN_KEY" -out "$sigf" "$blob"; fi
 [ -z "${STUB_COSIGN_NOBUNDLE:-}" ] || { rm -f "$sigf"; exit 0; }
-sig64=$(base64 -w0 <"$sigf"); rm -f "$sigf"
-dig64=$(@OPENSSL@ dgst -sha256 -binary "$blob" | base64 -w0)
-[ -z "${STUB_COSIGN_BADDIGEST:-}" ] || dig64=$(printf 'other bytes' | @OPENSSL@ dgst -sha256 -binary | base64 -w0)
+sig64=$(@OPENSSL@ base64 -A <"$sigf"); rm -f "$sigf"
+dig64=$(@OPENSSL@ dgst -sha256 -binary "$blob" | @OPENSSL@ base64 -A)
+[ -z "${STUB_COSIGN_BADDIGEST:-}" ] || dig64=$(printf 'other bytes' | @OPENSSL@ dgst -sha256 -binary | @OPENSSL@ base64 -A)
 [ -z "${STUB_COSIGN_BADB64:-}" ] || sig64='not base64 !!'
 if [ -n "${STUB_COSIGN_NOTLOG:-}" ]; then ent=''
 elif [ -n "${STUB_COSIGN_TWOTLOG:-}" ]; then ent='{"logIndex":"1"},{"logIndex":"2"}'
@@ -419,14 +419,15 @@ t "rule 22" "apk-tool attach-signature replaces the signature stream: one member
 # K3: the three streams of a signed apk are one tar to apk-tools: the signature segment has NO end-of-archive blocks, and verify refuses one that has
 cat >"$work/onetar.py" <<'P'
 import io, sys, tarfile, zlib
+# apk-tools reads the signature and control streams as ONE tar (the control stream ends it; the data stream is a second tar)
 raw = open(sys.argv[1], "rb").read(); out = b""
-while raw:
+for _ in range(2):
     d = zlib.decompressobj(31); out += d.decompress(raw); raw = d.unused_data
 names = [m.name for m in tarfile.open(fileobj=io.BytesIO(out)).getmembers()]
-assert names[0] == ".SIGN.RSA256.release.rsa.pub" and ".PKGINFO" in names and "usr/bin/fscache" in names, names
+assert names[0] == ".SIGN.RSA256.release.rsa.pub" and ".PKGINFO" in names, names
 P
-t "rule 22" "release signing (K3): the three streams of a signed apk read as ONE tar list .SIGN, .PKGINFO and the data member (no end-of-archive blocks inside the signature segment)" python3 "$work/onetar.py" "$s1apk"
-t "rule 22" "apk-tool attach-signature (K3): the output read as one tar lists .SIGN, .PKGINFO and the data member" bash -c "python3 '$AT' attach-signature '$work/at1/x86_64/fscache-0.3.0-r0.apk' '$work/at1.sig' '$work/at1.k3' && python3 '$work/onetar.py' '$work/at1.k3'"
+t "rule 22" "release signing (K3): the signature and control streams of a signed apk read as ONE tar list .SIGN and .PKGINFO (no end-of-archive blocks inside the signature segment)" python3 "$work/onetar.py" "$s1apk"
+t "rule 22" "apk-tool attach-signature (K3): the output's signature and control streams read as one tar list .SIGN and .PKGINFO" bash -c "python3 '$AT' attach-signature '$work/at1/x86_64/fscache-0.3.0-r0.apk' '$work/at1.sig' '$work/at1.k3' && python3 '$work/onetar.py' '$work/at1.k3'"
 python3 - "$work" <<'P'
 import os, sys
 sys.path.insert(0, sys.argv[1]); import lib
@@ -1663,7 +1664,7 @@ MS = '"$COSIGN" sign-blob'
 M = {
  "rs-cosign":   [(MS, 'cosign sign-blob')],
  "rs-python3":  [('sg=$("$PY3" -I -B bin/apk-tool.py signer', 'sg=$(python3 -I -B bin/apk-tool.py signer')],
- "rs-python3-bundle": [('"$PY3" -I -B - "$w/sig.bundle" <<', 'python3 -I -B - "$w/sig.bundle" <<')],
+ "rs-python3-bundle": [('"$PY3" -I -B - "$w/sig.bundle" "$w/control.gz" "$w/sig.bin" <<', 'python3 -I -B - "$w/sig.bundle" "$w/control.gz" "$w/sig.bin" <<')],
  "rs-openssl-gate": [('"$OPENSSL" dgst -sha256 -verify', 'openssl dgst -sha256 -verify')],
  "rs-openssl":  [('relpub=$("$OPENSSL" rsa -pubin -in "$KEYS_DIR/release.rsa.pub" -pubout 2>/dev/null)',
                   'relpub=$(openssl rsa -pubin -in "$KEYS_DIR/release.rsa.pub" -pubout)')],

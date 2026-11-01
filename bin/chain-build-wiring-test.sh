@@ -112,7 +112,7 @@ def witness_block(spec_):       # the stage's Witness step(s): one line through 
 
 def witnessed_text():           # bin/witnessed.sh, the witness line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
-    i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
+    i = next(n for n, l in enumerate(lines) if l.startswith("env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run "))
     for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
     comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
@@ -621,9 +621,9 @@ hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts
 hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
 hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 the wrapped script keeps both AWS variables" 'wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)' 'wrap=()'
-hm kwrap1  "AC2 only one of the two AWS variables is removed from the wrapped script" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
-hm ksignall "AC2 every step keeps the variables, not release-sign alone" 'if [ "$step" = release-sign ]; then' 'if [ "$step" != apk ]; then'
+hm kwrap0  "AC2 the wrapped script of another step keeps the AWS variables" '  *) wrap=() ;;' '  *) wrap=(env AWS_ROLE_ARN=1) ;;'
+hm kwrap1  "AC2 only one of the two AWS variables is removed from Witness's own environment" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
+hm ksignall "AC2 every step is handed the variables, not release-sign and release-apks alone" '  release-sign|release-apks) wrap=(env' '  *) wrap=(env'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
 hm kghenv  "AC2 the token file written to GITHUB_ENV" 'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"' $'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"\necho "AWS_WEB_IDENTITY_TOKEN_FILE=$td/token" >> "$GITHUB_ENV"'
