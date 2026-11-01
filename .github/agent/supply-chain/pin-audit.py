@@ -1354,7 +1354,9 @@ def main(argv=None):
         print("audit: cannot do its job: --deadline must be from 1 to 86400 seconds", file=sys.stderr)
         return 2
     # under Actions stdout is a pipe: without this a killed run loses what it printed since its last full buffer.
-    # The guard is for callers that swap stdout for a StringIO (pin-audit-test.sh:691, pin-audit-go-major-test.sh:397)
+    # The guard is for callers that swap stdout for a StringIO (pin-audit-test.sh case "an open pull request that cannot
+    # be checked (a failure inside its item) never hides main's own findings: they are still filed, and the PR is named
+    # as not audited", pin-audit-go-major-test.sh:397)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
     seconds = deadline_for(a)

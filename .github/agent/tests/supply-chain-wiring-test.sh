@@ -42,7 +42,7 @@ CANONICAL_RUNS = {
     'pin-age':
         'set -uo pipefail\n'
         'status=0\n'
-        "# 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop\n"
+        "# 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop\n"
         'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ '
         'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n'
         "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
