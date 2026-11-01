@@ -824,7 +824,7 @@ caught "WIT3 the whole signed directory uploaded (only the named signed-witness-
 caught "WIT3 an unsigned record directory uploaded as a signed artifact" 'name: signed-witness-build\n          path: signed/witness-build\n' 'name: signed-witness-build\n          path: witness-build\n'
 caught "WIT3 cosign is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: cu''''rl -sL https://example.com/cosign -o /usr/local/bin/cosign'
 caught "WIT3 sign installs no cosign (the provenance and the records are signed through it)" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
-# ---- W1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-001-AC2, whose text lists Sign's steps with a Witness install and a Witness sign step and no step env, and REQ-CHAIN-007-AC18): the signing steps carry exactly the three federation entries as step-level literals; sign-rebuild and sign-check install cosign
+# ---- W1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-001-AC2, whose text lists Sign's steps with a Witness install and a Witness sign step and no step env, REQ-CHAIN-001-AC1, whose text says step env names come from the closed env_names list, and REQ-CHAIN-007-AC18): the signing steps carry exactly the three federation entries as step-level literals; sign-rebuild and sign-check install cosign
 caught "W1 sign-rebuild installs no cosign" '(?<=path: witness-rebuild\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
 caught "W1 sign-check installs no cosign" '(?<=path: artifacts/check-results-arm64\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
 caught "W1 the staged-signing step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' '        run: bash bin/witness-sign-staged.sh'
@@ -1347,6 +1347,22 @@ jobs:
       - env:
           FOO: bar
         run: bash bin/build-stage.sh "$FOO"
+EOF
+ycase y_fedplace "a federation entry (AWS_REGION) on a step of stage-verify.yml, outside the signing steps (W1, #822 round 1)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          AWS_REGION: us-east-1
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_fedplace2 "a federation entry (RELEASE_KMS_KEY_REF) with another key reference on a step of stage-verify.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          RELEASE_KMS_KEY_REF: awskms:///alias/other
+        run: bash bin/build-stage.sh a
 EOF
 ycase y_envunread "step env key the run line does not read whole" <<'EOF'
 jobs:
@@ -3312,7 +3328,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='d5844a3739eb1a5cbd5e3c1f67b5a280d6565f638feaf14db5a9c0387343861d'
+FX_PIN='31127ae7b5ff3fb0739990402eb056c8750a4525b271fe43cdb8532c9312d251'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5058,7 +5074,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2123
+EXPECT=2125
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

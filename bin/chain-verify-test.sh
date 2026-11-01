@@ -2031,7 +2031,7 @@ done
 [ "$(PATH="$work/fakebin:$PATH" command -v cosign)" = "$work/fakebin/cosign" ] && ok "P2 the cosign every sign-record case reaches is the fake in the test's own folder (no public write)" \
   || bad "P2 cosign on the PATH is not the fake: $(PATH="$work/fakebin:$PATH" command -v cosign)"
 printf '{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"x","subject":[],"predicate":{}}' > "$work/sr-payload.json"
-SR() { run sign-record --payload "$work/sr-payload.json" --out "$work/sr/$1/build-collection.json" --template "$work/template.json"; }
+SR() { RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing run sign-record --payload "$work/sr-payload.json" --out "$work/sr/$1/build-collection.json" --template "$work/template.json"; }
 mkdir -p "$work/sr"; rc=0; SR ok || rc=$?
 SR_RE='^attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config [^ ]+/cosign-signing-config\.json --statement [^ ]+/sr-payload\.json --bundle [^ ]+\.bundle\.json$'
 [ "$rc" = 0 ] && [ -s "$work/sr/ok/build-collection.json" ] && [ -s "$work/sr/ok/build-collection.rekor.json" ] && [ "$(wc -l < "$work/cosign-argv.log")" = 1 ] \

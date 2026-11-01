@@ -621,8 +621,8 @@ hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts
 hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
 hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 the wrapped script keeps both AWS variables" 'wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)' 'wrap=()'
-hm kwrap1  "AC2 only one of the two AWS variables is removed from the wrapped script" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
+hm kwrap0  "AC2 the wrapped script keeps the AWS variables" '  unset AWS_ROLE_ARN AWS_REGION RELEASE_KMS_KEY_REF\n' '  :\n'
+hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" 'unset AWS_ROLE_ARN AWS_REGION RELEASE_KMS_KEY_REF' 'unset AWS_ROLE_ARN AWS_REGION'
 hm ksignall "AC2 every step keeps the variables, not release-sign alone" 'if [ "$step" = release-sign ]; then' 'if [ "$step" != apk ]; then'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
@@ -630,7 +630,7 @@ hm kghenv  "AC2 the token file written to GITHUB_ENV" 'export AWS_WEB_IDENTITY_T
 hm kclean  "AC2 the token directory not removed after Witness returns" $'rm -rf "$td"\n[ ! -e' '[ ! -e'
 hm fexec   "AC2 witness exec'd (the cleanup after it would never run)" 'witness run --step' 'exec witness run --step'
 hm fignore "AC2 a failure of the witnessed command is ignored" '|| rc=$?' '|| true'
-hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
+hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \

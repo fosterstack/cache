@@ -45,6 +45,20 @@ REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
 CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+# W1 (#822 round 1): every witnessed step of the release job signs its record through the one signing function (bin/chain-verify.py sign-record), so it carries the three non-secret
+# federation entries as step env, literals: the AWS role of the release Sign identity (ops/terraform/aws-apply/main.tf), its region, and the release key's reference, which must be
+# the verifier's own RELEASE_KEY_REF. They are not credentials: the identity token the role is assumed with is fetched by the helper just before each signing call.
+FED_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+FED_REGION = "us-east-1"
+
+
+def fed_env():
+    """The exact step env of a witnessed step: the key reference is read from bin/chain-verify.py next to this file (a literal in the workflow that differs from it is refused)."""
+    try:
+        m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
+    except OSError:
+        m = None
+    return {"AWS_ROLE_ARN": FED_ROLE, "AWS_REGION": FED_REGION, "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
@@ -348,19 +362,28 @@ def credentials(path):
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
+            if name == "release-verify":      # the release job's own re-run: no credential, only the three federation entries (it signs its record)
+                seen_verify = True
+                if env != fed_env() or CRED_RE.search(blob) or has_expression(s):
+                    bad.append("release-verify must carry exactly the step env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), env))
+                continue
             if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
-            seen_verify = name == "release-verify"
             continue
         if name is None:
             if env is not None or CRED_RE.search(blob):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
+        fed = fed_env()
         got = set((env or {}).keys())
-        if got != want:
-            bad.append("%s must get exactly the credentials %s, got %s" % (name, sorted(want), sorted(got)))
+        if got != want | set(fed):
+            bad.append("%s must get exactly the credentials %s and the federation entries %s, got %s" % (name, sorted(want), sorted(fed), sorted(got)))
         for k, v in (env or {}).items():
+            if k in fed:
+                if v != fed[k]:
+                    bad.append("%s in %s must be the literal %r, got %r" % (k, name, fed[k], v))
+                continue
             ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
             if k in CREDS and not ok:
                 bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))

@@ -503,8 +503,9 @@ STEPS = ("apk", "build", "rapk", "rebuild",
          "release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify")      # the closed list (PR 3 adds Check's three steps, PR 4 the six of Release); the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # Handoff 0713: Witness signs with the release KMS key by its alias. The identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
-# file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; every step but
-# release-sign runs its script under `env -u` of both variables; both are sensitive keys of the record.
+# file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN. Witness runs first with no token
+# and no AWS variable (every step but release-sign, whose script signs with the key itself); a fresh token is fetched just before the one signing function is called; both
+# variables are sensitive keys of the record.
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
 
 
@@ -518,32 +519,35 @@ def witnessed_lines():
             ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
             ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
             ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
-            'case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) echo "witnessed: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1 ;; esac',
             "umask 077",
             'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
             "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
-            'sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" '
-            '"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
-            'tok=$(cat "$td/token")',
-            '[ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
-            'echo "::add-mask::$tok"',
-            'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"',
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
-            "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
+            "role=$AWS_ROLE_ARN region=$AWS_REGION kref=$RELEASE_KMS_KEY_REF",
+            "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL",
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
+            "oidc_token() {",
+            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
+            '  tok=$(cat "$td/token")',
+            '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
+            '  echo "::add-mask::$tok"',
+            "}",
             'if [ "$step" = release-sign ]; then',
-            "  wrap=()",
+            "  oidc_token",
+            '  export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"',
             "else",
-            "  wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)",
+            "  unset AWS_ROLE_ARN AWS_REGION RELEASE_KMS_KEY_REF",
             "fi",
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",
             'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?' % keys,
+            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
             'if [ "$rc" -eq 0 ]; then',
-            '  jq -r .payload "$local_record" | base64 -d > "$td/payload" || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
-            '  python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
+            '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
+            "  oidc_token",
+            '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
+            'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
             '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json || rc=$?',
             "fi",
             'rm -rf "$td"',
@@ -804,7 +808,7 @@ NS_SHA = {
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
-    "bin/chain-verify.py": "0631cb29e883e8a9e19898c7a253bf7696037cca6a91cc70a03b7e8a8d1240e6",
+    "bin/chain-verify.py": "43d62d448512bf8e8c7cd9009548621104900b9f700d76a1a85aaa619864257c",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
     "bin/chain_items.py": "d34f6c9c5f6d79b97e3ea29bfdc0704c687e87b05cd7b2e93b2f3ae873baa49b",

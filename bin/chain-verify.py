@@ -1329,16 +1329,23 @@ def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sle
     `bundle_path` keeps cosign's bundle at that path (Sign publishes it); without it the bundle is a temporary file.
     `run` and `sleep` are arguments so a test passes a fake cosign and a clock that waits for nothing."""
     out_record = os.path.abspath(out_record)
-    if os.path.lexists(out_record):
-        refuse("sign", "the record %s exists: a signed record is never overwritten" % os.path.basename(out_record))
     out_dir, base = os.path.split(out_record)
     stem = base[:-len(".json")] if base.endswith(".json") else base
+    entries = os.path.join(out_dir, stem + ".rekor.json")
+    # both paths are checked before cosign is asked: lexists, so a symlink or a directory counts as taken and is never followed or written through
+    if os.path.lexists(out_record):
+        refuse("sign", "the record %s exists: a signed record is never overwritten" % os.path.basename(out_record))
+    if os.path.lexists(entries):
+        refuse("sign", "the entries file %s exists: a signed record's entries are never overwritten" % os.path.basename(entries))
     with open(statement_path, "rb") as f:
         statement = f.read()
     with tempfile.TemporaryDirectory() as tmp:
         bundle = bundle_path or os.path.join(tmp, "record.bundle.json")
+        tries = [0]
+        last_err = [b""]
 
         def fetch():
+            tries[0] += 1
             argv = ["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF, "--signing-config", signing_config,
                     "--statement", statement_path, "--bundle", bundle]
             try:
@@ -1348,6 +1355,7 @@ def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sle
                        else "cosign could not be started (%s)" % type(ex).__name__)
             if r.returncode != 0:
                 if REKOR_WORD in (r.stderr or b"").lower():
+                    last_err[0] = r.stderr or b""
                     raise RekorDown(r.stderr[:200])
                 refuse("sign", "cosign failed: %s" % (r.stderr or b"").decode(errors="replace")[:200])
             try:
@@ -1356,16 +1364,43 @@ def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sle
             except (OSError, ValueError):
                 refuse("sign", "the bundle cosign wrote is missing or not JSON")
 
-        bun = rekor_with_retry(fetch, sleep, "sign")
+        try:
+            bun = rekor_with_retry(fetch, sleep, "sign")
+        except Refuse as bad:
+            if last_err[0] and "did not answer" in bad.reason:
+                # the last error cosign printed, bounded, instead of a claim about what Rekor did
+                refuse("sign", "cosign failed %d times with an error naming Rekor: %s" % (tries[0], last_err[0][-2000:].decode(errors="replace").strip()))
+            raise
         bundle_to_outputs(bun, tmp, stem, expect_payload=statement)
         os.makedirs(out_dir, exist_ok=True)
-        entries = os.path.join(out_dir, stem + ".rekor.json")
-        shutil.copyfile(os.path.join(tmp, stem + ".json"), out_record)
-        shutil.copyfile(os.path.join(tmp, stem + ".rekor.json"), entries)
+        with open(os.path.join(tmp, stem + ".json"), "rb") as f:
+            record_bytes = f.read()
+        with open(os.path.join(tmp, stem + ".rekor.json"), "rb") as f:
+            entries_bytes = f.read()
+        # the entries file first and the record last: the record is the commit point, so a failure leaves no record; each file is created
+        # exclusively and never through a link, and what this call made is removed when a later write fails
+        made = []
+        try:
+            for path, data in ((entries, entries_bytes), (out_record, record_bytes)):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+                made.append(path)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+        except OSError as ex:
+            for path in made:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            refuse("sign", "cannot write the record and its entries file (%s): nothing is left behind" % type(ex).__name__)
 
 
 def cmd_sign_record(a):
     """Sign one staged Witness payload with the release key (the one signing function), write the record and its entries."""
+    # the one place the job's key reference is checked: it must be the verifier's own key, byte for byte, and is refused before cosign is asked
+    if os.environ.get("RELEASE_KMS_KEY_REF") != RELEASE_KEY_REF:
+        print("error: sign-record needs RELEASE_KMS_KEY_REF set to %s (got %s)" % (RELEASE_KEY_REF, json.dumps(os.environ.get("RELEASE_KMS_KEY_REF"))), file=sys.stderr)
+        sys.exit(2)
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template)), "cosign-signing-config.json")
     kms_sign(a.payload, a.out, signing_config)
 

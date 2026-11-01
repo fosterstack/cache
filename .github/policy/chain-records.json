@@ -7,7 +7,7 @@
   },
   {
    "type": "https://witness.testifysec.com/attestation-collection/v0.1",
-   "claim": "what each Build, Rebuild, Check and Release step did and produced (apk, build, rapk, rebuild; scanners, acceptance, runtime: the scan, suite, FIPS and guide results for the exact candidate digests; release-verify to release-postverify: what Release verified, signed, published and attached), Build, Rebuild and Check records are made under a throwaway key and re-signed by Sign (stage-sign.yml) with the release key, signed with the KMS key and its Rekor entry is recorded beside each (release-verify's own record stays unsigned: it runs under the throwaway key), and Release's own records are signed with the KMS key and their Rekor entries are recorded; the next stage verifies each, and a customer can read Release's own as extra evidence",
+   "claim": "what each Build, Rebuild, Check and Release step did and produced (apk, build, rapk, rebuild; scanners, acceptance, runtime: the scan, suite, FIPS and guide results for the exact candidate digests; release-verify to release-postverify: what Release verified, signed, published and attached), Build, Rebuild and Check records are made under a throwaway key and re-signed by Sign (stage-sign.yml) with the release key, signed with the KMS key and its Rekor entry is recorded beside each (the verify job's release-verify record is local and unsigned: it runs under the throwaway key), and the release job's own records, release-verify's included, are signed with the KMS key and their Rekor entries are recorded; the next stage verifies each, and a customer can read Release's own as extra evidence",
    "consumer": "release"
   },
   {

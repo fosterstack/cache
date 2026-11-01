@@ -595,6 +595,27 @@ SECRET_ROWS = {
 }
 SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}", "APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}",
                 "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}"}
+# W1 (#822 round 1): the three NON-SECRET federation entries of the signing steps: the AWS role of the release Sign identity, its region and the release key's reference. They are step env
+# literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (stage-sign.yml's three jobs, Release's six witnessed steps), reaching only the scripts below,
+# and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
+_SS = ".github/workflows/stage-sign.yml"
+_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/chain-verify.py"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
+           (_SP, "release"): {_WIT, "bin/release-verify.sh", "bin/release-apks.sh", "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}}
+FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
+
+
+def fed_value(name):
+    if name == "AWS_ROLE_ARN":
+        return "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+    if name == "AWS_REGION":
+        return "us-east-1"
+    try:
+        m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
+    except OSError:
+        m = None
+    return m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"
+
+
 # the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
 PLACE_PERMS = {(_SB, "apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
                (_SP, "release"): {"contents": "write", "packages": "write", "id-token": "write"}}
@@ -1177,7 +1198,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
             if (run is None) == (uses is None): errs.append("%s: must have exactly one of run/uses" % sp); continue
             for k in env:
                 if FORBID_ENV.fullmatch(k): errs.append("%s: env %s is never allowed (it can make a shell or interpreter load other code)" % (sp, k))
-                elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json%s" % (sp, k, (" and " + CLOSED) if closed and full in CHAIN_STAGE_FILES else ""))
+                elif k not in env_names and k not in amb and not (k in FED_ROWS and full in CHAIN_STAGE_FILES): errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json%s" % (sp, k, (" and " + CLOSED) if closed and full in CHAIN_STAGE_FILES else ""))
             if uses is not None:
                 if env: errs.append("%s: an action step passes env" % sp)
                 ref = str(uses).partition(" #")[0]      # actions/setup-go is not allowed: Go is installed by the checksum-pinned `bash bin/install-scanner.sh go`
@@ -1211,6 +1232,15 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                 # Round 1 (1): an AMBIENT name is valid in a step only if the step reaches a listed script the name is listed for AND its value is
                 # one plain expression; both checks run whether or not the run line also reads the name whole (a whole read of an ambient name in a
                 # step that does not reach its script is an error). An ambient name is never an ordinary env_names name.
+                if full in CHAIN_STAGE_FILES and k in FED_ROWS:      # W1: a federation entry: an exact literal, at its places only, reaching only its scripts
+                    used = set(r) | argp
+                    scripts = FED_ROWS[k].get((full, jn))
+                    if scripts is None or not used <= scripts:
+                        errs.append("%s: %s is allowed only on the signing steps of stage-sign.yml and the witnessed steps of stage-promote.yml job release: found in %s job %s, reaching %s" % (
+                            sp, k, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
+                    elif v != fed_value(k):
+                        errs.append("%s: %s must be exactly the literal %r, found %r" % (sp, k, fed_value(k), v))
+                    continue
                 if closed and full in CHAIN_STAGE_FILES and k in SECRET_ROWS:     # the five rows: name, place, scripts and value are exact
                     used = set(r) | argp
                     scripts = SECRET_ROWS[k].get((full, jn))

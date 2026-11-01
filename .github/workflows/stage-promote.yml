@@ -199,15 +199,25 @@ jobs:
           name: apk-ubuntu-24.04-arm
           path: apks/ubuntu-24.04-arm
       - name: release-verify under Witness
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witnessed.sh release-verify bin/release-verify.sh
       - name: release-apks under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}
         run: bash bin/witnessed.sh release-apks bin/release-apks.sh
       - name: release-publish under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -215,6 +225,9 @@ jobs:
       - name: release-sign under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -222,11 +235,17 @@ jobs:
       - name: release-assets under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-assets bin/release-assets.sh
       - name: release-postverify under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)

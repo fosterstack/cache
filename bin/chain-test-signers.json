@@ -99,6 +99,12 @@
    "pseudo": "https://slsa.dev/provenance/v1"
   },
   {
+   "name": "chain-verify sign-record",
+   "regex": "chain-verify\\.py\\s+sign-record\\b",
+   "prov": "never",
+   "pseudo": "https://witness.testifysec.com/attestation-collection/v0.1"
+  },
+  {
    "name": "witness-run-action",
    "regex": "testifysec/witness-run-action@",
    "prov": "always",
