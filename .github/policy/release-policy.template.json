@@ -1,7 +1,5 @@
 {
  "repository": "fosterstack/cache",
- "oidc_issuer": "https://token.actions.githubusercontent.com",
- "caller_workflow": ".github/workflows/release.yml",
  "stages": {
   "build": {
    "workflow": ".github/workflows/stage-sign.yml"

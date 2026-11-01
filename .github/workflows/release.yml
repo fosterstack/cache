@@ -613,7 +613,7 @@ jobs:
       - name: attempt read_sign_key
         run: |
           rc=0
-          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json 2> /tmp/read_sign_key.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
       - name: attempt hand_sign_code
         run: |

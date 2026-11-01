@@ -1055,9 +1055,12 @@ mappings:
   - ac: REQ-CHAIN-002-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-trust-files-test.sh" }
+      - { type: shell-test, ref: "bin/chain-manifest-test.sh" }
   - ac: REQ-CHAIN-002-AC3
     evidence:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-rekor-key-test.sh" }
   - ac: REQ-CHAIN-002-AC4
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }

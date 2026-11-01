@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "8913741c8e9470165392fe96c72e4611d96507423a8c6e7bbf625262df77a50c",
+      "sha256": "2bea5f9192ddca1d92df21fcc39c02dbe21d2bd746f1cabf4affde3527acc61e",
       "tools": [
         "make",
         "at",
@@ -225,7 +225,7 @@
     },
     {
       "path": "bin/chain_common.py",
-      "sha256": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
+      "sha256": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
       "tools": [],
       "runs": [],
       "signs": false,
@@ -242,7 +242,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "377ac8e8f5440fb51616ae937416ba0a206c70bce93999270c2df5cfb9c92d0c",
+      "sha256": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
       "tools": [
         "at"
       ],
@@ -630,7 +630,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6"
+      "sha256": "d34f6c9c5f6d79b97e3ea29bfdc0704c687e87b05cd7b2e93b2f3ae873baa49b"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
