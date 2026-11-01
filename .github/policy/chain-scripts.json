@@ -615,7 +615,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "a65ba25d82a27685b81f337bc977ac28396a06b2f69b44fbd3d2ac9f5b5af7db"
+      "sha256": "efeca58af8a332042878efc6cfaf58825fc45f5f4a59ce7e3ef7d7ad99ea5b3c"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -2162,7 +2162,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "90bcd44aa9c2a09902200e89fbb9ab30247c50785e37e95cf56026137d94c09b",
+      "sha256": "31c186347a439e1d3aa308569054f1f6fbeb7387aab676ce05f50e65d80467cc",
       "env_mentions": [
         {
           "name": "PATH",

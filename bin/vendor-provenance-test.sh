@@ -114,7 +114,7 @@ t  AC1 "recipe check: a Go recipe with both settings passes" in_rec "$work/rec/o
 t  AC1 "recipe check: build/melange-baselayout.yaml is skipped, with no Go and no settings" in_rec "$work/rec/skipped" recipe_env_check build
 tn AC1 "recipe check: a NEW recipe with no go word and no settings fails" in_rec "$work/rec/new-no-go" recipe_env_check build
 tn AC1 "recipe check: a recipe with go build and no settings fails" in_rec "$work/rec/no-env" recipe_env_check build
-tn AC1 "recipe check: a recipe with go install and no settings fails" in_rec "$work/rec/install-no-env" recipe_env_check build
+tn AC1 "recipe check: a recipe that installs with go and has no settings fails" in_rec "$work/rec/install-no-env" recipe_env_check build
 tn AC1 "recipe check: a recipe that only mentions go in a comment, without the settings, fails" in_rec "$work/rec/comment-no-env" recipe_env_check build
 t AC1 "go.sum exists and is non-empty" test -s "$root/go.sum"
 

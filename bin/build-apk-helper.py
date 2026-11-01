@@ -25,9 +25,8 @@ interpreter run on a variable path).
       another option or an environment that is not the file's).
 
   The other subcommands are the decisions the build driver makes, so that its script is straight-line text. Each prints
-  its
-  answer or the refusal "<script name>: <reason>" on standard error and exits with the status the script had for that
-  refusal:
+  its answer or the refusal "<script name>: <reason>" on standard error and exits with the status the script had for
+  that refusal:
   check-args UNAME_S UNAME_M ARG...     the host, the options, the environment and the inputs; prints "sde" or "build"
     (exit 2 refused)
   arg NAME ARG...                       one value of the options (src variant arch goarch version apkver build-date
@@ -35,8 +34,8 @@ interpreter run on a variable path).
                                         go-archive melange-lock out render-dir apk-cache-dir); a directory is printed
                                         absolute
   abs-file FILE                         FILE as an absolute path
-  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once (exit 1
-    refused)
+  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once
+                                        (exit 1 refused)
   melange-verdict RC PROBE              the status of the melange call (and of the network probe, empty if none ran):
     0, 1 or 4
   check-buildinfo FILE VERSION          the binary is stamped, clean, and carries the version being built (exit 1
@@ -524,28 +523,56 @@ def baselayout_arg(name, *args):
 
 BASELAYOUT_PACKAGE_KEYS = ("name", "version", "epoch", "description", "copyright")
 BASELAYOUT_COMMANDS = ("mkdir", "chmod", "cp")
-BASELAYOUT_BAD_CHARS = ";&|<>$`()"
+BASELAYOUT_LINE_CHARS = re.compile(r"[A-Za-z0-9._/ -]*")
+BASELAYOUT_PART = re.compile(r"[A-Za-z0-9._-]+")
+BASELAYOUT_MODE = re.compile(r"[0-7]{4}")
+BASELAYOUT_SOURCE = re.compile(r"build/baselayout/etc/[A-Za-z0-9._-]+")
 DESTDIR_TOKEN = "${{targets.destdir}}"
+
+
+def baselayout_destination(word):
+    """True for ${{targets.destdir}}/rel where every component of rel is plain ASCII and none is . or .. """
+    if not word.startswith(DESTDIR_TOKEN + "/"):
+        return False
+    parts = word[len(DESTDIR_TOKEN) + 1:].split("/")
+    return all(BASELAYOUT_PART.fullmatch(p) and p not in (".", "..") for p in parts)
+
+
+def baselayout_line_ok(words):
+    """One line of the recipe, already split on single spaces: mkdir -p DEST..., chmod MODE DEST..., or
+    cp build/baselayout/etc/NAME... ${{targets.destdir}}/etc/ (DEST is a path under the destdir token)."""
+    if words[0] == "mkdir":
+        return len(words) >= 3 and words[1] == "-p" and all(baselayout_destination(w) for w in words[2:])
+    if words[0] == "chmod":
+        return len(words) >= 3 and bool(BASELAYOUT_MODE.fullmatch(words[1])) and all(baselayout_destination(w) for w in words[2:])
+    sources = words[1:-1]
+    return len(words) >= 3 and words[-1] == DESTDIR_TOKEN + "/etc/" and all(
+        BASELAYOUT_SOURCE.fullmatch(w) and not w.endswith(("/.", "/..")) for w in sources)
 
 
 def baselayout_step_lines(step, recipe):
     """The lines of one pipeline step of the base-layout recipe, each checked: the step has the key runs only, and every
-    line starts with mkdir, chmod or cp and holds no character that chains or expands a command."""
+    non-empty line is one of three exact forms (see baselayout_line_ok): ASCII only, single spaces, every destination
+    under the destdir token with no . or .. component. Python and the shell split a line differently on any other
+    separator, so no other separator is allowed at all."""
     if not isinstance(step, dict) or set(step) != {"runs"} or not isinstance(step["runs"], str):
         raise Refused("the recipe %s has a pipeline step that is not exactly one runs: text" % recipe)
     for line in step["runs"].split("\n"):
-        if not line.strip():
+        if line == "":
             continue
-        words = line.split()
+        if not BASELAYOUT_LINE_CHARS.fullmatch(line.replace(DESTDIR_TOKEN, "")):
+            raise Refused("the recipe %s has a line with a character that chains or expands a command, or a separator the "
+                "shell does not split on (only letters, digits, . _ - / and single spaces are allowed): %r" % (recipe, line))
+        words = line.split(" ")
+        if "" in words:
+            raise Refused("the recipe %s has a line outside the allowed form (an empty word: a leading, trailing or double "
+                "space): %r" % (recipe, line))
         if words[0] not in BASELAYOUT_COMMANDS:
             raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, words[0]))
-        for word in words:
-            if DESTDIR_TOKEN in word and (word.count(DESTDIR_TOKEN) != 1 or not (
-                    word == DESTDIR_TOKEN or word.startswith(DESTDIR_TOKEN + "/"))):
-                raise Refused("the recipe %s uses ${{targets.destdir}} inside a word (%s): it may stand alone or start a path "
-                    "with a slash after it" % (recipe, word))
-        if any(c in line.replace(DESTDIR_TOKEN, "") for c in BASELAYOUT_BAD_CHARS):
-            raise Refused("the recipe %s has a line with a character that chains or expands a command: %s" % (recipe, line.strip()))
+        if not baselayout_line_ok(words):
+            raise Refused("the recipe %s has a line outside the allowed form (mkdir -p, chmod MODE, or cp build/baselayout/etc/NAME "
+                "to ${{targets.destdir}}/etc/; every destination under ${{targets.destdir}}/ with no . or .. part): %s"
+                % (recipe, line))
 
 
 def baselayout_facts(recipe, outfile):
@@ -554,7 +581,7 @@ def baselayout_facts(recipe, outfile):
     Everything is read inside the try, so a wrong shape is a refusal and never a traceback."""
     import yaml
     try:
-        d = yaml.safe_load(open(recipe))
+        d = yaml.safe_load(open(recipe, encoding="utf-8"))
         if not isinstance(d, dict) or not isinstance(d.get("package"), dict) or d["package"].get("name") != BASELAYOUT_PACKAGE:
             raise Refused("the recipe %s is not for the package %s: this driver builds only the base layout" % (recipe, BASELAYOUT_PACKAGE))
         if set(d) != {"package", "environment", "pipeline"}:

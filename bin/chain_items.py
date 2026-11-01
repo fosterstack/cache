@@ -189,7 +189,7 @@ def apk_output(result, command):
 
 def one_apk(out_dir, variant):
     pattern = {"standard": r"fscache-[0-9][^/]*-r0\.apk", "fips": r"fscache-fips-[^/]*-r0\.apk",
-        "baselayout": r"fscache-baselayout-[^/]*-r0\.apk"}[variant]
+        "baselayout": r"fscache-baselayout-[0-9][^/]*-r0\.apk"}[variant]
     found = [n for n in sorted(os.listdir(out_dir)) if re.fullmatch(pattern, n)]
     if len(found) != 1:
         refuse("build", "apk: expected exactly one %s apk in %s, found %d" % (variant, out_dir, len(found)))

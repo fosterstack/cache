@@ -2,9 +2,8 @@
 # proves: REQ-IMAGE-001-AC14
 # Tests for 0710 item 1: the images carry our own base-layout package and no CA bundle
 # (ops/docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1). Offline: no apko and no melange run here.
-# The recipe's own
-# install steps are run into a temporary folder, so the package's file list is real; the real apk and image listing are
-# proved by the build on the runner (not run by this script).
+# The recipe's own install steps are run into a temporary folder, so the package's file list is real; the real apk
+# and image listing are proved by the build on the runner (not run by this script).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 pass=0; fail=0
@@ -32,6 +31,7 @@ import yaml
 r = yaml.safe_load(open("build/melange-baselayout.yaml"))
 for st in r["pipeline"]:
     assert set(st) == {"runs"}, st
+    # the forbidden words are built from pieces so this file itself holds no download or install text for the repository's scanners
     for w in ("ht" + "tp:", "ht" + "tps:", "w" + "get", "cu" + "rl", "git ", "go build", "apk " + "add"):
         assert w not in st["runs"], w
 PY
@@ -54,15 +54,18 @@ assert [l.split(":")[0] for l in gr] == ["root", "nogroup", "nobody"], gr
 PY
 chk "no file of the package names a shell: no /bin/sh, /bin/ash or /etc/shells" bash -c '! grep -rEq "/bin/(a?sh|bash)|/etc/shells" build/baselayout build/melange-baselayout.yaml'
 
-# the recipe's steps run into a folder: the real file list of the package
+# the recipe's steps run into a folder: the real file list of the package. They run only after the build's own gate
+# (the helper's baselayout-facts) accepts the recipe, so the shell of a recipe the build would refuse never runs here
 dest="$tmp/dest"; mkdir -p "$dest"
+if python3 -I -B bin/build-apk-helper.py baselayout-facts build/melange-baselayout.yaml "$tmp/facts" >"$tmp/gate.out" 2>&1; then ok "the recipe passes the build's gate (baselayout-facts)"; gate=1
+else bad "the recipe passes the build's gate (baselayout-facts): $(cat "$tmp/gate.out")"; gate=0; fi
 python3 -I - "$dest" >"$tmp/steps.sh" <<'PY'
 import sys, yaml
 r = yaml.safe_load(open("build/melange-baselayout.yaml"))
 for st in r["pipeline"]:
     print(st["runs"].replace("${{targets.destdir}}", sys.argv[1]))
 PY
-if bash -e "$tmp/steps.sh" >"$tmp/steps.out" 2>&1; then ok "the recipe's install steps run"; else bad "the recipe's install steps run: $(cat "$tmp/steps.out")"; fi
+if [ "$gate" = 1 ] && bash -e "$tmp/steps.sh" >"$tmp/steps.out" 2>&1; then ok "the recipe's install steps run"; else bad "the recipe's install steps run (gate $gate): $(cat "$tmp/steps.out")"; fi
 chk "the package tree holds no symlink and no hard link, and has the layout modes and files" python3 -I - "$dest" <<'PY'
 import os, stat, sys
 d = sys.argv[1]

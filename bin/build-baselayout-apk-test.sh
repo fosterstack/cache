@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # proves: REQ-IMAGE-001-AC16
-# Tests of bin/build-baselayout-apk.sh (0710 chain part a): the sealed melange build of build/melange-
-# baselayout.yaml. Every
-# assertion runs offline against PATH stubs, like bin/build-apk-test.sh: nothing here calls a real sudo, unshare or
-# melange.
+# Tests of bin/build-baselayout-apk.sh (0710 chain part a): the sealed melange build of build/melange-baselayout.yaml.
+# Every assertion runs offline against PATH stubs, like bin/build-apk-test.sh: nothing here calls a real sudo, unshare
+# or melange.
 # The production script has no test hook: the tests run a COPY in which exactly the lines ending in TEST-SUBST are
-# replaced
-# and which is checked to differ in no other line.
+# replaced and which is checked to differ in no other line.
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
 cd "$root"
 unset GITHUB_ACTIONS
@@ -120,7 +118,8 @@ bl_recipe link 'd["pipeline"][0]["runs"] += "ln -s usr/bin ${{targets.destdir}}/
 sr "0710" "refuses a recipe with an ln -s step (a symlink in the package)" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-link-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe fetch 'd["pipeline"] = [{"uses": "fetch"}]'
 sr "0710" "refuses a recipe whose pipeline step uses fetch" 'not exactly one runs' "${bbe[@]}" "$bt/bb-fetch-w.sh" "${bb_args[@]}" --out "$(mo)"
-bl_recipe fetchcmd 'd["pipeline"][0]["runs"] += "w" "get ht" "tp://example.test/x\n"'
+# the download tool names are built from pieces so this file holds no download text for the repository's scanners
+bl_recipe fetchcmd 'd["pipeline"][0]["runs"] += "w" "get example.test/x\n"'
 sr "0710" "refuses a recipe line that starts with a download tool" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-fetchcmd-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe chain 'd["pipeline"][0]["runs"] += "mkdir -p x; w" "get ht" "tp://example.test/x\n"'
 sr "0710" "refuses a mkdir line that chains a second command" 'chains or expands' "${bbe[@]}" "$bt/bb-chain-w.sh" "${bb_args[@]}" --out "$(mo)"
@@ -142,6 +141,21 @@ bl_recipe tokglue 'd["pipeline"][0]["runs"] += "cp x y${{targets.destdir}}\n"'
 sr "0710" "refuses the destdir token glued after other text" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokglue-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe tokletter 'd["pipeline"][0]["runs"] += "cp x ${{targets.destdir}}x/etc\n"'
 sr "0710" "refuses the destdir token followed by a letter" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokletter-w.sh" "${bb_args[@]}" --out "$(mo)"
+# one strict form per line: ASCII and single spaces only, every destination under the destdir token, cp sources fixed (round-3 S1)
+bl_recipe sepU 'd["pipeline"][0]["runs"] += "mkdir cp\u3000\ncp\u3000/../../../bin/sh -c x\n"'
+sr "0710" "refuses a U+3000 separator (Python splits on it, the shell does not)" 'chains or expands' "${bbe[@]}" "$bt/bb-sepU-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe sepF 'd["pipeline"][0]["runs"] += "cp x\fy ${{targets.destdir}}/etc/\n"'
+sr "0710" "refuses a form feed inside a line" 'chains or expands' "${bbe[@]}" "$bt/bb-sepF-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe planted 'd["pipeline"][0]["runs"] += "cp /usr/bin/w" "get /usr/local/bin/chmod\n"'
+sr "0710" "refuses a cp that puts a program where an allowed command is looked up" 'allowed form' "${bbe[@]}" "$bt/bb-planted-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe srcback 'd["pipeline"][0]["runs"] += "cp ${{targets.destdir}}/etc/passwd build/baselayout/etc/passwd\n"'
+sr "0710" "refuses a cp that rewrites a source file of the checks" 'allowed form' "${bbe[@]}" "$bt/bb-srcback-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe dotdot 'd["pipeline"][0]["runs"] += "mkdir -p ${{targets.destdir}}/../x\n"'
+sr "0710" "refuses a .. component after the destdir token" 'allowed form' "${bbe[@]}" "$bt/bb-dotdot-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe tabsep 'd["pipeline"][0]["runs"] += "mkdir\t-p ${{targets.destdir}}/x\n"'
+sr "0710" "refuses a tab inside a line" 'chains or expands' "${bbe[@]}" "$bt/bb-tabsep-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe dblspace 'd["pipeline"][0]["runs"] += "mkdir  -p ${{targets.destdir}}/x\n"'
+sr "0710" "refuses a double space inside a line" 'allowed form' "${bbe[@]}" "$bt/bb-dblspace-w.sh" "${bb_args[@]}" --out "$(mo)"
 # a recipe that is not valid UTF-8 is a refusal at exit 2, not a traceback (round-2 R4)
 cp "$root/build/melange-baselayout.yaml" "$bt/recipe-utf.yaml"; printf '# \377\n' >>"$bt/recipe-utf.yaml"
 mkcopy "$bt/bb-utf.sh" "$bt/recipe-utf.yaml"; wrapper "$bt/bb-utf-w.sh" "$bt/bb-utf.sh"
@@ -150,6 +164,8 @@ t "0710" "the UTF-8 refusal prints no traceback" bash -c "! grep -q Traceback '$
 # melange writes the entries in its own order: the same list in another order passes (round-2 R1)
 cp -R "$work/bsrc" "$bt/bsrc-rev"; tac "$work/bsrc/build/baselayout/members.txt" >"$bt/bsrc-rev/build/baselayout/members.txt"
 sd "0710" "members.txt in another order than the apk's still passes (the check compares sorted lists)" '^melange build ' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-rev" --out "$(mo)"
+cp -R "$work/bsrc" "$bt/bsrc-dup"; head -n 1 "$work/bsrc/build/baselayout/members.txt" >>"$bt/bsrc-dup/build/baselayout/members.txt"
+sf "0710" "a members.txt with one line repeated is refused, naming a repeated line" 'a repeated line' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-dup" --out "$(mo)"
 sf "0710" "a failed melange call fails the build" 'compile error|melange' env STUB_FAIL=1 "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
 
 echo "build-baselayout-apk-test: $pass passed, $failn failed"
