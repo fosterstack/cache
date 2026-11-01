@@ -1,0 +1,721 @@
+#!/usr/bin/env bash
+# proves: REQ-REL-013-AC5, REQ-REL-013-AC9, REQ-REL-013-AC10, REQ-REL-013-AC11
+# The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml,
+# bin/evidence-letter-fetch.sh, bin/evidence-letter-publish.sh, bin/evidence-letter-verify.sh and
+# bin/evidence-letter-present.sh. Offline: cosign, gh, date and the Check-record verifier are stand-ins that record
+# their arguments; nothing is signed or uploaded. A mutation of the workflow must turn its own check red.
+set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
+here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
+python3 - "$root" <<'PY'
+import base64, copy, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import yaml
+ROOT = sys.argv[1]
+passed = failed = 0
+
+
+def check(name, ok, got=""):
+    global passed, failed
+    if ok:
+        passed += 1
+        print("ok:", name)
+    else:
+        failed += 1
+        print("FAIL:", name, "->", got)
+
+
+def read(rel):
+    return open(os.path.join(ROOT, rel)).read()
+
+
+# ---- the workflow file, judged; each mutation below must make the judge say something
+WF = ".github/workflows/evidence-letter.yml"
+ISSUER = "https://token.actions.githubusercontent.com"
+MAIN = "github.ref == 'refs/heads/main'"
+
+
+def steps_text(job):
+    return [str(s.get("run", "")) + str(s.get("uses", "")) for s in job["steps"]]
+
+
+def judge(doc, text):
+    """Everything the workflow must keep; the list of what it does not."""
+    bad = []
+    on = doc.get(True, doc.get("on"))
+    if sorted(on) != ["schedule", "workflow_dispatch"] or len(on["schedule"]) != 1:
+        bad.append("it must start only on one monthly schedule or by hand")
+    if doc["permissions"] != {"contents": "read"}:
+        bad.append("the workflow token must only read")
+    jobs = doc["jobs"]
+    if list(jobs) != ["draft", "sign"]:
+        return bad + ["the jobs must be draft and sign"]
+    draft, sign = jobs["draft"], jobs["sign"]
+    if draft["permissions"] != {"contents": "read"}:
+        bad.append("draft must only read, with no identity token")
+    if sign["permissions"] != {"contents": "write", "id-token": "write"}:
+        bad.append("sign must hold exactly contents: write and id-token: write")
+    for name, job in jobs.items():
+        if MAIN not in str(job.get("if", "")):
+            bad.append("%s must run only from main" % name)
+    if sign.get("needs") not in ("draft", ["draft"]):
+        bad.append("sign must need draft")
+    if sign.get("environment") != "evidence-letter" or "environment" in draft:
+        bad.append("only sign runs in the environment evidence-letter (its own signing subject)")
+    if "needs.draft.outputs.made == 'true'" not in str(sign.get("if", "")):
+        bad.append("sign must run only when draft made a letter")
+    up = [s for s in draft["steps"] if "upload-artifact" in str(s.get("uses", ""))]
+    down = [s for s in sign["steps"] if "download-artifact" in str(s.get("uses", ""))]
+    if len(up) != 1 or len(down) != 1 or up[0]["with"]["name"] != down[0]["with"]["name"]:
+        bad.append("sign must take the letter from the artifact draft uploaded")
+    dtext, stext = steps_text(draft), steps_text(sign)
+    install = [i for i, t in enumerate(dtext) if "bash bin/install-scanner.sh cosign" in t]
+    fetch = [i for i, t in enumerate(dtext) if "bash bin/evidence-letter-fetch.sh" in t]
+    if not install or not fetch or install[0] > fetch[0]:
+        bad.append("draft must install cosign (checksummed) before the fetch that verifies with it")
+    if not any("bin/evidence-letter.py" in t and "--draft" not in t for t in dtext):
+        bad.append("draft must make the letter without --draft")
+    if not (any("bash bin/install-scanner.sh cosign" in t for t in stext)
+            and any("bash bin/evidence-letter-publish.sh" in t for t in stext)):
+        bad.append("sign must install cosign and sign only through the publish script")
+    sign_env = [st.get("env") or {} for st in sign["steps"] if "evidence-letter-publish.sh" in str(st.get("run", ""))]
+    if len(sign_env) != 1 or set(sign_env[0]) != {"GH_TOKEN", "MONTH", "RELEASE_KMS_KEY_REF"}:
+        bad.append("the sign step's env must be exactly GH_TOKEN, MONTH and RELEASE_KMS_KEY_REF")
+    elif sign_env[0]["RELEASE_KMS_KEY_REF"] != "awskms:///alias/fosterstack-release-signing":
+        bad.append("RELEASE_KMS_KEY_REF must be the plain literal key reference (no vars, secret or expression)")
+    if text.count("RELEASE_KMS_KEY_REF") != 1:
+        bad.append("RELEASE_KMS_KEY_REF must be set once, on the sign step only")
+    if "cosign sign" in text or "--clobber" in text:
+        bad.append("no signing call and no --clobber in the workflow")
+    uses = re.findall(r"uses:\s*(\S+)", text)
+    if not uses or not all(re.fullmatch(r".+@[0-9a-f]{40}", u) for u in uses):
+        bad.append("every action must be pinned to a full commit id")
+    if "secrets." in text or "pull_request" in text:
+        bad.append("no secrets and no pull-request trigger")
+    return bad
+
+
+wf = read(WF)
+doc = yaml.safe_load(wf)
+check("AC9: the workflow keeps everything the judge lists", judge(doc, wf) == [], judge(doc, wf))
+
+
+def mutated(label, change, text_change=None):
+    d = copy.deepcopy(doc)
+    change(d)
+    t = text_change(wf) if text_change else wf
+    check("AC9: mutation, %s: the judge objects" % label, judge(d, t) != [])
+
+
+mutated("sign does not need draft", lambda d: d["jobs"]["sign"].pop("needs"))
+mutated("sign loses its environment", lambda d: d["jobs"]["sign"].pop("environment", None))
+mutated("draft joins the environment", lambda d: d["jobs"]["draft"].update({"environment": "evidence-letter"}))
+mutated("the key reference comes from a variable",
+        lambda d: [st["env"].update({"RELEASE_KMS_KEY_REF": "${{ vars.RELEASE_KEY }}"})
+                   for st in d["jobs"]["sign"]["steps"] if "env" in st])
+mutated("sign no longer waits for a letter", lambda d: d["jobs"]["sign"].update({"if": MAIN}))
+mutated("draft runs from any ref", lambda d: d["jobs"]["draft"].pop("if"))
+mutated("sign runs from any ref", lambda d: d["jobs"]["sign"].update({"if": "needs.draft.outputs.made == 'true'"}))
+mutated("draft no longer installs cosign", lambda d: d["jobs"]["draft"].update(
+    {"steps": [s for s in d["jobs"]["draft"]["steps"] if "install-scanner" not in str(s.get("run", ""))]}))
+mutated("sign downloads another artifact", lambda d: [s["with"].update(name="other") for s in d["jobs"]["sign"]["steps"]
+                                                      if "download-artifact" in str(s.get("uses", ""))])
+mutated("draft gets an identity token", lambda d: d["jobs"]["draft"]["permissions"].update({"id-token": "write"}))
+mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release upload --clobber\n")
+mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
+
+pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
+check("AC9: the key comes from RELEASE_KMS_KEY_REF and the signing config is the committed one",
+      '--key "$RELEASE_KMS_KEY_REF"' in pub and "--signing-config .github/policy/cosign-signing-config.json" in pub)
+for banned in ("alias", "--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog",
+               "@refs/heads/main", "keyless", "--identity-token", "--fulcio-url", "--oidc-"):
+    check("F2: neither the publish nor the verify script holds " + banned,
+          banned not in pub and banned not in ver, banned)
+check("AC9: no upload may overwrite", "--clobber" not in pub)
+
+
+# ---- the month step (R7): a dispatched month is checked before it is written to the step's outputs
+def month_step(text, given):
+    """Run the workflow's `the month` step with INPUT_MONTH=given; returns (exit code, what it wrote to GITHUB_OUTPUT)."""
+    step = [st for st in yaml.safe_load(text)["jobs"]["draft"]["steps"] if st.get("id") == "month"][0]
+    out = os.path.join(tempfile.mkdtemp(), "month-output")
+    open(out, "w").close()
+    r = subprocess.run(["bash", "-e", "-c", step["run"]], env=dict(os.environ, INPUT_MONTH=given, GITHUB_OUTPUT=out),
+                       capture_output=True, text=True)
+    return r.returncode, open(out).read()
+
+
+code, wrote = month_step(wf, "2026-11\nmade=true")
+check("R7/AC9: a dispatched month holding a newline ends the step with 2 and writes no output", (code, wrote) == (2, ""),
+      (code, wrote))
+check("R7/AC9: a month that is not YYYY-MM with a month 01 to 12 ends the step with 2",
+      all(month_step(wf, m) == (2, "") for m in ("2026-13", "2026-00", "26-11", "2026-1", "x", " 2026-11")))
+check("R7/AC9: a good month is written, and so is the default of last month (empty input)",
+      month_step(wf, "2026-11") == (0, "month=2026-11\n") and month_step(wf, "")[0] == 0
+      and re.fullmatch(r"month=\d{4}-\d{2}\n", month_step(wf, "")[1]))
+check("R7/AC9: mutation, the check removed: the newline month reaches the output",
+      month_step(wf.replace('[[ $month =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "the month is YYYY-MM" >&2; exit 2; }\n', ""),
+                  "2026-11\nmade=true")[1] != "")
+
+
+# ---- the words the repository keeps about the letter's signing job (R2) and the path of the Oct 3 amendment (R4)
+def id_token_reason(text):
+    rows = [r for r in json.loads(text)["jobs"] if (r["workflow"], r["job"]) == ("evidence-letter.yml", "sign")]
+    return rows[0]["reason"] if len(rows) == 1 else None
+
+
+def reason_bad(reason):
+    return reason is None or "keyless" in reason.lower() or "KMS release key" not in reason
+
+
+ID_TOKEN = read(".github/policy/id-token-jobs.json")
+check("R2/AC9: the id-token row of the letter's sign job names the KMS release key and no keyless call",
+      not reason_bad(id_token_reason(ID_TOKEN)), id_token_reason(ID_TOKEN))
+check("R2/AC9: mutation, the old keyless reason: the check objects",
+      reason_bad(id_token_reason(ID_TOKEN.replace("KMS release key by federation, its Rekor entry recorded",
+                                                  "keyless, the same cosign call as bin/release-sign.sh"))))
+AMENDMENT = re.compile(r"(?<!ops/)docs/ratify/2026-10-02-owner-load\.md")
+CITING = (".github/policy/id-token-jobs.json", "bin/chain-sign-wiring-test.sh", "bin/chain-test-shape.py",
+          "bin/chain-build-wiring-test.sh", "bin/workflow-consolidation-test.sh", "requirements/requirements.yaml",
+          "docs/quality/traceability.md")
+check("R4: every citation of the Oct 3 amendment gives its path in the ops repository, ops/docs/ratify/...",
+      [f for f in CITING if AMENDMENT.search(read(f))] == [], [f for f in CITING if AMENDMENT.search(read(f))])
+check("R4: mutation, a citation without the ops/ prefix: the check objects",
+      AMENDMENT.search("(the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md)") is not None)
+
+
+# ---- stand-ins: plain scripts that write what they were asked into a log
+STUBS = {
+    "cosign": """#!/bin/sh
+echo "cosign $*" >> "$LOG"
+prev=""
+for a in "$@"; do
+  # the file that follows --key is the key: log what it holds
+  if [ "$prev" = --key ] && [ -f "$a" ]; then echo "key-file: $(cat "$a")" >> "$LOG"; fi
+  prev=$a
+done
+case "$1" in
+  verify-blob)
+    n=$(grep -c "^cosign verify-blob" "$LOG")
+    [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
+  sign-blob)
+    for last; do :; done
+    echo "signed-sha256: $(sha256sum "$last" | cut -d' ' -f1)" >> "$LOG"
+    while [ $# -gt 0 ]; do [ "$1" = --bundle ] && bundle=$2; shift; done
+    echo '{"verificationMaterial":{"tlogEntries":'"$TLOG"'}}' > "$bundle" ;;
+esac
+""",
+    "date": """#!/bin/sh
+case "$*" in *%Y-%m-%d*) cat "$FIX/today_full" ;; *%Y-%m*) cat "$FIX/today" ;; *) exec /bin/date "$@" ;; esac
+""",
+    "python3": """#!/bin/sh
+case "$*" in
+  *chain-verify.py*policy*make*) echo "python3 $*" >> "$LOG" ;;
+  *chain-verify.py*check-list*)
+    [ -z "$REAL_CHECKLIST" ] || exec "$REAL_PYTHON" "$@"
+    echo "python3 $*" >> "$LOG"
+    if [ -e "$FIX/bad-records" ]; then echo "refused at check: the scanners record is not signed" >&2; exit 1; fi
+    exit 0 ;;
+esac
+exec "$REAL_PYTHON" "$@"
+""",
+    "gh": """#!/bin/sh
+echo "gh $*" >> "$LOG"
+case "$1 $2" in
+  "api --paginate") for a in "$@"; do path=$a; done
+    case "$path" in
+      *security-advisories*)
+        [ ! -e "$FIX/no-advisories" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+        cat "$FIX/advisories.json" ;;
+      *) cat "$FIX/pages.json" ;;
+    esac ;;
+  "api repos/"*) cat "$FIX/assets/${2##*/}" ;;
+  "release view")
+    [ -z "$FAIL_VIEW" ] || { echo "HTTP 500: boom" >&2; echo "second line" >&2; exit 1; }
+    echo "$LATEST" ;;
+  "release upload")
+    kind=letter; case "$4" in *.bundle) kind=bundle ;; esac
+    if [ "$kind" = "$FAIL_UPLOAD" ]; then
+      echo "HTTP 422: Validation Failed (already_exists)" >&2; echo "second line" >&2; exit 1
+    fi
+    echo "uploaded-sha256 $kind: $(sha256sum "$4" | cut -d' ' -f1)" >> "$LOG"
+    echo "${4##*/}" >> "$FIX/uploaded" ;;
+  "release delete-asset")
+    [ -z "$FAIL_DELETE" ] || exit 1
+    grep -vxF "$4" "$FIX/uploaded" > "$FIX/uploaded.new" || true; mv "$FIX/uploaded.new" "$FIX/uploaded" ;;
+esac
+""",
+}
+
+
+def openssl(*args):
+    return subprocess.run(["openssl", *args], check=True, capture_output=True).stdout
+
+
+def throwaway_repo(tmp):
+    """A copy of the scripts and the policy folder with a root key, a release key and a manifest made here: the real
+    `chain-verify.py policy make` runs on it, so no case needs a stand-in for the tool under test."""
+    repo = os.path.join(tmp, "repo")
+    shutil.copytree(os.path.join(ROOT, "bin"), os.path.join(repo, "bin"))
+    shutil.copytree(os.path.join(ROOT, ".github/policy"), os.path.join(repo, ".github/policy"))
+    keys = os.path.join(tmp, "keys")
+    os.makedirs(keys)
+    for name in ("root", "rel"):
+        openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", keys + "/%s.key" % name)
+        openssl("pkey", "-in", keys + "/%s.key" % name, "-pubout", "-out", keys + "/%s.pub" % name)
+    pub = open(keys + "/rel.pub").read()
+    der = openssl("pkey", "-pubin", "-in", keys + "/rel.pub", "-outform", "DER")
+    when = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body = json.dumps({"public_key": pub, "key_id": hashlib.sha256(der).hexdigest(), "valid_from": when},
+                      sort_keys=True, indent=1).encode() + b"\n"
+    pol = os.path.join(repo, ".github/policy")
+    open(pol + "/release-key-root.pub", "w").write(open(keys + "/root.pub").read())
+    open(pol + "/release-key-manifest.json", "wb").write(body)
+    open(keys + "/m.json", "wb").write(body)
+    sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/m.json")
+    open(pol + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    return repo, pub.splitlines()[1]
+
+
+def sandbox(tmp):
+    fix, bins = os.path.join(tmp, "fix"), os.path.join(tmp, "bin")
+    os.makedirs(os.path.join(fix, "assets"))
+    os.makedirs(bins)
+    repo, key_line = throwaway_repo(tmp)
+    for name, body in STUBS.items():
+        path = os.path.join(bins, name)
+        open(path, "w").write(body)
+        os.chmod(path, 0o755)
+    open(os.path.join(fix, "uploaded"), "w").close()
+    open(os.path.join(tmp, "log"), "w").write("throwaway-key: %s\n" % key_line)
+    open(os.path.join(fix, "today"), "w").write("2026-12\n")
+    open(os.path.join(fix, "today_full"), "w").write("2026-12-10\n")
+    open(os.path.join(fix, "advisories.json"), "w").write(
+        json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
+    env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
+               REAL_PYTHON=sys.executable, REAL_CHECKLIST="", REPO_DIR=repo, KEY_LINE=key_line,
+               TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="", FAIL_VIEW="",
+               FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
+    return fix, env
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def put_releases(fix, releases):
+    """releases: [(tag, published, draft, prerelease, page)]; every one gets the assets the fetch needs,
+    ids from 100."""
+    pages, next_id = {}, 100
+    for tag, published, draft, pre, page in releases:
+        manifest, vex = ("manifest of " + tag).encode(), ("vex of " + tag).encode()
+        files = {"release-manifest.json": manifest, "fosterstack-cache.openvex.json": vex,
+                 "release-files.sha256": ("%s  release-manifest.json\n%s  fosterstack-cache.openvex.json\n"
+                                          % (sha(manifest), sha(vex))).encode(),
+                 "release-files.sha256.bundle": b'{"verificationMaterial":{"tlogEntries":[{}]}}',
+                 "digests.json": json.dumps({"image-production": "sha256:" + "a" * 64}).encode()}
+        for step in ("scanners", "acceptance", "runtime", "arm64"):
+            files["%s-collection.json" % step] = ("record %s of %s" % (step, tag)).encode()
+        assets = []
+        for name, data in files.items():
+            open(os.path.join(fix, "assets", str(next_id)), "wb").write(data)
+            assets.append({"id": next_id, "name": name})
+            next_id += 1
+        pages.setdefault(page, []).append({"tag_name": tag, "published_at": published, "draft": draft,
+                                           "prerelease": pre, "assets": assets})
+    json.dump([pages[k] for k in sorted(pages)], open(os.path.join(fix, "pages.json"), "w"))
+
+
+RELEASES = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.6.0", "2027-02-03T12:00:00Z", False, False, 1),
+            ("v0.3.1", "2026-11-04T12:00:00Z", False, False, 2), ("v0.3.0", "2026-10-30T12:00:00Z", False, False, 2),
+            ("v0.5.0-rc1", "2026-11-21T12:00:00Z", False, True, 2), ("v0.4.5", "2026-11-22T12:00:00Z", True, False, 2)]
+
+
+def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False):
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    put_releases(fix, release_list)
+    if today:
+        open(os.path.join(fix, "today"), "w").write(today + "\n")
+    if edit:
+        edit(fix)
+    if real_verifier:
+        env["REAL_CHECKLIST"] = "1"
+    out = os.path.join(tmp, "work")
+    p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-fetch.sh"), month, out], cwd=env["REPO_DIR"], env=env,
+                       capture_output=True, text=True)
+    got = sorted(os.listdir(out + "/rel")) if os.path.isdir(out + "/rel") else []
+    return p, got, open(os.path.join(tmp, "log")).read().splitlines(), out, fix
+
+
+def one_line(p):
+    return p.returncode == 1 and len(p.stderr.strip().splitlines()) == 1
+
+
+def key_of(log):
+    """The public key line of the throwaway release key this sandbox made (the first line the log holds)."""
+    return next(l for l in log if l.startswith("throwaway-key: ")).split(": ", 1)[1]
+
+
+# ---- the fetch: which releases, from all pages
+p, got, log, out, fix = fetch("2026-11")
+check("AC10: the fetch takes the month's final releases from every page, no candidate, draft or other month",
+      p.returncode == 0 and got == ["v0.3.1", "v0.4.0"], (p.stderr, got))
+p2, got2, _l, _o, _f = fetch("2027-01", today="2027-03")
+check("AC10: a month with no release gets the newest release before it, and only that one",
+      p2.returncode == 0 and got2 == ["v0.4.0"], (p2.stderr, got2))
+p3, got3, _l, _o, _f = fetch("2026-10")
+check("AC10: a month with a release does not fetch the release before it", got3 == ["v0.3.0"], got3)
+check("AC10: it writes release.json for each and the advisories as one list from every page",
+      all(os.path.isfile(out + "/rel/%s/release.json" % g) for g in got)
+      and json.load(open(out + "/advisories.json")) == [{"ghsa_id": "GHSA-a"}, {"ghsa_id": "GHSA-b"}])
+check("AC10: it only reads: no upload, no write call",
+      not any(("upload" in l or "-X" in l or "--method" in l) for l in log))
+check("AC10: it fetches the files the verification needs and no release is downloaded by the subcommand",
+      os.path.isfile(out + "/rel/v0.3.1/release-files.sha256.bundle")
+      and os.path.isfile(out + "/rel/v0.3.1/digests.json")
+      and os.path.isfile(out + "/rel/v0.3.1/witness-check/witness-arm64/arm64-collection.json")
+      and not any("release download" in l for l in log))
+check("AC10: a bad month is refused", fetch("2026-13")[0].returncode == 2)
+check("AC9: a month that is not over is refused, in one line", one_line(fetch("2026-12", today="2026-12")[0]))
+check("AC9: a future month is refused", one_line(fetch("2027-05", today="2026-12")[0]))
+
+def no_advisories(fix):
+    open(os.path.join(fix, "no-advisories"), "w").close()
+
+
+pn = fetch("2026-11", no_advisories)
+check("F15: advisories the token cannot read (a 403 or 404) refuse the letter, in one line that names them",
+      one_line(pn[0]) and "advisories" in pn[0].stderr and "HTTP 404" in pn[0].stderr, pn[0].stderr)
+
+
+# ---- the checks on what was fetched
+def list_verifies(log, tag):
+    bundle = "/rel/%s/release-files.sha256.bundle" % tag
+    return [l for l in log if l.startswith("cosign verify-blob --key ") and bundle in l]
+
+
+ROOT_FLAG = "--trusted-root .github/policy/rekor-trusted-root.json"
+check("F1 1: each release's list is verified through the helper with the key and the pinned log, no identity",
+      all(len(list_verifies(log, t)) == 1 and ROOT_FLAG in list_verifies(log, t)[0]
+          and "--certificate" not in list_verifies(log, t)[0] for t in ("v0.3.1", "v0.4.0")), log)
+check("F1 5: each fetched release gets its own policy made for its tag, never for a branch",
+      sum("policy make" in l and "--tag v0.3.1" in l for l in log) == 1
+      and sum("policy make" in l and "--tag v0.4.0" in l for l in log) == 1
+      and not any("policy make" in l and "--ref" in l for l in log), log)
+check("F1 9: the list is verified with the key of the policy that check-list then gets (the key the manifest holds)",
+      log.count(key_of(log)) == 2 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 2
+      and all(any("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log)
+              for t in ("v0.3.1", "v0.4.0")), log)
+check("AC10: the Check records are verified with the same command Release runs, under a policy made for the tag",
+      sum("check-list --policy" in l for l in log) == 2 and os.path.isfile(out + "/rel/v0.3.1/policy.json"), log)
+
+
+def find(log, *needles):
+    return next((i for i, l in enumerate(log) if all(n in l for n in needles)), 10 ** 6)
+
+
+order_ok = True
+for t in ("v0.3.1", "v0.4.0"):
+    made = find(log, "policy make", "--tag " + t)
+    listed = find(log, "cosign verify-blob", "/rel/%s/release-files.sha256.bundle" % t)
+    checked = find(log, "check-list --policy", "/rel/%s/policy.json" % t)
+    order_ok = order_ok and made < listed < checked
+check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
+
+
+def helper(edit=None, tag=None):
+    """The shared check on an UNMODIFIED policy made by the real `chain-verify.py policy make` (a branch ref, or a tag)."""
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    pol, letter = os.path.join(tmp, "policy.json"), os.path.join(tmp, "evidence-letter-2026-11.md")
+    which = ["--tag", tag] if tag else ["--ref", "refs/heads/main"]
+    subprocess.run(["python3", "-I", "bin/chain-verify.py", "policy", "make", "--template",
+                    ".github/policy/release-policy.template.json", *which, "--out", pol],
+                   cwd=env["REPO_DIR"], env=env, check=True, capture_output=True)
+    if edit:
+        doc = json.load(open(pol))
+        edit(doc)
+        json.dump(doc, open(pol, "w"))
+    open(letter, "w").write("a letter\n")
+    open(letter + ".bundle", "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
+    p = subprocess.run(["bash", "bin/evidence-letter-verify.sh", pol, letter], cwd=env["REPO_DIR"], env=env,
+                       capture_output=True, text=True)
+    return p, open(os.path.join(tmp, "log")).read().splitlines()
+
+
+for label, tag in (("a branch ref", None), ("a tag", "v0.3.1")):
+    ph, lh = helper(tag=tag)
+    check("R1 a: the helper on the real policy for %s finds the manifest's key and verifies with it" % label,
+          ph.returncode == 0 and lh.count(key_of(lh)) == 1, (ph.stderr, lh))
+ph, lh = helper(lambda d: d.pop("release_key"))
+check("F1 5b: a policy with no release key ends the helper in one line before any verify",
+      one_line(ph) and "release key" in ph.stderr and not any("verify-blob" in l for l in lh), (ph.stderr, lh))
+check("R1 c: the pinned log root the helper names is a file in the tree",
+      os.path.isfile(os.path.join(ROOT, ".github/policy/rekor-trusted-root.json")))
+
+
+def list_without_rekor(fix):
+    for name in os.listdir(os.path.join(fix, "assets")):
+        path = os.path.join(fix, "assets", name)
+        if open(path).read() == '{"verificationMaterial":{"tlogEntries":[{}]}}':
+            open(path, "w").write('{"verificationMaterial":{"tlogEntries":[]}}')
+
+
+pr_ = fetch("2026-11", list_without_rekor)
+check("F1 8: a release-files bundle with no Rekor entry ends the fetch, in one line",
+      one_line(pr_[0]) and "Rekor" in pr_[0].stderr, pr_[0].stderr)
+KEYLESS = ("--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog", "oidc", "fulcio", "keyless",
+           "stage-promote.yml@", "stage-sign.yml@")
+LETTER_FILES = ("bin/evidence-letter-fetch.sh", "bin/evidence-letter-publish.sh", "bin/evidence-letter-verify.sh",
+                "bin/evidence-letter-present.sh", "bin/evidence-letter.py", ".github/workflows/evidence-letter.yml")
+# every signing line of the letter's files has the key form: "cosign sign-blob --yes --key ... --signing-config ..."
+# matches; a call without --key (keyless), or without the signing config, does not
+SIGN_FORM = re.compile(r'cosign\s+(sign-blob|sign|attest)\s+--yes\s+--key\s+"\$RELEASE_KMS_KEY_REF"\s+'
+                       r'--signing-config\s+\.github/policy/cosign-signing-config\.json\s')
+for f in LETTER_FILES + (".github/workflows/supply-chain.yml",):
+    joined = re.sub(r"\\\n\s*", " ", read(f))
+    calls = [l for l in joined.split("\n") if re.search(r"\bcosign (sign-blob|sign|attest)\b", l)]
+    check("K-5: every signing line of %s has the key form" % f, all(SIGN_FORM.search(l) for l in calls), calls)
+check("K-5: the publish script has exactly one signing line",
+      len([1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if "cosign sign" in l]) == 1)
+for word in KEYLESS:
+    hit = [f for f in LETTER_FILES if word in read(f).lower()]
+    check("F1 6: no letter file holds %s" % word, not hit, hit)
+
+
+def unsigned(fix):
+    open(os.path.join(fix, "bad-signature"), "w").close()
+
+
+pu = fetch("2026-11", unsigned)
+check("AC10: a release-files list whose signature does not verify ends the fetch, in one line",
+      one_line(pu[0]), pu[0].stderr)
+
+
+def other_manifest(fix):
+    for name in os.listdir(os.path.join(fix, "assets")):
+        path = os.path.join(fix, "assets", name)
+        if open(path, "rb").read().startswith(b"manifest of v0.3.1"):
+            open(path, "wb").write(b"a replaced manifest")
+
+
+pm = fetch("2026-11", other_manifest)
+check("AC10: a manifest that is not the file the signed list names ends the fetch, in one line",
+      one_line(pm[0]) and "release-manifest.json" in pm[0].stderr, pm[0].stderr)
+
+
+def bad_records(fix):
+    open(os.path.join(fix, "bad-records"), "w").close()
+
+
+pr = fetch("2026-11", bad_records)
+check("AC10: Check records the verifier refuses end the fetch, in one line, with the verifier's first line",
+      one_line(pr[0]) and "the scanners record is not signed" in pr[0].stderr, pr[0].stderr)
+pv = fetch("2026-11", real_verifier=True)
+check("AC10: with the real verifier, a record that is not JSON is refused",
+      one_line(pv[0]) and "the scanners record" in pv[0].stderr, pv[0].stderr)
+
+
+def replaced_record(fix):
+    for name in os.listdir(os.path.join(fix, "assets")):
+        path = os.path.join(fix, "assets", name)
+        if open(path, "rb").read().startswith(b"record scanners of v0.3.1"):
+            open(path, "wb").write(b'{"payloadType": "x", "payload": "e30=", "signatures": []}')
+
+
+pv2 = fetch("2026-11", replaced_record, real_verifier=True)
+check("AC10: with the real verifier, a replaced record that is JSON but signed by no one is refused",
+      one_line(pv2[0]) and "record" in pv2[0].stderr, pv2[0].stderr)
+
+
+def no_digests(fix):
+    pages = json.load(open(os.path.join(fix, "pages.json")))
+    for page in pages:
+        for rel in page:
+            rel["assets"] = [a for a in rel["assets"] if a["name"] != "digests.json"]
+    json.dump(pages, open(os.path.join(fix, "pages.json"), "w"))
+
+
+pd = fetch("2026-11", no_digests)
+check("AC10: a release without one of the needed assets ends the fetch, in one line",
+      one_line(pd[0]) and "digests.json" in pd[0].stderr, pd[0].stderr)
+
+
+# ---- the publish script
+def publish(on_release=None, edit=None, **extra):
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    env.update(extra)
+    put_releases(fix, RELEASES)
+    if edit:
+        edit(fix, env)
+    if on_release:
+        pages = json.load(open(os.path.join(fix, "pages.json")))
+        for page in pages:
+            for rel in page:
+                if rel["tag_name"] == on_release:
+                    rel["assets"].append({"id": 999, "name": "evidence-letter-2026-11.md"})
+        json.dump(pages, open(os.path.join(fix, "pages.json"), "w"))
+    letter = os.path.join(tmp, "evidence-letter-2026-11.md")
+    open(letter, "w").write("a letter\n")
+    p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), letter], cwd=env["REPO_DIR"], env=env,
+                       capture_output=True, text=True)
+    return (p, open(os.path.join(tmp, "log")).read().splitlines(),
+            open(os.path.join(fix, "uploaded")).read().split(), letter)
+
+
+p, log, up, letter = publish()
+names = ["evidence-letter-2026-11.md.bundle", "evidence-letter-2026-11.md"]
+SIGN = ("cosign sign-blob --yes --key awskms:///stand-in-key --signing-config "
+        ".github/policy/cosign-signing-config.json --bundle " + letter + ".bundle " + letter)
+VERIFY = ("cosign verify-blob --key ",
+          " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
+verifies = [l for l in log if l.startswith("cosign verify-blob")]
+check("F2: a good run takes the key from the root-checked manifest (policy make for main), signs with "
+      "exactly Sign's argv, verifies, then uploads", p.returncode == 0 and SIGN in log
+      and any("chain-verify.py policy make --template .github/policy/release-policy.template.json"
+              " --ref refs/heads/main" in l for l in log)
+      and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1]), (p.stderr, log))
+check("F2: the verify reads the manifest's key file", log.count(key_of(log)) == 1, log)
+check("F2: the verify names no identity, issuer or ignored log",
+      len(verifies) == 1 and not any(x in verifies[0] for x in ("--certificate-identity", "--certificate-oidc-issuer",
+                                                              "--insecure-ignore-tlog")), verifies)
+idx = lambda needle: next((i for i, l in enumerate(log) if needle in l), -1)
+check("F2: the order is manifest key, sign, verify, upload",
+      0 <= idx("policy make") < idx("sign-blob") < idx("verify-blob") < idx("release upload"), log)
+signed = [l.split()[-1] for l in log if l.startswith("signed-sha256:")]
+sent = [l.split()[-1] for l in log if l.startswith("uploaded-sha256 letter:")]
+check("F-bytes: the letter uploaded is the exact bytes that were signed, so nothing edits it after signing",
+      len(signed) == 1 and signed == sent, (signed, sent))
+check("AC9: the bundle is uploaded first, the letter second, no overwrite",
+      [os.path.basename(u) for u in up] == names and not any("--clobber" in l for l in log), (up, log))
+check("R6/AC10: the stand-in gh log holds exactly the two uploads, the bundle and the letter, and no call names checksums.txt",
+      sum(l.startswith("gh release upload") for l in log) == 2 and not any("checksums.txt" in l for l in log), log)
+pv_, lv_, upv_, _l = publish(FAIL_VIEW="1")
+check("R8/AC10: a failing gh release view ends the publish in one line carrying gh's first line, with nothing uploaded",
+      one_line(pv_) and "HTTP 500" in pv_.stderr and "second line" not in pv_.stderr and upv_ == [], pv_.stderr)
+for rel in ("v0.4.0", "v0.3.1"):
+    po, lo, upo, _l = publish(on_release=rel)
+    check("R10/AC10: the month's letter already on %s (not the latest) ends the publish in one line, before any sign line" % rel,
+          one_line(po) and "evidence-letter-2026-11.md" in po.stderr and upo == []
+          and not any("sign-blob" in l or "policy make" in l for l in lo), (po.stderr, lo))
+pp, lp, upp, _l = publish(TLOG="[]")
+check("AC9: a bundle with no Rekor entry publishes nothing",
+      pp.returncode == 1 and upp == [] and "Rekor" in pp.stderr, pp.stderr)
+
+
+def bad_signature(fix, env):
+    open(os.path.join(fix, "bad-signature"), "w").close()
+
+
+pq, _lq, upq, _l = publish(edit=bad_signature)
+check("F2: a signature that does not verify against the manifest key and the pinned log publishes nothing, in one line",
+      one_line(pq) and upq == [], pq.stderr)
+
+
+def bad_manifest_signature(fix, env):
+    open(os.path.join(env["REPO_DIR"], ".github/policy/release-key-manifest.sig"), "w").write("AAAA\n")
+
+
+pm, lm, upm, _l = publish(edit=bad_manifest_signature)
+check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed "
+      "or uploaded, in one line",
+      one_line(pm) and upm == [] and not any("sign-blob" in l or "release upload" in l for l in lm), (pm.stderr, lm))
+for label, value, code in (("unset", "", 2), ("not an awskms reference", "arn:aws:kms:us-east-1:1:key/x", 1)):
+    pr_, lg_, up_, _l = publish(RELEASE_KMS_KEY_REF=value)
+    check("F7-key: a key reference that is %s fails closed before the manifest, the sign call and any upload" % label,
+          pr_.returncode == code and len(pr_.stderr.strip().splitlines()) == 1 and up_ == []
+          and not any("policy make" in x or "sign-blob" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
+pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
+check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",
+      one_line(pb) and "HTTP 422" in pb.stderr and "second line" not in pb.stderr and upb == [], (pb.stderr, upb))
+pl, ll, upl, _l = publish(FAIL_UPLOAD="letter")
+check("AC9: a refused letter upload removes the bundle again, fails closed with one line, and leaves nothing",
+      one_line(pl) and "HTTP 422" in pl.stderr and upl == [] and any("delete-asset" in x for x in ll), (pl.stderr, upl))
+pk, lk, upk, _l = publish(FAIL_UPLOAD="letter", FAIL_DELETE="1")
+check("AC9: if the bundle cannot be removed the one line says so",
+      one_line(pk) and "could not be removed" in pk.stderr, pk.stderr)
+# ---- the daily presence check (F7): bin/evidence-letter-present.sh, run by a job of supply-chain.yml
+def present(pages, today="2026-12-10", **extra):
+    """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body."""
+    tmp = tempfile.mkdtemp()
+    fix, env = sandbox(tmp)
+    env.update(extra)
+    open(os.path.join(fix, "today_full"), "w").write(today + "\n")
+    out, next_id = [], 500
+    for page in pages:
+        rels = []
+        for tag, draft, assets in page:
+            listed = []
+            for a in assets:
+                name, kind = (a, "ok") if isinstance(a, str) else a
+                tlog = "[]" if kind == "norekor" else "[{}]"
+                body = "a letter\n"
+                if name.endswith(".bundle"):
+                    body = '{"verificationMaterial":{"tlogEntries":%s}}' % tlog
+                open(os.path.join(fix, "assets", str(next_id)), "w").write(body)
+                listed.append({"id": next_id, "name": name})
+                next_id += 1
+            rels.append({"tag_name": tag, "draft": draft, "prerelease": False, "assets": listed})
+        out.append(rels)
+    json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
+    script = os.path.join(env["REPO_DIR"], "bin/evidence-letter-present.sh")
+    p = subprocess.run(["bash", script], cwd=env["REPO_DIR"], env=env, capture_output=True, text=True)
+    return p, open(os.path.join(tmp, "log")).read().splitlines()
+
+
+def pair(m):
+    return ["evidence-letter-%s.md" % m, "evidence-letter-%s.md.bundle" % m]
+
+
+def verifies(log):
+    return sum("cosign verify-blob" in l for l in log)
+
+
+V4 = ("v0.4.0", False, pair("2026-10") + pair("2026-11"))
+pr, lr = present([[V4]])
+check("F7 1: a good pair for last month, with the key and the pinned log, passes", pr.returncode == 0 and any(
+    l.startswith("cosign verify-blob --key ") and "--trusted-root .github/policy/rekor-trusted-root.json" in l
+    for l in lr), (pr.stderr, lr))
+pr, lr = present([[V4]], today="2026-12-02")
+check("F7 2: before the 3rd of the month nothing is checked",
+      pr.returncode == 0 and not any(l.startswith("gh api") for l in lr), (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, ["release-manifest.json"])]])
+check("F7 3: no letter was ever published: quiet", pr.returncode == 0 and verifies(lr) == 0, (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, pair("2026-10"))]])
+check("F7 4: last month's letter is missing: one line naming the month",
+      one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+pr, lr = present([[("v0.4.0", False, pair("2026-10") + ["evidence-letter-2026-11.md"])]])
+check("F7 5: the bundle is missing: one line naming the month", one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+pr, lr = present([[V4]])
+check("F7 6: a good pair on a published release is verified once and exits 0",
+      pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, pair("2026-11"))]], today="2027-01-05")
+check("F7 7: in January the month checked is the December before", one_line(pr) and "2026-12" in pr.stderr, pr.stderr)
+pr, lr = present([[V4]], FAIL_VERIFY="1")
+# F7 8 is the wiring case in .github/agent/tests/supply-chain-wiring-test.sh (the job reads only), not a case here
+check("F7 9: a pair whose signature does not verify fails, in one line",
+      one_line(pr) and pr.returncode == 1, (pr.stderr, lr))
+split = [("v0.4.0", False, pair("2026-10") + ["evidence-letter-2026-11.md"]),
+         ("v0.4.1", False, ["evidence-letter-2026-11.md.bundle"])]
+pr, lr = present([split])
+check("F7 10: the .md on one release and the .bundle on another is a missing pair, in one line",
+      one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+pr, lr = present([[("v0.5.0", False, ["release-manifest.json"])], [V4]])
+check("F7 11: a letter on the second page of releases is found",
+      pr.returncode == 0 and any(l.startswith("gh api --paginate") for l in lr), (pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, pair("2026-10")), ("v0.4.1", True, pair("2026-11"))]])
+check("F7 12: a draft release carrying the pair does not count", one_line(pr) and "2026-11" in pr.stderr, pr.stderr)
+norekor = pair("2026-10") + [("evidence-letter-2026-11.md", "ok"), ("evidence-letter-2026-11.md.bundle", "norekor")]
+pr, lr = present([[("v0.4.0", False, norekor)]])
+check("F7 13: a bundle with no Rekor entry fails in the job too", one_line(pr) and "Rekor" in pr.stderr, pr.stderr)
+pr, lr = present([[("v0.4.0", False, ["evidence-letter-x.md", "evidence-letter-2026-1.md"])]])
+check("F7 14: a name that is only a prefix of a letter does not start the check",
+      pr.returncode == 0 and verifies(lr) == 0, (pr.stderr, lr))
+twice = [V4, ("v0.4.1", False, pair("2026-11"))]
+pr, lr = present([twice], FAIL_VERIFY_AFTER="1")
+check("F7 15: every copy of last month's pair is verified (the second one fails)",
+      pr.returncode == 1 and verifies(lr) == 2, (pr.stderr, lr))
+print("%d passed, %d failed" % (passed, failed))
+sys.exit(1 if failed else 0)
+PY

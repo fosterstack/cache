@@ -22,7 +22,7 @@
  "chain-release-metadata-test.sh": 100,
  "chain-release-scripts-test.sh": 406,
  "chain-release-wiring-test.sh": 286,
- "chain-sign-wiring-test.sh": 2112,
+ "chain-sign-wiring-test.sh": 2115,
  "chain-snapshot-test.sh": 160,
  "chain-trust-files-test.sh": 24,
  "chain-verify-test.sh": 778,
@@ -33,6 +33,8 @@
  "dependabot-reviewer-test.sh": 106,
  "dependency-lanes-test.sh": 56,
  "docs-snippets-test.sh": 50,
+ "evidence-letter-job-test.sh": 106,
+ "evidence-letter-test.sh": 51,
  "go-bump-open-pr-test.sh": 22,
  "go-freshness-wiring-test.sh": 77,
  "govulncheck-fixtures-test.sh": 4,
@@ -61,12 +63,12 @@
  "rescan-statement-test.sh": 198,
  "scout-root-cause-test.sh": 33,
  "suite-guard-test.sh": 115,
- "supply-chain-wiring-test.sh": 135,
+ "supply-chain-wiring-test.sh": 140,
  "verify-release-guide-test.sh": 69,
  "vex-both-scanners-test.sh": 47,
  "vex-forms-test.sh": 64,
  "vex-index-test.sh": 1159,
  "vex-scope-test.sh": 21,
  "witness-kms-test.sh": 26,
- "workflow-consolidation-test.sh": 145
+ "workflow-consolidation-test.sh": 149
 }

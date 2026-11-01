@@ -115,8 +115,11 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
+bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
+bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
+bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 80: errs.append("declared list is not 80 paths: %d" % len(DECLARED))
+if len(DECLARED) != 88: errs.append("declared list is not 88 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -129,7 +132,7 @@ ALLOWED_MENTIONS = {
 # 207 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
 # plus the two outbound-check patterns (0710), the recorded publisher signatures (REQ-SUP-001), the kept Fulcio chain, the real-record
 # fixtures and the one P2 file, the three base-layout patterns, the two of the base-layout builder, and the recipe template and members list (0710)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 218, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 221, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
