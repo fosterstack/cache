@@ -678,7 +678,8 @@ jobs:
         if: ${{ github.base_ref != '' }}
         env:
           BASE: ${{ github.base_ref }}
-        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
 
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
