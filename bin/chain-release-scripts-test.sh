@@ -241,6 +241,7 @@ def tree(extra_env=None):
         open(os.path.join(t, f), "w").write("{}")
     for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json"] + ["witness-check/witness-%s/%s-collection.json" % (n, n) for n in ("scanners", "acceptance", "runtime", "arm64")]:
         os.makedirs(os.path.dirname(os.path.join(t, f)), exist_ok=True); open(os.path.join(t, f), "w").write("{}")
+        if f.endswith("-collection.json"): open(os.path.join(t, f[:-len(".json")] + ".rekor.json"), "w").write("{}")      # R1 (#822 round 1): the entries file Sign keeps beside each record
     for k, n in (("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"),      # the four Linux archives Build uploaded as `dist` (REQ-CHAIN-007-AC21: checksums.txt is NOT among them; release-sign.sh makes it)
                  ("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz")):
         open(os.path.join(t, "dist", n), "wb").write(k.encode())
@@ -647,6 +648,7 @@ for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: con
 # before a re-run (REQ-CHAIN-007-AC9).
 def pub_of(t): return os.path.join(t, "calls.log.published")
 def pub_bytes(t):
+    if not os.path.isdir(pub_of(t)): return {}      # nothing was published (the run was refused before the upload)
     return {n: open(os.path.join(pub_of(t), n), "rb").read() for n in sorted(os.listdir(pub_of(t)))}
 tb = full_assets(); rcb1, sob, seb = run(tb, "release-assets", creds=["GH_TOKEN"]); before = pub_bytes(tb)
 rcb, sob, seb = run(tb, "release-assets", creds=["GH_TOKEN"])
@@ -703,6 +705,28 @@ t = full_assets(); os.remove(os.path.join(t, "release-apks/aarch64/fscache-fips-
 t = full_assets(); os.remove(os.path.join(t, "release-apks/x86_64/fscache-0.3.0-r0.apk")); refused_before_upload(t, "no standard apk of the amd64 architecture (one apk of four is missing)", "x86_64")
 for n in ("scanners", "acceptance", "runtime", "arm64"):
     t = full_assets(); os.remove(os.path.join(t, "witness-check/witness-%s/%s-collection.json" % (n, n))); refused_before_upload(t, "the Check record %s missing (the four named records are attached)" % n, n)
+# R1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-007-AC9, whose text lists what is attached and names no entries file): exactly one <stem>.rekor.json beside each record, in the staging list, the upload list and the coverage gate
+RECS = ["witness-build/build", "witness-rebuild/rebuild"] + ["witness-check/witness-%s/%s" % (n, n) for n in ("scanners", "acceptance", "runtime", "arm64")]
+t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"}); L = " ".join(log(t)) + " "
+for r in RECS:
+    nm = r.rsplit("/", 1)[1] + "-collection.rekor.json"
+    check(rc == 0 and ("release-upload/" + nm + " ") in L and os.path.exists(os.path.join(t, "release-upload", nm)), "AC9 R1 the entries file %s is staged and attached beside its record" % nm, "rc=%s %s" % (rc, first(se)))
+for r in RECS:
+    t = full_assets(); os.remove(os.path.join(t, r + "-collection.rekor.json")); refused_before_upload(t, "a record %s-collection.json with no entries file beside it" % r.rsplit("/", 1)[1], r.rsplit("/", 1)[1] + "-collection.rekor.json")
+t = full_assets(); open(os.path.join(t, "witness-build/other-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "an entries file with no record (other-collection.rekor.json)", "other-collection.rekor.json")
+t = full_assets(); open(os.path.join(t, "release-evidence/build-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "a second source for the release name build-collection.rekor.json", "build-collection.rekor.json")
+def gate_of(t, mutate):
+    rc0, so0, se0 = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
+    try: mutate(os.path.join(t, "release-upload"))
+    except OSError: pass      # the run was refused before this file was staged
+    r = subprocess.run(["python3", "bin/release-metadata.py", "gate", "--dir", "release-upload"], cwd=t, capture_output=True, text=True)
+    return r.returncode, r.stderr
+t = full_assets(); rcg, seg = gate_of(t, lambda d: os.remove(os.path.join(d, "scanners-collection.rekor.json")))
+check(rcg != 0 and "scanners-collection.rekor.json" in seg, "AC9 R1 the coverage gate refuses a record whose entries file is gone, naming it", "rc=%s %s" % (rcg, seg.strip()[:160]))
+t = full_assets(); rcg, seg = gate_of(t, lambda d: open(os.path.join(d, "stray-collection.rekor.json"), "w").write("{}"))
+check(rcg != 0 and "stray-collection.rekor.json" in seg, "AC9 R1 the coverage gate refuses an entries file with no record, naming it", "rc=%s %s" % (rcg, seg.strip()[:160]))
+t = full_assets(); rcg, seg = gate_of(t, lambda d: None)
+check(rcg == 0, "AC9 R1 the coverage gate accepts the staged set with every entries file beside its record (control)", "rc=%s %s" % (rcg, seg.strip()[:160]))
 t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/x86_64")); refused_before_upload(t, "no apk of the amd64 architecture", "x86_64")
 t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_before_upload(t, "no Check record to attach", "witness-check")
 # F4 (Codex A): an explicit evidence inventory; a second file under a release name, or a name outside the inventory, stops before anything is staged
@@ -917,7 +941,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "401"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "418"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

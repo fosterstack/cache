@@ -137,7 +137,7 @@ def release_dir():
     open(a + "/checksums.txt.bundle", "w").write("{}")
     open(a + "/production.sbom.json", "w").write("{}"); open(a + "/production.sbom.json.bundle", "w").write("{}")
     open(a + "/policy.json", "w").write("{}"); open(a + "/release-policy.bundle", "w").write("{}")
-    open(a + "/build-collection.json", "w").write("{}")
+    open(a + "/build-collection.json", "w").write("{}"); open(a + "/build-collection.rekor.json", "w").write("{}")      # R1 (#822 round 1): the entries file Sign keeps beside the record
     for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
     return a
 def gate(label, mutate, word=None):
@@ -145,6 +145,8 @@ def gate(label, mutate, word=None):
     if word is None: check(rc == 0, "gate: " + label, "rc=%s %s" % (rc, se[:200]))
     else: check(rc == 1 and word in se, "gate: " + label, "rc=%s %s" % (rc, se[:200]))
 gate("a complete release directory passes", lambda a: None)
+gate("a Witness record with no entries file beside it is refused, naming the missing file", lambda a: os.remove(a + "/build-collection.rekor.json"), "build-collection.rekor.json")
+gate("an entries file with no record beside it is refused, naming it", lambda a: open(a + "/other-collection.rekor.json", "w").write("{}"), "other-collection.rekor.json")
 gate("an asset in neither checksums.txt nor release-files.sha256 nor with a bundle is refused, naming it", lambda a: open(a + "/stray.txt", "w").write("x"), "stray.txt")
 gate("a bundle whose signed file is not an asset is refused", lambda a: open(a + "/ghost.json.bundle", "w").write("{}"), "ghost.json.bundle")
 gate("a file listed in checksums.txt that is not an asset is refused", lambda a: open(a + "/checksums.txt", "a").write("%s  gone.tar.gz\n" % ("0" * 64)), "gone.tar.gz")
@@ -270,7 +272,7 @@ check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "107"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "109"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

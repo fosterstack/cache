@@ -216,6 +216,15 @@ expect ok "the same sign-blob with the cosign signature row (consumer: customer)
 d=$(mk relrow); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
 addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
 expect ok "the release policy's sign-blob with a row whose consumer is the release stage passes" "$d"
+# S1 (#822 round 1; REQ-CHAIN-003-AC3 stays the AC; no sentence of it is made false): `chain-verify.py sign-record` is the one signing function for
+# Witness collections, so it has a row in the signer table (the collection type) and a produced collection needs its row in chain-records.json
+d=$(mk srec); printf 'jobs:\n  b:\n    steps:\n      - run: python3 bin/chain-verify.py sign-record --payload p --out o --template t\n' > "$d/.github/workflows/stage-build.yml"
+expect ok "S1 a stage file whose only collection producer is chain-verify.py sign-record is seen: the collection row is the one it produces" "$d"
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-records.json"; j = json.load(open(f)); j["records"] = [r for r in j["records"] if "attestation-collection" not in r["type"]]; json.dump(j, open(f, "w"))
+PY
+expect_named "S1 the same tree without the collection row fails: chain-verify.py sign-record produces a type that needs a row" "$d" "produced type has no row: https://witness.testifysec.com/attestation-collection/v0.1"
 # (Codex #249 r7 B7, the class closed) a signing call whose type cannot be resolved fails closed BY NAME, even when the rows it would
 # need exist: an unresolved attestor list, type, datatype or argument is an explicit error, never an assumption
 uncase() { # uncase NAME 'run line' LABEL WORD [ok]: stage-verify.yml with that run line; caught and naming WORD (or ok)
@@ -363,7 +372,7 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-EXPECT=99
+EXPECT=101
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

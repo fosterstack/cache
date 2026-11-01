@@ -422,6 +422,79 @@ try:
 except cv.Refuse as ex:
     (ok if "exists" in ex.reason and not calls else bad)("kms_sign: an existing record is refused before cosign is asked (%s)" % ex.reason)
 
+# ---- #822 round 1 (W2, R2, E1): sign-record checks the key reference in one place, refuses before cosign when either path exists, writes the entries file
+# first and the record last (the record is the commit point), and the final refusal carries cosign's last error text. REQ-CHAIN-002-AC3 stays the proof AC
+# for these cases (no sentence of it is made false).
+# E1: the last cosign stderr is in the refusal after seven failures that name Rekor
+tail_txt = b"error: creating log entry: rekor: 503 Service Unavailable ZQ-LAST-LINE"
+calls, slept, out = ks("kms_sign: the refusal after seven Rekor failures carries cosign's last error text", "ZQ-LAST-LINE", failures=99, stderr=tail_txt)
+calls, slept, out = ks("kms_sign: the refusal says cosign failed seven times with an error naming Rekor", "cosign failed 7 times with an error naming Rekor", failures=99, stderr=tail_txt)
+# R2: refuse when either path exists (a symlink or a directory counts), before cosign is asked
+def kr(label, setup, want):
+    d = os.path.join(work, "kr-" + label.replace(" ", "_")[:40]); os.makedirs(os.path.join(d, "rec"), exist_ok=True)
+    sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json")
+    open(sp, "wb").write(STATEMENT)
+    setup(d, out)
+    run, calls = fake_cosign()
+    try:
+        cv.kms_sign(sp, out, SIGNING_CONFIG, run=run, sleep=lambda s: None); got = None
+    except cv.Refuse as ex:
+        got = ex.reason
+    except OSError as ex:
+        got = "OSError " + type(ex).__name__
+    good_ = got is not None and want.lower() in got.lower() and not calls
+    (ok if good_ else bad)("%s (refused: %s, cosign called %d times)" % (label, got, len(calls)))
+    return d, out, calls
+def s_dir(d, out): os.makedirs(out[:-len(".json")] + ".rekor.json")
+d, out, c = kr("kms_sign: a directory at the entries path is refused before cosign", s_dir, "exists")
+def s_link(d, out):
+    open(os.path.join(d, "target"), "w").write("keep"); os.symlink(os.path.join(d, "target"), out[:-len(".json")] + ".rekor.json")
+d, out, c = kr("kms_sign: a symlink at the entries path is refused before cosign", s_link, "exists")
+(ok if open(os.path.join(d, "target")).read() == "keep" and not os.path.exists(out) else bad)("kms_sign: the symlink's target is untouched and no record is left")
+def s_file(d, out): open(out[:-len(".json")] + ".rekor.json", "w").write("old")
+d, out, c = kr("kms_sign: an existing entries file is refused before cosign", s_file, "exists")
+(ok if open(out[:-len(".json")] + ".rekor.json").read() == "old" else bad)("kms_sign: the existing entries file is not overwritten")
+# R2 order: a failure after cosign returns leaves nothing behind. cosign's run plants a directory where the entries file goes (the record would have been written first)
+d = os.path.join(work, "kr-race-entries"); os.makedirs(os.path.join(d, "rec"))
+sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json"); open(sp, "wb").write(STATEMENT)
+inner, calls = fake_cosign()
+def run_race(argv, **kw):
+    r = inner(argv, **kw); os.makedirs(out[:-len(".json")] + ".rekor.json"); return r
+try:
+    cv.kms_sign(sp, out, SIGNING_CONFIG, run=run_race, sleep=lambda s: None); raised = False
+except (cv.Refuse, OSError):
+    raised = True
+(ok if raised and not os.path.lexists(out) else bad)("kms_sign: when the entries file cannot be written, no record is left behind (raised=%s, record exists=%s)" % (raised, os.path.lexists(out)))
+# and the other way: the record path taken after cosign returns leaves no entries file
+d = os.path.join(work, "kr-race-record"); os.makedirs(os.path.join(d, "rec"))
+sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json"); open(sp, "wb").write(STATEMENT)
+inner, calls = fake_cosign()
+def run_race2(argv, **kw):
+    r = inner(argv, **kw); os.makedirs(out); return r
+try:
+    cv.kms_sign(sp, out, SIGNING_CONFIG, run=run_race2, sleep=lambda s: None); raised = False
+except (cv.Refuse, OSError):
+    raised = True
+(ok if raised and not os.path.lexists(out[:-len(".json")] + ".rekor.json") else bad)("kms_sign: when the record cannot be written, the entries file this call made is removed (raised=%s)" % raised)
+# W2: sign-record refuses an unset or different RELEASE_KMS_KEY_REF with exit 2 before cosign; the equal value reaches cosign
+import shutil
+def sr_run(label, refval, want_rc, want_cosign):
+    d = os.path.join(work, "w2-" + label.replace(" ", "_")[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
+    open(os.path.join(fb, "cosign"), "w").write("#!/bin/sh\necho called >> %s/calls\nexit 1\n" % d); os.chmod(os.path.join(fb, "cosign"), 0o755)
+    open(os.path.join(d, "payload"), "wb").write(STATEMENT)
+    env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
+    if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
+    r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "sign-record", "--payload", os.path.join(d, "payload"),
+                        "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json")],
+                       env=env, capture_output=True, text=True)
+    called = os.path.exists(os.path.join(d, "calls"))
+    (ok if r.returncode == want_rc and called == want_cosign else bad)("sign-record: RELEASE_KMS_KEY_REF %s -> exit %d, cosign %s (got exit %d, cosign called %s: %s)" % (
+        label, want_rc, "called" if want_cosign else "not called", r.returncode, called, r.stderr.strip()[:120]))
+sr_run("unset", None, 2, False)
+sr_run("another alias", "awskms:///alias/other", 2, False)
+sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, False)
+sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, True)       # the fake cosign exits 1, so the call ends in a refusal after cosign was asked once
+
 # KMS rule 4 / build-apk rule 22: production code holds no test hook. The flags that swapped the trust root or the clock are gone from every
 # subcommand, and verify_record takes no `now`.
 import inspect

@@ -34,11 +34,12 @@ def check(label, good, detail=""):
         print("ok   " + label)
     else:
         failn += 1
-        print("FAIL %s%s" % (label, (" (" + detail[:240] + ")") if detail else ""))
+        print("FAIL %s%s" % (label, (" (" + detail[:1500] + ")") if detail else ""))
 
 
 FAKE_LOOP = r'''#!/bin/sh
 echo "$*" >> "$LOG/loop.log"
+echo loop >> "$LOG/seq"
 [ -z "${FAKE_FETCH_FAIL:-}" ] || exit 1
 printf '{"value":"%s"}\n' "${FAKE_TOKEN-TOK-SECRET-9f3a}"
 '''
@@ -59,7 +60,10 @@ set -u
     echo "TOKCONTENT $(cat "$AWS_WEB_IDENTITY_TOKEN_FILE" 2> /dev/null)"
   fi
   echo "CWD $(pwd)"
+  echo "RTFILES $(find "$RUNNER_TEMP" -type f -name token 2> /dev/null | wc -l)"
+  echo "LOOPN $(cat "$LOG/loop.log" 2> /dev/null | wc -l)"
 } >> "$LOG/witness.log"
+echo witness >> "$LOG/seq"
 args=("$@")
 n=0
 for a in "${args[@]}"; do n=$((n + 1)); [ "$a" = -- ] && break; done
@@ -70,7 +74,8 @@ fi
 out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
 if [ -n "$out" ] && [ "${FAKE_WITNESS_RC:-0}" = 0 ]; then
   mkdir -p "$(dirname "$out")"
-  printf '{"payloadType":"application/vnd.in-toto+json","payload":"%s","signatures":[]}\n' "$(printf 'PAYLOAD-OF-WITNESS' | base64 -w0)" > "$out"
+  if [ -n "${FAKE_WITNESS_NOPAYLOAD:-}" ]; then printf '{"payloadType":"application/vnd.in-toto+json","signatures":[]}\n' > "$out"
+  else printf '{"payloadType":"application/vnd.in-toto+json","payload":"%s","signatures":[]}\n' "$(printf 'PAYLOAD-OF-WITNESS' | base64 -w0)" > "$out"; fi
 fi
 exit "${FAKE_WITNESS_RC:-0}"
 '''
@@ -83,7 +88,15 @@ open(log + "/cv.log", "a").write(" ".join(a) + "\n")
 if a[:2] == ["policy", "make"]:
     open(a[a.index("--out") + 1], "w").write("{}")
 if a[:1] == ["sign-record"]:
+    open(log + "/seq", "a").write("sign-record\n")
     tf = os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE", "UNSET")
+    try:
+        import stat as _st
+        open(log + "/signrec.tok", "a").write("MODE=%o DIRMODE=%o CONTENT=%s REGION=%s KEYREF=%s\n" % (
+            _st.S_IMODE(os.stat(tf).st_mode), _st.S_IMODE(os.stat(os.path.dirname(tf)).st_mode), open(tf).read().strip(),
+            os.environ.get("AWS_REGION", "UNSET"), os.environ.get("RELEASE_KMS_KEY_REF", "UNSET")))
+    except OSError:
+        open(log + "/signrec.tok", "a").write("NOTOKEN\n")
     open(log + "/signrec.env", "a").write("ROLE=%s TOKFILE=%s TOKEXISTS=%s REQ=%s|%s|%s\n" % (
         os.environ.get("AWS_ROLE_ARN", "UNSET"), tf, "yes" if os.path.isfile(tf) else "no", os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "UNSET"),
         os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "UNSET"), os.environ.get("ACTIONS_RUNTIME_TOKEN", "UNSET")))
@@ -97,7 +110,8 @@ if a[:1] == ["sign-record"]:
 '''
 
 FAKE_INNER = r'''#!/usr/bin/env bash
-env | grep -E '^(AWS_|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|SIGSTORE)' | sort >> "$LOG/inner.log"
+env | grep -E '^(AWS_|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|SIGSTORE|RELEASE_KMS)' | sort >> "$LOG/inner.log"
+echo "RTFILES $(find "$RUNNER_TEMP" -type f -name token 2> /dev/null | wc -l)" >> "$LOG/inner.log"
 echo ran >> "$LOG/inner.log"
 '''
 
@@ -183,30 +197,30 @@ def problems_witnessed(text):
     loops = read(os.path.join(log, "loop.log")).splitlines()
     if len(loops) != 1 or not loops[0].endswith("&audience=sts.amazonaws.com"):
         bad.append("the identity token is not asked for exactly once with audience sts.amazonaws.com: %r" % loops)
-    if tokfile in ("", "UNSET"):
-        bad.append("Witness does not see AWS_WEB_IDENTITY_TOKEN_FILE")
-    else:
-        if (lines(log, "witness.log", "TOKEXISTS") or [""])[0] != "yes":
-            bad.append("the token file does not exist while Witness runs")
-        if (lines(log, "witness.log", "TOKMODE") or [""])[0] != "600":
-            bad.append("the token file is not mode 0600")
-        if (lines(log, "witness.log", "TOKDIRMODE") or [""])[0] != "700":
-            bad.append("the token directory is not mode 0700")
-        if (lines(log, "witness.log", "TOKCONTENT") or [""])[0] != TOKEN:
-            bad.append("the token file does not hold exactly the token")
-        if not os.path.realpath(tokfile).startswith(os.path.realpath(runner) + os.sep):
-            bad.append("the token file is not under RUNNER_TEMP")
-        if os.path.realpath(tokfile).startswith(os.path.realpath(repo) + os.sep):
-            bad.append("the token file is inside the repository tree")
-    if (lines(log, "witness.log", "ROLE") or [""])[0] != ROLE:
-        bad.append("Witness does not see AWS_ROLE_ARN")
+    # T1 (#822 round 1): Witness and the wrapped command run first, with no token file and no AWS variable; the token is fetched just before sign-record
+    if read(os.path.join(log, "seq")).split() != ["witness", "loop", "sign-record"]:
+        bad.append("the order is not Witness, then one token fetch, then sign-record: %r" % read(os.path.join(log, "seq")).split())
+    if tokfile not in ("", "UNSET") or (lines(log, "witness.log", "RTFILES") or ["0"])[0] != "0" or (lines(log, "witness.log", "LOOPN") or ["9"])[0] != "0":
+        bad.append("Witness runs with a token already fetched (token variable %r, files under RUNNER_TEMP %r, fetches so far %r)" % (
+            tokfile, (lines(log, "witness.log", "RTFILES") or ["?"])[0], (lines(log, "witness.log", "LOOPN") or ["?"])[0]))
+    stok = read(os.path.join(log, "signrec.tok")).splitlines()
+    srtf = re.search(r"TOKFILE=(\S+)", (read(os.path.join(log, "signrec.env")).splitlines() or [""])[0])
+    tokdir = os.path.dirname(srtf.group(1)) if srtf and srtf.group(1) != "UNSET" else ""
+    if len(stok) != 1 or not stok[0].startswith("MODE=600 DIRMODE=700 CONTENT=" + TOKEN + " ") or not stok[0].endswith(" REGION=us-east-1 KEYREF=" + KEY):
+        bad.append("sign-record does not see a mode 0600 token file in a 0700 directory holding exactly the token, with the region and the key reference: %r" % stok)
+    if srtf and (not os.path.realpath(srtf.group(1)).startswith(os.path.realpath(runner) + os.sep) or os.path.realpath(srtf.group(1)).startswith(os.path.realpath(repo) + os.sep)):
+        bad.append("the token file is not under RUNNER_TEMP, outside the repository tree")
+    if (lines(log, "witness.log", "ROLE") or [""])[0] != "UNSET":
+        bad.append("Witness sees AWS_ROLE_ARN")
     if (lines(log, "witness.log", "REQ") or [""])[0] != "UNSET|UNSET|UNSET":
         bad.append("the identity-token request or runtime variables reach Witness: %r" % (lines(log, "witness.log", "REQ") or [""])[0])
     inner = read(os.path.join(log, "inner.log"))
     if "ran" not in inner:
         bad.append("the wrapped script did not run")
-    if re.search(r"^AWS_(WEB_IDENTITY_TOKEN_FILE|ROLE_ARN)=", inner, re.M):
-        bad.append("the wrapped script of release-verify still sees the AWS variables")
+    if re.search(r"^(AWS_|RELEASE_KMS)", inner, re.M):
+        bad.append("the wrapped script of release-verify still sees an AWS variable")
+    if "RTFILES 0" not in inner:
+        bad.append("a token file exists while the wrapped script of release-verify runs")
     if re.search(r"^ACTIONS_ID_TOKEN|^SIGSTORE", inner, re.M):
         bad.append("the wrapped script sees a request variable or SIGSTORE_ID_TOKEN")
     for k in ("AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"):
@@ -225,11 +239,15 @@ def problems_witnessed(text):
     inner2 = read(os.path.join(log2, "inner.log"))
     if not (re.search(r"^AWS_ROLE_ARN=" + re.escape(ROLE) + "$", inner2, re.M) and re.search(r"^AWS_WEB_IDENTITY_TOKEN_FILE=", inner2, re.M)):
         bad.append("the wrapped script of release-sign does not keep AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE")
-    if len(read(os.path.join(log2, "loop.log")).splitlines()) != 1:
-        bad.append("release-sign asks for more than one token")
+    if read(os.path.join(log2, "seq")).split() != ["loop", "witness", "loop", "sign-record"]:
+        bad.append("release-sign: the order is not a token for its own signing script, Witness, a fresh token, sign-record: %r" % read(os.path.join(log2, "seq")).split())
+    if "RTFILES 1" not in inner2:
+        bad.append("release-sign: the token file does not exist while its script runs")
     # a failing Witness: its exit status is kept and the token directory is gone
     t3, repo3, log3, runner3, r3 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_RC": "7"})
-    d3 = os.path.dirname((lines(log3, "witness.log", "TOKFILE") or [""])[0])
+    d3 = ""
+    if os.path.exists(os.path.join(log3, "loop.log")):
+        bad.append("a token is fetched although Witness failed")
     if r3.returncode != 7:
         bad.append("a failing Witness (7) ends the helper with %d" % r3.returncode)
     if "sign-record" in read(os.path.join(log3, "cv.log")):
@@ -244,15 +262,22 @@ def problems_witnessed(text):
     if d3 and os.path.exists(d3):
         bad.append("the token directory still exists after a failing Witness")
     # refusals: nothing is run, nothing is left
-    for label, extra, drop in (("no role", {}, ("AWS_ROLE_ARN",)), ("no region", {}, ("AWS_REGION",)), ("no key reference", {}, ("RELEASE_KMS_KEY_REF",)), ("a key reference that is not a KMS one", {"RELEASE_KMS_KEY_REF": "arn:aws:kms:x"}, ()), ("no RUNNER_TEMP", {}, ("RUNNER_TEMP",)),
+    for label, extra, drop in (("no role", {}, ("AWS_ROLE_ARN",)), ("no region", {}, ("AWS_REGION",)), ("no key reference", {}, ("RELEASE_KMS_KEY_REF",)), ("no RUNNER_TEMP", {}, ("RUNNER_TEMP",)),
                                ("an empty token", {"FAKE_TOKEN": ""}, ()), ("a null token", {"FAKE_TOKEN": "null"}, ()), ("a failed fetch", {"FAKE_FETCH_FAIL": "1"}, ())):
         t4, repo4, log4, runner4, r4 = run_witnessed(text, "release-verify", extra, drop)
         if r4.returncode == 0 or os.path.exists(os.path.join(log4, "witness.log")):
             bad.append("%s: the helper went on (exit %d)" % (label, r4.returncode))
         if label != "no RUNNER_TEMP" and os.listdir(runner4):
             bad.append("%s: a token directory is left behind" % label)
-        if label in ("no role", "no region", "no key reference", "a key reference that is not a KMS one") and os.path.exists(os.path.join(log4, "loop.log")):
+        if label in ("no role", "no region", "no key reference") and os.path.exists(os.path.join(log4, "loop.log")):
             bad.append("%s: a token was asked for before the job was checked" % label)
+    # P1 (#822 round 1): a collection with no payload is refused before the signing function is called (jq -er: a missing field is an error, not the text null)
+    t7, repo7, log7, runner7, r7 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_NOPAYLOAD": "1"})
+    if r7.returncode == 0 or "sign-record" in read(os.path.join(log7, "cv.log")):
+        bad.append("a collection with no payload is not refused before sign-record (exit %d)" % r7.returncode)
+    if os.listdir(runner7):
+        bad.append("a token directory is left after a collection with no payload")
+    shutil.rmtree(t7, ignore_errors=True)
     t5, repo5, log5, runner5, r5 = run_witnessed(text, "release-nonsense")
     if r5.returncode != 2:
         bad.append("an unknown step does not exit 2")
@@ -329,7 +354,9 @@ def problems_staged(text):
     argv = want_sr
     loops = read(os.path.join(log, "loop.log")).splitlines()
     if len(loops) != 1 or not loops[0].endswith("&audience=sts.amazonaws.com"):
-        bad.append("the identity token is not asked for exactly once with audience sts.amazonaws.com: %r" % loops)
+        bad.append("the identity token is not asked for exactly once per record with audience sts.amazonaws.com: %r" % loops)
+    if read(os.path.join(log, "seq")).split() != ["loop", "sign-record"]:
+        bad.append("the order is not a fresh token, then sign-record: %r" % read(os.path.join(log, "seq")).split())
     se = read(os.path.join(log, "signrec.env")).splitlines()
     if len(se) != 1 or not se[0].startswith("ROLE=" + ROLE) or "TOKEXISTS=yes" not in se[0] or not se[0].endswith("REQ=UNSET|UNSET|UNSET"):
         bad.append("sign-record does not see the role and the token file, or sees a request variable: %r" % se)
@@ -347,6 +374,17 @@ def problems_staged(text):
     if read(os.path.join(log, "github_env")):
         bad.append("something was written to GITHUB_ENV")
     shutil.rmtree(t, ignore_errors=True)
+    # T1: two records, two fresh tokens, each fetched just before its own sign-record call
+    t8, repo8, log8, runner8, fakebin8 = staged_tree(text)
+    os.makedirs(os.path.join(repo8, "staged", "witness-rebuild")); open(os.path.join(repo8, "staged", "witness-rebuild", "rebuild-collection.payload"), "w").write("payload2")
+    open(os.path.join(repo8, "staged", "plan.txt"), "w").write("%s\t%s\n%s\t%s\n" % (
+        os.path.join(repo8, "staged/witness-build/build-collection.payload"), os.path.join(repo8, "signed/witness-build/build-collection.json"),
+        os.path.join(repo8, "staged/witness-rebuild/rebuild-collection.payload"), os.path.join(repo8, "signed/witness-rebuild/rebuild-collection.json")))
+    e8 = env_of(t8, log8, runner8, fakebin8, {"GITHUB_REF": "refs/tags/v0.3.0"})
+    r8 = subprocess.run(["bash", "bin/witness-sign-staged.sh", os.path.join(repo8, "staged"), os.path.join(repo8, "signed")], cwd=repo8, env=e8, capture_output=True, text=True, timeout=60)
+    if read(os.path.join(log8, "seq")).split() != ["loop", "sign-record", "loop", "sign-record"]:
+        bad.append("two records: the order is not a fresh token before each sign-record call: %r (exit %d %s)" % (read(os.path.join(log8, "seq")).split(), r8.returncode, r8.stderr.strip()[:100]))
+    shutil.rmtree(t8, ignore_errors=True)
     # a failing Witness stops the job and leaves no token directory
     t2, repo2, log2, runner2, fakebin2 = staged_tree(text)
     open(os.path.join(repo2, "staged", "plan.txt"), "w").write("%s\t%s\n" % (os.path.join(repo2, "staged/witness-build/build-collection.payload"), os.path.join(repo2, "signed/witness-build/build-collection.json")))
