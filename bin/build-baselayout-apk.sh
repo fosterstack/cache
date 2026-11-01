@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the fscache-baselayout apk with melange, sealed from the network (0710; v0.3.0 rules 11-17, 19, 22, 23, 38a,
-# 40).
+# Build the fscache-baselayout apk with melange, sealed from the network
+# (0710; v0.3.0 rules 11-17, 19, 22, 23, 38a, 40).
 #
 #   build-baselayout-apk.sh --arch x86_64|aarch64 --version X.Y.Z|X.Y.Z-rcN|0.0.0-rc.1 --source-dir DIR --repo DIR
 #                           --keyring FILE --melange-lock FILE --out DIR [--render-dir DIR] [--apk-cache-dir DIR]
@@ -24,8 +24,8 @@
 #      recipe that is not the base-layout package, a recipe and a melange lock that disagree;
 #   2. render the recipe (@VERSION@ replaced);
 #   3. sudo env -i <sealed items> unshare -n melange build ... --runner bubblewrap --namespace fosterstack;
-#   4. checks of the apk: signed by assembly.rsa.pub, each file equal to its source under build/baselayout/etc, and no
-#      CA bundle file in it;
+#   4. checks of the apk: signed by assembly.rsa.pub, each file equal to its source under build/baselayout/etc, and its
+#      entries (names, types, modes) equal to build/baselayout/members.txt, compared as sorted lists;
 #   5. writes OUT/<arch>/fscache-baselayout-<version>-r0.apk (+ APKINDEX.tar.gz, from melange) and
 #      OUT/inputs-manifest-baselayout.json (bin/apk-tool.py).
 #
@@ -146,15 +146,16 @@ signer=$("$PY3" -I -B bin/apk-tool.py signer "$apk") \
   || { echo "build-baselayout-apk.sh: etc/protocols in $apk differs from build/baselayout/etc/protocols" >&2; exit 1; }
 "$PY3" -I -B bin/apk-tool.py cat "$apk" etc/services | cmp -s - "$src/build/baselayout/etc/services" \
   || { echo "build-baselayout-apk.sh: etc/services in $apk differs from build/baselayout/etc/services" >&2; exit 1; }
-"$PY3" -I -B bin/apk-tool.py members "$apk" >"$tmp/members" \
+"$PY3" -I -B bin/apk-tool.py members "$apk" >"$tmp/members.raw" \
   || { echo "build-baselayout-apk.sh: cannot list the entries of $apk" >&2; exit 1; }
-sed "s/@VERSION@/$apkver/g" "$src/build/baselayout/members.txt" >"$tmp/members.want"
+LC_ALL=C sort "$tmp/members.raw" >"$tmp/members"
+sed "s/@VERSION@/$apkver/g" "$src/build/baselayout/members.txt" | LC_ALL=C sort >"$tmp/members.want"
 if ! cmp -s "$tmp/members" "$tmp/members.want"; then
   first=$(grep -m1 -Fxv -f "$tmp/members.want" "$tmp/members" || true)
   if [ -z "$first" ]; then
     first=$(grep -m1 -Fxv -f "$tmp/members" "$tmp/members.want" || true)
   fi
-  echo "build-baselayout-apk.sh: the entries of $apk differ from build/baselayout/members.txt, first at: ${first:-the order}" >&2
+  echo "build-baselayout-apk.sh: the entries of $apk differ from build/baselayout/members.txt, first at: ${first:-a repeated line}" >&2
   exit 1
 fi
 

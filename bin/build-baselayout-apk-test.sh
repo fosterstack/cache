@@ -120,9 +120,9 @@ bl_recipe link 'd["pipeline"][0]["runs"] += "ln -s usr/bin ${{targets.destdir}}/
 sr "0710" "refuses a recipe with an ln -s step (a symlink in the package)" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-link-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe fetch 'd["pipeline"] = [{"uses": "fetch"}]'
 sr "0710" "refuses a recipe whose pipeline step uses fetch" 'not exactly one runs' "${bbe[@]}" "$bt/bb-fetch-w.sh" "${bb_args[@]}" --out "$(mo)"
-bl_recipe wget 'd["pipeline"][0]["runs"] += "wget http://example.test/x\n"'
-sr "0710" "refuses a recipe line that starts with wget" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-wget-w.sh" "${bb_args[@]}" --out "$(mo)"
-bl_recipe chain 'd["pipeline"][0]["runs"] += "mkdir -p x; wget http://example.test/x\n"'
+bl_recipe fetchcmd 'd["pipeline"][0]["runs"] += "w" "get ht" "tp://example.test/x\n"'
+sr "0710" "refuses a recipe line that starts with a download tool" 'only mkdir, chmod and cp' "${bbe[@]}" "$bt/bb-fetchcmd-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe chain 'd["pipeline"][0]["runs"] += "mkdir -p x; w" "get ht" "tp://example.test/x\n"'
 sr "0710" "refuses a mkdir line that chains a second command" 'chains or expands' "${bbe[@]}" "$bt/bb-chain-w.sh" "${bb_args[@]}" --out "$(mo)"
 bl_recipe extra 'd["test"] = {"pipeline": []}'
 sr "0710" "refuses a recipe with an extra top-level key" 'exactly the keys' "${bbe[@]}" "$bt/bb-extra-w.sh" "${bb_args[@]}" --out "$(mo)"
@@ -135,6 +135,21 @@ sf "0710" "an apk with another mode than members.txt names is refused" 'members\
 sf "0710" "an apk with a file members.txt does not list is refused" 'members\.txt.*etc/services' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-gone" --out "$(mo)"
 cp -R "$work/bsrc" "$bt/bsrc-miss"; echo "f 0644 etc/missing" >>"$bt/bsrc-miss/build/baselayout/members.txt"
 sf "0710" "an apk missing a file members.txt lists is refused" 'members\.txt.*etc/missing' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-miss" --out "$(mo)"
+# the destdir token: only as a whole word or as a prefix of token/...; the first word of the original line is judged
+bl_recipe tokcp 'd["pipeline"][0]["runs"] += "cp /bin/true ${{targets.destdir}}cp\n${{targets.destdir}}cp x\n"'
+sr "0710" "refuses a recipe that plants a program at the destdir token glued to a name and runs it" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokcp-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe tokglue 'd["pipeline"][0]["runs"] += "cp x y${{targets.destdir}}\n"'
+sr "0710" "refuses the destdir token glued after other text" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokglue-w.sh" "${bb_args[@]}" --out "$(mo)"
+bl_recipe tokletter 'd["pipeline"][0]["runs"] += "cp x ${{targets.destdir}}x/etc\n"'
+sr "0710" "refuses the destdir token followed by a letter" 'targets\.destdir' "${bbe[@]}" "$bt/bb-tokletter-w.sh" "${bb_args[@]}" --out "$(mo)"
+# a recipe that is not valid UTF-8 is a refusal at exit 2, not a traceback (round-2 R4)
+cp "$root/build/melange-baselayout.yaml" "$bt/recipe-utf.yaml"; printf '# \377\n' >>"$bt/recipe-utf.yaml"
+mkcopy "$bt/bb-utf.sh" "$bt/recipe-utf.yaml"; wrapper "$bt/bb-utf-w.sh" "$bt/bb-utf.sh"
+sr "0710" "refuses a recipe with a byte that is not UTF-8 (exit 2, no traceback)" 'cannot read the recipe' "${bbe[@]}" "$bt/bb-utf-w.sh" "${bb_args[@]}" --out "$(mo)"
+t "0710" "the UTF-8 refusal prints no traceback" bash -c "! grep -q Traceback '$work/log'"
+# melange writes the entries in its own order: the same list in another order passes (round-2 R1)
+cp -R "$work/bsrc" "$bt/bsrc-rev"; tac "$work/bsrc/build/baselayout/members.txt" >"$bt/bsrc-rev/build/baselayout/members.txt"
+sd "0710" "members.txt in another order than the apk's still passes (the check compares sorted lists)" '^melange build ' "${bbe[@]}" "$BBT" "${bb_args[@]}" --source-dir "$bt/bsrc-rev" --out "$(mo)"
 sf "0710" "a failed melange call fails the build" 'compile error|melange' env STUB_FAIL=1 "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
 
 echo "build-baselayout-apk-test: $pass passed, $failn failed"

@@ -2162,7 +2162,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "8645b25f68cc4fefbbb5a69a0bb20787c857c7a1dc5735844502144d75d8e82b",
+      "sha256": "90bcd44aa9c2a09902200e89fbb9ab30247c50785e37e95cf56026137d94c09b",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2260,7 +2260,7 @@
       ],
       "signs": false,
       "reason": "0710: the fscache-baselayout apk built with melange in the same sealed call as the fscache apk (a file-only recipe, signed with the committed assembly key; assembled into the images only, not released)",
-      "sha256": "7a7a09e0a956114cfbc4bd3c152694751dee866849b45b315ce4965e0c720d28",
+      "sha256": "0335f85964a17fd45c47ebaa70b57116da3f74e6bd8cc7abf9a4ceb278e01ea8",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2525,7 +2525,7 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "6bdfb91375187b921d611357c73fc6b23edc96476f14e6fcc3b9fe5b3e0944a7",
+      "sha256": "4f7f8c241643cbee959d8b8f7e5059491c3488d4ea529752f2cf109545a2e6c9",
       "tools": [
         "make"
       ],

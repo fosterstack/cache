@@ -805,7 +805,7 @@ NS_SHA = {
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
-    "bin/build-apk-helper.py": "8645b25f68cc4fefbbb5a69a0bb20787c857c7a1dc5735844502144d75d8e82b",
+    "bin/build-apk-helper.py": "90bcd44aa9c2a09902200e89fbb9ab30247c50785e37e95cf56026137d94c09b",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
@@ -1109,16 +1109,17 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$PY3" -I -B bin/apk-tool.py cat "$apk" etc/services | cmp -s - "$src/build/baselayout/etc/services"'
         ' || { echo "build-baselayout-apk.sh: etc/services in $apk differs from build/baselayout/etc/services'
         '" >&2; exit 1; }',
-        '"$PY3" -I -B bin/apk-tool.py members "$apk" >"$tmp/members" || { echo "build-baselayout-apk.sh: cann'
-        'ot list the entries of $apk" >&2; exit 1; }',
-        'sed "s/@VERSION@/$apkver/g" "$src/build/baselayout/members.txt" >"$tmp/members.want"',
+        '"$PY3" -I -B bin/apk-tool.py members "$apk" >"$tmp/members.raw" || { echo "build-baselayout-apk.sh: '
+        'cannot list the entries of $apk" >&2; exit 1; }',
+        'LC_ALL=C sort "$tmp/members.raw" >"$tmp/members"',
+        'sed "s/@VERSION@/$apkver/g" "$src/build/baselayout/members.txt" | LC_ALL=C sort >"$tmp/members.want"',
         'if ! cmp -s "$tmp/members" "$tmp/members.want"; then',
         '  first=$(grep -m1 -Fxv -f "$tmp/members.want" "$tmp/members" || true)',
         '  if [ -z "$first" ]; then',
         '    first=$(grep -m1 -Fxv -f "$tmp/members" "$tmp/members.want" || true)',
         '  fi',
         '  echo "build-baselayout-apk.sh: the entries of $apk differ from build/baselayout/members.txt, first'
-        ' at: ${first:-the order}" >&2',
+        ' at: ${first:-a repeated line}" >&2',
         '  exit 1',
         'fi',
         '"$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out "$out/inputs'

@@ -66,6 +66,7 @@ PY
   # pin and the recipes regenerated, so the work tree is self-consistent before the bump; BUMP_TMPL=drift leaves the template at another Go version
   root_real="$(cd "$here/.." && pwd)"
   mkdir -p "$work/build/locks"; cp "$root_real"/build/locks/* "$work/build/locks/"; cp "$root_real/bin/gen-recipes.py" "$work/bin/"
+  cp "$root_real/build/melange-baselayout.yaml.tmpl" "$root_real/build/melange-baselayout.yaml" "$work/build/"   # the generator reads the base-layout template too (0710)
   sed -E 's#(go\.dev/dl/go)[0-9.]+(\.linux-)#\11.26.6\2#' "$root_real/build/melange.yaml.tmpl" > "$work/build/melange.yaml.tmpl"
   [ "${BUMP_TMPL:-ok}" = drift ] && sed -i.bak -E 's#(go\.dev/dl/go)1\.26\.6#\11.26.5#' "$work/build/melange.yaml.tmpl" && rm -f "$work/build/melange.yaml.tmpl.bak"
   [ "${BUMP_TMPL:-ok}" = split ] && python3 - "$work/build/melange.yaml.tmpl" <<'PY'
@@ -299,7 +300,7 @@ root="$(cd "$here/.." && pwd)"
 cp "$root/go.mod" "$e2e/go.mod"; cp "$root/tools/requirements/go.mod" "$e2e/tools/requirements/go.mod"
 cp "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$e2e/tools/govulncheck/"      # the installer test reads the govulncheck pin (ruling G)
 cp "$root/.github/policy/chain-scripts.json" "$e2e/.github/policy/"; cp "$root"/.github/workflows/*.yml "$e2e/.github/workflows/"
-mkdir -p "$e2e/build/locks"; cp "$root/build/melange.yaml.tmpl" "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$e2e/build/"; cp "$root"/build/locks/* "$e2e/build/locks/"
+mkdir -p "$e2e/build/locks"; cp "$root/build/melange.yaml.tmpl" "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/melange-baselayout.yaml.tmpl" "$root/build/melange-baselayout.yaml" "$e2e/build/"; cp "$root"/build/locks/* "$e2e/build/locks/"
 cp "$root"/bin/*.sh "$root"/bin/*.py "$e2e/bin/" 2> /dev/null; cp "$root/bin/chain-test-signers.json" "$e2e/bin/" 2> /dev/null
 cur=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$e2e/bin/install-scanner.sh" | head -1); new="9.${cur#*.}"
 t_amd=$(printf 'e2e amd64' | sha256sum | cut -d' ' -f1); t_arm=$(printf 'e2e arm64' | sha256sum | cut -d' ' -f1)

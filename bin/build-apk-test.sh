@@ -427,6 +427,8 @@ cmpmk "$work/cmb1"; rm "$work/cmb1/rapks/ubuntu-24.04-arm/aarch64/fscache-basela
 cmpexpect "the base-layout apk on one side only -> refused (exit 2), named" 2 'baselayout' "$work/cmb1"
 cmpmk "$work/cmb2"; cp "$fx/pair/a.apk" "$work/cmb2/apks/ubuntu-24.04/x86_64/fscache-other-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/cmb2/rapks/ubuntu-24.04/x86_64/fscache-other-0.3.0-r0.apk"
 cmpexpect "a fifth apk named fscache-other-0.3.0-r0.apk on both sides is still an extra (exit 2)" 2 'extra' "$work/cmb2"
+cmpmk "$work/cmb5"; for top in apks rapks; do mv "$work/cmb5/$top/ubuntu-24.04/x86_64/fscache-baselayout-0.3.0-r0.apk" "$work/cmb5/$top/ubuntu-24.04/x86_64/fscache-baselayout-addon-0.3.0-r0.apk"; done
+cmpexpect "an apk named fscache-baselayout-addon-... in place of the base-layout apk is not the base-layout apk: refused (exit 2)" 2 'baselayout|extra' "$work/cmb5"
 cmpmk "$work/cmb3"; cp "$pr/b.apk" "$work/cmb3/rapks/ubuntu-24.04/x86_64/fscache-baselayout-0.3.0-r0.apk"
 cmpexpect "a base-layout apk signed by another key -> refused (exit 2), naming the signer" 2 'assembly\.rsa\.pub' "$work/cmb3"
 cmpmk "$work/cmb4"; cp "$fx/pair/c.apk" "$work/cmb4/rapks/ubuntu-24.04/x86_64/fscache-baselayout-0.3.0-r0.apk"

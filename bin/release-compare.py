@@ -20,8 +20,9 @@ CHAIN = [sys.executable, "-I", "-B", "bin/chain-verify.py"]
 # the four expected pairs, one fixed table (REQ-CHAIN-007-AC17): artifact (runner) -> apk architecture directory -> short name; variant -> file name pattern
 RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
 VARIANTS = (("standard", re.compile(r"fscache-[0-9][^/]*-r0\.apk")), ("fips", re.compile(r"fscache-fips-[^/]+-r0\.apk")))
-# apks the images use and no release ships (0710): per runner exactly one on each side, the same signer, signature and bytes, but no row in apk-compare.json
-IMAGE_ONLY = (("baselayout", re.compile(r"fscache-baselayout-[^/]+-r0\.apk")),)
+# apks the images use and no release ships (0710): per runner exactly one on each side, the same signer, signature and
+# bytes, but no row in apk-compare.json
+IMAGE_ONLY = (("baselayout", re.compile(r"fscache-baselayout-[0-9][^/]*-r0\.apk")),)
 
 
 def die(msg, code=2):
@@ -118,7 +119,8 @@ def main():
         known = {p[idx] for p in pairs + image_only}
         for f in listed[top]:
             if f not in known:
-                die("%s is an extra apk that is none of the four expected (standard and fips, amd64 and arm64); refusing (no counterpart on the other side)" % f)
+                die("%s is an extra apk: it is none of the four pairs (standard and fips, amd64 and arm64) or the image-only "
+                    "base-layout apk; refusing" % f)
     # both sides come from the assembly-key build: anything else was signed by somebody else, and a signature name is not a signature
     for short, variant, b, r in pairs + image_only:
         for f in (b, r):

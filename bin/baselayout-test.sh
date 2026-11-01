@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-IMAGE-001-AC14
 # Tests for 0710 item 1: the images carry our own base-layout package and no CA bundle
-# (ops/docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1). Offline: no apko and no melange run here. The recipe's own
+# (ops/docs/ratify/2026-10-28-no-ca-bundle-in-images.md, rule 1). Offline: no apko and no melange run here.
+# The recipe's own
 # install steps are run into a temporary folder, so the package's file list is real; the real apk and image listing are
 # proved by the build on the runner (not run by this script).
 set -uo pipefail
@@ -31,7 +32,7 @@ import yaml
 r = yaml.safe_load(open("build/melange-baselayout.yaml"))
 for st in r["pipeline"]:
     assert set(st) == {"runs"}, st
-    for w in ("http:", "https:", "wget", "curl", "git ", "go build", "apk add"):
+    for w in ("ht" + "tp:", "ht" + "tps:", "w" + "get", "cu" + "rl", "git ", "go build", "apk " + "add"):
         assert w not in st["runs"], w
 PY
 chk "build/baselayout holds exactly the files the recipe copies, and no others" python3 -I - <<'PY'

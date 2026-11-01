@@ -534,12 +534,17 @@ def baselayout_step_lines(step, recipe):
     if not isinstance(step, dict) or set(step) != {"runs"} or not isinstance(step["runs"], str):
         raise Refused("the recipe %s has a pipeline step that is not exactly one runs: text" % recipe)
     for line in step["runs"].split("\n"):
-        text = line.replace(DESTDIR_TOKEN, "").strip()
-        if not text:
+        if not line.strip():
             continue
-        if text.split()[0] not in BASELAYOUT_COMMANDS:
-            raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, text.split()[0]))
-        if any(c in text for c in BASELAYOUT_BAD_CHARS):
+        words = line.split()
+        if words[0] not in BASELAYOUT_COMMANDS:
+            raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, words[0]))
+        for word in words:
+            if DESTDIR_TOKEN in word and (word.count(DESTDIR_TOKEN) != 1 or not (
+                    word == DESTDIR_TOKEN or word.startswith(DESTDIR_TOKEN + "/"))):
+                raise Refused("the recipe %s uses ${{targets.destdir}} inside a word (%s): it may stand alone or start a path "
+                    "with a slash after it" % (recipe, word))
+        if any(c in line.replace(DESTDIR_TOKEN, "") for c in BASELAYOUT_BAD_CHARS):
             raise Refused("the recipe %s has a line with a character that chains or expands a command: %s" % (recipe, line.strip()))
 
 
@@ -568,7 +573,7 @@ def baselayout_facts(recipe, outfile):
             baselayout_step_lines(step, recipe)
         name = pkg["name"]
         pins = env["contents"]["packages"]
-    except (OSError, yaml.YAMLError):
+    except (OSError, ValueError, RecursionError, yaml.YAMLError):   # ValueError holds bytes that are not UTF-8
         raise Refused("cannot read the recipe %s" % recipe)
     with open(outfile, "w") as f:
         f.write("name=%s\n" % name)
