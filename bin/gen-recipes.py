@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Generate the two melange recipes from ONE template, and check that the committed ones are exactly that (v0.3.0 rule 21).
+"""Generate the melange recipes from their templates, and check that the committed ones are exactly that (v0.3.0 rule 21).
 
-  gen-recipes.py [--template T] [--regular R] [--fips F] [--melange-lock L] [--fips-module M] (--check | --write | --emit DIR)
+  gen-recipes.py [--template T] [--regular R] [--fips F] [--baselayout-template BT] [--baselayout B] [--melange-lock L]
+                 [--fips-module M] (--check | --write | --emit DIR)
 
-Defaults: build/melange.yaml.tmpl, build/melange.yaml, build/melange-fips.yaml, build/locks/melange.lock, build/locks/fips-module.txt (relative to the repository root).
+Defaults: build/melange.yaml.tmpl, build/melange.yaml, build/melange-fips.yaml, build/melange-baselayout.yaml.tmpl, build/melange-baselayout.yaml,
+build/locks/melange.lock, build/locks/fips-module.txt (relative to the repository root).
+The third recipe (the file-only base layout, 0710) comes from its own template: the only placeholder is @PACKAGES@ (one whole line, the same pins as the other
+recipes) and the template has its own pin, BASELAYOUT_TEMPLATE_SHA256; @VERSION@ is left as written.
 Two DATA files feed the template, and they are the only thing the daily refresh job ever edits: the melange lock (the package pins of the build environment) and the
 FIPS module file (the certified Go Cryptographic Module, vX.Y.Z-<8 hex>). Both have a closed line grammar; anything else is refused. The generator holds no FIPS constant.
 The template is plain text with a CLOSED set of named placeholders and nothing else is substituted or parsed:
@@ -18,8 +22,8 @@ exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed
 What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed and
 pinned (TEMPLATE_SHA256 below: --check fails if the template changes, naming the pin; a change must update the pin in the same reviewed change), and the final control
 is build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs), which is mandatory in CI.
---check exits 0 when both committed files equal the generator's output byte for byte, 1 when a file differs (the diff is printed) or the template breaks a rule,
-2 when a file is missing or unreadable. --write writes the two files.
+--check exits 0 when all three committed files equal the generator's output byte for byte, 1 when a file differs (the diff is printed) or the template breaks a rule,
+2 when a file is missing or unreadable. --write writes the three files.
 """
 import argparse
 import difflib
@@ -32,6 +36,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 # sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
 TEMPLATE_SHA256 = "046f3ee631006982d941ebd8f44036a1eb5e7d8813a3f6f30ae5e89a39cdfc66"   # TEST-SUBST
+# sha256 of build/melange-baselayout.yaml.tmpl: the same rule as the pin above
+BASELAYOUT_TEMPLATE_SHA256 = "d509dfde7cb3d3b017b6c76251acbb3ce0b7c95698b4cec508e8ef5ceb9bd9e9"   # TEST-SUBST
 ALLOWED_SUBST = ("${{targets.destdir}}", "${{build.arch}}")
 ALLOWED_IF = re.compile(r"    if: \$\{\{build\.arch\}\} == '(x86_64|aarch64)'")
 NAMED = ("NAME", "DESCRIPTION", "PACKAGES", "FIPS_EXPORT", "FIPS_PROOF")
@@ -127,6 +133,35 @@ def read_template(path):
     return text
 
 
+def read_baselayout_template(path):
+    """the base-layout template: plain UTF-8 text with one @PACKAGES@ line and the literal @VERSION@, and its pin"""
+    try:
+        raw = open(path, "rb").read()
+    except OSError as e:
+        bad("cannot read the template %s: %s" % (path, e), 2)
+    for ch, name in ((b"\t", "a tab"), (b"\r", "a carriage return"), (b"\0", "a NUL byte")):
+        if ch in raw:
+            bad("the template %s holds %s; refusing" % (path, name))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        bad("the template %s is not UTF-8 text" % path)
+    for tok in re.findall(r"@[A-Za-z0-9_]*@", text):
+        if tok not in ("@PACKAGES@", "@VERSION@"):
+            bad("the template %s holds the placeholder %s, which is not @PACKAGES@ or @VERSION@" % (path, tok))
+    if text.count("@PACKAGES@") != 1 or ("\n@PACKAGES@\n") not in text:
+        bad("@PACKAGES@ must appear exactly once in the template %s, alone on its line" % path)
+    got = hashlib.sha256(raw).hexdigest()
+    if got != BASELAYOUT_TEMPLATE_SHA256:
+        bad("the template changed: update BASELAYOUT_TEMPLATE_SHA256 in the same reviewed change (the template %s has sha256 %s, the pin is %s)"
+            % (path, got, BASELAYOUT_TEMPLATE_SHA256))
+    return text
+
+
+def generate_baselayout(text, packages):
+    return "\n".join("\n".join("      - " + p for p in packages) if ln == "@PACKAGES@" else ln for ln in text.split("\n"))
+
+
 def generate(text, variant, packages, module):
     """module is the certified Go Cryptographic Module, vX.Y.Z-<8 hex>, from the FIPS module data file: the generator holds no FIPS constant of its own"""
     fips = variant == "fips"
@@ -154,22 +189,28 @@ def main():
     ap.add_argument("--template", default=os.path.join(ROOT, "build/melange.yaml.tmpl"))
     ap.add_argument("--regular", default=os.path.join(ROOT, "build/melange.yaml"))
     ap.add_argument("--fips", default=os.path.join(ROOT, "build/melange-fips.yaml"))
+    ap.add_argument("--baselayout-template", default=os.path.join(ROOT, "build/melange-baselayout.yaml.tmpl"))
+    ap.add_argument("--baselayout", default=os.path.join(ROOT, "build/melange-baselayout.yaml"))
     ap.add_argument("--melange-lock", default=os.path.join(ROOT, "build/locks/melange.lock"))
     ap.add_argument("--fips-module", default=os.path.join(ROOT, "build/locks/fips-module.txt"))
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", action="store_true")
     g.add_argument("--write", action="store_true")
-    g.add_argument("--emit", metavar="DIR", help="write the two generated recipes (melange.yaml, melange-fips.yaml) into DIR and nothing else (the daily job reads them from there)")
+    g.add_argument("--emit", metavar="DIR", help="write the three generated recipes (melange.yaml, melange-fips.yaml, melange-baselayout.yaml) into DIR and nothing else (the daily job reads them from there)")
     a = ap.parse_args()
     text = read_template(a.template)
+    bl_text = read_baselayout_template(a.baselayout_template)
     if os.path.abspath(a.regular) == os.path.abspath(a.fips):
         bad("--regular and --fips name the same file; refusing (one recipe would silently replace the other)", 2)
     packages, module = read_packages(a.melange_lock), read_fips_module(a.fips_module)
-    want = {a.regular: generate(text, "regular", packages, module), a.fips: generate(text, "fips", packages, module)}
+    want = {a.regular: generate(text, "regular", packages, module), a.fips: generate(text, "fips", packages, module),
+            a.baselayout: generate_baselayout(bl_text, packages)}
     if a.emit:
         for fn, variant in (("melange.yaml", "regular"), ("melange-fips.yaml", "fips")):
             with open(os.path.join(a.emit, fn), "w", encoding="utf-8") as f:
                 f.write(generate(text, variant, packages, module))
+        with open(os.path.join(a.emit, "melange-baselayout.yaml"), "w", encoding="utf-8") as f:
+            f.write(generate_baselayout(bl_text, packages))
         return
     if a.write:
         for path, content in want.items():

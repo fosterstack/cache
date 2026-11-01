@@ -1020,11 +1020,11 @@ if sorted(old_mel) != new_mel:
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
-r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--baselayout-template", repo + "/build/melange-baselayout.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
                      "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
-for rf in ("melange.yaml", "melange-fips.yaml"):
+for rf in ("melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"):
     path = "%s/build/%s" % (repo, rf)
     out = open("%s/%s" % (gen_dir, rf)).read()
     if out != open(path).read():
@@ -1331,12 +1331,12 @@ open_prs_guard("fips-module")   # before any file is changed
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/fips-module.new", "w").write(newest + "\n")
-r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--baselayout-template", repo + "/build/melange-baselayout.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
                      "--fips-module", tmp + "/fips-module.new", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
 writes = []
-for rf in ("melange.yaml", "melange-fips.yaml"):
+for rf in ("melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"):
     path = "%s/build/%s" % (repo, rf)
     out = open("%s/%s" % (gen_dir, rf)).read()
     if out != open(path).read():

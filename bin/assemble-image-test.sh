@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-IMAGE-001-AC12, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
+# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-IMAGE-001-AC12, REQ-IMAGE-001-AC15, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
 # Tests of the PR: apko configs, image assembly, lock and sealed-build proofs, OCI index digest.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -228,7 +228,7 @@ t "rule 19" "apko-fips.yaml: the same two keys" y apko-keys "$root/build/apko-fi
 # ===== rules 25 26 33 34 38: apko configs ================================================================================
 for v in production fips; do
   f="$root/build/apko.yaml"; [ $v = fips ] && f="$root/build/apko-fips.yaml"
-  t "rule 25" "[$v] no base image, no include, no debug; declares only baselayout, ca-certificates-bundle, tzdata and our apk" y apko-pkgs "$f" $v
+  t "rule 25" "[$v] no base image, no include, no debug; declares only our base-layout apk, tzdata and our apk" y apko-pkgs "$f" $v
   t "rule 26" "[$v] repositories are exactly /work/archive and /work/melange-repo, no live URL" y apko-repos "$f"
   t "rule 33" "[$v] archs x86_64 and aarch64" y apko-archs "$f"
   t "rule 38" "[$v] uid/gid 65532, /home/nonroot created and owned, work-dir, entrypoint /usr/bin/fscache" y apko-user "$f"
@@ -638,6 +638,8 @@ sd "rule 28" "...apko build too" '^apko build .*--cache-dir [^ ]*/apko-cache ' "
 rm -rf "$work/mel-ni"; cp -R "$fx/melrepo" "$work/mel-ni"; rm -f "$work/mel-ni/x86_64/APKINDEX.tar.gz"
 fixed12 melange="$work/mel-ni"; sr "rule 27" "a melange repository without its APKINDEX.tar.gz is refused, naming \
 APKINDEX" 'APKINDEX' "${aie[@]}" "$AI" "${w12[@]}"
+rm -rf "$work/mel-nb"; cp -R "$fx/melrepo" "$work/mel-nb"; rm -f "$work/mel-nb/x86_64/fscache-baselayout-0.3.0-r0.apk"
+fixed12 melange="$work/mel-nb"; sr "0710" "a melange repository without our base-layout apk is refused, naming it" 'fscache-baselayout' "${aie[@]}" "$AI" "${w12[@]}"
 # compare alone must stop an extra package in the full lock: the extra package is IN the archive, so verify-archive would pass it
 mkarch "$work/ia8"; cp "$work/ia8/x86_64/tzdata-2026a-r0.apk" "$work/ia8/x86_64/extra-1.0-r0.apk"; cp "$work/ia8/aarch64/tzdata-2026a-r0.apk" "$work/ia8/aarch64/extra-1.0-r0.apk"
 python3 - "$work" "$FL" <<'P'
@@ -698,10 +700,10 @@ assert d['assemble_script'].endswith('/bin/assemble-image.sh') and d['assemble_s
 assert set(d['cases']) >= {'missing-package', 'missing-index', 'tampered-package', 'live-packages'}, d
 for c in d['cases'].values(): assert c['result'] == 'failed-as-required' and c['exit'] == 2 and c['reason'], c
 P"
-t "rule 36" "lock-proof: the victim is a package of the BASE LOCK (the first by name), and the failure names it" bash -c "python3 - '$lpo2/lock-proof.json' <<'P'
+t "rule 36" "lock-proof: the victim is a package of the BASE LOCK (the only one, tzdata), and the failure names it" bash -c "python3 - '$lpo2/lock-proof.json' <<'P'
 import json, sys
 d = json.load(open(sys.argv[1]))['cases']
-for c in ('missing-package', 'tampered-package'): assert 'ca-certificates-bundle' in d[c]['reason'], d[c]
+for c in ('missing-package', 'tampered-package'): assert 'tzdata' in d[c]['reason'], d[c]
 P"
 mkarch "$work/lp-unrel"; cp "$work/lp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/lp-unrel/x86_64/aaa-unrelated-1-r0.apk"
 run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-unrel" "${lp_args[@]}"

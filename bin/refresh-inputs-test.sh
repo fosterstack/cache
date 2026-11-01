@@ -141,7 +141,7 @@ mkrepo; run_s2 env STUB_LIVE_KEY="$work/rotated.pub" STUB_LOCK="$fx/live-same.lo
 t "rule 46" "refresh: the live Wolfi key differs from the archived one -> exit 3, message names the signing key and a human, no apko call, no PR" bash -c "test \"\$(cat '$work/rc')\" = 3 && grep -Eqi 'signing key' '$work/log' && grep -Eqi 'human' '$work/log' && ! grep -Eq '^(apko|gh )' '$CALLS'"
 # rule 73: the certified-module check (daily, in the same job)
 gr="$work/goroot"; mkdir -p "$gr/lib/fips140"
-fr() { rm -rf "$work/rp3"; mkdir -p "$work/rp3/build/locks"; cp "$fx/melange-fips.yaml" "$fx/melange.yaml" "$fx/melange.yaml.tmpl" "$work/rp3/build/"; cp "$fx/melange.lock" "$fx/fips-module.txt" "$work/rp3/build/locks/"; }
+fr() { rm -rf "$work/rp3"; mkdir -p "$work/rp3/build/locks"; cp "$fx/melange-fips.yaml" "$fx/melange.yaml" "$fx/melange.yaml.tmpl" "$fx/melange-baselayout.yaml" "$fx/melange-baselayout.yaml.tmpl" "$work/rp3/build/"; cp "$fx/melange.lock" "$fx/fips-module.txt" "$work/rp3/build/locks/"; }
 printf '#!/bin/bash\ncd "$(dirname "$0")/rp3/build" && find . -type f ! -name '*.tmp-*' | sort | xargs shasum -a 256 | shasum -a 256 | cut -d" " -f1\n' >"$work/bhash.sh"
 echo "v1.0.0-c2097c7c" >"$gr/lib/fips140/certified.txt"; fr
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
@@ -1119,11 +1119,11 @@ run_s4 env GH_STUB_OPEN="$wb3" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@]:
 t "rule 49" "a MISSING apk while a lock-only refresh PR waits (pointer equal to the record, not ahead) and the downloads fail: exit 0 'earlier pull request' (the guard precedes the downloads)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log' && ! test -e '$victim'"
 
 # ---- ruling (P3 finding 1): after BOTH daily jobs the generator --check stays green, and the template is never touched ----------------------------------------
-gcheck() { python3 "$fx/gen-recipes.py" --template "$1/build/melange.yaml.tmpl" --regular "$1/build/melange.yaml" --fips "$1/build/melange-fips.yaml" --melange-lock "$1/build/locks/melange.lock" --fips-module "$1/build/locks/fips-module.txt" --check; }
+gcheck() { python3 "$fx/gen-recipes.py" --template "$1/build/melange.yaml.tmpl" --regular "$1/build/melange.yaml" --fips "$1/build/melange-fips.yaml" --baselayout-template "$1/build/melange-baselayout.yaml.tmpl" --baselayout "$1/build/melange-baselayout.yaml" --melange-lock "$1/build/locks/melange.lock" --fips-module "$1/build/locks/fips-module.txt" --check; }
 tsha() { shasum -a 256 "$1/build/melange.yaml.tmpl" | cut -d' ' -f1; }
 mkrepo; tpl_before=$(tsha "$work/rp"); gcheck "$work/rp" >/dev/null 2>&1 || echo "FIXTURE: the fixture repo does not pass the generator check before the job" >&2
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 21" "refresh: after a closure change the generator --check passes on the job's output (the job edits the lock; the recipes are the generator's output)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/locks/melange.lock' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'" && t "rule 21" "...--check passes" gcheck "$work/rp"
+t "rule 21" "refresh: after a closure change the generator --check passes on the job's output (the job edits the lock; the recipes are the generator's output)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/locks/melange.lock' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-baselayout.yaml'" && t "rule 21" "...--check passes" gcheck "$work/rp"
 t "rule 21" "...the template is byte-for-byte what it was (an automated change never edits the template or its pin)" test "$(tsha "$work/rp")" = "$tpl_before"
 t "rule 21" "...and the daily PR adds the lock and the two regenerated recipes, never the template" bash -c "$GHPATHS | grep -q 'melange.lock' && $GHPATHS | grep -q 'build/melange.yaml' && ! $GHPATHS | grep -q 'tmpl'"
 fr; tpl_before=$(tsha "$work/rp3" 2>/dev/null || shasum -a 256 "$work/rp3/build/melange.yaml.tmpl" | cut -d' ' -f1)

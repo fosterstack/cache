@@ -92,6 +92,9 @@ dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendor-provenance-records.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 bin/check-no-outbound.py bin/check-no-outbound-test.sh
+build/melange-baselayout.yaml build/melange-baselayout.yaml.tmpl build/baselayout/members.txt bin/baselayout-test.sh bin/build-baselayout-apk.sh bin/build-baselayout-apk-test.sh
+build/baselayout/etc/group build/baselayout/etc/hosts build/baselayout/etc/nsswitch.conf build/baselayout/etc/os-release
+build/baselayout/etc/passwd build/baselayout/etc/protocols build/baselayout/etc/services
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
@@ -124,7 +127,7 @@ ALLOWED_MENTIONS = {
 # be added without touching the test.
 # 207 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
 # plus the two outbound-check patterns (0710), the recorded publisher signatures (REQ-SUP-001), the kept Fulcio chain, the real-record
-# fixtures and the one P2 file
+# fixtures and the one P2 file, the three base-layout patterns, the two of the base-layout builder, and the recipe template and members list (0710)
 EXPECT_ALLOW, EXPECT_SUPPRESSION = 210, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
