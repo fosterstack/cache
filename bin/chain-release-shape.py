@@ -42,8 +42,10 @@ UP = {"release-evidence", "witness-release", "witness-release-verify"}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
+# release-postverify holds no token and no registry credential: the listed commands read the published image and the
+# downloaded assets only (rule 66)
 WHO = {"release-apks": set(), "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
-       "release-postverify": set()}   # no token and no registry credential: the listed commands read the published image and the downloaded assets only (rule 66)
+       "release-postverify": set()}
 CREDS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none

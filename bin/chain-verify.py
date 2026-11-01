@@ -1280,7 +1280,8 @@ def provenance_statement(pol, obj, dry, byproducts):
 
 
 def bundle_certificate_why(vm):
-    """The refusal text when a bundle's verificationMaterial carries a certificate, else None (a key signed it; nothing here is keyless)."""
+    """The refusal text when a bundle's verificationMaterial carries a certificate, else None (a key signed it; nothing
+    here is keyless)."""
     if "certificate" in vm or "x509CertificateChain" in vm:
         return "the bundle cosign wrote carries a certificate: no certificate belongs to this chain"
     return None
