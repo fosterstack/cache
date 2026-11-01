@@ -7,25 +7,24 @@ subcommands are specified in the header of the hostile test.
 
 Every refusal exits 1 and prints, as its FIRST stderr line, `refused at <stage>: <reason>`. Anything else
 (bad usage, an unreadable input of the hostile helpers) is `error: ...` and exits 2 (or 1 where the test says so).
-No network is used: certificates, timestamps and Rekor entries are verified from files only, with the openssl binary
-(the fixed path OPENSSL in the common helper module). Tokens in the environment are never read, printed or stored here.
+No network is used: the record's signature, the key manifest and the Rekor entries (the signed entry timestamp, the
+inclusion proof and the checkpoint) are verified from files only, with the openssl binary (the fixed path OPENSSL in the
+common helper module). Tokens in the environment are never read, printed or stored here.
 
-Modelled on: in-toto-witness cmd/verify.go:116-163,211 (roots, intermediates, timestamp authorities taken from the
-policy; a verifier's refusal is its exit code and message), options/sign.go:36 (policy payloadType),
-options/verify.go:80-99 (the Fulcio extensions Witness itself can pin), docs/tutorials/artifact-policy.md:58-70
-(collection predicate type, product subject name `.../product/v0.1/file:<name>`);
+Modelled on: in-toto-witness cmd/verify.go:116-163,211 (a verifier's refusal is its exit code and message),
+options/sign.go:36 (policy payloadType), docs/tutorials/artifact-policy.md:58-70 (collection predicate type, product
+subject name `.../product/v0.1/file:<name>`);
 in-toto-attestation spec/v1/statement.md:11,19 (_type, subject, predicateType), spec/predicates/provenance.md:3.
 """
 import argparse
 import base64
 import datetime as dt
-import math
-from fractions import Fraction
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import unicodedata
 import sys
@@ -61,10 +60,9 @@ def load_sibling(name):
 
 
 _common = load_sibling("chain_common")
-Refuse, b64d, b64e, load_json, parse_now, refuse, ssl_done, strict_json = (_common.Refuse, _common.b64d, _common.b64e,
-    _common.load_json,
-                                                                           _common.parse_now, _common.refuse,
-                                                                           _common.ssl_done, _common.strict_json)
+Refuse, b64d, b64e, load_json, refuse, ssl_done, strict_json = (
+    _common.Refuse, _common.b64d, _common.b64e, _common.load_json, _common.refuse, _common.ssl_done,
+    _common.strict_json)
 OPENSSL = _common.OPENSSL
 chain_hostile = load_sibling("chain_hostile")
 chain_items = load_sibling("chain_items")
@@ -75,158 +73,161 @@ POLT = "https://witness.testifysec.com/policy/v0.1"
 DSSE_STMT = "application/vnd.in-toto+json"
 STMT_TYPES = ("https://in-toto.io/Statement/v0.1", "https://in-toto.io/Statement/v1")
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:digests.json"
-OID_ISSUER, OID_CONFIG = "1.3.6.1.4.1.57264.1.8", "1.3.6.1.4.1.57264.1.18"
 STAGES = ("build", "sign", "rebuild", "check", "release")
 WITNESS_STAGES = ("build", "rebuild", "check")
+ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
 
 
-# ---- minimal DER reading (certificate fields the policy needs) ---------------------------------------------------
-# BOUNDARY: this is not a general DER parser. It reads the fields below from a certificate that openssl has verified to chain to a
-# Fulcio root (the same DER, see single_cert_der); it trusts the structure of a Fulcio-signed TBS and refuses what it cannot read
-# (a repeated extension, a second SAN) instead of guessing. Do not point it at bytes nobody has verified.
-def _tlv(b, i):
-    tag, ln = b[i], b[i + 1]
-    if ln < 0x80:
-        return tag, i + 2, i + 2 + ln
-    k = ln & 0x7F
-    n = int.from_bytes(b[i + 2:i + 2 + k], "big")
-    return tag, i + 2 + k, i + 2 + k + n
-
-
-def _children(b, s, e):
-    out, i = [], s
-    while i < e:
-        tag, cs, ce = _tlv(b, i)
-        out.append((tag, cs, ce))
-        i = ce
-    return out
-
-
-def _oid(b, s, e):
-    first = b[s]
-    parts = [first // 40, first % 40]
-    v = 0
-    for x in b[s + 1:e]:
-        v = (v << 7) | (x & 0x7F)
-        if not x & 0x80:
-            parts.append(v)
-            v = 0
-    return ".".join(str(p) for p in parts)
-
-
-def _time(b, tag, s, e):
-    t = b[s:e].decode()
-    if tag == 0x17:
-        yy = int(t[:2])
-        t = ("20" if yy < 50 else "19") + t
-    return dt.datetime.strptime(t[:14], "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc)
-
-
-def pem_blocks(text):
-    return re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", text, re.S)
-
-
-ONE_CERT_PEM = re.compile(r"\s*-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*)-----END CERTIFICATE-----\s*")
-
-
-def single_cert_der(text):
-    """The DER of a field that holds EXACTLY ONE certificate PEM block with nothing but whitespace around it, else ValueError.
-    The identity is read from this DER and openssl verifies a PEM re-made from this same DER (der_to_pem), so the bytes that are
-    read and the bytes that are verified cannot differ: text before the block, a second block, or bytes after the outer
-    SEQUENCE are refused instead of being skipped by one reader and used by the other."""
-    m = ONE_CERT_PEM.fullmatch(text)
-    if not m:
-        raise ValueError("the certificate field is not exactly one PEM certificate block")
-    der = base64.b64decode(re.sub(r"\s", "", m.group(1)), validate=True)
-    if len(der) < 4 or der[0] != 0x30:
-        raise ValueError("the certificate is not a DER SEQUENCE")
-    _, _, end = _tlv(der, 0)
-    if end != len(der):
-        raise ValueError("bytes after the certificate's outer SEQUENCE")
-    return der
-
-
-def der_to_pem(der):
-    b = b64e(der)
-    return "-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i + 64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n"
-
-
-def parse_cert(der):
-    _, s, _e = _tlv(der, 0)
-    _tbs_t, ts, te = _tlv(der, s)
-    kids = _children(der, ts, te)
-    i = 0
-    if kids[0][0] == 0xA0:
-        i = 1
-    validity = kids[i + 3]
-    vk = _children(der, validity[1], validity[2])
-    nb, na = _time(der, vk[0][0], vk[0][1], vk[0][2]), _time(der, vk[1][0], vk[1][1], vk[1][2])
-    exts = {}
-    for tag, cs, ce in kids[i + 6:]:
-        if tag != 0xA3:
-            continue
-        for _t, es, ee in _children(der, cs, ce)[0:1]:
-            for x in _children(der, es, ee):
-                xk = _children(der, x[1], x[2])
-                oid = _oid(der, xk[0][1], xk[0][2])
-                val = xk[-1]
-                if oid in exts:
-                    raise ValueError("repeated extension %s" % oid)   # a second SAN or Fulcio field would otherwise silently replace the first
-                exts[oid] = der[val[1]:val[2]]
-    return {"not_before": nb, "not_after": na, "exts": exts, "der": der}
-
-
-def ext_string(cert, oid):
-    """A Fulcio v2 extension's value (.1.8 issuer, .1.18 Build Config URI): exactly ONE DER UTF8String TLV (tag 0x0C, minimal definite
-    length, no bytes after it), as Fulcio's OID specification defines it (REQ-CHAIN-001-AC4, Codex security r3); anything else is
-    ValueError, never read as raw text."""
-    raw = cert["exts"].get(oid)
-    if raw is None:
-        return None
-    if len(raw) < 2 or raw[0] != 0x0C:
-        raise ValueError("extension %s is not a DER UTF8String" % oid)
-    n = raw[1]
-    if n < 0x80:
-        start, length = 2, n
-    else:
-        k = n & 0x7F
-        length = int.from_bytes(raw[2:2 + k], "big")
-        if k == 0 or k > 2 or length < 0x80 or raw[2] == 0:     # DER: the long form only for 128+ bytes, in the fewest octets
-            raise ValueError("extension %s has a non-minimal length" % oid)
-        start = 2 + k
-    if start + length != len(raw):
-        raise ValueError("extension %s length does not cover exactly its bytes" % oid)
-    return raw[start:].decode("utf-8")
-
-
-def san_uris(cert):
-    raw = cert["exts"].get("2.5.29.17")
-    if raw is None:
-        return []
-    _, s, e = _tlv(raw, 0)
-    return [raw[cs:ce].decode() for tag, cs, ce in _children(raw, s, e) if tag == 0x86]
-
-
-# ---- the policy ----------------------------------------------------------------------------------------------------
-def first_cert_der(pem_text):
-    blocks = pem_blocks(pem_text)
-    if not blocks:
-        raise Refuse("policy", "trust: no certificate in the chain file")
-    return base64.b64decode(re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", blocks[0]), validate=True), blocks
-
-
-# the ONE tag grammar of the chain (advisor 0383): vX.Y.Z or the release candidate vX.Y.Z-rcN, nothing else (no -RC1, -rc, -rc1x, -rc.1 or an rc in the middle);
-# the policy and the records carry the FULL tag string
 TAG_GRAMMAR = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?"
 
 
+MANIFEST_FILES = ("release-key-root.pub", "release-key-manifest.json", "release-key-manifest.sig")
+MANIFEST_FIELDS = ("public_key", "key_id", "valid_from", "valid_to", "revoked_at")
+ONE_PUBLIC_KEY_PEM = re.compile(r"\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\s]*-----END PUBLIC KEY-----\s*")
+MANIFEST_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+def read_manifest_file(path, what):
+    """The bytes of a regular file that is not a link, else a refusal: a manifest file must not be missing, a directory
+    or a link."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            refuse("manifest", "%s is not a regular file (a link or a directory): %s" % (what, os.path.basename(path)))
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        refuse("manifest", "%s is missing or unreadable: %s" % (what, os.path.basename(path)))
+
+
+def manifest_date(m, field, required):
+    if field not in m:
+        if required:
+            refuse("manifest", "%s is missing" % field)
+        return None
+    v = m[field]
+    try:
+        if not (isinstance(v, str) and MANIFEST_DATE.fullmatch(v)):
+            raise ValueError(v)
+        return dt.datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        refuse("manifest", "%s is not a date written YYYY-mm-ddTHH:MM:SSZ" % field)
+
+
+def check_manifest(keys_dir):
+    """The release key manifest, checked before anything else is read (handoff 0713 P1): the offline root key's
+    signature over the exact
+    bytes of the manifest file, then the closed field list, the key (ECDSA P-256) and its key_id, and the window against
+    the clock of this run.
+    No time inside a record is trusted (ruling R3), so a revoked_at at or before now refuses the manifest. Returns
+    {key_id, public_key}."""
+    root_p, man_p, sig_p = (os.path.join(keys_dir, n) for n in MANIFEST_FILES)
+    root_raw = read_manifest_file(root_p, "root key file")
+    body = read_manifest_file(man_p, "manifest file")
+    sig_raw = read_manifest_file(sig_p, "signature file")
+    try:
+        sig = b64d(sig_raw.decode("ascii").rstrip("\n"))
+    except ValueError:
+        refuse("manifest", "the signature file is not canonical base64")
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, data in (("root.pub", root_raw), ("manifest.json", body), ("manifest.sig", sig)):
+            with open(os.path.join(tmp, name), "wb") as f:
+                f.write(data)
+        root_der = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", os.path.join(tmp, "root.pub"), "-outform", "DER"],
+                                  capture_output=True)
+        if root_der.returncode != 0 or not root_der.stdout:
+            refuse("manifest", "the root key file is not a public key")
+        if not is_p256_spki(root_der.stdout):
+            refuse("manifest", "the root key file is not an ECDSA P-256 key")
+        verified = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "root.pub"),
+                       "-signature", os.path.join(tmp, "manifest.sig"), os.path.join(tmp, "manifest.json")],
+                      capture_output=True)
+        if not sig or verified.returncode != 0:
+            refuse("manifest", "the signature of the manifest does not verify with the root key")
+        m = parse_manifest_body(body)
+        key = manifest_key(m, tmp)
+    now = dt.datetime.now(dt.timezone.utc)
+    start = manifest_date(m, "valid_from", True)
+    end, revoked = manifest_date(m, "valid_to", False), manifest_date(m, "revoked_at", False)
+    if now < start:
+        refuse("manifest", "the key is not yet valid (valid_from %s)" % m["valid_from"])
+    if end is not None and now >= end:
+        refuse("manifest", "the key has expired (valid_to %s)" % m["valid_to"])
+    if revoked is not None and now >= revoked:
+        refuse("manifest", "the key was revoked (revoked_at %s)" % m["revoked_at"])
+    return key
+
+
+def parse_manifest_body(body):
+    try:
+        m = strict_json(body)
+    except ValueError as ex:
+        refuse("manifest", "the manifest is not JSON (%s)" % ex)
+    if not isinstance(m, dict):
+        refuse("manifest", "the manifest is not a JSON object")
+    for k in m:
+        if k not in MANIFEST_FIELDS:
+            refuse("manifest", "unknown field %r" % k)
+    for k in ("public_key", "key_id"):
+        if k not in m:
+            refuse("manifest", "%s is missing" % k)
+    return m
+
+
+# SubjectPublicKeyInfo of an ECDSA P-256 key, up to its point
+P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+
+
+def is_p256_spki(der):
+    """True for the DER of an ECDSA P-256 public key: the 26-byte SPKI prefix, then the 65-byte uncompressed point
+    (91 bytes in all)."""
+    n = len(P256_SPKI_PREFIX)
+    return len(der) == n + 65 and der.startswith(P256_SPKI_PREFIX) and der[n] == 4
+
+
+def manifest_key(m, tmp):
+    """The manifest's key: one PEM public key block, ECDSA P-256 (the KMS key's type), and key_id = the lower-case
+    sha256 of its DER."""
+    pem = m["public_key"]
+    if not (isinstance(pem, str) and ONE_PUBLIC_KEY_PEM.fullmatch(pem)):
+        refuse("manifest", "public_key is not exactly one PEM public key block")
+    der = public_key_der(pem)
+    if der is None:
+        refuse("manifest", "public_key is not a public key")
+    if not is_p256_spki(der):
+        refuse("manifest", "public_key is not an ECDSA P-256 key")
+    if m["key_id"] != hashlib.sha256(der).hexdigest():
+        refuse("manifest", "key_id is not the lower-case sha256 of the public key")
+    return {"key_id": m["key_id"], "public_key": pem}
+
+
+def rekor_pin(trust_path, rekor_path):
+    """The Rekor log's public key (PEM text), taken from rekor.pub only when sigstore-trust.json pins it: the sha256 of
+    the key's DER must be
+    the file's rekor_sha256. This is only a drift check, not an authorization: a hash edited in the same pull request
+    authorizes nothing, the
+    boundary is review of these files. rekor_sha256 records the refresh from Sigstore's TUF root. It is the only
+    Sigstore material the
+    key-signed chain trusts (ratify B: Rekor kept, Fulcio and the TSA gone)."""
+    trust = load_json(trust_path, "trust file")
+    try:
+        with open(rekor_path) as f:
+            text = f.read()
+    except OSError as ex:
+        raise Refuse("policy", "trust: cannot read %s" % ex)
+    der = public_key_der(text)
+    if der is None:
+        refuse("policy", "trust: the rekor key file is not a public key")
+    if trust.get("rekor_sha256") != hashlib.sha256(der).hexdigest():
+        refuse("policy", "trust: rekor_sha256 of the rekor key file does not match the committed trust file")
+    return text
+
+
 def policy_make(a):
+    # the key files sit beside the template: there is no flag that points elsewhere
+    pol_dir = os.path.dirname(os.path.abspath(a.template))
+    key = check_manifest(pol_dir)
     tpl = load_json(a.template, "template")
-    d = os.path.dirname(os.path.abspath(a.template))
-    trust_p = a.trust or os.path.join(d, "sigstore-trust.json")
-    fulcio_p = a.fulcio_chain or os.path.join(d, "fulcio-chain.pem")
-    tsa_p = a.tsa_chain or os.path.join(d, "tsa-chain.pem")
-    rekor_p = a.rekor_key or os.path.join(d, "rekor.pub")
+    rekor_text = rekor_pin(os.path.join(pol_dir, "sigstore-trust.json"), os.path.join(pol_dir, "rekor.pub"))
     if re.match(r"(refs/tags/)?v0\.0\.0($|-)", a.tag or a.ref or ""):
         refuse("policy", "snapshot version")      # no policy, hence no Sign or Release, can exist for a snapshot version (REQ-CHAIN-004-AC15)
     if a.tag:
@@ -242,34 +243,8 @@ def policy_make(a):
             tag, dry = "", True
         else:
             refuse("policy", "ref %r is neither refs/tags/vX.Y.Z[-rcN] nor a branch (tag)" % ref)
-    trust = load_json(trust_p, "trust file")
-    try:
-        with open(fulcio_p) as f1, open(tsa_p) as f2, open(rekor_p) as f3:
-            fulcio_text, tsa_text, rekor_text = f1.read(), f2.read(), f3.read()
-    except OSError as ex:
-        raise Refuse("policy", "trust: cannot read %s" % ex)
-    froot, fblocks = first_cert_der(fulcio_text)
-    troot, tblocks = first_cert_der(tsa_text)
-    rdir = ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", rekor_p, "-outform", "DER"],
-        capture_output=True)).stdout
-    got = {"fulcio_root_sha256": hashlib.sha256(froot).hexdigest(), "tsa_root_sha256": hashlib.sha256(troot).hexdigest(),
-           "rekor_sha256": hashlib.sha256(rdir).hexdigest()}
-    for k, v in got.items():
-        if trust.get(k) != v:
-            refuse("policy", "trust: %s of the chain file does not match the committed trust file" % k)
-    repo = tpl["repository"]
-
-    def ident(wf):
-        return "https://github.com/%s/%s@%s" % (repo, wf, ref)
-
-    pol = {
-        "tag": tag, "ref": ref, "repository": repo, "oidc_issuer": tpl["oidc_issuer"],
-        "caller_identity": ident(tpl["caller_workflow"]),
-        "roots": {got["fulcio_root_sha256"]: {"certificate": b64e((fblocks[0] + "\n").encode()), "intermediates": [b64e((x + "\n").encode()) for x in fblocks[1:]]}},
-        "timestampauthorities": {got["tsa_root_sha256"]: {"certificate": b64e((tblocks[0] + "\n").encode()), "intermediates": [b64e((x + "\n").encode()) for x in tblocks[1:]]}},
-        "rekor_public_key": rekor_text,
-        "stages": {k: {"identity": ident(v["workflow"])} for k, v in tpl["stages"].items()},
-    }
+    pol = {"tag": tag, "ref": ref, "repository": tpl["repository"], "release_key": key,
+           "rekor_public_key": rekor_text, "stages": tpl["stages"]}
     if dry:
         pol["dry_run"] = True
     with open(a.out, "w") as f:
@@ -284,8 +259,10 @@ def pae(t, body):
 
 
 def envelope_shape(dsse):
-    """Every envelope field has its JSON type (Codex security r3): payloadType and payload strings, signatures a list of objects whose
-    sig and certificate are strings, intermediates a list of strings, timestamps a list of objects. Returns the first wrong field or None."""
+    """Every envelope field has its JSON type: payloadType and payload strings, signatures a list of objects that hold a
+    string sig and
+    an optional string keyid and nothing else (a certificate, intermediates or timestamps field is an old-form record).
+    Returns the first wrong field or None."""
     if not isinstance(dsse, dict):
         return "the envelope is not an object"
     for k in ("payloadType", "payload"):
@@ -295,22 +272,14 @@ def envelope_shape(dsse):
     if not isinstance(sigs, list) or not all(isinstance(x, dict) for x in sigs):
         return "signatures is not a list of objects"
     for x in sigs:
-        for k in ("sig", "certificate"):
-            if not isinstance(x.get(k), str):
-                return "signature field %s is not a string" % k
-        if not isinstance(x.get("intermediates", []), list) or not all(isinstance(i, str) for i in x.get("intermediates", [])):
-            return "intermediates is not a list of strings"
-        if not isinstance(x.get("timestamps", []), list) or not all(isinstance(t, dict) for t in x.get("timestamps", [])):
-            return "timestamps is not a list of objects"
+        extra = sorted(set(x) - {"keyid", "sig"})
+        if extra:
+            return "signature field %s is not part of the form (a signature is {keyid, sig})" % extra[0]
+        if not isinstance(x.get("sig"), str):
+            return "signature field sig is not a string"
+        if "keyid" in x and not isinstance(x["keyid"], str):
+            return "signature field keyid is not a string"
     return None
-
-
-def throwaway_only(stage, dsse):
-    """The Witness move (owner Oct 22): the building jobs record under Witness with a throwaway key, and Sign re-signs the record keyless. A record whose signatures
-    carry a key id and no certificate is that throwaway form (Witness 0.12.0 with a file key: signatures [{keyid, sig}]); no stage accepts it, with a plain reason."""
-    sigs = dsse.get("signatures") if isinstance(dsse, dict) else None
-    if isinstance(sigs, list) and sigs and all(isinstance(x, dict) and not x.get("certificate") for x in sigs) and any(x.get("keyid") for x in sigs):
-        refuse(stage, "record is signed only by the build job's throwaway key (a key id and no certificate): only stage-sign.yml's keyless signature is trusted")
 
 
 def local_records(stage, rec_path):
@@ -337,209 +306,42 @@ def read_record(stage, path):
         payload = b64d(dsse["payload"]) if not why else None
     except Exception as ex:
         refuse(stage, "record is not a DSSE envelope (%s)" % (ex if isinstance(ex, ValueError) and "duplicate" in str(ex) else type(ex).__name__))
-    throwaway_only(stage, dsse)        # before the shape complaint: the plain reason for the throwaway form is the one worth reading
     if why:
         refuse(stage, "record is not a DSSE envelope (%s)" % why)
     ptype = dsse["payloadType"]
     if len(dsse["signatures"]) != 1:
         refuse(stage, "record must carry exactly one signature, it has %d" % len(dsse["signatures"]))
-    chain_items.check_record_names(stage, payload)       # a snapshot record or version, a name that is not the stage's: refused before any certificate
+    # a snapshot record or version, a name that is not the stage's: refused before the signature
+    chain_items.check_record_names(stage, payload)
     return dsse, payload, ptype
 
 
-# The two timestamp forms in the chain: Witness stores the bare token (go-witness timestamp/tsp.go: `return timestamp.RawToken`),
-# a Sigstore bundle stores the whole DER TimeStampResponse (protobuf-specs sigstore_common.proto RFC3161SignedTimestamp,
-# sigstore-go pkg/sign/timestamping.go). The type of the entry says which: "tsp" is a token, "rfc3161-response" a response.
-STAMP_TOKEN, STAMP_RESPONSE = "tsp", "rfc3161-response"
-# Which form each record type carries: a Witness collection stores the bare token, a Sigstore bundle (the provenance) the whole
-# TimeStampResponse. The signed release policy may carry either (PR 4 decides how Release signs it).
-STAMP_FORM = {COLL: STAMP_TOKEN, PROV: STAMP_RESPONSE}
-FORM_NAME = {STAMP_TOKEN: "bare token (tsp)", STAMP_RESPONSE: "whole response (rfc3161-response)"}
+def release_key_pem(stage, pol):
+    """The policy's one release key (the manifest key `policy make` put there); a policy without one verifies
+    nothing."""
+    k = pol.get("release_key")
+    if not (isinstance(k, dict) and isinstance(k.get("public_key"), str)):
+        refuse(stage, "the policy has no release key (release_key)")
+    return k["public_key"]
 
 
-def expected_stamp_kind(ptype, payload):
-    """The stamp form the record's type carries, or None (any) when the type is not known here: check_record_type refuses it later."""
-    if ptype == POLT:
-        return None
-    try:
-        return STAMP_FORM.get(strict_json(payload).get("predicateType"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def stamp_token(stamp_der, kind, tmp):
-    """The bare timestamp token (a file) of a stamp. A whole response is first checked for a clean status and then reduced to its
-    token, so that the time is read from, and the TSA's signature is verified over, the SAME token bytes. The response's status
-    section (a status string, a failure info) is outside the TSA's signature: reading the time from the response text let an edited
-    status string `x\\nTime stamp: <date>` set the time that is compared with the certificate's validity."""
-    resp = os.path.join(tmp, "stamp.der")
-    with open(resp, "wb") as f:
-        f.write(stamp_der)
-    if kind == STAMP_TOKEN:
-        return resp
-    text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", resp, "-text"],
-        capture_output=True)).stdout.decode(errors="replace")
-    status = re.search(r"^Status info:\n(.*?)(?=^TST info:|\Z)", text, re.S | re.M)
-    fields = dict(re.findall(r"^(Status|Status description|Failure info): (.*)$", status.group(1) if status else "", re.M))
-    if fields.get("Status") != "Granted." or fields.get("Status description", "unspecified") != "unspecified" or fields.get("Failure info", "unspecified") != "unspecified":
-        raise ValueError("the response carries a status string or failure info (status)")
-    token = os.path.join(tmp, "stamp-token.der")
-    ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", resp, "-token_out", "-out", token], capture_output=True))
-    return token
-
-
-def stamp_time(token_path):
-    """genTime of a bare token, as exact epoch seconds (a Fraction): the one `Time stamp:` line of `openssl ts -reply -token_in -text`
-    (no status section exists there). The fraction of a second is KEPT (REQ-CHAIN-002-AC1, Codex security r2 note): 12:00:00.5 is
-    after a certificate that ends at 12:00:00."""
-    text = ssl_done(subprocess.run([OPENSSL, "ts", "-reply", "-in", token_path, "-token_in", "-text"],
-        capture_output=True)).stdout.decode(errors="replace")
-    hits = re.findall(r"^Time stamp: (\w{3})\s+(\d+) (\d\d):(\d\d):(\d\d)(?:\.(\d+))? (\d{4}) GMT$", text, re.M)
-    if len(hits) != 1:
-        raise ValueError("not exactly one genTime in the timestamp token")
-    mon, day, hh, mm, ss, frac, year = hits[0]
-    whole = dt.datetime.strptime("%s %s %s:%s:%s %s" % (mon, day, hh, mm, ss, year), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
-    return Fraction(epoch(whole)) + (Fraction(int(frac), 10 ** len(frac)) if frac else 0)
-
-
-def epoch(when):
-    """Whole epoch seconds of a certificate or clock time (certificate times have no fraction)."""
-    return int(when.timestamp())
-
-
-def stamp_text(when):
-    """A datetime, or exact epoch seconds with any fraction shown."""
-    if isinstance(when, dt.datetime):
-        return when.strftime("%Y-%m-%dT%H:%M:%SZ")
-    whole = math.floor(when)
-    text = dt.datetime.fromtimestamp(whole, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    if when != whole:
-        text += ("%.9f" % float(when - whole))[1:].rstrip("0")
-    return text + "Z"
-
-
-def attimes(when):
-    """The whole second at which openssl checks a chain for `when`. openssl treats a certificate as expired when notAfter <= the
-    -attime and as not yet valid when notBefore > it, and certificate times are whole seconds, so the floor gives the exact answer
-    for a time with a fraction; for a whole-second time equal to a notAfter it refuses (one second stricter: fail closed)."""
-    return [math.floor(when)]
-
-
-def check_identity(stage, pol, leaf):
-    """The certificate must be the stage's workflow file at the ref, called by release.yml at the same ref, from GitHub's issuer."""
-    want_id = pol["stages"][stage]["identity"]
-    # REQ-CHAIN-001-AC4 (Codex #249 r6 B6): every refusal here names the identity found, the certificate's SAN(s) or "(none)"
-    try:
-        uris = san_uris(leaf)
-        found = ", ".join(uris) or "(none)"
-    except (UnicodeDecodeError, IndexError, ValueError):
-        refuse(stage, "certificate identity fields are malformed (identity found: unreadable SAN)")
-    try:
-        cfg = ext_string(leaf, OID_CONFIG)
-        iss = ext_string(leaf, OID_ISSUER)
-    except (UnicodeDecodeError, IndexError, ValueError):
-        refuse(stage, "certificate identity fields are malformed (identity found: %s)" % found)
-    if uris != [want_id]:
-        refuse(stage, "certificate identity %s is not %s" % (found, want_id))
-    if cfg is None:
-        refuse(stage, "certificate has no build config URI extension (the calling workflow); identity found: %s" % found)
-    if cfg != pol["caller_identity"]:
-        refuse(stage, "certificate build config URI %s is not %s; identity found: %s" % (cfg, pol["caller_identity"], found))
-    if iss is None:
-        refuse(stage, "certificate has no OIDC issuer extension; identity found: %s" % found)
-    if iss != pol["oidc_issuer"]:
-        refuse(stage, "certificate issuer %s is not %s; identity found: %s" % (iss, pol["oidc_issuer"], found))
-
-
-def check_chain(stage, pol, cert_pem, intermediates, tmp):
-    """The certificate must chain to a root of the policy and to nothing else: the system trust store is switched off."""
-    leaf_p = os.path.join(tmp, "leaf.pem")
-    with open(leaf_p, "w") as f:
-        f.write(cert_pem)
-    untrusted = os.path.join(tmp, "untrusted.pem")
-    policy_inter = [b64d(x).decode() for root in pol["roots"].values() for x in root.get("intermediates", [])]
-    with open(untrusted, "w") as f:
-        f.write("".join(x.rstrip("\n") + "\n" for x in intermediates + policy_inter))
-    for rid, root in pol["roots"].items():
-        rp = os.path.join(tmp, "root-%s.pem" % rid[:12])
-        with open(rp, "w") as f:
-            f.write(b64d(root["certificate"]).decode())
-        # no default file, directory or store: only the policy's root is trusted, whatever SSL_CERT_FILE / SSL_CERT_DIR say
-        # the path is found here; its validity is checked at the stamp time by chain_valid_at, once that time is known
-        r = subprocess.run([OPENSSL, "verify", "-no_check_time", "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted",
-            rp, "-untrusted", untrusted, leaf_p], capture_output=True)
-        if r.returncode == 0:
-            return leaf_p, rp, untrusted
-    refuse(stage, "certificate does not chain to a root of the policy (root)")
-
-
-def chain_valid_at(stage, chain, when):
-    """Every certificate of the chain (leaf, intermediates, root) was valid at the stamp's authenticated time (REQ-CHAIN-002-AC1,
-    Codex security r2): an intermediate that had expired, or was not yet valid, then is refused, not only the leaf."""
-    leaf_p, root_p, untrusted = chain
-    for t in attimes(when):
-        r = subprocess.run([OPENSSL, "verify", "-attime", str(t), "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted",
-            root_p, "-untrusted", untrusted, leaf_p], capture_output=True)
-        if r.returncode != 0:
-            detail = (r.stdout + r.stderr).decode(errors="replace").strip().splitlines()
-            refuse(stage, "certificate chain is not valid at the timestamp time %s (validity): %s" % (stamp_text(when), detail[-1] if detail else "openssl verify failed"))
-
-
-def check_signature(stage, leaf_p, ptype, payload, sig, tmp):
-    pub = os.path.join(tmp, "leaf.pub")
-    with open(pub, "wb") as f:
-        f.write(ssl_done(subprocess.run([OPENSSL, "x509", "-in", leaf_p, "-pubkey", "-noout"],
-            capture_output=True)).stdout)
-    for n, data in (("pae.bin", pae(ptype, payload)), ("sig.bin", sig)):
+def check_signature(stage, pol, ptype, payload, sig, tmp):
+    """The record's one signature is the release key's ECDSA P-256 signature over the DSSE PAE. A record signed by
+    another key, by the
+    building job's throwaway key, or by nobody ends here (ruling F2: one refusal, the same words)."""
+    for n, data in (("release.pub", release_key_pem(stage, pol).encode()), ("pae.bin", pae(ptype, payload)),
+                    ("sig.bin", sig)):
         with open(os.path.join(tmp, n), "wb") as f:
             f.write(data)
-    if subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", pub, "-signature", os.path.join(tmp, "sig.bin"),
-        os.path.join(tmp, "pae.bin")], capture_output=True).returncode != 0:
-        refuse(stage, "signature does not verify over the payload")
+    r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(tmp, "release.pub"), "-signature",
+                        os.path.join(tmp, "sig.bin"), os.path.join(tmp, "pae.bin")], capture_output=True)
+    # the one pass is exit status 0; openssl exits 1 for a bad signature and for an error alike, so what it said is
+    # appended, not matched
+    if r.returncode != 0:
+        said = " / ".join((r.stdout + r.stderr).decode(errors="replace").strip().splitlines())[:200] or "no output"
+        refuse(stage, "signature does not verify over the payload: the record is not signed by the manifest key "
+                      "(openssl exit %d: %s)" % (r.returncode, said))
 
-
-def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp, want_kind=None):
-    """A stamp over sha256(signature) from a policy authority, inside the certificate's validity (the cert may have expired since)."""
-    stamps = signature_entry.get("timestamps") or []
-    if not stamps:
-        refuse(stage, "record has no timestamp, so a certificate that has expired cannot be accepted")
-    why = "no authority of the policy accepts the timestamp"
-    stamped = None
-    for st in stamps:
-        try:
-            kind = st["type"]
-            if kind not in (STAMP_TOKEN, STAMP_RESPONSE):
-                raise ValueError(kind)
-            if want_kind and kind != want_kind:
-                why = "timestamp type %s is not the form this record carries: %s" % (kind, FORM_NAME[want_kind])
-                continue
-            tokp = stamp_token(b64d(st["data"]), kind, tmp)
-            when = stamp_time(tokp)
-        except Exception as ex:
-            why = "timestamp token is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__)
-            continue
-        for aid, auth in pol.get("timestampauthorities", {}).items():
-            cp = os.path.join(tmp, "tsa-%s.pem" % aid[:12])
-            ip = os.path.join(tmp, "tsa-int-%s.pem" % aid[:12])
-            with open(cp, "w") as f:
-                f.write(b64d(auth["certificate"]).decode())
-            with open(ip, "w") as f:
-                f.write("".join(b64d(x).decode().rstrip("\n") + "\n" for x in auth.get("intermediates", [])))
-            # the TSA's signing certificate and its chain must be valid AT genTime (Codex security r2), not merely ever
-            if all(subprocess.run([OPENSSL, "ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp,
-                "-token_in", "-CAfile", cp, "-untrusted", ip, "-attime", str(t)],
-                capture_output=True).returncode == 0 for t in attimes(when)):
-                stamped = when
-                break
-        if stamped is not None:
-            break
-    if stamped is None:
-        refuse(stage, "timestamp: " + why)
-    if not (epoch(leaf["not_before"]) <= stamped <= epoch(leaf["not_after"])):
-        refuse(stage, "timestamp time %s is outside the certificate validity %s..%s" % (stamp_text(stamped), stamp_text(leaf["not_before"]), stamp_text(leaf["not_after"])))
-    if stamped > epoch(now) + 600:
-        refuse(stage, "timestamp time %s is later than the verification time" % stamp_text(stamped))
-    return stamped
 
 
 TYPE_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
@@ -630,12 +432,12 @@ def check_slsa_v1(stage, predicate):
 
 
 def check_record_type(stage, pol, ptype, payload):
-    """Bind the record type to the stage. Returns (statement, needs_rekor)."""
+    """Bind the record type to the stage. Returns the statement (the policy payload for the release stage)."""
     if ptype == POLT:
         if stage != "release":
             refuse(stage, "predicate: the signed policy type (policy payloadType) is the release stage's record, not %s's" % stage)
         try:
-            return strict_json(payload), True
+            return strict_json(payload)
         except ValueError:
             refuse(stage, "predicate: the policy payload is not JSON")
     if ptype != DSSE_STMT:
@@ -655,63 +457,104 @@ def check_record_type(stage, pol, ptype, payload):
             refuse(stage, "predicate type provenance is the sign stage's record type, not %s's" % stage)
         predicate = stmt.get("predicate")
         check_slsa_v1(stage, predicate)
+        params = predicate["buildDefinition"]["externalParameters"]
+        found = params.get("ref")
+        if found != pol.get("ref"):
+            refuse(stage, "ref: the ref inside the provenance (%s) is not the policy's ref %s"
+                   % (json.dumps(found), pol.get("ref")))
+        # the provenance names the ref twice (the run's ref and the calling workflow's `file@ref`); a branch run must
+        # not pass as the tag by either one
+        workflow = params.get("workflow")
+        want = "https://github.com/%s/.github/workflows/release.yml@%s" % (pol.get("repository"), pol.get("ref"))
+        if workflow != want:
+            refuse(stage, "ref: the calling workflow inside the provenance (%s) is not %s"
+                   % (json.dumps(workflow), want))
         if predicate.get("dryRun") and not pol.get("dry_run"):
             refuse(stage, "the provenance says dryRun true (dry): only a dry-run policy accepts it")
-        return stmt, True
+        return stmt
     if pt == COLL:
         if stage not in WITNESS_STAGES:
             refuse(stage, "predicate type %s (a witness collection) is not the %s stage's record type" % (pt, stage))
-        return stmt, False
+        collection_ref(stage, pol, stmt)
+        return stmt
     refuse(stage, "predicate type %s is not allowed for stage %s" % (pt, stage))
 
 
-def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
-    """Verify one stage's DSSE record against the policy. Returns (statement-or-policy-dict, payload, envelope)."""
+def environment_ref(att):
+    """GITHUB_REF out of a Witness environment attestation, or None when the attestation is not an object or its
+    variables are not an object (a list or a string must be a refusal for the caller, never a traceback)."""
+    variables = att.get("variables") if isinstance(att, dict) else None
+    return variables.get("GITHUB_REF") if isinstance(variables, dict) else None
+
+
+def collection_ref(stage, pol, stmt):
+    """Tag binding of a Witness collection: the environment attestor (the building job runs it under Witness) records
+    GITHUB_REF, and it must be the policy's ref, so a collection made at another tag, an rc tag or a branch (same
+    digests) is refused. Exactly one environment attestor."""
+    atts = (stmt.get("predicate") or {}).get("attestations") if isinstance(stmt, dict) else None
+    envs = [a for a in atts if isinstance(a, dict) and a.get("type") == ENV_ATTESTOR] if isinstance(atts, list) else []
+    if len(envs) != 1:
+        refuse(stage, "ref: the collection holds %d environment attestations, not exactly one" % len(envs))
+    att = envs[0].get("attestation")
+    found = environment_ref(att)
+    if not isinstance(found, str) or found != pol.get("ref"):
+        refuse(stage, "ref: the ref inside the collection (%s) is not the policy's ref %s"
+               % (json.dumps(found), pol.get("ref")))
+
+
+def verify_record(pol, stage, rec_path, tmp, rekor_path=None):
+    """Verify one stage's DSSE record against the policy: the envelope, the release key's signature, the record type
+    bound to the stage, and,
+    for the provenance and the release policy, the Rekor entry of that signature (ratify B: Release refuses a signature
+    without its entry;
+    a Witness record has none). No time inside a record is trusted.
+    Returns (statement-or-policy-dict, payload, envelope)."""
     if stage not in STAGES or stage not in pol.get("stages", {}):
         refuse(stage, "stage %r is not in the policy" % stage)
     if pol.get("dry_run") and stage != "sign":
         refuse(stage, "the policy is a dry-run policy (dry): it is accepted only for stage sign")
     local_records(stage, rec_path)
     dsse, payload, ptype = read_record(stage, rec_path)
-    entry = dsse["signatures"][0]
     try:
-        leaf_der = single_cert_der(b64d(entry["certificate"]).decode())
-        cert_pem = der_to_pem(leaf_der)
-        intermediates = [b64d(x).decode() for x in entry.get("intermediates", [])]
-        sig = b64d(entry["sig"])
+        sig = b64d(dsse["signatures"][0]["sig"])
     except Exception as ex:
-        refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
-    # rc-2 R8: the certificate chain is verified (by openssl) BEFORE the DER reader sees a single field of the leaf (its boundary note: never point it at bytes nobody has verified)
-    chain = check_chain(stage, pol, cert_pem, intermediates, tmp)
-    try:
-        leaf = parse_cert(leaf_der)
-    except Exception as ex:
-        refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
-    check_identity(stage, pol, leaf)
-    check_signature(stage, chain[0], ptype, payload, sig, tmp)
-    stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
-    chain_valid_at(stage, chain, stamped)
-    stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
+        refuse(stage, "record is not a DSSE envelope (signature is malformed: %s)"
+                      % (ex if isinstance(ex, ValueError) else type(ex).__name__))
+    check_signature(stage, pol, ptype, payload, sig, tmp)
+    stmt = check_record_type(stage, pol, ptype, payload)
+    if ptype == POLT or (isinstance(stmt, dict) and stmt.get("predicateType") == PROV):
+        check_rekor(pol, stage, rekor_path, payload, sig, public_key_der(release_key_pem(stage, pol)))
     if isinstance(stmt, dict) and stmt.get("predicateType") == COLL:
         chain_items.check_record_env(stage, dsse, payload)      # REQ-CHAIN-004-AC8: no token variable or value in a verified Witness collection
-    if needs_rekor:
-        check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf)
     return stmt, payload, dsse
 
 
-# ---- Rekor (v1 log, the DSSE entry kind that `cosign attest-blob` writes) -----------------------------------------------
-# An entry is a protobuf-JSON TransparencyLogEntry as it sits in a Sigstore bundle's verificationMaterial.tlogEntries
-# (protobuf-specs sigstore_rekor.proto: logIndex and integratedTime are strings, logId.keyId and canonicalizedBody are base64,
-# inclusionPromise.signedEntryTimestamp is the log's signature). Its canonical body is a Rekor `dsse` 0.0.1 entry:
-# {"apiVersion","kind":"dsse","spec":{"envelopeHash","payloadHash","signatures":[{"signature","verifier"}]}} where signature
-# is the base64 DSSE signature and verifier the base64 PEM certificate. The signed entry timestamp is an ECDSA signature over
-# the canonical JSON {body, integratedTime, logID, logIndex} (sigstore-go pkg/tlog/entry.go VerifySET).
+# ---- Rekor (v1 log, the DSSE entry kind that `cosign attest-blob --key` writes) --------------------------------------
+# Ratify B (owner, Oct 29): every signature by the KMS release key keeps its Rekor entry, and Release refuses a
+# signature without one.
+# An entry is a protobuf-JSON TransparencyLogEntry as it sits in a Sigstore bundle's tlogEntries (logIndex and
+# integratedTime are
+# decimal strings; logId.keyId and canonicalizedBody are base64; inclusionPromise.signedEntryTimestamp is the log's
+# signature).
+# Its body is a Rekor `dsse` 0.0.1 entry:
+# {"apiVersion","kind":"dsse","spec":{"payloadHash","signatures":[{"signature","verifier"}]}}.
+# For a key signature the verifier is the base64 PEM of the PUBLIC KEY, so the entry is bound to the manifest's KMS key,
+# not to a
+# certificate. The signed entry timestamp is the log's ECDSA signature over the canonical JSON {body, integratedTime,
+# logID, logIndex}.
+# The entry must also be IN the log: its inclusionProof (RFC 9162 audit path to the root) and the checkpoint signed by
+# the same key are checked.
+# No time in the entry is trusted: the log's signature over it is checked, and the integrated time is not compared with
+# anything.
 CANONICAL_DECIMAL = re.compile(r"0|[1-9][0-9]*")
+# seconds between one try and six retries (about 63 s in all); then Release fails closed
+REKOR_WAITS = (1, 2, 4, 8, 16, 32)
 
 
 def canonical_int(e, field):
-    """protobuf-JSON writes int64 as a decimal STRING; only its one canonical spelling is accepted (REQ-CHAIN-002-AC3, Codex security r2):
-    int() would read 7, "+7", " 7", "07" and 7.9 alike, so an edited outer entry would still match the log's signed numbers."""
+    """protobuf-JSON writes int64 as a decimal STRING; only its one canonical spelling is accepted: int() would read 7,
+    "+7", " 7", "07"
+    and 7.9 alike, so an edited outer entry would still match the log's signed numbers."""
     v = e[field]
     if not isinstance(v, str) or not CANONICAL_DECIMAL.fullmatch(v):
         raise ValueError("%s %r is not a canonical decimal string" % (field, v))
@@ -727,6 +570,16 @@ def rekor_entry_fields(e):
     }
 
 
+def public_key_der(pem):
+    """The DER of one PEM public key, or None when the text is not one."""
+    with tempfile.TemporaryDirectory() as d:
+        kp = os.path.join(d, "key.pem")
+        with open(kp, "w") as f:
+            f.write(pem)
+        r = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"], capture_output=True)
+    return r.stdout if r.returncode == 0 and r.stdout else None
+
+
 def set_is_valid(e, key_pem):
     canon = json.dumps(rekor_entry_fields(e), sort_keys=True, separators=(",", ":")).encode()
     with tempfile.TemporaryDirectory() as d:
@@ -738,13 +591,78 @@ def set_is_valid(e, key_pem):
     return r.returncode == 0
 
 
-def rekor_log_id(key_pem):
-    with tempfile.TemporaryDirectory() as d:
-        kp = os.path.join(d, "key.pem")
-        with open(kp, "w") as f:
-            f.write(key_pem)
-        return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"],
-            capture_output=True)).stdout).hexdigest()
+def merkle_inclusion_ok(index, size, leaf, hashes, root):
+    """RFC 9162 section 2.1.3.2: does `hashes` (32-byte audit path) take the leaf at `index` to `root` in a tree of
+    `size` leaves."""
+    if not 0 <= index < size:
+        return False
+    fn, sn, r = index, size - 1, leaf
+    for p in hashes:
+        if sn == 0:
+            return False
+        if fn & 1 or fn == sn:
+            r = hashlib.sha256(b"\x01" + p + r).digest()
+            while not fn & 1 and fn != 0:
+                fn >>= 1
+                sn >>= 1
+        else:
+            r = hashlib.sha256(b"\x01" + r + p).digest()
+        fn >>= 1
+        sn >>= 1
+    return sn == 0 and r == root
+
+
+def check_inclusion(e, rekor_pem):
+    """None when the entry is IN the log's tree, else the reason it is not: the leaf hash of the canonical body takes
+    the audit path to the
+    root hash at the tree size, and the checkpoint (a signed note) is signed by the policy's Rekor key and names that
+    same size and root."""
+    try:
+        proof = e["inclusionProof"]
+        index, size = canonical_int(proof, "logIndex"), canonical_int(proof, "treeSize")
+        root = b64d(proof["rootHash"])
+        hashes = [b64d(h) for h in proof["hashes"]]
+        envelope = proof["checkpoint"]["envelope"]
+        leaf = hashlib.sha256(b"\x00" + b64d(e["canonicalizedBody"])).digest()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return "rekor entry has no usable inclusion proof (a signed entry timestamp alone is not enough)"
+    if len(root) != 32 or not all(len(h) == 32 for h in hashes):
+        return "rekor entry inclusion proof: a hash is not 32 bytes"
+    if not merkle_inclusion_ok(index, size, leaf, hashes, root):
+        return "rekor entry is not in the tree: its audit path does not lead to the root hash"
+    if not isinstance(envelope, str) or "\n\n" not in envelope:
+        return "rekor entry checkpoint is not a signed note"
+    text, _, sigs = envelope.partition("\n\n")
+    text += "\n"
+    lines = text.split("\n")
+    if len(lines) < 4 or not lines[0].startswith("rekor.sigstore.dev - ") or lines[1] != str(size):
+        return "rekor entry checkpoint names another log or another tree size"
+    try:
+        if b64d(lines[2]) != root:
+            return "rekor entry checkpoint names another root hash than the inclusion proof"
+    except ValueError:
+        return "rekor entry checkpoint root hash is malformed"
+    rekor_der = public_key_der(rekor_pem)
+    if rekor_der is None:
+        return "rekor entry: the policy's rekor key is not a public key"
+    for line in sigs.split("\n"):
+        if not line.startswith("\u2014 "):
+            continue
+        try:
+            blob = b64d(line.split(" ")[2])
+        except (IndexError, ValueError):
+            continue
+        if blob[:4] != hashlib.sha256(rekor_der).digest()[:4]:
+            continue
+        with tempfile.TemporaryDirectory() as d:
+            for name, data in (("key.pem", rekor_pem.encode()), ("note.bin", text.encode()), ("note.sig", blob[4:])):
+                with open(os.path.join(d, name), "wb") as f:
+                    f.write(data)
+            r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature",
+                                os.path.join(d, "note.sig"), os.path.join(d, "note.bin")], capture_output=True)
+        if r.returncode == 0:
+            return None
+    return "rekor entry checkpoint is not signed by the policy's rekor key"
 
 
 def rekor_body(e):
@@ -756,35 +674,41 @@ def rekor_body(e):
     return body if body.get("kind") == "dsse" and body.get("apiVersion") == "0.0.1" else None
 
 
-def check_rekor_entry(pol, e, body, sig, leaf_der, leaf):
-    """Returns None when the entry is good, else the reason it is not."""
+def check_rekor_entry(pol, e, body, sig, key_der):
+    """None when the entry is good, else the reason it is not: the log's signed timestamp verifies against the policy's
+    Rekor key, the entry
+    names that log, and its one signature is this record's signature made by the manifest's KMS key (key_der)."""
     try:
-        rekor_entry_fields(e)
+        fields = rekor_entry_fields(e)
     except (ValueError, KeyError, TypeError) as ex:
         return "rekor entry is malformed (%s)" % ex
-    spec = body["spec"]
-    if not set_is_valid(e, pol["rekor_public_key"]):
+    rekor_pem = pol["rekor_public_key"]
+    if not set_is_valid(e, rekor_pem):
         return "rekor entry: the signed entry timestamp does not verify against the policy's rekor key"
-    if rekor_entry_fields(e)["logID"] != rekor_log_id(pol["rekor_public_key"]):
+    rekor_der = public_key_der(rekor_pem)
+    if rekor_der is None or fields["logID"] != hashlib.sha256(rekor_der).hexdigest():
         return "rekor entry names another log (log id is not the policy's rekor key)"
-    signatures = spec.get("signatures") or []
+    why = check_inclusion(e, rekor_pem)
+    if why:
+        return why
+    signatures = body["spec"].get("signatures") or []
     if len(signatures) != 1 or signatures[0].get("signature") != b64e(sig):
         return "rekor entry body is for another signature than this record's"
     try:
-        verifier_der = single_cert_der(b64d(signatures[0]["verifier"]).decode())
+        verifier_pem = b64d(signatures[0]["verifier"]).decode()
+        # one key block, nothing around it
+        verifier_der = public_key_der(verifier_pem) if ONE_PUBLIC_KEY_PEM.fullmatch(verifier_pem) else None
     except Exception:
-        return "rekor entry body has no usable certificate (verifier)"
-    if verifier_der != leaf_der:
-        return "rekor entry body is for another certificate than this record's"
-    when = dt.datetime.fromtimestamp(rekor_entry_fields(e)["integratedTime"], dt.timezone.utc)
-    if not (leaf["not_before"] <= when <= leaf["not_after"]):
-        return "rekor entry integrated time %s is outside the certificate validity" % stamp_text(when)
+        verifier_der = None
+    if verifier_der is None:
+        return "rekor entry body has no usable public key (verifier)"
+    if verifier_der != key_der:
+        return "rekor entry body is for another key than the manifest's release key"
     return None
 
 
 def read_rekor_entries(stage, rekor_path):
-    """The `entries` list of a Rekor entries file. Anything but a list of objects is a refusal, never a traceback
-    (REQ-CHAIN-002-AC3, Codex security r1 S2)."""
+    """The `entries` list of a Rekor entries file. Anything but a list of objects is a refusal, never a traceback."""
     try:
         with open(rekor_path, "rb") as f:
             entries = strict_json(f.read())["entries"]
@@ -795,9 +719,11 @@ def read_rekor_entries(stage, rekor_path):
     return entries
 
 
-def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
+def check_rekor(pol, stage, rekor_path, payload, sig, key_der):
+    """Release refuses a signature without its Rekor entry: some entry in the file must bind this payload's hash and
+    pass check_rekor_entry."""
     if not rekor_path:
-        refuse(stage, "rekor entry required for this record type but no Rekor entries file (--rekor-stub) was given")
+        refuse(stage, "rekor entry required for this record type but no Rekor entries file was given")
     entries = read_rekor_entries(stage, rekor_path)
     payload_hash = hashlib.sha256(payload).hexdigest()
     candidates = []
@@ -813,13 +739,28 @@ def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
     first = None
     for e, body in candidates:
         try:
-            why = check_rekor_entry(pol, e, body, sig, leaf_der, leaf)
+            why = check_rekor_entry(pol, e, body, sig, key_der)
         except Exception:
             why = "rekor entry is malformed"
         if why is None:
             return
         first = first or why
     refuse(stage, first)
+
+
+def rekor_with_retry(fetch, sleep):
+    """Ask Rekor for the entries with `fetch`: one try, then up to six retries after waits of 1, 2, 4, 8, 16 and 32
+    seconds. Rekor still
+    down after the last wait: Release fails closed with one line naming Rekor, and a re-run continues. `sleep` is passed
+    in so a test waits for nothing."""
+    for wait in REKOR_WAITS + (None,):
+        try:
+            return fetch()
+        except Exception:
+            if wait is None:
+                refuse("release", "rekor did not answer after one try and six retries (63 seconds): the release "
+                                  "stops here, run it again when Rekor is back")
+            sleep(wait)
 
 
 def typed_subjects(stage, stmt):
@@ -873,11 +814,22 @@ def parse_digest_bytes(raw, stage="sign"):
 
 
 # ---- subcommands ---------------------------------------------------------------------------------------------------
+def rekor_entries_path(record, given):
+    """The Rekor entries file of a record: the one named, else <record>.rekor.json beside it (Release lays them out so:
+    provenance.json and
+    provenance.rekor.json). Whether this record needs one is verify_record's decision; a file that is not there is a
+    refusal there."""
+    if given:
+        return given
+    base = record[:-len(".json")] if record.endswith(".json") else record
+    return base + ".rekor.json"
+
+
 def cmd_verify(a):
     pol = load_json(a.policy, "policy")
-    now = parse_now(a.now)
     with tempfile.TemporaryDirectory() as tmp:
-        verify_record(pol, a.stage, a.record, a.rekor_stub, now, tmp)
+        verify_record(pol, a.stage, a.record, tmp,
+                      rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
     print("ok")
 
 
@@ -890,7 +842,6 @@ def cmd_stage_start(a):
         refuse(a.previous, "stage %s does not start from the %s stage's record (stage)" % (a.stage, a.previous))
     chain_items.check_digest_names(a.previous, a.digests)
     pol = load_json(a.policy, "policy")
-    now = parse_now(a.now)
     if pol.get("dry_run"):
         refuse(a.previous, "the policy is a dry-run policy (dry): no stage may start from it")
     try:
@@ -900,7 +851,8 @@ def cmd_stage_start(a):
     except (OSError, ValueError):
         refuse(a.previous, "digest file is missing or not JSON")
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, payload, dsse = verify_record(pol, a.previous, a.record, a.rekor_stub, now, tmp)
+        stmt, payload, dsse = verify_record(pol, a.previous, a.record, tmp,
+                                            rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
     if dsse["payloadType"] == POLT:
         refuse(a.previous, "predicate: a signed release policy is not a record a stage starts from")
     parse_digest_bytes(d_bytes, a.previous)   # the same format check Sign applies (Codex security r2), before any comparison
@@ -933,7 +885,6 @@ def _release_policy(a, stage):
 def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
-    now = parse_now(a.now)
     # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
     product = (a.product if "product" in a else None) or "items.json"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
@@ -941,7 +892,7 @@ def cmd_bind_items(a):
     want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
     have = _sha256_bytes_of(a.items, "build", product)
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, _payload, dsse = verify_record(pol, "build", a.record, None, now, tmp)
+        stmt, _payload, dsse = verify_record(pol, "build", a.record, tmp)
     if dsse["payloadType"] == POLT:
         refuse("build", "predicate: a signed release policy is not Build's record")
     hits = [s for s in typed_subjects("build", stmt) if s["name"] == want]
@@ -961,7 +912,6 @@ def cmd_bind_check(a):
     verified under Check's identity at the tag, is the record of the step scanners, and names Build's verified digest list as its material (rule 55: results tied to
     the exact digests). A missing, duplicated, material-named or different product, or a record of another step, is refused."""
     pol = _release_policy(a, "check")
-    now = parse_now(a.now)
     if not BIND_CHECK_PRODUCT.fullmatch(a.product):
         refuse("check", "product: %r is not a plain file of check-results/" % a.product)
     try:
@@ -974,7 +924,7 @@ def cmd_bind_check(a):
     want = hashlib.sha256(d_bytes).hexdigest()
     have = _sha256_bytes_of(a.file, "check", a.product)
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, _payload, dsse = verify_record(pol, "check", a.record, None, now, tmp)
+        stmt, _payload, dsse = verify_record(pol, "check", a.record, tmp)
     if dsse["payloadType"] == POLT:
         refuse("check", "predicate: a signed release policy is not Check's record")
     step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
@@ -1064,7 +1014,6 @@ def cmd_check_list(a):
     """Exactly the four Check records, scanners, acceptance, runtime and arm64, each verified under Check's identity at the tag and each tied by its
     material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
     pol = _release_policy(a, "check")
-    now = parse_now(a.now)
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -1097,7 +1046,7 @@ def cmd_check_list(a):
         path = os.path.join(a.dir, "witness-" + n, "%s-collection.json" % n)
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                stmt, _payload, dsse = verify_record(pol, "check", path, None, now, tmp)
+                stmt, _payload, dsse = verify_record(pol, "check", path, tmp)
         except Refuse as r:
             refuse("check", "the %s record: %s" % (n, r.reason))
         if dsse["payloadType"] == POLT:
@@ -1145,27 +1094,38 @@ def cmd_rc_proof(a):
     rec = lambda rel: os.path.join(a.records, rel)
     with tempfile.TemporaryDirectory() as tmp:
         pol_path = os.path.join(tmp, "policy.json")
-        ns = argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, trust=a.trust, fulcio_chain=a.fulcio_chain,
-                                tsa_chain=a.tsa_chain, rekor_key=a.rekor_key, out=pol_path)
+        ns = argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, out=pol_path)
         policy_make(ns)
-        now = a.now
         quiet = io.StringIO()
         with contextlib.redirect_stdout(quiet):
             digests = rec("witness-build/digests.json")
             cmd_stage_start(argparse.Namespace(stage="release", previous="build", record=rec("witness-build/build-collection.json"),
-                                               digests=digests, policy=pol_path, now=now, rekor_stub=None))
+                                               digests=digests, policy=pol_path))
             cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                              items=rec("witness-build/items.json"), now=now))
+                                              items=rec("witness-build/items.json")))
+            # Build's record names the tag through its signed admission-baseline.json product (`tag`): the baseline is
+            # bound to the record like items.json, and
+            # its tag must be the marker's rc tag, so a Build record made in the run for another tag (the final one) is
+            # refused here
+            cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
+                                              items=rec("witness-build/admission-baseline.json"),
+                                              product="admission-baseline.json"))
             cmd_stage_start(argparse.Namespace(stage="release", previous="sign", record=rec("provenance/provenance.json"), digests=digests,
-                                               policy=pol_path, now=now, rekor_stub=rec("provenance/provenance.rekor.json")))
+                                               policy=pol_path))
             cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", record=rec("witness-rebuild/rebuild-collection.json"),
-                                               digests=digests, policy=pol_path, now=now, rekor_stub=None))
-            cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check"), now=now))
+                                               digests=digests, policy=pol_path))
+            cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check")))
         # the marker's run id is the run Sign's provenance came from: the statement (verified above under the rc tag's Sign identity) names its run as
         # invocationId, and that must be exactly this repository's URL for exactly this run (not a prefix, not another repository)
+        baseline = load_json(rec("witness-build/admission-baseline.json"), "admission baseline")
+        if not isinstance(baseline, dict) or baseline.get("tag") != marker["rc_tag"]:
+            baseline_tag = baseline.get("tag") if isinstance(baseline, dict) else None
+            refuse("build", "tag: Build's admission baseline is for %s, the marker's rc tag is %s"
+                   % (json.dumps(baseline_tag), marker["rc_tag"]))
         pol = load_json(pol_path, "policy")
         with tempfile.TemporaryDirectory() as tmp2:
-            pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), rec("provenance/provenance.rekor.json"), parse_now(now), tmp2)
+            pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), tmp2,
+                                            rekor_path=rec("provenance/provenance.rekor.json"))
         inv = (((pstmt.get("predicate") or {}).get("runDetails") or {}).get("metadata") or {}).get("invocationId")
         want_run = "https://github.com/%s/actions/runs/%s" % (a.repository, marker["run_id"])
         if inv != want_run:
@@ -1200,7 +1160,7 @@ def make_policy_from_template(a, tpl_path):
         refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z[-rcN] nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
-    ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, trust=a.trust, fulcio_chain=a.fulcio_chain, tsa_chain=a.tsa_chain, rekor_key=a.rekor_key, out=out.name)
+    ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, out=out.name)
     try:
         policy_make(ns)
         with open(out.name) as f:
@@ -1211,27 +1171,62 @@ def make_policy_from_template(a, tpl_path):
 
 def check_build_record(a):
     """What Sign must establish before it signs anything: Build's record is genuine, the digest list is the one Build attested,
-    and the list has the right format. Returns (policy, digest-object). Signs nothing and calls no tool."""
+    and the list has the right format. Returns (policy, digest-object, the verified statement of Build's record).
+    Signs nothing and calls no tool."""
     # two clearly named inputs: --template makes the per-tag policy here (the production Sign job), --policy is a finished one
     # (the dry run's own policy.json); exactly one is given
     pol = make_policy_from_template(a, a.template) if a.template else load_json(a.policy, "policy")
-    if "roots" not in pol:
+    if "release_key" not in pol:
         refuse("sign", "--policy must be a finished policy; a template goes to --template")
-    now = parse_now(a.now)
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
     except OSError:
         refuse("sign", "digest file is missing or unreadable (format)")
-    chain_items.check_digest_bytes("build", d_bytes)       # a snapshot version in the list: refused before any certificate, from the bytes read once (REQ-CHAIN-004-AC15)
+    # a snapshot version in the list: refused before any signature check, from the bytes read once (REQ-CHAIN-004-AC15)
+    chain_items.check_digest_bytes("build", d_bytes)
     # Build's record first, as stage build, under the policy's build identity (a dry-run policy is allowed for this)
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, None, now, tmp)
+        stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, tmp)
     if product_digest(typed_subjects("sign", stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
-    return pol, parse_digest_bytes(d_bytes)
+    return pol, parse_digest_bytes(d_bytes), stmt
+
+
+# The SBOMs the signed provenance names: their sha256 come from the file --items names, which Sign binds to Build's
+# verified record exactly as Release binds items.json (ITEMS_PRODUCT). A missing, unbound or malformed one is a refusal,
+# never a provenance without them.
+SBOM_ITEMS = ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production")   # the byproducts' order
+
+
+def sbom_byproducts(stmt, items_path):
+    try:
+        with open(items_path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        refuse("sign", "the --items file is missing or unreadable: the provenance names the SBOMs listed there")
+    hits = [x for x in typed_subjects("sign", stmt) if x["name"] == ITEMS_PRODUCT]
+    if len(hits) != 1:
+        refuse("sign", "--items: Build's record holds %d product subjects named file:items.json, exactly one is "
+               "required" % len(hits))
+    if hits[0]["digest"].get("sha256") != hashlib.sha256(raw).hexdigest():
+        refuse("sign", "the --items file is not the file Build's record holds (its sha256 differs from the record's "
+               "product subject)")
+    try:
+        items = strict_json(raw)
+    except ValueError as ex:
+        refuse("sign", "--items: not UTF-8 JSON or has a duplicate key (%s)" % ex)
+    if not isinstance(items, dict):
+        refuse("sign", "--items: must be a JSON object")
+    out = []
+    for name in SBOM_ITEMS:
+        v = items.get(name)
+        if not isinstance(v, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", v):
+            refuse("sign", "--items: %s is missing or is not sha256:<64 lower-case hex>" % name)
+        out.append({"name": name, "digest": {"sha256": v.split(":", 1)[1]}})
+    return out
 
 
 def cmd_check_build_record(a):
@@ -1239,22 +1234,36 @@ def cmd_check_build_record(a):
     print("ok")
 
 
-def provenance_statement(pol, obj, dry):
+# the KMS key, named by its alias and never by an ARN, a token or a file (ruling of Oct 28)
+RELEASE_KEY_REF = "awskms:///alias/fosterstack-release-signing"
+
+
+def provenance_statement(pol, obj, dry, byproducts):
     """The SLSA v1 provenance Sign signs: what was built (the digests), from which commit and run (GitHub's own variables)."""
     repo, ref = pol["repository"], pol.get("ref", "")
+    site = "https://github.com/" + repo
     run_url = "%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", "https://github.com"), repo, os.environ.get("GITHUB_RUN_ID", "0"))
     commit = os.environ.get("GITHUB_SHA", "")
+    # the calling workflow is the one GitHub names for this run, and it must be release.yml at the policy's ref: Sign
+    # writes what it was
+    # told, never a constant, so a run of another workflow (or of release.yml at another ref) cannot produce a
+    # provenance that passes
+    caller = os.environ.get("GITHUB_WORKFLOW_REF", "")
+    if caller != "%s/.github/workflows/release.yml@%s" % (repo, ref):
+        refuse("sign", "workflow: GITHUB_WORKFLOW_REF (%s) is not %s/.github/workflows/release.yml@%s"
+                       % (json.dumps(caller), repo, ref))
     statement = {
         "_type": "https://in-toto.io/Statement/v1", "predicateType": PROV,
         "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in sorted(obj.items())],
         "predicate": {
             "buildDefinition": {
                 "buildType": "https://github.com/%s/release-chain/v0.3.0" % repo,
-                "externalParameters": {"ref": ref, "workflow": pol["caller_identity"]},
+                "externalParameters": {"ref": ref, "workflow": "https://github.com/" + caller},
                 "internalParameters": {},
                 "resolvedDependencies": [{"uri": "git+https://github.com/%s@%s" % (repo, ref), "digest": {"gitCommit": commit}}],
             },
-            "runDetails": {"builder": {"id": pol["stages"]["sign"]["identity"]}, "metadata": {"invocationId": run_url}},
+            "runDetails": {"builder": {"id": "%s/.github/workflows/stage-sign.yml@%s" % (site, ref)},
+                           "metadata": {"invocationId": run_url}, "byproducts": byproducts},
         },
     }
     if dry:
@@ -1262,38 +1271,32 @@ def provenance_statement(pol, obj, dry):
     return statement
 
 
-def bundle_materials(vm):
-    """The bundle's timestamps and Rekor entries. Both must be present and non-empty: a provenance with either missing cannot be
-    accepted by Release, so Sign refuses it here and names each missing one (REQ-CHAIN-002-AC1, 002-AC3, Codex security r1 S1)."""
-    stamps = (vm.get("timestampVerificationData") or {}).get("rfc3161Timestamps")
-    tlog = vm.get("tlogEntries")
-    missing = []
-    if not isinstance(stamps, list) or not stamps:
-        missing.append("no timestamp (verificationMaterial.timestampVerificationData.rfc3161Timestamps is missing or empty)")
-    if not isinstance(tlog, list) or not tlog:
-        missing.append("no Rekor entry (verificationMaterial.tlogEntries is missing or empty)")
-    if missing:
-        refuse("sign", "the bundle cosign wrote has " + " and ".join(missing))
-    return stamps, tlog
-
-
-def bundle_to_outputs(bun, out_dir, pol):
-    """Turn the Sigstore bundle cosign wrote into the two files Release verifies: the DSSE envelope with its certificate chain and
-    timestamps (provenance.json) and the bundle's own Rekor entries, untouched (provenance.rekor.json)."""
+def bundle_to_outputs(bun, out_dir):
+    """Turn the bundle cosign wrote into the two files Release verifies: its DSSE envelope, one signature {keyid, sig}
+    (provenance.json), and the
+    bundle's own Rekor entries, untouched (provenance.rekor.json). The bundle must hold a
+    DSSE envelope and no certificate (a key signed it; nothing here is keyless)."""
     try:
         vm = bun["verificationMaterial"]
-        stamps, tlog = bundle_materials(vm)
-        leaf_pem = der_to_pem(b64d(vm["certificate"]["rawBytes"]))
+        if not isinstance(vm, dict):
+            raise TypeError("verificationMaterial")
+        if "certificate" in vm or "x509CertificateChain" in vm:
+            refuse("sign", "the bundle cosign wrote carries a certificate: no certificate belongs to this chain")
         dsse = bun["dsseEnvelope"]
-        envelope = {
-            "payloadType": dsse["payloadType"], "payload": dsse["payload"],
-            "signatures": [{"keyid": "", "sig": dsse["signatures"][0]["sig"], "certificate": b64e(leaf_pem.encode()),
-                            "intermediates": [x for root in pol["roots"].values() for x in root.get("intermediates", []) + [root["certificate"]]],
-                            "timestamps": [{"type": STAMP_RESPONSE, "data": s["signedTimestamp"]} for s in stamps]}],
-        }
+        sigs = dsse["signatures"]
+        if not isinstance(sigs, list) or len(sigs) != 1:
+            refuse("sign", "the bundle cosign wrote holds %s signatures, not exactly one: a second signature would be "
+                           "dropped unseen" % (len(sigs) if isinstance(sigs, list) else "no list of"))
+        sig = sigs[0]
+        envelope = {"payloadType": dsse["payloadType"], "payload": dsse["payload"],
+                    "signatures": [{"keyid": sig.get("keyid", ""), "sig": sig["sig"]}]}
+        tlog = vm.get("tlogEntries")
+        if not isinstance(tlog, list) or not tlog:
+            refuse("sign", "the bundle cosign wrote has no Rekor entry (verificationMaterial.tlogEntries is missing or "
+                           "empty): Release refuses a signature without one")
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
         # a malformed bundle is a refusal, never a traceback (property e); the field named is the one that was missing or wrong
-        refuse("sign", "the bundle cosign wrote is malformed: certificate or envelope field %s (%s)" % (ex, type(ex).__name__))
+        refuse("sign", "the bundle cosign wrote is malformed: envelope field %s (%s)" % (ex, type(ex).__name__))
     with open(os.path.join(out_dir, "provenance.json"), "w") as f:
         json.dump(envelope, f)
     with open(os.path.join(out_dir, "provenance.rekor.json"), "w") as f:
@@ -1338,23 +1341,25 @@ def cmd_sign(a):
     if a.signer != "cosign":
         refuse("sign", "the only signer is cosign")
     require_fresh_out(a.out)
-    pol, obj = check_build_record(a)
+    pol, obj, build_stmt = check_build_record(a)
     dry = bool(pol.get("dry_run"))
     # rc-2 R1a: GITHUB_SHA and GITHUB_RUN_ID are written into the signed provenance, so Sign refuses (before cosign is asked, before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number, rather than signing the defaults "" and "0"
     if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
         refuse("sign", "provenance: GITHUB_SHA is not a 40-hex commit")
     if not re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")):
         refuse("sign", "provenance: GITHUB_RUN_ID is not a run number (digits)")
+    byproducts = sbom_byproducts(build_stmt, a.items)       # before cosign is asked and before an output folder is made
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
     with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
-        statement = provenance_statement(pol, obj, dry)
+        statement = provenance_statement(pol, obj, dry, byproducts)
         with open(sp, "w") as f:
             json.dump(statement, f, sort_keys=True)
         make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         try:
-            r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
+            r = subprocess.run(["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF, "--signing-config",
+                                signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
         except OSError as ex:   # no cosign on PATH, or not runnable: a refusal, and the fresh output folder goes
             remove_own_out(a.out)
             refuse("sign", "cosign not found on PATH" if isinstance(ex, FileNotFoundError) else "cosign could not be started (%s)" % type(ex).__name__)
@@ -1362,7 +1367,7 @@ def cmd_sign(a):
             remove_own_out(a.out)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
         try:
-            convert_and_verify(bundle, a.out, pol, statement, parse_now(a.now), tmpd)
+            convert_and_verify(bundle, a.out, pol, statement, tmpd)
         except Refuse as bad:
             remove_own_out(a.out)   # a failed sign leaves no provenance behind (001-AC2)
             refuse("sign", bad.reason)
@@ -1378,15 +1383,20 @@ def cmd_sign(a):
 
 # ---- sign-records (the Witness move; owner Oct 22): Sign's check-and-stage step for the building jobs' local records ---------------------------------------
 # Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This step is the check that comes before Sign re-signs the
-# payloads keyless: it signs nothing, calls no tool and reads no token. A shell step of the Sign job signs each staged payload and `verify` checks the result.
+# payloads with the release key: it signs nothing, calls no tool and reads no token. A shell step of the Sign job
+# signs each staged payload and `verify` checks the result.
 SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}
 SR_CHECK_FOLDER = {"witness-scanners": "scanners", "witness-acceptance": "acceptance", "witness-runtime": "runtime", "witness-arm64": "arm64"}     # Check's four record folders, each named for its one step
 SR_CHECK_GROUPS = (("check-results", ("witness-scanners", "witness-acceptance", "witness-runtime")), ("check-results-arm64", ("witness-arm64",)))     # (artifact folder under --artifacts-dir, the records whose products it carries)
 SR_CHECK_PREFIX = "check-results/"
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
-SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}   # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in witness-rebuild/; matched in full, never by basename
-SR_ATTESTORS = ("environment", "git", "material", "product")
+# a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in
+# witness-rebuild/; matched in full, never by basename
+SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}
+# Witness 0.12.0 writes these five attestors and no other; command-run holds what ran, its stdout and stderr and its
+# exit code
+SR_ATTESTORS = ("environment", "git", "material", "command-run", "product")
 GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
 ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
 
@@ -1424,7 +1434,7 @@ def sr_received(stage, rec_dir, art_dir, name):
     return got
 
 
-def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
+def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     """Checks one record directory; returns (step, payload bytes, [data file names])."""
     steps = SR_STEPS[stage]
     names = sorted(os.listdir(rec_dir))
@@ -1469,6 +1479,14 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     extra, missing = sorted(set(kinds) - set(SR_ATTESTORS)), sorted(set(SR_ATTESTORS) - set(kinds))
     if extra or missing or len(kinds) != len(set(kinds)):
         refuse(stage, "attestors: exactly %s are allowed (beyond: %s; missing: %s; a repeated attestor is refused too)" % (", ".join(SR_ATTESTORS), " ".join(extra) or "none", " ".join(missing) or "none"))
+    # the KMS key never signs a collection of another ref: the environment attestor's GITHUB_REF is Sign's own
+    for att in atts:
+        if ATTESTOR_URI.fullmatch(att["type"]).group(1) == "environment":
+            ev = att.get("attestation")
+            found = environment_ref(ev)
+            if not isinstance(found, str) or found != ref:
+                refuse(stage, "ref: the ref inside %s/%s (%s) is not Sign's ref %s"
+                              % (name, fname, json.dumps(found), ref))
     subs = typed_subjects(stage, stmt)
     commits = [x["name"][len(GIT_COMMIT_PREFIX):] for x in subs if x["name"].startswith(GIT_COMMIT_PREFIX)]
     if commits != [commit]:
@@ -1607,7 +1625,8 @@ def cmd_sign_records(a):
         if name in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or not os.path.isdir(rec_dir) or os.path.islink(rec_dir):
             refuse(stage, "record: %r is not a distinct plain record directory" % rec_dir)
         seen.add(name)
-        step, payload, data, prods = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha)
+        step, payload, data, prods = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha,
+                                                     os.environ.get("GITHUB_REF", ""))
         plan.append((rec_dir, name, step, payload, data))
         check_products[name] = prods
     if stage == "check":
@@ -1645,8 +1664,9 @@ def same_json(a, b):
     return a == b
 
 
-def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
-    """Write Release's two files from cosign's bundle, then verify them as stage sign exactly as Release will, and require that the
+def convert_and_verify(bundle, out_dir, pol, statement, tmpd):
+    """Write Release's file from cosign's bundle, then verify it as stage sign exactly as Release will, and require that
+    the
     payload cosign signed IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3; Codex security r1 S1,
     Opus r1-verify F1): Sign never reports success for provenance Release would refuse, nor for a statement it did not make."""
     try:
@@ -1654,10 +1674,11 @@ def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
             bun = strict_json(f.read())
     except (OSError, ValueError) as ex:
         refuse("sign", "the bundle cosign wrote is missing or not JSON (%s)" % type(ex).__name__)
-    bundle_to_outputs(bun, out_dir, pol)
+    bundle_to_outputs(bun, out_dir)
     vdir = os.path.join(tmpd, "verify-own-output")
     os.makedirs(vdir)
-    signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), os.path.join(out_dir, "provenance.rekor.json"), now, vdir)
+    signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), vdir,
+                                            rekor_path=os.path.join(out_dir, "provenance.rekor.json"))
     # compared as parsed JSON, not as bytes: what matters is what the statement says, and cosign may re-serialise the statement file
     # it was given (key order, spacing) without changing a single subject or field; the parse is strict (no duplicate key, no NaN)
     if not same_json(signed, statement):
@@ -1850,29 +1871,25 @@ def build_parser():
     g = m.add_mutually_exclusive_group(required=True)
     g.add_argument("--tag")
     g.add_argument("--ref")
-    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
-        m.add_argument("--" + n)
     m.add_argument("--out", required=True)
     v = sub.add_parser("verify")
     v.add_argument("--policy", required=True)
     v.add_argument("--stage", required=True)
     v.add_argument("--record", required=True)
-    v.add_argument("--now")
-    v.add_argument("--rekor-stub")
+    # the Rekor entries file of a provenance or a release policy (provenance.rekor.json)
+    v.add_argument("--rekor-stub", dest="rekor_entries")
     for name in ("sign", "check-build-record"):
         s = sub.add_parser(name)
         if name == "sign":
             s.add_argument("--check", action="store_true")
             s.add_argument("--signer", default="")
             s.add_argument("--out", required=True)
+            s.add_argument("--items", required=True)    # the items.json Build's record holds (the SBOM byproducts)
         s.add_argument("--digests", required=True)
         s.add_argument("--build-record", required=True)
         which = s.add_mutually_exclusive_group(required=True)
         which.add_argument("--template")   # the committed release-policy template: the per-tag policy is made here from GITHUB_REF
         which.add_argument("--policy")     # a finished policy (the dry run's policy.json)
-        s.add_argument("--now")
-        for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
-            s.add_argument("--" + n)
     sr = sub.add_parser("sign-records")
     sr.add_argument("--stage", required=True, choices=sorted(SR_STEPS))
     sr.add_argument("--template", required=True)
@@ -1881,29 +1898,25 @@ def build_parser():
     sr.add_argument("--record-dir", action="append", required=True)
     sr.add_argument("--artifacts-dir")
     sr.add_argument("--expect-digests", action="append")
-    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
-        sr.add_argument("--" + n)
     st = sub.add_parser("stage-start")
     st.add_argument("--stage", required=True)
     st.add_argument("--previous", required=True)
     st.add_argument("--record", required=True)
+    # the previous stage's Rekor entries file, when its record is a provenance
+    st.add_argument("--rekor-stub", dest="rekor_entries")
     st.add_argument("--digests", required=True)
     st.add_argument("--policy", required=True)
-    st.add_argument("--now")
-    st.add_argument("--rekor-stub")
     bi = sub.add_parser("bind-items")
     bi.add_argument("--policy", required=True)
     bi.add_argument("--record", required=True)
     bi.add_argument("--items", required=True)
     bi.add_argument("--product")
-    bi.add_argument("--now")
     bc = sub.add_parser("bind-check")
     bc.add_argument("--policy", required=True)
     bc.add_argument("--record", required=True)
     bc.add_argument("--digests", required=True)
     bc.add_argument("--file", required=True)
     bc.add_argument("--product", required=True)
-    bc.add_argument("--now")
     ap = sub.add_parser("apk-compare")
     ap.add_argument("--file", required=True)
     ap.add_argument("--digests", required=True)
@@ -1911,7 +1924,6 @@ def build_parser():
     cl.add_argument("--policy", required=True)
     cl.add_argument("--digests", required=True)
     cl.add_argument("--dir", required=True)
-    cl.add_argument("--now")
     ac = sub.add_parser("actions")
     ac.add_argument("workflow")
     ac.add_argument("--allowed", required=True)
@@ -1927,7 +1939,7 @@ def build_parser():
     hm = sub.add_parser("hostile-material")
     hm.add_argument("--kind", required=True)
     hm.add_argument("--file", required=True)
-    hm.add_argument("--sign-record")
+    hm.add_argument("--policy")
     hv = sub.add_parser("hostile-verdict")
     hv.add_argument("results")
     rp = sub.add_parser("rc-proof")
@@ -1937,8 +1949,6 @@ def build_parser():
     rp.add_argument("--records", required=True)
     rp.add_argument("--template", required=True)
     rp.add_argument("--repository", required=True)      # owner/name of the repository the rc run ran in (GITHUB_REPOSITORY of the caller)
-    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key", "now"):
-        rp.add_argument("--" + n)
     chain_items.add_parsers(sub)
     return p
 

@@ -217,6 +217,9 @@ CHAIN_STEPS = {
     "the suite guard's own regressions (REQ-CI-005, a counting step)": "bash bin/suite-guard-test.sh",
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
+    "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)": "bash bin/chain-rekor-key-test.sh",
+    "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)": "bash bin/chain-trust-files-test.sh",
+    "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)": "bash bin/chain-manifest-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
@@ -243,9 +246,10 @@ GUARD_STEPS = [
         "name": "suite floors only rise (against the merge base on a pull request)",
         "if": "${{ github.base_ref != '' }}",
         "env": {
-            "BASE": "${{ github.base_ref }}"
+            "BASE": "${{ github.base_ref }}",
+            "PR_BODY": "${{ github.event.pull_request.body }}"
         },
-        "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+        "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -435,11 +439,12 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref }}",
+    "PR_BODY": "${{ github.event.pull_request.body }}"
    },
    "if": "${{ github.base_ref != '' }}",
    "name": "suite floors only rise (against the merge base on a pull request)",
-   "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+   "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
   },
   {
    "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
@@ -448,6 +453,18 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)",
    "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
+  },
+  {
+   "name": "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)",
+   "run": "bash bin/chain-rekor-key-test.sh"
+  },
+  {
+   "name": "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)",
+   "run": "bash bin/chain-trust-files-test.sh"
+  },
+  {
+   "name": "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)",
+   "run": "bash bin/chain-manifest-test.sh"
   },
   {
    "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
@@ -1016,7 +1033,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-rekor-key-test.sh" "bash bin/chain-trust-files-test.sh" "bash bin/chain-manifest-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
@@ -1156,6 +1173,9 @@ case_ chain-split-setup-dropped   bad "${SC}${S4}['steps'].pop(0)"
 case_ chain-split-shard-missing   bad "${SC}d['jobs'].pop('allowlist-chain-3')"
 case_ chain-split-shard-extra     bad "${SC}d['jobs']['allowlist-chain-5'] = {'name': 'allowlist-chain-5', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ chain-split-guard-dropped   bad "${SC}${S4}['steps'][:] = [x for x in ${S4}['steps'] if 'floors-vs-base' not in (x.get('run') or '')]"
+case_ chain-split-floors-body-in-run bad "${SC}[x.__setitem__('run', 'bash bin/suite-guard.sh floors-vs-base --allow-lowered \"\${{ github.event.pull_request.body }}\" x y') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-env-gone bad "${SC}[x['env'].pop('PR_BODY') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-other-env bad "${SC}[x['env'].__setitem__('PR_BODY', '\${{ github.event.pull_request.title }}') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
 case_ chain-split-old-steps-left  bad "${SC}${GT}['steps'].append(dict(${S1}['steps'][-1]))"
 # AC2: the gate keeps the name, needs every shard, always runs, takes no checkout and no action, and fails on anything but success (incl. a missing or empty result)
 case_ chain-split-gate-renamed    bad "${SC}${GT}['name'] = 'allowlist-chain-gate'"
