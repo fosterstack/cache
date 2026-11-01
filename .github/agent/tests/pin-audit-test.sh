@@ -971,9 +971,255 @@ net._version_of = lambda i: "1.27.3"
 assert [r["affected"] for r in net.lists(it)[1]] == [False]
 PY
 
-# --- the history reader skips exactly three named unreadable revisions (advisor 0637): the Oct 20 RED commits of the release-chain branch's PR 459 held a 12000-character fixture line in
-# bin/chain-sign-wiring-test.sh, which the inventory refuses (a command line over 4000 characters is never read partially); they are in that branch's history, so once it lands every
-# version-moving pull request would stop in the 90-day history read. The skip is by FULL sha, from a reviewed list in the script; anything else unreadable still ends the audit.
+# --- cache#455 follow-up (handoff 0496 step 2): the 90-day history reads one inventory per DISTINCT set of files the inventory reads, not one per commit ---
+r="$work/r-histmemo"; mkrepo "$r" "100:$CLEANSHA" "40:$SHA1" "30:$SHA2"
+mkdir -p "$r/.github/agent/tests" "$r/docs"
+for n in 1 2 3 4 5 6; do   # commits that touch .github but nothing the inventory reads (.github/agent/ and docs are outside tree_files)
+  printf 'x%s\n' "$n" >"$r/.github/agent/tests/noise.txt"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="$(dago $((20 - n)))" GIT_COMMITTER_DATE="$(dago $((20 - n)))" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "noise $n"
+done
+CASE="history memo: the same items as one inventory per commit (the verdicts do not change)"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+assert set(got) == set(ref) and len(ref) > 0, (sorted(got), sorted(ref))
+PY
+rr="$work/r-histrevert"; mkrepo "$rr" "100:$CLEANSHA"
+for spec in "40:v3.0.0" "20:v4.1.0"; do   # same pin, a label that changes and then reverts: the same key at two trees, a different label in between
+  sed -i.bak "s|^\(      - uses: actions/checkout@[0-9a-f]*\) # .*|\1 # ${spec#*:}|" "$rr/.github/workflows/ci.yml"; rm -f "$rr/.github/workflows/ci.yml.bak"; git -C "$rr" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$rr" -c user.name=t -c user.email=t@x commit -q -m "label ${spec#*:}"
+done
+CASE="history memo: the VALUES match one inventory per commit, not only the keys (a label that reverts: the oldest occurrence still wins, as before; seat A of cache#456)"
+check python3 - "$aud" "$rr" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+f = lambda d: {k: (i.label, i.src, i.step, i.raw, i.version, i.path) for k, i in d.items()}
+assert f(got) == f(ref), (f(got), f(ref))
+assert any(i.label == "v4.1.0" for k, i in ref.items() if "checkout" in k), "the probe did not exercise a revert"
+PY
+CASE="history memo: commits that changed nothing the inventory reads cost no inventory (calls < commits) and the timing line is printed"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+calls = [0]; real = pa.inv.inventory
+def counting(files):
+    calls[0] += 1
+    return real(files)
+pa.inv.inventory = counting
+t = time.time()
+pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
+assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
+# --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
+# new tree re-reads only the files that changed. The verdicts must not move: byte-identical items, a changed callee invalidates its caller, a raise is never cached. ---
+CASE="file memo: over a real slice of this repository's history the memoised inventories equal the unmemoised ones, field for field, in history order and in a scrambled order"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, random, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+for order in (list(reversed(revs)), random.Random(7).sample(revs, len(revs))):   # oldest first, then scrambled
+    inv._FILE_MEMO.clear()
+    for r in order:
+        assert dump(inv.load_at(root, r)) == ref[r], r
+assert any(len(v) > 2 for v in ref.values()), "the slice held no items"
+PY
+CASE="file memo: a changed callee invalidates its caller (the same caller blob, a local reusable workflow gaining then losing workflow_call)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+keys = lambda files: sorted(inv.inventory(files))
+inv._MEMO_ON[0] = False
+plain = {c: keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) == plain[c]
+# the callee leaves the tree altogether: the caller's items follow it
+alone = {".github/workflows/caller.yml": caller}
+got = keys(alone); inv._MEMO_ON[0] = False
+assert got == keys(alone)
+PY
+CASE="file memo: a file that does not parse raises every time (a raise is never remembered) and one file is read once per distinct blob across a history scan"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+bad = {".github/workflows/x.yml": "on: [\n  broken: : :\n"}
+for _ in range(2):
+    try:
+        inv.inventory(dict(bad)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+calls = [0]; real = inv._file_found
+def counting(path, text):
+    calls[0] += 1
+    return real(path, text)
+inv._file_found = counting
+inv._FILE_MEMO.clear()
+files = {".github/workflows/a.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n", "bin/install-scanner.sh": "TRIVY_VER=0.74.0\n"}
+for n in range(5):
+    inv.inventory(dict(files, **{".github/workflows/b%d.yml" % n: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %d\n" % n}))
+assert calls[0] == 2 + 5, calls[0]    # a.yml and the script once, each b file once
+PY
+
+# --- cache#693 first look (advisor ruling Oct 24): the memo revalidates the callees the walk actually READ, the context is neutral for every file, and the oracle is the parent ---
+CASE="file memo: a caller whose callee is spelled with YAML escapes (\\x2e) is re-read when the callee changes: the memo decides on the reads the walk made, not on a regex of the text"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = 'on: pull_request\njobs:\n  c:\n    uses: "\\x2e/.github/workflows/c\\x61llee.yml"\n'
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda c: {".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(c))) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the escaped callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert sorted(inv.inventory(files(c))) == plain[c]
+PY
+CASE="file memo: a caller with TWO local callees is re-read when either one changes, and only then (each call records its own read)"
+check python3 - "$aud" <<'PY'
+import importlib.util, itertools, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  a:\n    uses: ./.github/workflows/one.yml\n  b:\n    uses: ./.github/workflows/two.yml\n"
+ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda one, two: {".github/workflows/caller.yml": caller, ".github/workflows/one.yml": one, ".github/workflows/two.yml": two}
+combos = list(itertools.product((ok, no), repeat=2))
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(*c))) for c in combos}
+assert len({tuple(v) for v in plain.values()}) == 4, "the probe does not tell the four outcomes apart"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in combos + combos[::-1] + combos:
+    assert sorted(inv.inventory(files(*c))) == plain[c], c
+# "and only then": count the walks of the caller (the callees are walked when their own text is new)
+walks = []; real = inv._file_found
+inv._file_found = lambda p, x: (walks.append(p), real(p, x))[1]
+caller_path = ".github/workflows/caller.yml"
+inv._FILE_MEMO.clear(); inv.inventory(files(ok, ok)); walks.clear()
+inv.inventory(files(ok, ok)); assert caller_path not in walks, "an unchanged tree re-walked the caller"
+inv.inventory(files(no, ok)); assert walks.count(caller_path) == 1, "callee one changed: the caller is walked once"
+walks.clear(); inv.inventory(files(no, ok)); assert caller_path not in walks, "nothing changed: not walked"
+walks.clear(); inv.inventory(files(no, no)); assert walks.count(caller_path) == 1, "callee two changed: the caller is walked once"
+inv._file_found = real
+PY
+CASE="file memo: the context is neutral for every file: a workflow that raises in the middle of a job leaves nothing for the next file (a script read after it equals a neutral run, memo cold and warm)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+bad = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: echo " + "0123456789abcdef" * 4 + "\n      - run: " + "x" * 4500 + "\n"
+script = "#!/usr/bin/env bash\npip install missingversion\ncurl -L -o /tmp/t https://example.org/releases/download/v${VER}/tool-${VER}.tgz\n"
+dump = lambda d: sorted((k, i.step, i.path, i.src) for k, i in d.items())
+inv._MEMO_ON[0] = False
+neutral = dump(inv.inventory({"bin/x.sh": script}))
+assert neutral, "the probe has no items"
+many = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: |\n" + "".join("          pip install p%d==1.0\n" % i for i in range(600))
+for memo, poison in ((m, p) for m in (False, True) for p in (bad, many)):
+    inv._MEMO_ON[0] = memo; inv._FILE_MEMO.clear()
+    for _ in range(2):    # cold, then warm
+        try:
+            inv.inventory({".github/workflows/bad.yml": poison}); raise SystemExit("the limit did not raise")
+        except RuntimeError:
+            pass
+        assert dump(inv.inventory({"bin/x.sh": script})) == neutral, ("memo", memo)
+        for v in (inv._ENV_CTX[0], inv._INPUT_CTX[0]): assert v == "", v
+        assert inv._ENV_PRESENT[0] is False and inv._JOB_RUNS[0] == [] and inv._JOB_SUMS[0] == []
+PY
+CASE="file memo: a returned item can be changed without reaching the memo or a later inventory; a file that breaks a limit raises on every use"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+wf = ".github/workflows/a.yml"
+files = {wf: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n      - run: curl -L https://example.org/x/${V}/t.tgz\n", "bin/a.sh": "curl -L https://example.org/x/${V}/t.tgz\n"}
+dump = lambda d: sorted((k, i.step, i.label, i.version) for k, i in d.items())
+first = inv.inventory(dict(files)); pristine = dump(first)
+for it in first.values():
+    it.step = "changed"; it.label = "changed"; it.version = "changed"
+assert dump(inv.inventory(dict(files))) == pristine
+callee_bad = {".github/workflows/caller.yml": "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n", ".github/workflows/callee.yml": "on: [\n  broken: : :\n"}
+callee_ok = dict(callee_bad, **{".github/workflows/callee.yml": "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"})
+for files_ in (callee_ok, callee_bad, callee_ok, callee_bad):      # a warm caller whose callee becomes unreadable raises, every time
+    try:
+        inv.inventory(dict(files_)); assert files_ is callee_ok
+    except RuntimeError:
+        assert files_ is callee_bad
+long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
+for _ in range(3):
+    try:
+        inv.inventory(dict(long_line)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+PY
+CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, subprocess, sys, tempfile, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+ipath = ".github/agent/supply-chain/pin-inventory.py"
+intro = subprocess.run(["git", "-C", root, "log", "-S_FILE_MEMO", "--reverse", "--format=%H", "HEAD", "--", ipath], capture_output=True, text=True).stdout.split()
+assert intro, "the commit that introduced the memo is not in this checkout's history"
+src = subprocess.run(["git", "-C", root, "show", intro[0] + "^:" + ipath], capture_output=True, text=True)      # the file as it was before the memo existed, whatever the parents of HEAD are
+assert src.returncode == 0, src.stderr[:200]
+assert "_FILE_MEMO" not in src.stdout, "the oracle is the memoising implementation"
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
+    ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+def run(mod, r):
+    try:
+        return dump(mod.load_at(root, r))
+    except RuntimeError as e:
+        return "raise:" + str(e)
+want = {r: run(parent, r) for r in revs}
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for r in revs + list(reversed(revs)):
+    assert run(inv, r) == want[r], r
+PY
+# --- the history reader skips only the unreadable revisions named in its list (advisor 0637): a command line
+# over 4000 characters is never read partially, so every audit would stop in the 90-day history read at a revision
+# that held one. The skip is by FULL sha, from a reviewed list in the script, each named with its own reason;
+# anything else unreadable still ends it.
 r="$work/r-oversize"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at that sha, with one step whose run line is $2 long
   printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
@@ -1030,15 +1276,30 @@ items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B"
 assert err is None, err
 assert sys.argv[6] in " ".join(repr(k) for k in items)
 PY
-CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 (full lowercase 40-hex shas), each with a reason that names bin/chain-sign-wiring-test.sh"
+CASE="oversize history: the list holds the named commits (full 40-hex shas), each with a reason that names its file"
 check python3 - "$aud" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
-assert set(pa.SKIP_UNREADABLE) == want, sorted(pa.SKIP_UNREADABLE)
+pr459 = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
+p1p5 = {"27b14e37ed06bca44ae479a8880480fa5855605b", "c4ac17f07ac894c014034ec7e535e4598e06ced8", "c9e30be29823765fce4c8a23bb11a4340a73fd69", "23f771008513913f5a1bf434af83530125621a53",
+        "c5b8f225a378db6fa72200bafcf9af7998ef23e5", "9045a08f287801c75cbf385caae8038774ed9f10",
+        "115c746b17620f08c0fe52c789dea720c887d465", "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987",
+        "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8", "464b72fea4e356a9876bf9bd70f57cc84e07cab4"}
+p2 = {"7d538938ec3733112eb29b5f495502e8a74d7e33", "16e2e1f9a010dfc966930b7963cec13326fa877c",
+      "28acfea97185023710ee2ba4596cbdb2ca68bfb0", "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa",
+      "fbecada5bf5c37ab9263ca82664b3382c3dd9457"}
+r597 = "6b8c70df66651667e530748db9bc22462e307bee"
+assert set(pa.SKIP_UNREADABLE) == pr459 | p1p5 | p2 | {r597}, sorted(pa.SKIP_UNREADABLE)
 for k, why in pa.SKIP_UNREADABLE.items():
     assert re.fullmatch(r"[0-9a-f]{40}", k), k
-    assert isinstance(why, str) and "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
+    if k == r597:
+        assert "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
+    elif k in p1p5 | p2:
+        assert ("cache6-0713-p1p5" if k in p1p5 else "cache6-0713-p2") in why, (k, why)
+        assert "bin/chain-rekor-key-test.sh" in why and "4529" in why, (k, why)
+        assert why.endswith("since wrapped (0289dc91)"), (k, why)
+    else:
+        assert "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
 PY
 CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
 check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
@@ -1056,6 +1317,138 @@ except RuntimeError as e:
     assert "some other failure" in str(e)
 else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
+PY
+
+
+# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key. A skipped revision must never be remembered under that key (seat A and
+# seat B of cache#520: the cases above never share a tree, so a memo that stored skipped revisions as empty passed them all).
+r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
+oversize_ci "$SHA1" 0;    SH_M=$(commit_at 40 "readable M")
+oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
+oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
+oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
+oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
+CASE="oversize history, shared tree: listing one of two revisions that share an unreadable tree never lets the other, unlisted one pass (a skip is not remembered under the tree key), in both orders"
+check python3 - "$aud" "$r" "$SH_X" "$SH_Y" <<PY
+$OVPY
+for listed in (sys.argv[3], sys.argv[4]):
+    items, err = hist({listed: "only one of the pair"})
+    assert items is None and "command line of" in err, (listed, items, err)
+items, err = hist({sys.argv[3]: "x", sys.argv[4]: "y"})
+assert err is None, err
+PY
+CASE="oversize history, shared tree: a listed revision whose tree was already read from a readable revision is read normally, in both orders (the list never hides a readable revision's pins)"
+check python3 - "$aud" "$r" "$SH_M" "$SH_R1" "$SH_R2" "$SH_X" "$SH_Y" "$SHA1" <<PY
+$OVPY
+both = {sys.argv[6]: "x", sys.argv[7]: "y"}
+for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
+    items, err = hist({**both, listed: "readable but listed"})
+    assert err is None, err
+    assert sys.argv[8] in " ".join(repr(k) for k in items)
+PY
+
+
+# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2 and the tag observations are already written; one
+# ls-tree -r per revision is all the history reader asks git for ---
+rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
+CASE="oversize history, daily run: an unlisted unreadable revision ends the audit with exit 2 and the cap's own message"
+check test "$rc" -eq 2; check grep -q 'refusing to read it partially' "$work/oversizeobs.err"
+CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
+check test -s "$work/obsout4/state.json"
+CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
+check python3 - "$aud" "$work/r-histmemo" <<'PY'
+import collections, datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+listings = collections.Counter()
+real = pa.inv.git
+def counting(root, *args):
+    if "ls-tree" in args and "-r" in args:
+        listings[args[-1]] += 1
+    return real(root, *args)
+pa.inv.git = counting
+pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+assert listings and max(listings.values()) == 1, dict(listings)
+PY
+
+# --- the gate follow-up (supply-chain gate ruling, Oct 31): the costly part of a history scan is reading each new version of a big script line by line. Three more memos, all exact:
+# a script line (in a neutral context), the id of a script line, and the file memo keeps every read-set it has seen for a blob. None may move a verdict. ---
+CASE="T5 line memos: over a real slice of history the inventories with the line memos equal the unmemoised ones, field for field, and the memos were used"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
+         ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src)
+                             for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear(); inv._LINE_ID_MEMO.clear()
+for r in revs:
+    assert dump(inv.load_at(root, r)) == ref[r], r
+assert inv._STEP_MEMO and inv._LINE_ID_MEMO, "the line memos were not used"
+inv._FILE_MEMO.clear()          # a warm line memo under a cold file memo: every file is read again, every line is a hit
+for r in reversed(revs):
+    assert dump(inv.load_at(root, r)) == ref[r], r
+PY
+CASE="T5 line memo: a script line that makes too many items raises on a hit too, a returned item cannot reach the memo, and nothing is remembered under a context"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear()
+script = {"bin/x.sh": "#!/usr/bin/env bash\npip install a==1.0 b==2.0 c==3.0\n"}
+first = inv.inventory(dict(script))
+assert inv._STEP_MEMO, "the line was not remembered"
+for it in first.values():
+    it.version = "changed"; it.step = "changed"
+inv._FILE_MEMO.clear()
+again = inv.inventory(dict(script))
+assert sorted(i.version for i in again.values()) == ["1.0", "2.0", "3.0"], "a returned item reached the memo"
+limit = inv.MAX_ITEMS_PER_STEP
+inv.MAX_ITEMS_PER_STEP = 2
+try:
+    inv._FILE_MEMO.clear()
+    try:
+        inv.inventory(dict(script)); raise SystemExit("the memoised line did not raise on a hit")
+    except RuntimeError as e:
+        assert "more than 2 items" in str(e), str(e)
+finally:
+    inv.MAX_ITEMS_PER_STEP = limit
+inv._JOB_RUNS[0] = ["echo earlier step"]
+try:
+    inv._step_line({"run": "pip install q==1.0"}, [])
+    raise SystemExit("a line was read from the memo while a job's run texts were set")
+except AssertionError:
+    pass
+finally:
+    inv._JOB_RUNS[0] = []
+PY
+CASE="T6 file memo keeps every read-set: two trees that differ only in a callee, read alternately, hit the caller from the second round on"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %s\n"
+trees = [{".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": callee % n} for n in ("one", "two")]
+walks = []
+real_found = inv._file_found
+inv._file_found = lambda path, text: (walks.append(path), real_found(path, text))[1]
+for t in trees:                       # warm-up: each tree once; the caller is walked once per read-set
+    inv.inventory(dict(t))
+assert walks.count(".github/workflows/caller.yml") == 2, walks
+walks.clear()
+for _ in range(2):
+    for t in trees:
+        inv.inventory(dict(t))
+assert walks == [], walks      # then every file of every tree is answered by the memo: no walk at all
 PY
 
 echo "pin-audit: $pass passed, $failn failed"
