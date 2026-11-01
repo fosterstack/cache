@@ -458,7 +458,7 @@ case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 
 # REQ-REL-008-AC1 (owner RATIFIED Oct 2): the workflow directory holds exactly the ratified files and nothing else, so
 # no workflow sprawls. Today's 20 are the consolidation's "keep" rows, the attestation-signer stages and
 # dependabot-auto-merge.yml. Two files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9) and
-# evidence-letter.yml (a new file under the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md).
+# evidence-letter.yml (a new file under the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md).
 # The history of the count (24, 25, 26, 24, 19) is in the git log of this file.
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml

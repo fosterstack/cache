@@ -12,13 +12,14 @@ set -euo pipefail
 die() { echo "evidence-letter-fetch: $*" >&2; exit 1; }
 month=${1:?the month YYYY-MM is the first argument}
 out=${2:?the output folder is the second argument}
+# "2026-11" matches; "2026-13" and "2026-1" do not
 [[ "$month" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "evidence-letter-fetch: the month is YYYY-MM" >&2; exit 2; }
 [[ "$month" < "$(date -u +%Y-%m)" ]] || die "$month is not over yet: no letter"
 repo=${REPO:-fosterstack/cache}
 mkdir -p "$out/rel"
 
 # every release, all pages; the letter's releases are the final ones published in the month, else the newest
-# one before it
+# one before it. A final tag is vX.Y.Z: "v0.3.1" matches; "v0.3.1-rc1" and "0.3.1" do not
 gh api --paginate --slurp "repos/$repo/releases?per_page=100" | jq 'add // []' > "$out/releases.json"
 tags=$(jq -r --arg m "$month" '
   [.[] | select(.draft == false and .prerelease == false

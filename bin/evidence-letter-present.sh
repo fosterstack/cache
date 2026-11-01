@@ -17,7 +17,8 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # every page of the releases; a draft never counts
 gh api --paginate --slurp "repos/$repo/releases?per_page=100" |
   jq 'add // [] | map(select(.draft == false))' > "$work/releases.json"
-# the check starts once some published release carries a letter, named exactly evidence-letter-YYYY-MM.md
+# the check starts once some published release carries a letter, named exactly evidence-letter-YYYY-MM.md:
+# "evidence-letter-2026-11.md" matches; "evidence-letter-2026-11.md.bundle" and "evidence-letter-2026-1.md" do not
 letters='[.[].assets[].name | select(test("^evidence-letter-[0-9]{4}-[0-9]{2}\\.md$"))] | length > 0'
 jq -e "$letters" "$work/releases.json" > /dev/null || exit 0
 md="evidence-letter-$month.md"

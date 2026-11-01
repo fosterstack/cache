@@ -212,6 +212,8 @@ for label, note in (("a forbidden word", "Fix: now certified compliant."),
                     ("a link", "Fix: see [here](http://example.test/a)."),
                     ("SOC2 without a space", "Fix: SOC2 now."),
                     ("SOC 2 with two spaces", "Fix: SOC  2 now."),
+                    ("SOC-2 with a hyphen", "Fix: SOC-2 now."),
+                    ("S.O.C. 2 with full stops", "Fix: S.O.C. 2 now."),
                     ("an address", "Fix: write to a@b.test now.")):
     pw, tw = reason(note)
     check("AC7: a quoted reason with %s refuses" % label, pw.returncode == 1 and tw == "", pw.stderr)

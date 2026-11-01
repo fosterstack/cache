@@ -27,7 +27,7 @@ SAFE_NAME = re.compile(r"[A-Za-z0-9._:-]+")  # CVE-2026-1111 matches; "CVE 1" an
 # the only characters a quoted note or summary may hold: no markup, entity or link can be written with them
 QUOTED = re.compile(r"[A-Za-z0-9 .,:;()'/-]+")  # "Fix: a crash (rare)." matches; "a&#105;b" and "[x](y)" do not
 RECORDS = ("scanners-collection.json", "acceptance-collection.json", "runtime-collection.json", "arm64-collection.json")
-FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc2")  # tested on the letter with its spaces removed
+FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc2")  # tested on the letter with only letters and digits kept
 PAGE = "https://github.com/fosterstack/cache/releases/tag/"
 PLACEHOLDER = "PLACEHOLDER"
 CUSTOMER_MARK = "{{customer_name}}"
@@ -81,6 +81,7 @@ def quoted(text, what, limit=200):
 
 def day(stamp, what):
     """The date part of a timestamp as the asset wrote it (2026-11-04T12:00:00Z gives 2026-11-04)."""
+    # "2026-11-09T12:00:00Z" matches; "2026-11-09" and "9 Nov 2026" do not
     if not (isinstance(stamp, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T.*", stamp)):
         raise Refuse("%s has no timestamp" % what)
     return stamp[:10]
@@ -119,6 +120,7 @@ def release_of(rel_dir, name, date):
         raise Refuse("the release folder %s does not match its release.json" % name)
     if info.get("html_url") != PAGE + name:
         raise Refuse("%s: the release page link is not the release's own" % name)
+    # a commit is 40 lower-case hex characters: "9eedc51ba83aa198f006394c0a27bfd47a2ab696" matches; "9eedc51" and "9EEDC51..." do not
     if manifest.get("version") != name[1:] or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("commit"))):
         raise Refuse("%s: the release manifest names another version or no commit" % name)
     return {"tag": name, "dir": path, "date": date, "info": info, "manifest": manifest}
@@ -198,8 +200,8 @@ def controls_lines(rels, month, controls_text):
 
 
 def check_words(text):
-    """Refuses a letter that holds a forbidden word (spaces removed, so SOC 2 and SOC  2 and SOC2 are all caught)."""
-    squeezed = "".join(text.lower().split())
+    """Refuses a letter that holds a forbidden word (all but letters and digits removed: SOC 2, SOC-2, S.O.C. 2, SOC2)."""
+    squeezed = re.sub(r"[^a-z0-9]", "", text.lower())
     words = [w for w in FORBIDDEN if w in squeezed]
     if words or "@" in text:
         raise Refuse("the letter would hold a word it must not (%s) or an address" % ", ".join(words or ["@"]))

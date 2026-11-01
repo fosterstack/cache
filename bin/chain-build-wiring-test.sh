@@ -589,7 +589,7 @@ mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 # the monthly evidence letter's workflow is the second new file (owner's Oct 3 amendment,
-# docs/ratify/2026-10-02-owner-load.md): admitted; a third is still refused
+# ops/docs/ratify/2026-10-02-owner-load.md): admitted; a third is still refused
 mkdir -p "$work/wf-letter" "$work/wf-third"
 cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-letter"/* "$work/wf-third/"; : > "$work/wf-third/stage-extra.yml"

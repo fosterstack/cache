@@ -1419,7 +1419,7 @@ def workflows(directory):
     have = set(os.listdir(directory))
     added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "evidence-letter.yml"})
     only = ("(the only new files of v0.3.0 are stage-sign.yml, rule 52, and evidence-letter.yml, "
-            "the owner's Oct 3 amendment in docs/ratify/2026-10-02-owner-load.md)")
+            "the owner's Oct 3 amendment in ops/docs/ratify/2026-10-02-owner-load.md)")
     bad = ["workflow file %s was added %s" % (f, only) for f in added]
     return bad + ["%s still exists (PR 2 removes it, rules 50 and 61)" % f for f in ("stage-image.yml", "stage-admission.yml") if f in have]
 

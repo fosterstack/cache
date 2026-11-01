@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC9, REQ-REL-013-AC10, REQ-REL-013-AC11
+# proves: REQ-REL-013-AC5, REQ-REL-013-AC9, REQ-REL-013-AC10, REQ-REL-013-AC11
 # The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml,
 # bin/evidence-letter-fetch.sh, bin/evidence-letter-publish.sh, bin/evidence-letter-verify.sh and
 # bin/evidence-letter-present.sh. Offline: cosign, gh, date and the Check-record verifier are stand-ins that record
@@ -59,6 +59,8 @@ def judge(doc, text):
             bad.append("%s must run only from main" % name)
     if sign.get("needs") not in ("draft", ["draft"]):
         bad.append("sign must need draft")
+    if sign.get("environment") != "evidence-letter" or "environment" in draft:
+        bad.append("only sign runs in the environment evidence-letter (its own signing subject)")
     if "needs.draft.outputs.made == 'true'" not in str(sign.get("if", "")):
         bad.append("sign must run only when draft made a letter")
     up = [s for s in draft["steps"] if "upload-artifact" in str(s.get("uses", ""))]
@@ -105,6 +107,8 @@ def mutated(label, change, text_change=None):
 
 
 mutated("sign does not need draft", lambda d: d["jobs"]["sign"].pop("needs"))
+mutated("sign loses its environment", lambda d: d["jobs"]["sign"].pop("environment", None))
+mutated("draft joins the environment", lambda d: d["jobs"]["draft"].update({"environment": "evidence-letter"}))
 mutated("the key reference comes from a variable",
         lambda d: [st["env"].update({"RELEASE_KMS_KEY_REF": "${{ vars.RELEASE_KEY }}"})
                    for st in d["jobs"]["sign"]["steps"] if "env" in st])
@@ -129,13 +133,65 @@ for banned in ("alias", "--certificate-identity", "--certificate-oidc-issuer", "
 check("AC9: no upload may overwrite", "--clobber" not in pub)
 
 
+# ---- the month step (R7): a dispatched month is checked before it is written to the step's outputs
+def month_step(text, given):
+    """Run the workflow's `the month` step with INPUT_MONTH=given; returns (exit code, what it wrote to GITHUB_OUTPUT)."""
+    step = [st for st in yaml.safe_load(text)["jobs"]["draft"]["steps"] if st.get("id") == "month"][0]
+    out = os.path.join(tempfile.mkdtemp(), "month-output")
+    open(out, "w").close()
+    r = subprocess.run(["bash", "-e", "-c", step["run"]], env=dict(os.environ, INPUT_MONTH=given, GITHUB_OUTPUT=out),
+                       capture_output=True, text=True)
+    return r.returncode, open(out).read()
+
+
+code, wrote = month_step(wf, "2026-11\nmade=true")
+check("R7/AC9: a dispatched month holding a newline ends the step with 2 and writes no output", (code, wrote) == (2, ""),
+      (code, wrote))
+check("R7/AC9: a month that is not YYYY-MM with a month 01 to 12 ends the step with 2",
+      all(month_step(wf, m) == (2, "") for m in ("2026-13", "2026-00", "26-11", "2026-1", "x", " 2026-11")))
+check("R7/AC9: a good month is written, and so is the default of last month (empty input)",
+      month_step(wf, "2026-11") == (0, "month=2026-11\n") and month_step(wf, "")[0] == 0
+      and re.fullmatch(r"month=\d{4}-\d{2}\n", month_step(wf, "")[1]))
+check("R7/AC9: mutation, the check removed: the newline month reaches the output",
+      month_step(wf.replace('[[ $month =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "the month is YYYY-MM" >&2; exit 2; }\n', ""),
+                  "2026-11\nmade=true")[1] != "")
+
+
+# ---- the words the repository keeps about the letter's signing job (R2) and the path of the Oct 3 amendment (R4)
+def id_token_reason(text):
+    rows = [r for r in json.loads(text)["jobs"] if (r["workflow"], r["job"]) == ("evidence-letter.yml", "sign")]
+    return rows[0]["reason"] if len(rows) == 1 else None
+
+
+def reason_bad(reason):
+    return reason is None or "keyless" in reason.lower() or "KMS release key" not in reason
+
+
+ID_TOKEN = read(".github/policy/id-token-jobs.json")
+check("R2/AC9: the id-token row of the letter's sign job names the KMS release key and no keyless call",
+      not reason_bad(id_token_reason(ID_TOKEN)), id_token_reason(ID_TOKEN))
+check("R2/AC9: mutation, the old keyless reason: the check objects",
+      reason_bad(id_token_reason(ID_TOKEN.replace("KMS release key by federation, its Rekor entry recorded",
+                                                  "keyless, the same cosign call as bin/release-sign.sh"))))
+AMENDMENT = re.compile(r"(?<!ops/)docs/ratify/2026-10-02-owner-load\.md")
+CITING = (".github/policy/id-token-jobs.json", "bin/chain-sign-wiring-test.sh", "bin/chain-test-shape.py",
+          "bin/chain-build-wiring-test.sh", "bin/workflow-consolidation-test.sh", "requirements/requirements.yaml",
+          "docs/quality/traceability.md")
+check("R4: every citation of the Oct 3 amendment gives its path in the ops repository, ops/docs/ratify/...",
+      [f for f in CITING if AMENDMENT.search(read(f))] == [], [f for f in CITING if AMENDMENT.search(read(f))])
+check("R4: mutation, a citation without the ops/ prefix: the check objects",
+      AMENDMENT.search("(the owner's Oct 3 amendment, docs/ratify/2026-10-02-owner-load.md)") is not None)
+
+
 # ---- stand-ins: plain scripts that write what they were asked into a log
 STUBS = {
     "cosign": """#!/bin/sh
 echo "cosign $*" >> "$LOG"
+prev=""
 for a in "$@"; do
-  [ "$k" = 1 ] && [ -f "$a" ] && echo "key-file: $(cat "$a")" >> "$LOG"
-  k=0; [ "$a" = --key ] && k=1
+  # the file that follows --key is the key: log what it holds
+  if [ "$prev" = --key ] && [ -f "$a" ]; then echo "key-file: $(cat "$a")" >> "$LOG"; fi
+  prev=$a
 done
 case "$1" in
   verify-blob)
@@ -173,7 +229,9 @@ case "$1 $2" in
       *) cat "$FIX/pages.json" ;;
     esac ;;
   "api repos/"*) cat "$FIX/assets/${2##*/}" ;;
-  "release view") echo "$LATEST" ;;
+  "release view")
+    [ -z "$FAIL_VIEW" ] || { echo "HTTP 500: boom" >&2; echo "second line" >&2; exit 1; }
+    echo "$LATEST" ;;
   "release upload")
     kind=letter; case "$4" in *.bundle) kind=bundle ;; esac
     if [ "$kind" = "$FAIL_UPLOAD" ]; then
@@ -235,7 +293,7 @@ def sandbox(tmp):
         json.dumps([[{"ghsa_id": "GHSA-a"}], [{"ghsa_id": "GHSA-b"}]]))
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
                REAL_PYTHON=sys.executable, REAL_CHECKLIST="", REPO_DIR=repo, KEY_LINE=key_line,
-               TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="",
+               TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="", FAIL_VIEW="",
                FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
     return fix, env
 
@@ -484,10 +542,20 @@ check("AC10: a release without one of the needed assets ends the fetch, in one l
 
 
 # ---- the publish script
-def publish(**extra):
+def publish(on_release=None, edit=None, **extra):
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
     env.update(extra)
+    put_releases(fix, RELEASES)
+    if edit:
+        edit(fix, env)
+    if on_release:
+        pages = json.load(open(os.path.join(fix, "pages.json")))
+        for page in pages:
+            for rel in page:
+                if rel["tag_name"] == on_release:
+                    rel["assets"].append({"id": 999, "name": "evidence-letter-2026-11.md"})
+        json.dump(pages, open(os.path.join(fix, "pages.json"), "w"))
     letter = os.path.join(tmp, "evidence-letter-2026-11.md")
     open(letter, "w").write("a letter\n")
     p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), letter], cwd=env["REPO_DIR"], env=env,
@@ -521,39 +589,35 @@ check("F-bytes: the letter uploaded is the exact bytes that were signed, so noth
       len(signed) == 1 and signed == sent, (signed, sent))
 check("AC9: the bundle is uploaded first, the letter second, no overwrite",
       [os.path.basename(u) for u in up] == names and not any("--clobber" in l for l in log), (up, log))
+check("R6/AC10: the stand-in gh log holds exactly the two uploads, the bundle and the letter, and no call names checksums.txt",
+      sum(l.startswith("gh release upload") for l in log) == 2 and not any("checksums.txt" in l for l in log), log)
+pv_, lv_, upv_, _l = publish(FAIL_VIEW="1")
+check("R8/AC10: a failing gh release view ends the publish in one line carrying gh's first line, with nothing uploaded",
+      one_line(pv_) and "HTTP 500" in pv_.stderr and "second line" not in pv_.stderr and upv_ == [], pv_.stderr)
+for rel in ("v0.4.0", "v0.3.1"):
+    po, lo, upo, _l = publish(on_release=rel)
+    check("R10/AC10: the month's letter already on %s (not the latest) ends the publish in one line, before any sign line" % rel,
+          one_line(po) and "evidence-letter-2026-11.md" in po.stderr and upo == []
+          and not any("sign-blob" in l or "policy make" in l for l in lo), (po.stderr, lo))
 pp, lp, upp, _l = publish(TLOG="[]")
 check("AC9: a bundle with no Rekor entry publishes nothing",
       pp.returncode == 1 and upp == [] and "Rekor" in pp.stderr, pp.stderr)
 
 
-def refused_signature():
-    tmp = tempfile.mkdtemp()
-    fix, env = sandbox(tmp)
+def bad_signature(fix, env):
     open(os.path.join(fix, "bad-signature"), "w").close()
-    lt = os.path.join(tmp, "evidence-letter-2026-11.md")
-    open(lt, "w").write("a letter\n")
-    q = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), lt], cwd=env["REPO_DIR"], env=env,
-                       capture_output=True, text=True)
-    return q, open(os.path.join(fix, "uploaded")).read().split()
 
 
-pq, upq = refused_signature()
+pq, _lq, upq, _l = publish(edit=bad_signature)
 check("F2: a signature that does not verify against the manifest key and the pinned log publishes nothing, in one line",
       one_line(pq) and upq == [], pq.stderr)
 
 
-def refused_manifest():
-    tmp = tempfile.mkdtemp()
-    fix, env = sandbox(tmp)
+def bad_manifest_signature(fix, env):
     open(os.path.join(env["REPO_DIR"], ".github/policy/release-key-manifest.sig"), "w").write("AAAA\n")
-    lt = os.path.join(tmp, "evidence-letter-2026-11.md")
-    open(lt, "w").write("a letter\n")
-    q = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-publish.sh"), lt], cwd=env["REPO_DIR"], env=env,
-                       capture_output=True, text=True)
-    return q, open(os.path.join(fix, "uploaded")).read().split(), open(os.path.join(tmp, "log")).read().splitlines()
 
 
-pm, upm, lm = refused_manifest()
+pm, lm, upm, _l = publish(edit=bad_manifest_signature)
 check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed "
       "or uploaded, in one line",
       one_line(pm) and upm == [] and not any("sign-blob" in l or "release upload" in l for l in lm), (pm.stderr, lm))
@@ -629,6 +693,7 @@ check("F7 6: a good pair on a published release is verified once and exits 0",
 pr, lr = present([[("v0.4.0", False, pair("2026-11"))]], today="2027-01-05")
 check("F7 7: in January the month checked is the December before", one_line(pr) and "2026-12" in pr.stderr, pr.stderr)
 pr, lr = present([[V4]], FAIL_VERIFY="1")
+# F7 8 is the wiring case in .github/agent/tests/supply-chain-wiring-test.sh (the job reads only), not a case here
 check("F7 9: a pair whose signature does not verify fails, in one line",
       one_line(pr) and pr.returncode == 1, (pr.stderr, lr))
 split = [("v0.4.0", False, pair("2026-10") + ["evidence-letter-2026-11.md"]),

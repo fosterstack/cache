@@ -1848,6 +1848,7 @@ mappings:
   - ac: REQ-REL-013-AC5
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC6
     evidence:
