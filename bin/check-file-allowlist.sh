@@ -126,7 +126,6 @@ ALLOW_PATTERNS=(
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
-  '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
   '^bin/inspector-reuse\.py$'
@@ -146,7 +145,7 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|no-keyless-tag|manifest|rekor-key|trust-files)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
@@ -296,12 +295,17 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/build-freeze\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The sandbox wall probe of the dry run (sandboxed-build rules 3, 5, 6): the probe, its offline test and its six test-only recipe templates.
+  '^bin/chain-sandbox-probe\.sh$'
+  '^bin/build-sandbox-hostile-test\.sh$'
+  '^build/probe/(control|read-record|write-record|read-keydir|read-token|network)\.yaml\.tmpl$'
   # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
   # of bin/build-apk.sh, and the closed rule-23 variable list as data.
   '^bin/build-apk-helper\.py$'

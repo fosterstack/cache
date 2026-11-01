@@ -1,15 +1,4 @@
 {
- "_note": "Every signing call other than the SLSA provenance Sign writes, with the reason it exists (REQ-CHAIN-001-AC1). Entries for the old chain disappear when PRs 2-4 replace those stage files.",
- "signers": [
-  {
-   "file": "ci.yml",
-   "tool": "gitsign",
-   "reason": "keyless signs nothing customers verify: the CI patch tag of the automatic patch release is signed by gitsign under release.yml's identity (REQ-REL-009-AC5); ci.yml only installs/uses it in tests"
-  },
-  {
-   "file": "release.yml",
-   "tool": "gitsign",
-   "reason": "signs the automatic patch tag with release.yml's own keyless identity (REQ-REL-009-AC5)"
-  }
- ]
+ "_note": "Every signing call other than the SLSA provenance Sign writes, with the reason it exists (REQ-CHAIN-001-AC1). The automatic patch tag's keyless signer is out (handoff 0713 P8), so no tag-signing call is listed. This file lists no other signer either: Sign and Release still sign keyless at this head and are owned by the KMS cutover (KR-CUTOVER), which changes their rows.",
+ "signers": []
 }

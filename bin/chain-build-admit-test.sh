@@ -19,7 +19,8 @@
 #         repos/R/commits/SHA/check-runs?filter=latest   (and the same for the merged PR's head sha)
 #         repos/R/commits/SHA/status
 #         repos/R/commits/SHA/pulls
-#       `go -C tools/requirements run . verify-freeze BASE` with GOTOOLCHAIN=local for the baseline's consistency; `gitsign verify-tag`
+# the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok BASE` for the baseline's consistency; no Go
+# runs here); `gitsign verify-tag`
 #       with the exact identity flags for a patch route. Exit 0: wrote admission.json. Exit 1: the first line of stderr is
 #       `admission refused at <check>: <reason>` and NO admission.json is left. Exit 2: usage or environment error.
 #   python3 bin/build-admit.py list-checks                    one check name per line, in order (below)
@@ -137,9 +138,6 @@ if [ "${1:-}" = version ] && [ "${2:-}" = -m ]; then cat "${FAKE_BUILDINFO:?}"; 
 exit "${FAKE_GO_RC:-0}"
 EOF
 chmod +x "$FB/go"
-# the PINNED Go (what bash bin/install-scanner.sh go leaves at the fixed path): the same fake, marked, so a case can tell which go ran
-PINNED="$W/pinned/fscache-go/bin"; mkdir -p "$PINNED"
-{ echo '#!/usr/bin/env bash'; echo 'echo "WHICH-GO pinned" >> "${FAKE_LOG:-/dev/null}"'; tail -n +2 "$FB/go"; } > "$PINNED/go"; chmod +x "$PINNED/go"
 SHA=0123456789abcdef0123456789abcdef01234567
 bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	$2	" \
     "	build	-ldflags=\"-s -w\"" "	build	vcs=git" "	build	vcs.revision=$3" "	build	vcs.modified=$4";
@@ -383,13 +381,27 @@ fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origi
    git fetch -q --tags origin 2> /dev/null;
    git checkout -q --detach v0.3.0 2> /dev/null;
    git branch -q -f main origin/main 2> /dev/null || true)
-  SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f "$W/c/repo/admission.json"; }
+  SHAC=$(git -C "$W/c/repo" rev-parse v0.3.0^{commit}); gh_fixtures "$W/c/gh" "$SHAC"; : > "$W/c/calls.log"; rm -f \
+    "$W/c/repo/admission.json"; mkfreeze; }
+# mkfreeze [LINE...] : freeze/freeze.txt of the case, by default the line the freeze job writes for every baseline file
+# at the checked-out commit
+headsha() { git -C "$W/c/repo" rev-parse HEAD; }
+default_freeze() { # the lines the freeze job writes for the checked-out commit: one per baseline file
+  (cd "$W/c/repo" && for f in requirements/releases/*.yaml; do b=${f##*/}; echo "freeze-ok $(headsha) ${b%.yaml}"; \
+    done); }
+mkfreeze() {
+  rm -rf "$W/c/repo/freeze" "$W/c/freeze-default.txt"; mkdir -p "$W/c/repo/freeze"
+  if [ "$#" -gt 0 ]; then printf '%s\n' "$@" > "$W/c/repo/freeze/freeze.txt"
+  else default_freeze > "$W/c/repo/freeze/freeze.txt"; cp "$W/c/repo/freeze/freeze.txt" "$W/c/freeze-default.txt"; fi; }
 run_admit() { # run_admit [ENV=VAL...]  -> sets RC; stderr in $W/c/err, stdout in $W/c/out
+  # a case that committed after fresh moved HEAD: the untouched default file follows it (a changed file stays as it is)
+  if cmp -s "$W/c/repo/freeze/freeze.txt" "$W/c/freeze-default.txt" 2> /dev/null; then
+    default_freeze > "$W/c/repo/freeze/freeze.txt"; cp "$W/c/repo/freeze/freeze.txt" "$W/c/freeze-default.txt"; fi
   local sha; sha=$(git -C "$W/c/repo" rev-parse HEAD); RC=0
   (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 \
       GITHUB_RUN_ATTEMPT=1 \
      GH_TOKEN=SENTINEL-GH-TOKEN GH_FIXTURES="$W/c/gh" FAKE_LOG="$W/c/calls.log" FAKE_BUILDINFO="$W/buildinfo.txt" PATH="$FB:$PATH" "$@" \
-     python3 "$BA" run --out admission.json ${RUN_GO_ARG-"--go"} ${RUN_GO_ARG-"$PINNED/go"} > "$W/c/out" 2> "$W/c/err") || RC=$?
+     python3 "$BA" run --out admission.json > "$W/c/out" 2> "$W/c/err") || RC=$?
 }
 expect_ok() { n_cases=$((n_cases + 1)); if [ ! -f "$BA" ]; then bad "$1 (bin/build-admit.py does not exist: RED)"; return; fi
   if grep -q Traceback "$W/c/err" 2> /dev/null; then bad "$1 -> a Python traceback is a crash"; return; fi
@@ -447,7 +459,7 @@ GNUPGHOME="$W/gh-check" G -c gpg.format=openpgp verify-commit HEAD > /dev/null 2
     "fixture: a commit signed by another GPG key does not verify against the pinned key"
 fresh; patch_tag v0.3.1; G cat-file tag v0.3.1 > "$W/c/tagobj"; git -C "$W/c/repo" tag -l 'v*' > "$W/c/released"
 r=$(python3 "$root/bin/admission-tag-signer.py" route --tag v0.3.1 --tag-object "$W/c/tagobj" --tags "$W/c/released" 2>&1 || true);
-[ "${r%% *}" = gitsign ] && ok "fixture: the patch tag routes to gitsign (next patch of the released v0.3.0)" || bad "fixture: patch route is '$r'"
+[ "${r%% *}" = refuse ] && ok "fixture: the router refuses the keyless patch tag (handoff 0713 P8: no keyless route is left)" || bad "fixture: patch route is '$r'"
 r=$(GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api "repos/fosterstack/cache/commits/$SHAC/check-runs?filter=latest&per_page=100" | jq -r '.check_runs[0].name');
 [ "$r" = ci ] && ok "fixture: the fake gh serves the check runs of the tagged commit" || bad "fixture: fake gh"
 GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api repos/fosterstack/cache/nope > /dev/null 2>&1 && bad \
@@ -548,20 +560,14 @@ expect_refuse \
 fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused" tag-annotated
 fresh; retag none; run_admit;    expect_refuse "AC4 an unsigned annotated tag is refused" tag-signature
 fresh; retag attacker; run_admit; expect_refuse "AC4 a tag signed by a key that is not in main's allowed signers is refused" tag-signature
-# a CI patch tag: the gitsign route (a gitsign-shaped signature block on the next patch of a released line)
-fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
-if grep -q 'gitsign verify-tag v0.3.1' "$W/c/calls.log" 2> /dev/null; then
-  for want in "--certificate-identity https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/main" \
-      "--certificate-oidc-issuer https://token.actions.githubusercontent.com" "--certificate-github-workflow-repository fosterstack/cache" \
-      "--certificate-github-workflow-ref refs/heads/main" "--certificate-github-workflow-sha $SHAC";
-  do
-    grep -Fq -- "$want" "$W/c/calls.log" && ok "AC4 the patch route verifies with $want" || bad "AC4 the patch route's gitsign call lacks $want"; done
-else for i in 1 2 3 4 5; do bad "AC4 the patch route never called gitsign verify-tag (RED: not implemented or the route was not taken)"; done; fi
-expect_refuse "AC4 a patch tag whose signer metadata cannot be extracted is refused: no empty evidence is admitted" tag-signature evidence
-fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=1
-expect_refuse "AC4 a patch tag whose keyless verification fails is refused" tag-signature
-fresh; patch_tag v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0 FAKE_GITSIGN_RC=0
-expect_refuse "AC4 the keyless identity on a MINOR tag is refused (the owner signs minors)" tag-signature
+# a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run (handoff 0713 P8);
+# an owner-signed patch tag passes this check and meets the later ones (the rc-proof cases below)
+fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_refuse "AC4 a keyless patch tag is refused at tag-signature: no keyless route is left" tag-signature keyless
+grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a keyless patch tag" || ok "AC4 gitsign is never run, not even to look at a keyless patch tag"
+[ ! -e "$W/c/repo/admission.json" ] && ok "AC4 a refused keyless patch tag leaves no admission.json" || bad "AC4 admission.json exists after a keyless patch tag was refused"
+fresh; patch_tag v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0
+expect_refuse "AC4 a keyless minor tag is refused (the owner signs minors)" tag-signature
 # ---- commit-signature ----------------------------------------------------------------------------------------------------------------
 fresh; commit_move none "unsigned"; retag owner; run_admit;     expect_refuse "AC4 an unsigned tagged commit is refused" commit-signature
 fresh;
@@ -673,40 +679,83 @@ expect_refuse "AC4 a baseline whose approved is the string 'true' is refused" ba
 fresh; base_edit 'd["version"] = "v0.2.9"'; run_admit;             expect_refuse "AC4 a baseline for another version is refused" baseline version
 fresh; base_edit 'd["approved_on"] = "soon"'; run_admit;           expect_refuse "AC4 a baseline with no real approval date is refused" baseline approved_on
 fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse "AC4 an empty required set is not a baseline" baseline release_blocking_acs
-fresh;
-run_admit FAKE_GO_RC=1;
-expect_refuse "AC4 a baseline that fails the requirements tool's freeze check is refused" baseline freeze
-# Codex A r2 blocker 4 / r3 F4: admission's freeze check runs the PINNED Go at its fixed path (`bash bin/install-scanner.sh go` puts it there), never the runner's
-# own `go` on PATH, which may be older than go.mod. GOTOOLCHAIN=local stays: no toolchain download.
-grep -q 'GO_BIN = "/usr/local/bin/fscache-go/bin/go"' "$BA" 2> /dev/null && ok "AC4 the freeze check's Go is the fixed path /usr/local/bin/fscache-go/bin/go (the installer's output)" || bad "AC4 build-admit.py has no fixed GO_BIN path"
-# a runner Go older than go.mod, first on PATH: it must never be used
-OLD="$W/oldgo"; mkdir -p "$OLD"
-cat > "$OLD/go" <<'EOF'
-#!/usr/bin/env bash
-echo "WHICH-GO runner-path" >> "${FAKE_LOG:-/dev/null}"
-echo "go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)" >&2
-exit 1
-EOF
-chmod +x "$OLD/go"
-fresh; RUN_GO_ARG= ; run_admit "PATH=$OLD:$FB:$PATH"
+# REQ-CHAIN-004-AC4 (rule 1 of the sandboxed build): the requirements tool is Go code of the tagged commit, so it no
+# longer runs inside Build. Its own job `freeze` (before Build, contents: read, no secret) runs `verify-freeze` for
+# every
+# baseline file at the tagged commit and writes freeze/freeze.txt, one `freeze-ok COMMIT BASE` line for each that
+# passed.
+# Admission starts no Go: it reads that file, requires the line for the tagged commit and the base it computed, and
+# prints the file's sha256 and that line (log lines; the Build record binds the file as a material).
+fresh; run_admit
+expect_ok "AC4 the freeze file lists freeze-ok for the base admission computed (the default file lists every baseline \
+file of the tagged commit): admitted"
 n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 2 ] && grep -q 'fscache-go' "$W/c/err" && ! grep -q 'runner-path' "$W/c/calls.log" 2> /dev/null; then
-  ok "AC4 with no pinned Go at the fixed path admission stops with an environment error and does not fall back to the runner's go"
-else bad "AC4 no pinned go: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
-unset RUN_GO_ARG
-fresh; run_admit "PATH=$OLD:$FB:$PATH"; n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 0 ] && grep -q 'WHICH-GO pinned' "$W/c/calls.log" && ! grep -q 'runner-path' "$W/c/calls.log" \
-   && grep -q 'go -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log" && ! grep -q 'GOTOOLCHAIN=auto' "$W/c/calls.log"; then
-  ok "AC4 a runner Go older than go.mod first on PATH is NOT used: the freeze check runs the pinned Go, with GOTOOLCHAIN=local and no toolchain download"
-else bad "AC4 pinned go: exit $RC $(grep -E 'WHICH|go ' "$W/c/calls.log" 2> /dev/null | head -3 | tr '\n' ' ') $(head -c 160 "$W/c/err")"; fi
-fresh
-run_admit "PATH=$OLD:$FB:$PATH" "FAKE_GO_RC=1" "FAKE_GO_MSG=go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)"; n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' < <(head -1 "$W/c/err") && ! grep -q 'runner-path' "$W/c/calls.log" && [ ! -e "$W/c/repo/admission.json" ]; then
-  ok "AC4 a freeze check that fails under the pinned Go refuses admission at baseline (never retried with another go)"
-else bad "AC4 pinned go failing: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
+want_sha=$(sha256sum "$W/c/repo/freeze/freeze.txt" | cut -d' ' -f1)
+if [ "$RC" = 0 ] && grep -qx "freeze-file-sha256 $want_sha" "$W/c/out" && grep -qx "freeze-ok $(headsha) v0.3.0" \
+  "$W/c/out"; then
+  ok "AC4 admission prints the freeze file's sha256 and its exact freeze-ok line for its base into its own output \
+(the Build record shows what admission trusted)"
+else bad "AC4 freeze evidence in the output: exit $RC, stdout: $(head -c 300 "$W/c/out" | tr '\n' '|')"; fi
+fresh; rm -rf "$W/c/repo/freeze"; run_admit
+expect_refuse "AC4 no freeze file (the freeze job did not run or its artifact is missing) is refused" baseline freeze
+fresh; mkfreeze "freeze-ok $(headsha) v0.2.0"; run_admit
+expect_refuse "AC4 a freeze file without the base admission computed (v0.3.0) is refused" baseline v0.3.0
+fresh; mkfreeze "freeze-ok ${SHAC//[0-9a-f]/0} v0.3.0"; run_admit
+expect_refuse "AC4 a freeze line for another commit and the right base is refused" baseline "freeze-ok"
+fresh; mkfreeze "freeze-ok $(headsha) v0.3.0 extra"; run_admit
+expect_refuse "AC4 a freeze-ok line with more words than the base is refused" baseline freeze
+fresh; mkfreeze "freeze-failed $(headsha) v0.3.0"; run_admit
+expect_refuse "AC4 a line that is not freeze-ok COMMIT BASE is refused" baseline freeze
+fresh; mkfreeze; mv "$W/c/repo/freeze/freeze.txt" "$W/c/repo/freeze/real.txt"
+ln -s real.txt "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 a freeze file that is a symlink is refused" baseline freeze
+fresh; head -c 70000 /dev/zero | tr '\0' 'a' > "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 an oversized freeze file is refused" baseline freeze
+fresh; : > "$W/c/repo/freeze/freeze.txt"; run_admit
+expect_refuse "AC4 an empty freeze file is refused" baseline v0.3.0
+# bin/build-freeze.sh decides which baselines get a line: a stub go (its pinned path substituted in a copy) fails the
+# bases
+# named in STUB_FAIL. The repo has two baseline files; the line carries the checked-out commit.
+BF="$W/bf"; mkdir -p "$BF/bin"
+printf '#!/usr/bin/env bash\ncase " $STUB_FAIL " in *" ${@: -1} "*) exit 1 ;; esac\nexit 0\n' > "$BF/go-stub"; chmod \
+  +x "$BF/go-stub"
+sed "s|/usr/local/bin/fscache-go/bin/go|$BF/go-stub|g" "$root/bin/build-freeze.sh" > "$BF/bin/build-freeze.sh"
+(cd "$BF" && git init -q . && mkdir -p requirements/releases && : > requirements/releases/v0.1.0.yaml \
+  && : > requirements/releases/v0.1.1.yaml && git add . && git -c user.name=t -c user.email=t@t commit -q -m i)
+bf_run() { # bf_run FAILING-BASES -> BF_RC; freeze/freeze.txt of the run is left in $BF
+  BF_RC=0; (cd "$BF" && STUB_FAIL="$1" bash bin/build-freeze.sh > "$BF/out.txt" 2>&1) || BF_RC=$?; }
+bf_head=$(git -C "$BF" rev-parse HEAD)
+bf_run ""; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 0 ] && [ "$(cat "$BF/freeze/freeze.txt")" = "freeze-ok $bf_head v0.1.0
+freeze-ok $bf_head v0.1.1" ]; then ok "AC4 build-freeze.sh: every passing baseline gets a freeze-ok line with the \
+  checked-out commit"
+else bad "AC4 build-freeze.sh: passing baselines (exit $BF_RC): $(tr '\n' '|' < "$BF/freeze/freeze.txt")"; fi
+bf_run "v0.1.0"; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 0 ] && [ "$(cat "$BF/freeze/freeze.txt")" = "freeze-ok $bf_head v0.1.1" ]; then
+  ok "AC4 build-freeze.sh: a baseline that fails verify-freeze gets no line and the run goes on"
+else bad "AC4 build-freeze.sh: one failing baseline (exit $BF_RC): $(tr '\n' '|' < "$BF/freeze/freeze.txt")"; fi
+bf_run "v0.1.0 v0.1.1"; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 1 ] && [ ! -s "$BF/freeze/freeze.txt" ]; then ok "AC4 build-freeze.sh: no baseline passing exits 1 \
+with an empty file"
+else bad "AC4 build-freeze.sh: no baseline passing (exit $BF_RC)"; fi
+mkdir -p "$BF/freeze"; echo "freeze-ok $bf_head v9.9.9" > "$BF/freeze/freeze.txt"; bf_run "v0.1.0"; \
+  n_cases=$((n_cases + 1))
+if [ "$(cat "$BF/freeze/freeze.txt")" = "freeze-ok $bf_head v0.1.1" ]; then ok "AC4 build-freeze.sh: a file left from \
+before is emptied first"
+else bad "AC4 build-freeze.sh: the old file was kept: $(tr '\n' '|' < "$BF/freeze/freeze.txt")"; fi
+sed "s|/usr/local/bin/fscache-go/bin/go|$BF/missing-go|g" "$root/bin/build-freeze.sh" > "$BF/bin/build-freeze.sh"; \
+  bf_run ""; n_cases=$((n_cases + 1))
+if [ "$BF_RC" = 2 ]; then ok "AC4 build-freeze.sh: a missing pinned Go exits 2"; else bad "AC4 build-freeze.sh: \
+missing Go (exit $BF_RC)"; fi
+# admission starts no Go at all: no verify-freeze, no go path, no --go option left in the file (the judge holds the same
+# from outside: bin/chain-test-shape.py)
+n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && ! grep -Eq 'verify-freeze|GO_BIN|fscache-go|--go\b|GOTOOLCHAIN' "$BA"; then ok \
+  "AC4 bin/build-admit.py names no Go program, no verify-freeze and no --go option"
+else bad "AC4 build-admit.py still names the Go freeze check (or is missing: RED)"; fi
 # the ACs baseline of a CI patch (REQ-REL-009-AC13) goes through bin/admission-tag-signer.py baseline: its own tests and cache's auto-baseline PR
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
-fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
+fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a patch tag cannot reach the baseline check with fabricated signer evidence (it stops earlier)" tag-signature
 # ---- required-checks: duplicates, another sha, pagination (Opus S7, Sonnet S6) -----------------------------------------------------------
 ckf() { echo "$W/c/gh/repos_fosterstack_cache_commits_$1_check-runs.json"; }
@@ -758,61 +807,32 @@ if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ];
 then ok "AC4 policy from main: the tagged commit's own bin/admission-tag-signer.py and bin/install-scanner.sh are never executed (owner route)";
 else bad "AC4 policy from main: a script of the tagged commit ran (or build-admit.py is missing: RED)";
 fi
-obj=$(pkcs7_tag v0.3.1 "$SIDE"); G update-ref refs/tags/v0.3.1 "$obj"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
+obj=$(pkcs7_tag v0.3.1 "$SIDE"); G update-ref refs/tags/v0.3.1 "$obj"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ];
 then ok "AC4 policy from main: nor on the patch route (the installer and the router come from origin/main)";
 else bad "AC4 policy from main: a script of the tagged commit ran on the patch route (or build-admit.py is missing: RED)";
 fi
 fresh; commit_move owner "newer"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit GITHUB_SHA="$SHAC"
 expect_refuse "AC4 the re-tag race: a tag that was moved after the event (it no longer points at GITHUB_SHA) is refused" tag-ref sha
-# ---- the CI patch / keyless baseline path with a REAL PKCS7 signature (REQ-REL-009-AC13 through bin/admission-tag-signer.py baseline) ---
-patch_setup() { # patch_setup [SHELL-SNIPPET-run-in-the-repo-before-the-tagged-commit]  -> a signed commit on main and the patch tag v0.3.1 on it
-  fresh; [ "${PATCH_BASE_TAG:-}" != attacker ] || retag attacker
-  if [ -n "${1:-}" ]; then (cd "$W/c/repo" && G checkout -q main && eval "$1"; G add -A); fi
-  G checkout -q main 2> /dev/null;
-  G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch";
-  G push -q origin HEAD:main 2> /dev/null;
+# ---- a patch tag with a REAL PKCS7 (keyless) signature, unchanged requirements and an owner-approved baseline is still
+# refused (handoff 0713 P8) ---
+# The CI patch path (the baseline of its line, bin/admission-tag-signer.py baseline) is not reachable from admission any
+# more: the router refuses a keyless
+# signature on every tag, a patch tag included (an owner SSH signature on a patch tag is admitted, above). The baseline
+# subcommands keep their own tests
+# in bin/admission-tag-signer-test.sh.
+patch_setup() { # patch_setup : a signed commit on main and the patch tag v0.3.1 on it, signed as gitsign signs (a real PKCS7 block)
+  fresh
+  G checkout -q main 2> /dev/null
+  G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch"
+  G push -q origin HEAD:main 2> /dev/null
   G fetch -q origin 2> /dev/null
   local sha obj; sha=$(G rev-parse HEAD); obj=$(pkcs7_tag v0.3.1 "$sha"); G update-ref refs/tags/v0.3.1 "$obj"; gh_fixtures "$W/c/gh" "$sha"; }
-run_patch() { run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0 "$@"; }
-pfix() { # pfix LABEL WANT-PREFIX : the REAL bin/admission-tag-signer.py says WANT about this fixture, so the refusal below is about the claimed cause
-  local out="$W/c/ob" b; rm -rf "$out"
-  (cd "$W/c/repo" && python3 "$root/bin/admission-tag-signer.py" owner-baselines --tag v0.3.1 --allowed-signers \
-      "$W/c/repo/.github/policy/allowed_signers" --out "$out" > /dev/null 2>&1) || true
-  git -C "$W/c/repo" show HEAD:requirements/requirements.yaml > "$W/c/tagged-req.yaml"
-  b=$(python3 "$root/bin/admission-tag-signer.py" baseline --tag v0.3.1 --owner-baselines "$out" --requirements "$W/c/tagged-req.yaml" 2>&1 || true)
-  case "$b" in "$2"*) ok "fixture: $1";; *) bad "fixture: $1 -> '$b'";; esac
-}
+run_patch() { run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 "$@"; }
 patch_setup; run_patch
-pfix "an unchanged patch candidate gets the owner baseline: the rule says 'use v0.3.0'" "use v0.3.0"
-expect_ok "AC4 a CI patch tag (real PKCS7 signature, gitsign verified) with unchanged requirements and the owner-approved baseline of its line is admitted"
-if [ -f "$W/c/repo/admission.json" ]; then
-  jq -e '.tag=="v0.3.1" and .tag_signature.method=="release-workflow-keyless"
-         and (.tag_signature.key_fingerprint|startswith("x509-sha256:"))
-         and (.tag_signature.principal|endswith("release.yml@refs/heads/main")) and .baseline_version=="v0.3.0"' "$W/c/repo/admission.json" > /dev/null \
-    && ok \
-        "AC4 the patch admission records the keyless method, an x509 fingerprint, the release workflow as principal and the OWNER baseline v0.3.0 it used" \
-        || bad "AC4 patch admission.json content: $(head -c 300 "$W/c/repo/admission.json")"
-else bad "AC4 the patch admission recorded nothing (RED)"; fi
-patch_setup 'printf "# tampered\n" >> requirements/releases/v0.3.0.yaml'; run_patch
-cmp -s <(git -C "$W/c/repo" show v0.3.0:requirements/releases/v0.3.0.yaml) <(git -C "$W/c/repo" show HEAD:requirements/releases/v0.3.0.yaml) && bad \
-    "fixture: the tagged commit's baseline must differ from the owner tag's copy" || ok \
-    "fixture: the tagged commit's baseline file differs from the owner-signed tag's copy"
-expect_refuse "AC4 baseline (patch): the tagged commit's baseline differs from the copy in the owner-signed v0.3.0 tag (byte compare)" baseline differs
-patch_setup 'printf "      - {id: REQ-REL-004-AC2, given: g, when: w, then: t, status: approved, verification: {method: unit, release_blocking: true}}\n" \
-  >> requirements/requirements.yaml'
-run_patch
-pfix "the blocking set differs, the real rule says no (release-blocking AC set changed)" "no the release-blocking AC set changed"
-expect_refuse "AC4 baseline (patch): the release-blocking AC set changed since the owner baseline: no automatic patch" baseline blocking
-AC_FROM='then: \"t\", status: approved, verification: {method: unit, release_blocking: false}'
-AC_TO='then: \"changed\", status: approved, verification: {method: unit, release_blocking: false}'
-patch_setup "sed -i.bak \"s/$AC_FROM/$AC_TO/\" requirements/requirements.yaml; rm -f requirements/requirements.yaml.bak"
-run_patch
-pfix "a product AC changed, the real rule says no (pipeline-only)" "no REQ-PROTO-001-AC1 (requirement REQ-PROTO-001) changed"
-expect_refuse "AC4 baseline (patch): a product AC changed since the owner baseline (not on the pipeline-only list): no automatic patch" baseline pipeline-only
-PATCH_BASE_TAG=attacker patch_setup; run_patch
-pfix "no owner-signed baseline, the real rule says no" "no no owner-approved"
-expect_refuse "AC4 baseline (patch): the line's only v0.3.0 tag is signed by a key outside main's allowed signers: there is no owner baseline" baseline owner
+expect_refuse "AC4 a patch tag with a real PKCS7 signature and an owner-approved baseline is refused at tag-signature: gitsign is out" tag-signature keyless
+grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a real-PKCS7 patch tag" || ok "AC4 gitsign is not run for a real-PKCS7 patch tag either"
+[ ! -e "$W/c/repo/admission.json" ] && ok "AC4 no admission.json for a refused patch tag" || bad "AC4 admission.json exists after a patch tag was refused"
 # ---- rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12): a final or patch tag needs the committed marker of origin/main; an rc tag is exempt -------------
 mainfix() { # mainfix DESCRIPTION CMD : on main, run CMD in the clone (the file edit), commit it owner-signed, push, retag v0.3.0 at it, serve green checks for it
   fresh; G checkout -q main; (cd "$W/c/repo" && eval "$2"); G add -A
@@ -834,11 +854,26 @@ expect_refuse "AC6 a marker naming an rc tag that does not exist is refused" rc-
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; G -c user.signingkey="$W/keys/owner" commit -q -S -m "marker removed"; G push -q origin main 2> /dev/null
 G fetch -q origin 2> /dev/null; G checkout -q --detach v0.3.0; run_admit
 expect_refuse "AC6 the marker is read from origin/main: v0.3.0 (whose own tree has a marker) is refused when main has none" rc-proof marker
+# an owner-signed patch tag is admitted like any owner-signed tag (handoff 0713 P8, ruling b: owner SSH on every tag,
+# patch tags included):
+# the marker on main, an approved requirements/releases/v0.3.1.yaml, the checks green; admission.json records owner-ssh
+# and the patch baseline
+fresh; G checkout -q main
+sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_ok "AC4 an owner-SSH-signed patch tag v0.3.1 with the marker, its approved baseline and green checks is admitted"
+jq -e '.tag=="v0.3.1" and .tag_signature.method=="owner-ssh" and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.1"
+       and .baseline=="requirements/releases/v0.3.1.yaml"' "$W/c/repo/admission.json" > /dev/null \
+  && ok "AC4 admission.json of the patch tag records owner-ssh and the baseline v0.3.1" \
+  || bad "AC4 patch admission.json content: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
 # an rc tag is exempt: no marker on main, an owner-signed annotated rc tag with its own baseline, every other check green
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
 expect_ok "AC6 a release candidate tag is exempt: it is admitted with no marker on main"
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
@@ -851,12 +886,14 @@ fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at rc-proof, naming the marker" rc-proof marker
 fresh; G checkout -q main; printf '# edited\n' >> "$W/c/repo/.github/workflows/release.yml"
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, chain file edited after the proof"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
@@ -869,6 +906,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=150
+EXPECT_TOTAL=151
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

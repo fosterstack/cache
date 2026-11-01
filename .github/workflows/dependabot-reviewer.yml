@@ -258,19 +258,6 @@ jobs:
           print("sdk ready")
           PY
 
-      # Row 76: a HOLD dispatches the fixer in the ops repository. Best effort: if the App is not
-      # installed on ops this mint fails and the hold still stands (the issue is the record).
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
-
       - name: gather, read twice, decide, act — one PR at a time
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.app-merge.outcome == 'success' }}
         id: act
@@ -285,7 +272,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}
           MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # The runner starts bash with -e. Here every failure is handled explicitly, per PR, so
@@ -405,8 +391,6 @@ jobs:
                   unfinished "$n" "$sha" "$prior" "could not open/update the held issue"
                 elif publish "$sha" failure "A reader found a documented change that breaks a line of ours ($names). Held (auto-merge off); see the issue. Evidence: this run's artifact."; then
                   held=$((held+1)); echo "PR #$n: hold (issue open, check published)"
-                  # row 76: the fixer makes our-side change; a failed dispatch is a warning, the hold stands
-                  bash bin/dispatch-fixer.sh fix-held-bump "$ISSUE_NO" "$n" || true
                 else unfinished "$n" "$sha" "$prior" "held, issue open, but the failure check could not be published"; fi ;;
               guard)
                 unfinished "$n" "$sha" "$prior" "readers found nothing that breaks us, but the required-check guard refused" ;;

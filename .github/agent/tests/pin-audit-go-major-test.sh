@@ -942,7 +942,7 @@ for it in items.values():
                 pinned.setdefault(name, set()).add((it.version, "gotool " + it.key))
 # goreleaser was pinned by the old stage-build.yml; the v0.3.0 Build (PR 2) builds with cache's scripts and no longer pins it, so it is no longer a tool this
 # tree pins (its GO_TOOLS row stays: a future pin is audited with the right path)
-need = {"trivy", "grype", "syft", "osv", "gitsign", "scout", "golangci-lint"}
+need = {"trivy", "grype", "syft", "osv", "scout", "golangci-lint"}
 assert need <= set(pinned), ("the check would be vacuous; found only", sorted(pinned))
 wrong = []
 for name, vs in sorted(pinned.items()):
