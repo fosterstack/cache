@@ -1481,6 +1481,9 @@ leak("arn", {"AWS_ROLE_ARN": "x"})
 leak("rt", {"ACTIONS_RUNTIME_FOO": "x"})
 leak("pem", "-----BEGIN " + "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END " + "PRIVATE KEY-----\n")      # assembled here, so no tracked file holds a private-key block (persona-uat-test: a private key never touches the tree)
 leak("dckr", "dckr_pat_" + "B" * 30)
+leak("rra", {"RELEASE_ROLE_ARN": "x"})
+leak("rtf", {"RELEASE_TOKEN_FILE": "x"})
+leak("arnv", "arn:aws:iam::111122223333:role/release-signing")
 PYE
 expect_ok     "R4 record-env accepts a Witness record that carries no token" record-env --record "$work/build_coll.json"
 expect_refuse "R4 record-env refuses a Witness record that names GH_TOKEN (inside the base64 payload)" "env|gh_token" record-env --record "$work/renv_gh.json"
@@ -1492,6 +1495,9 @@ expect_refuse "R4 record-env refuses a Witness record that names DOCKERHUB_TOKEN
 expect_refuse "R4 record-env refuses a Witness record that names AWS_ROLE_ARN" "env|aws_role_arn" record-env --record "$work/renv_arn.json"
 expect_refuse "R4 record-env refuses any ACTIONS_RUNTIME_ variable (a prefix, not two names)" "env|actions_runtime_foo" record-env --record "$work/renv_rt.json"
 expect_refuse "R4 record-env refuses a Witness record that holds a private key block" "env|private key" record-env --record "$work/renv_pem.json"
+expect_refuse "KA-2 R4C-3 record-env refuses a Witness record that names RELEASE_ROLE_ARN" "env|release_role_arn" record-env --record "$work/renv_rra.json"
+expect_refuse "KA-2 R4C-3 record-env refuses a Witness record that names RELEASE_TOKEN_FILE" "env|release_token_file" record-env --record "$work/renv_rtf.json"
+expect_refuse "KA-2 R4C-3 record-env refuses a Witness record that holds an arn:aws: value" "env|arn" record-env --record "$work/renv_arnv.json"
 expect_refuse "R4 record-env refuses a Witness record that holds a Docker Hub token value" "env|docker hub token" record-env --record "$work/renv_dckr.json"
 # N-c: only a JOB-level `uses:` naming a .yml/.yaml file is a reusable workflow (not opened as a directory); a STEP-level reference to a
 # directory that is called thing.yml and holds an action.yml is followed
@@ -2110,7 +2116,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=786
+EXPECT=789
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

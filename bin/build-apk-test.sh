@@ -461,13 +461,16 @@ if e.get("STUB_FAKEKMS_NOINTEGRATED"): del item["integratedTime"]
 s64 = base64.b64encode(sig).decode(); d64 = base64.b64encode(dig).decode()
 if e.get("STUB_FAKEKMS_BADDIGEST"): d64 = base64.b64encode(hashlib.sha256(b"other bytes").digest()).decode()
 if e.get("STUB_FAKEKMS_BADB64"): s64 = "not base64 !!"
+cert = {}
+if e.get("STUB_FAKEKMS_CERT"): cert = {"certificate": {"rawBytes": base64.b64encode(b"a certificate").decode()}}
+if e.get("STUB_FAKEKMS_CHAIN"): cert = {"x509CertificateChain": {"certificates": [{"rawBytes": base64.b64encode(b"a certificate").decode()}]}}
 ents = [item]
 if e.get("STUB_FAKEKMS_NOTLOG"): ents = []
 if e.get("STUB_FAKEKMS_TWOTLOG"): ents = [item, item]
 if e.get("STUB_FAKEKMS_NOMSGSIG"): ms = {}
 elif e.get("STUB_FAKEKMS_NODIGEST"): ms = {"messageSignature": {"signature": s64}}
 else: ms = {"messageSignature": {"messageDigest": {"algorithm": "SHA2_256", "digest": d64}, "signature": s64}}
-doc = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"tlogEntries": ents}}; doc.update(ms)
+doc = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": dict(cert, tlogEntries=ents)}; doc.update(ms)
 open(opt["--bundle"], "w").write(json.dumps(doc) + "\n")
 P
 python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy-fake.sh" \
@@ -703,6 +706,9 @@ t "rule 22" "release signing (round 4 R4C-6): witnessed.sh and the witness-kms s
 t "rule 22" "release signing (round 4 R4C-6): the usage and exit-code lines of release-sign-apks.sh name RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE" bash -c "sed -n 1,30p '$RS' | grep -q 'RELEASE_ROLE_ARN' && sed -n 1,30p '$RS' | grep -q 'RELEASE_TOKEN_FILE'"
 # F8b: bundle-check names itself in its refusals
 fmutant "rule 22" "release signing (round 3 F8b): the refusal of a bad bundle names bundle-check, not kms-sign" 'bundle-check: refused' m42 STUB_FAKEKMS_OTHERDIGEST=1
+# KA-2 CV-1: bundle-check refuses a bundle whose verificationMaterial carries a certificate (nothing here is keyless), whatever else in it is valid
+fmutant "rule 22" "release signing (KA-2 CV-1): bundle-check refuses an otherwise valid bundle that carries a certificate (exit 1 naming the certificate, Build untouched)" 'bundle-check: refused.*certificate' m43 STUB_FAKEKMS_CERT=1
+fmutant "rule 22" "release signing (KA-2 CV-1): bundle-check refuses an otherwise valid bundle that carries an x509CertificateChain (exit 1 naming the certificate, Build untouched)" 'bundle-check: refused.*certificate' m44 STUB_FAKEKMS_CHAIN=1
 # F1: the signer maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE onto the AWS variables itself (the wrapped command Witness records holds no AWS name)
 rs1 c1; : >"$work/aws.env"
 run_s env -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE "${RK[@]}" STUB_AWS_ENVLOG="$work/aws.env" "$RS" --build-dir "$work/c1"; c1rc=$(rc)
