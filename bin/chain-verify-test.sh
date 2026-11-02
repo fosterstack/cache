@@ -908,6 +908,13 @@ json.dump(bundle, open(out, "w"))
 PYF
 FAKE
 chmod +x "$work/fakebin/cosign"
+# KA-0: sign-record asks the aws CLI (GetPublicKey only) which algorithms the release key lists before cosign is asked; the fake lists FAKE_ALGS (default: RSASSA_PKCS1_V1_5_SHA_256 only) and logs its argv
+cat > "$work/fakebin/aws" <<FAKEAWS
+#!/bin/sh
+echo "\$*" >> $work/aws-argv.log
+printf '%s\\n' "\${FAKE_ALGS:-[\\"RSASSA_PKCS1_V1_5_SHA_256\\"]}"
+FAKEAWS
+chmod +x "$work/fakebin/aws"
 # sign refuses a GITHUB_SHA that is not 40-hex and a GITHUB_RUN_ID that is not digits, so every case that signs runs with GitHub's own two variables set (the R1a cases below override them)
 export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242
 PY3=$(command -v python3)
@@ -922,7 +929,7 @@ run() { : > "$work/cosign-argv.log"; local rc=0
     GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
-    ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
+    ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${FAKE_ALGS:+FAKE_ALGS=$FAKE_ALGS} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
     AWS_SECRET_ACCESS_KEY="$SENT_AWS" \
     "$PY3" "$cvr" "$@" 2> "$work/err" > "$work/out" || rc=$?
@@ -2045,6 +2052,8 @@ done
 # (the first assertion proves it), so nothing here calls KMS, a certificate service or a public Rekor.
 [ "$(PATH="$work/fakebin:$PATH" command -v cosign)" = "$work/fakebin/cosign" ] && ok "P2 the cosign every sign-record case reaches is the fake in the test's own folder (no public write)" \
   || bad "P2 cosign on the PATH is not the fake: $(PATH="$work/fakebin:$PATH" command -v cosign)"
+[ "$(PATH="$work/fakebin:$PATH" command -v aws)" = "$work/fakebin/aws" ] && ok "KA-0 the aws every sign-record case reaches is the fake in the test's own folder (no call to AWS)" \
+  || bad "KA-0 aws on the PATH is not the fake: $(PATH="$work/fakebin:$PATH" command -v aws)"
 printf '{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"x","subject":[],"predicate":{}}' > "$work/sr-payload.json"
 SR() { RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing run sign-record --payload "$work/sr-payload.json" --out "$work/sr/$1/build-collection.json" --template "$work/template.json"; }
 mkdir -p "$work/sr"; rc=0; SR ok || rc=$?
@@ -2059,6 +2068,11 @@ for m in twosigs notlog withcert; do
     && ok "P2 sign-record: a bundle that fails ($m) is refused and leaves no record and no entries file" \
     || bad "P2 sign-record $m (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 done
+# KA-0 (interim guard): a key that lists another algorithm first is refused with exit 2 before cosign is asked, naming the algorithm
+rc=0; FAKE_ALGS='["RSASSA_PSS_SHA_256","RSASSA_PKCS1_V1_5_SHA_256"]' SR ka0 || rc=$?
+[ "$rc" = 2 ] && grep -q 'cosign signs with the first algorithm the release key lists (RSASSA_PSS_SHA_256), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path' "$work/err" && [ ! -s "$work/cosign-argv.log" ] \
+  && [ ! -e "$work/sr/ka0/build-collection.json" ] && ok "KA-0 sign-record: a release key that lists another algorithm first is refused (exit 2) before cosign is asked, and no record is written" \
+  || bad "KA-0 sign-record with a key listing PSS first (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); cosign argv $(head -c 100 "$work/cosign-argv.log"))"
 rc=0; SR ok || rc=$?
 [ "$rc" = 1 ] && grep -q 'exists' "$work/err" && [ ! -s "$work/cosign-argv.log" ] && ok "P2 sign-record: an existing record is refused before cosign is asked" \
   || bad "P2 sign-record over an existing record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
@@ -2076,7 +2090,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=780
+EXPECT=782
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

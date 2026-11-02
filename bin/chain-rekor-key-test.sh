@@ -477,10 +477,15 @@ except (cv.Refuse, OSError):
     raised = True
 (ok if raised and not os.path.lexists(out[:-len(".json")] + ".rekor.json") else bad)("kms_sign: when the record cannot be written, the entries file this call made is removed (raised=%s)" % raised)
 # W2: sign-record refuses an unset or different RELEASE_KMS_KEY_REF with exit 2 before cosign; the equal value reaches cosign
-import shutil
-def sr_run(label, refval, want_rc, want_cosign):
+import re, shutil
+PKCS1 = "RSASSA_PKCS1_V1_5_SHA_256"
+def fake_aws(fb, d, algs, rc=0):
+    # the aws CLI the algorithm guard asks (GetPublicKey only): it logs its argv and answers with the key's SigningAlgorithms, in the order the key lists them
+    open(os.path.join(fb, "aws"), "w").write("#!/bin/sh\necho \"$*\" >> %s/aws-calls\n[ %d = 0 ] || { echo 'An error occurred (AccessDeniedException)' >&2; exit %d; }\necho '%s'\n" % (d, rc, rc, json.dumps(algs))); os.chmod(os.path.join(fb, "aws"), 0o755)
+def sr_run(label, refval, want_rc, want_cosign, algs=(PKCS1,), aws_rc=0, text=None, want_aws=None):
     d = os.path.join(work, "w2-" + label.replace(" ", "_")[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
     open(os.path.join(fb, "cosign"), "w").write("#!/bin/sh\necho called >> %s/calls\nexit 1\n" % d); os.chmod(os.path.join(fb, "cosign"), 0o755)
+    if algs is not None: fake_aws(fb, d, list(algs), aws_rc)
     open(os.path.join(d, "payload"), "wb").write(STATEMENT)
     env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
     if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
@@ -488,12 +493,45 @@ def sr_run(label, refval, want_rc, want_cosign):
                         "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json")],
                        env=env, capture_output=True, text=True)
     called = os.path.exists(os.path.join(d, "calls"))
-    (ok if r.returncode == want_rc and called == want_cosign else bad)("sign-record: RELEASE_KMS_KEY_REF %s -> exit %d, cosign %s (got exit %d, cosign called %s: %s)" % (
-        label, want_rc, "called" if want_cosign else "not called", r.returncode, called, r.stderr.strip()[:120]))
+    asked = os.path.exists(os.path.join(d, "aws-calls"))
+    good = r.returncode == want_rc and called == want_cosign and (text is None or text in r.stderr) and (want_aws is None or asked == want_aws)
+    (ok if good else bad)("sign-record: RELEASE_KMS_KEY_REF %s -> exit %d, cosign %s (got exit %d, cosign called %s, aws asked %s: %s)" % (
+        label, want_rc, "called" if want_cosign else "not called", r.returncode, called, asked, r.stderr.strip()[:160]))
 sr_run("unset", None, 2, False)
 sr_run("another alias", "awskms:///alias/other", 2, False)
 sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, False)
-sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, True)       # the fake cosign exits 1, so the call ends in a refusal after cosign was asked once
+sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, True, want_aws=True)       # the fake cosign exits 1, so the call ends in a refusal after cosign was asked once
+# KA-0 (interim guard, goes with KA-2): before cosign is asked, the release key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists)
+KA0 = "refused: cosign signs with the first algorithm the release key lists (%s), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path"
+sr_run("KA-0 key lists another algorithm first", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PSS_SHA_256", want_aws=True)
+sr_run("KA-0 key lists PKCS1 second of three", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PKCS1_V1_5_SHA_384")
+sr_run("KA-0 key does not list PKCS1 at all", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
+sr_run("KA-0 empty algorithm list", cv.RELEASE_KEY_REF, 2, False, algs=(), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
+sr_run("KA-0 aws CLI fails", cv.RELEASE_KEY_REF, 1, False, aws_rc=255, text="aws kms get-public-key failed")
+sr_run("KA-0 aws CLI missing", cv.RELEASE_KEY_REF, 1, False, algs=None, text="cannot run the aws CLI")
+sr_run("KA-0 a wrong alias is refused before aws is asked", "awskms:///alias/other", 2, False, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=False)
+
+# W2, second half (Q/W2 ruling): the one check is also the subcommand `key-ref-check`, which release-sign.sh and release-sign-apks.sh call before any tool (exit 2 everywhere);
+# with --algorithm-guard it is the KA-0 check release-sign.sh needs before its cosign calls
+def kc_run(label, refval, args, want_rc, text=None, algs=(PKCS1,), want_aws=None):
+    d = os.path.join(work, "kc-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
+    if algs is not None: fake_aws(fb, d, list(algs))
+    env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
+    if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
+    r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "key-ref-check"] + args, env=env, capture_output=True, text=True)
+    asked = os.path.exists(os.path.join(d, "aws-calls"))
+    good = r.returncode == want_rc and (text is None or text in r.stderr) and (want_aws is None or asked == want_aws)
+    (ok if good else bad)("key-ref-check %s -> exit %d (got exit %d, aws asked %s: %s)" % (label, want_rc, r.returncode, asked, r.stderr.strip()[:160]))
+kc_run("unset", None, [], 2, text="RELEASE_KMS_KEY_REF")
+kc_run("another alias", "awskms:///alias/other", [], 2, text="not a KMS key reference of the release key", want_aws=False)
+kc_run("not a KMS reference", "alias/fosterstack-release-signing", [], 2, text="not a KMS key reference of the release key")
+kc_run("empty", "", [], 2, text="RELEASE_KMS_KEY_REF")
+kc_run("equal proceeds, no aws asked without the guard", cv.RELEASE_KEY_REF, [], 0, want_aws=False)
+kc_run("guard: PKCS1 first proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 0, want_aws=True)
+kc_run("guard: another algorithm first", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 2, algs=("RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PSS_SHA_256")
+kc_run("guard: another alias is refused before aws", "awskms:///alias/other", ["--algorithm-guard", "--aws", "aws"], 2, want_aws=False)
+kc_run("guard without --aws asks the aws CLI by name", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, want_aws=True)
+kc_run("guard without --aws, another algorithm first", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 2, algs=("RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PSS_SHA_256")
 
 # KMS rule 4 / build-apk rule 22: production code holds no test hook. The flags that swapped the trust root or the clock are gone from every
 # subcommand, and verify_record takes no `now`.

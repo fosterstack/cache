@@ -130,6 +130,12 @@ json.dump({"mode": "vendor"}, open(os.path.join(out, "vendor-evidence.json"), "w
  "bin/chain-verify.py": r'''import os, sys
 a = sys.argv[1:]
 open(os.environ["LOG"], "a").write("chain-verify %s\n" % " ".join(a))
+if a[0] == "key-ref-check":     # W2 + KA-0 (a model of the one check in bin/chain-verify.py): the job's key reference must be the release key's, byte for byte; --algorithm-guard asks the key's algorithm list
+    if os.environ.get("RELEASE_KMS_KEY_REF") != "awskms:///alias/fosterstack-release-signing":
+        print("error: key-ref-check needs RELEASE_KMS_KEY_REF set to the release key (got %r): not a KMS key reference of the release key" % os.environ.get("RELEASE_KMS_KEY_REF"), file=sys.stderr); sys.exit(2)
+    if "--algorithm-guard" in a and os.environ.get("KEYREF_ALG_FAIL"):
+        print("refused: cosign signs with the first algorithm the release key lists (RSASSA_PSS_SHA_256), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path", file=sys.stderr); sys.exit(2)
+    sys.exit(0)
 if a[0] == "policy":
     if os.environ.get("POLICY_FAIL"): print("refused at release: policy", file=sys.stderr); sys.exit(1)
     open(a[a.index("--out") + 1], "w").write("{}"); sys.exit(0)
@@ -477,7 +483,7 @@ t = tree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = r
 check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
 # ---- AC8: release-sign.sh -------------------------------------------------------------------------------------------------------------------
 def signs(t): return [l for l in log(t) if l.startswith("cosign")]
-t = tree(); os.makedirs(os.path.join(t, "reg"), exist_ok=True); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
+t = tree(); os.makedirs(os.path.join(t, "reg"), exist_ok=True); rc, so, se = run(t, "release-sign", creds=REG); L = [l for l in log(t) if not l.startswith("chain-verify key-ref-check")]   # the key-reference check (W2, KA-0) is the step's first call, and is judged below
 check(rc == 0, "AC8 a good run signs", se)
 check(L and L[0].startswith("vendor-provenance evidence --out"), "AC8 the dependency evidence is produced first (bin/vendor-provenance.py evidence --out DIR)", str(L[:1]))
 # ruling G (advisor Oct 12; cache-ce's PROPOSED interface `evidence --out DIR --provenance FILE --govulncheck FILE --date EPOCH`): the dependency list is the tag checkout's own
@@ -526,7 +532,16 @@ check(not any(re.search(r"--(identity-token|fulcio|oidc)", l) for l in L if l.st
 tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
 check(rc != 0 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(tn) if l.startswith(("cosign", "vendor-provenance"))], "P3 a job with no RELEASE_KMS_KEY_REF stops the step before anything is made or signed, naming the variable", "rc=%s %s" % (rc, first(se)))
 tb = tree(); rc, so, se = run(tb, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "arn:aws:kms:us-east-1:111122223333:key/abc"})
-check(rc != 0 and not [l for l in log(tb) if l.startswith("cosign")], "P3 a key reference that is not awskms:/// is refused before any signature", "rc=%s %s" % (rc, first(se)))
+check(rc == 2 and not [l for l in log(tb) if l.startswith("cosign")], "P3 a key reference that is not awskms:/// is refused before any signature, exit 2 (the one check, W2)", "rc=%s %s" % (rc, first(se)))
+# W2 (Q/W2 ruling) + KA-0: release-sign.sh has no key-reference check of its own: it calls the one check in bin/chain-verify.py (key-ref-check, with the algorithm guard) once, before its
+# first cosign call, and a refusal there ends the step with exit 2 before anything is made or signed
+tw = tree(); rc, so, se = run(tw, "release-sign", creds=REG); lw = log(tw)
+kc = [i for i, l in enumerate(lw) if l.startswith("chain-verify key-ref-check")]; cs = [i for i, l in enumerate(lw) if l.startswith("cosign")]
+check(rc == 0 and len(kc) == 1 and cs and kc[0] < cs[0] and lw[kc[0]] == "chain-verify key-ref-check --algorithm-guard", "W2/KA-0 release-sign.sh calls `chain-verify.py key-ref-check --algorithm-guard` once, before its first cosign call", "rc=%s %s" % (rc, kc))
+to = tree(); rc, so, se = run(to, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "awskms:///alias/other"})
+check(rc == 2 and "not a KMS key reference of the release key" in se and not [l for l in log(to) if l.startswith(("cosign", "vendor-provenance"))], "W2 another awskms alias is refused with exit 2 before anything is made or signed", "rc=%s %s" % (rc, first(se)))
+tk = tree(); rc, so, se = run(tk, "release-sign", creds=REG, env={"KEYREF_ALG_FAIL": "1"})
+check(rc == 2 and "KA-2 removes this path" in se and not [l for l in log(tk) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 a key whose first algorithm is not RSASSA_PKCS1_V1_5_SHA_256 stops the step with exit 2 before any cosign call", "rc=%s %s" % (rc, first(se)))
 # REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): release-sign.sh makes dist/checksums.txt itself, from the four archives Build recorded, before its first signature
 t21 = tree(); rc21, so21, se21 = run(t21, "release-sign", creds=REG)
 ARC21 = sorted((("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
@@ -1061,7 +1076,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "466"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "469"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
