@@ -1140,6 +1140,8 @@ mappings:
   - ac: REQ-CHAIN-004-AC10
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC11
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1161,6 +1163,7 @@ mappings:
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }

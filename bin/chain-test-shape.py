@@ -23,10 +23,9 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
     outside melange (34 closure files:
                                              13 shell files by exact lines, 21 files held whole by sha256)
 
-=== Rule 68 seam (advisor ruling, Oct 9; owner's amendment of rule 68: every command run under Witness is wrapped in `timeout 540`) ===========
-Fulcio's keyless certificate lives 10 minutes and Witness verifies it at the timestamp's time (harness spike (d)), so no witnessed command may
-outlive it. The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
-(keyless Fulcio, the timestamp authority, the attestors, the output path, `timeout 540`). Every stage calls it; no stage file and no listed script
+=== Rule 68 seam (advisor ruling, Oct 9; the Release helper no longer carries the ten-minute bound of the earlier certificate: Witness signs with a throwaway key, the release key signs afterwards) ===========
+The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
+(the throwaway key, the attestors, the output path) and then calls the one signing function; the building steps' local helper keeps `timeout -k 20 540`. Every stage calls it; no stage file and no listed script
 names `witness run`. The seam in this file is exactly three functions: witness_seam (the stage's one run line), helper (the helper's exact lines)
 and directwitness (nothing else runs Witness). If harness spike (d) changes the wrapping (witness wraps only short steps; or a second witness run
 signs a record of the first), only those three functions and the fixture generators (witness_block, witnessed_text in
@@ -502,11 +501,11 @@ STEPS = ("apk", "build", "rapk", "rebuild",
          "scanners", "acceptance", "runtime", "arm64",
          "release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify")      # the closed list (PR 3 adds Check's three steps, PR 4 the six of Release); the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
-# Handoff 0713: Witness signs with the release KMS key by its alias. The identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
-# file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN. Witness runs first with no token
-# and no AWS variable (every step but release-sign, whose script signs with the key itself); a fresh token is fetched just before the one signing function is called; both
-# variables are sensitive keys of the record.
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
+# Handoff 0713: the collection is signed with the release KMS key by its alias, by the one signing function (chain-verify.py sign-record), after Witness has run with a throwaway key. The identity
+# token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through
+# AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN. Witness itself runs with no token and no AWS variable, for every step; a step whose script signs with the key itself (release-sign) gets them in that script's
+# environment only, by one single-quoted launcher literal that maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names) for that script, so no value is in Witness's argument list, and the token made for it is removed when Witness returns; a fresh token is fetched just before the one signing function is called; both variables are sensitive keys of the record.
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # never github (raw OIDC token) and never slsa
 
 
 def witnessed_lines():
@@ -531,18 +530,17 @@ def witnessed_lines():
             '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
             '  echo "::add-mask::$tok"',
             "}",
-            'if [ "$step" = release-sign ]; then',
-            "  oidc_token",
-            '  export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"',
-            "else",
-            "  unset AWS_ROLE_ARN AWS_REGION RELEASE_KMS_KEY_REF",
-            "fi",
+            'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
+            'signers=" release-sign "',
+            'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
+            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token"; set -- -c \'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"\' release-creds bash "$@" ;; esac',
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",
             'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
             '-o "$local_record" -- bash "$@" || rc=$?' % keys,
+            'rm -rf "$td/step"',
             'if [ "$rc" -eq 0 ]; then',
             '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
             "  oidc_token",
@@ -560,7 +558,7 @@ LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|
 
 def local_lines():
     """The exact lines of bin/witnessed-local.sh (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md, option 1): the building steps record under Witness
-    with a throwaway ed25519 key made in the job and destroyed before it ends; no identity token, no Fulcio, no timestamp. Sign re-signs the payload keyless. Key hygiene, not the
+    with a throwaway ed25519 key made in the job and destroyed before it ends; no identity token, no certificate, no timestamp. Sign checks the record and signs its payload with the release KMS key. Key hygiene, not the
     trust boundary: the record carries no trust until Sign has checked its product digests (backslash continuations are joined before comparing)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",

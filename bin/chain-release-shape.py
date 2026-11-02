@@ -103,8 +103,24 @@ KEYWRITE = r'printf %s "\$APK_RELEASE_SIGNING_KEY" > "\$keyfile"'   # the one pl
 OLD = ["bin/authorize-acceptance-check.py", "bin/authorize-acceptance-check-test.sh"]
 
 
+class DuplicateKey(Exception):
+    pass
+
+
+class _NoDuplicateKeys(yaml.BaseLoader):
+    """The one load of a workflow: a loader keeps the LAST of two equal mapping keys, so a second env: (or any key) would hide the first from every judge below. A repeated key refuses the file."""
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise DuplicateKey("duplicate key %r in a mapping of the workflow (the loader keeps the last one, so the first would be hidden)" % (key,))
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load(path):
-    return yaml.load(open(path), Loader=yaml.BaseLoader)
+    return yaml.load(open(path), Loader=_NoDuplicateKeys)
 
 
 def has_expression(obj):
@@ -195,7 +211,7 @@ def compare_job(j):
     """The owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks runs in a job with no secrets, no
     publish permission and no identity token: contents read ONLY (an id-token can assume the signing role), no environment, no env, no needs, no condition. Its steps are
     exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
-    under Witness: Witness signs through the identity token) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
+    under Witness: a Witness record is signed with the release KMS key, which needs the identity token this job must not hold) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []
     allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes"}
     if set(j) - allowed:
@@ -616,6 +632,9 @@ if __name__ == "__main__":
     fn = {"stage": lambda: stage(a[0]), "credentials": lambda: credentials(a[0]), "others": lambda: others(a[0]),
           "graph": lambda: graph(a[0]), "verify": lambda: verify(a[0]), "scan": lambda: scan(a[0], a[1]),
           "listed": lambda: listed(a[0], a[1]), "metadata": lambda: metadata(a[0]), "record": lambda: record(a[0], a[1:]), "removed": lambda: removed(a[0])}[cmd]
-    bad = fn()
+    try:
+        bad = fn()
+    except DuplicateKey as e:
+        bad = [str(e)]
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)
