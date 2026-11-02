@@ -1,10 +1,10 @@
 name: 'Stage: sign'
 
-# The Sign stage of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0), three jobs of ONE file so that all carry ONE certificate
-# identity (the workflow file at the tag, with release.yml as the top-level workflow): no job that builds can obtain a certificate in it, and a second workflow that calls
-# this file still carries its OWN top-level workflow in the certificate's Build Config URI, which the release policy pins to release.yml.
+# The Sign stage of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0), three jobs of ONE file so that one workflow file at the tag (with release.yml as the
+# top-level workflow) holds the release signing role: no job that builds can reach the release key. Every signature here is made with the one release key in AWS KMS, through the job's federation role,
+# and keeps its Rekor entry; there is no keyless signing and no certificate identity.
 # The building jobs hold no identity token (owner, Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness records are made with a throwaway
-# key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it keyless; every later stage trusts
+# key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it with the release key in KMS; every later stage trusts
 # only a record signed here.
 #   sign:         receives Build's records (witness-build, witness-apk-<runner>) and the artifacts those records name (images, dist, the apks), checks them (bin/chain-verify.py
 #                 sign-records), signs the records, then checks Build's digest list against the signed record and asks cosign for the provenance signature.

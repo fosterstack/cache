@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Sign the released apks with the release KMS key (v0.3.0 rules 17, 22; the one-key rule: no stored apk key exists).
 #
-#   RELEASE_KMS_KEY_REF=awskms:///<key> release-sign-apks.sh --build-dir A
+#   RELEASE_KMS_KEY_REF=awskms:///<key> RELEASE_ROLE_ARN=<role> RELEASE_TOKEN_FILE=<file> release-sign-apks.sh --build-dir A
 #
 # A is the output directory of Build (<dir>/<arch>/<name>-<version>.apk, signed with the non-secret assembly key).
-# Each apk in A is re-signed in place: the control stream is signed by cosign with the release KMS key
-# (the Rekor-only signing config of the chain), the signature is checked as RSA PKCS#1 v1.5 SHA-256 against the
-# committed build/keys/release.rsa.pub (a key that lists a PSS algorithm first would sign PSS, which apk-tools rejects:
-# that fails here, closed), and the apk tool puts it in front of the unchanged control and data streams as the one
-# .SIGN.RSA256.release.rsa.pub member. The Rekor bundle of each signature is kept beside the apk as <apk>.bundle.
+# Each apk in A is re-signed in place: the sha256 of its control stream is signed by KMS Sign with the algorithm
+# RSASSA_PKCS1_V1_5_SHA_256 NAMED ON THE CALL (bin/chain-verify.py kms-sign, through the aws CLI; cosign 3.1.3 would use the first
+# algorithm the key lists, so it is not used here), one hashedrekord entry is posted to the Rekor of the chain's signing config, and the
+# signature is checked as RSA PKCS#1 v1.5 SHA-256 against the committed build/keys/release.rsa.pub. The apk tool then puts it in
+# front of the unchanged control and data streams as the one .SIGN.RSA256.release.rsa.pub member. The signature is taken from the
+# bundle kms-sign wrote (messageSignature, strict base64, its messageDigest the SHA2_256 of the signed control stream, exactly one
+# tlogEntries item). The bundle of each signature is kept beside the apk as <apk>.bundle. The aws CLI path and version on the runner
+# image are UNVERIFIED until a job log shows them.
 # Nothing a customer trusts is ever signed with the assembly key.
 # Rebuild's apks never reach this job (owner's rule of Oct 21 2026,
 # ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: the job that holds the signing role receives no build
@@ -18,7 +21,8 @@
 # Only files named *.apk are signed. An APKINDEX.tar.gz in Build keeps its assembly-key signature, so the release
 # workflow must not ship it as it is.
 # Exit codes: 0 all signed | 1 a signing step failed (nothing in Build's directory was changed) |
-# 2 refused: a missing or unknown argument (--key is unknown), RELEASE_KMS_KEY_REF unset or not awskms:///<name>, a
+# 2 refused: a missing or unknown argument (--key is unknown), RELEASE_KMS_KEY_REF unset or not awskms:///<name>, RELEASE_ROLE_ARN or
+# RELEASE_TOKEN_FILE unset or empty (the Witness wrapper hands them over; the signer maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE), a
 # missing file, a symlink, build/keys/release.rsa.pub is not a readable public key (the committed placeholder, until a
 # human commits the real half: every release is refused) or is the assembly public key, or Build carries a signature
 # other than the assembly key's (no tool run).
@@ -35,7 +39,9 @@ die() { echo "release-sign-apks.sh: $1" >&2; exit "${2:-2}"; }
 # (REQ-BUILDAPK-001-AC7, AC8).
 PY3=/usr/bin/python3            # TEST-SUBST
 OPENSSL=/usr/bin/openssl        # TEST-SUBST
-COSIGN=/usr/local/bin/cosign    # TEST-SUBST
+AWS=/usr/local/bin/aws          # TEST-SUBST
+SIGNING_CONFIG=$PWD/.github/policy/cosign-signing-config.json   # TEST-SUBST
+KMSSIGN=bin/chain-verify.py     # TEST-SUBST
 KEYS_DIR=$PWD/build/keys        # TEST-SUBST
 
 build_dir=
@@ -50,6 +56,10 @@ done
 # the key is the KMS reference the job pins (as the release signing step reads it); checked before any tool runs
 [ -n "${RELEASE_KMS_KEY_REF:-}" ] || die "RELEASE_KMS_KEY_REF is unset"
 case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) die "RELEASE_KMS_KEY_REF is not a KMS key reference (awskms:///<name>)";; esac
+# RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS CLI reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
+case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) die "RELEASE_ROLE_ARN is unset (the release job's signing role)";; esac
+case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) die "RELEASE_TOKEN_FILE is unset (the release job's identity-token file)";; esac
+export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
 kept="nothing in $build_dir was changed"
 [ -d "$build_dir" ] || die "--build-dir is not a directory: $build_dir"
 # Everything below reads PRIVATE COPIES (a 0700 temp directory): Build's apks are copied once, and the checks and
@@ -103,34 +113,55 @@ for rel in "${apks[@]}"; do
   [ ! -e "$build_dir/$rel.bundle.new" ] ||
     die "$build_dir/$rel.bundle.new already exists (a leftover or a planted file); refusing, $kept"
 done
-[ -x "$COSIGN" ] || die "cosign is not installed at $COSIGN (install it before this step)" 1
+[ -x "$AWS" ] || die "aws is not installed at $AWS (the runner image has it; this step does not install it)" 1
 # Sign the private copies, check each signature and signer, and only when every one succeeded replace the originals:
 # a failure leaves Build's directory untouched.
 n=0
 for rel in "${apks[@]}"; do
   w=$tmp/work/$n; mkdir -p "$w"
   "$PY3" -I -B bin/apk-tool.py control "$copy/$rel" "$w/control.gz" || die "cannot read the control stream of ${rel#./}; $kept" 1
-  cp .github/policy/cosign-signing-config.json "$w/signing-config.json" || die "cannot copy the signing config; $kept" 1
-  # run in the private directory with literal file names: the chain's records judge needs every argument of the signing call to be a literal (its blob, and so its type, must be known)
-  cd "$w"
-  "$COSIGN" sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config signing-config.json --output-signature sig.bin --bundle sig.bundle control.gz ||
+  read -r dg _ < <("$OPENSSL" dgst -sha256 -r "$w/control.gz") && [ -n "$dg" ] || die "cannot hash the control stream of ${rel#./}; $kept" 1
+  # KMS Sign names RSASSA_PKCS1_V1_5_SHA_256 itself on every call and refuses a key that does not list it; the Rekor entry is posted by the same call
+  "$PY3" -I -B "$KMSSIGN" kms-sign --aws "$AWS" --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config "$SIGNING_CONFIG" \
+    --public-key "$KEYS_DIR/release.rsa.pub" --out "$w/kms.sig" --bundle "$w/sig.bundle" ||
     die "signing the control stream failed for ${rel#./}; $kept" 1
-  cd "$root_dir"
-  [ -s "$w/sig.bin" ] && [ -s "$w/sig.bundle" ] || die "cosign left no signature or no bundle for ${rel#./}; $kept" 1
+  [ -s "$w/kms.sig" ] && [ -s "$w/sig.bundle" ] || die "kms-sign left no signature or no bundle for ${rel#./}; $kept" 1
+  # the signature is taken from the bundle, strictly: messageSignature.signature is base64 and messageSignature.messageDigest is the SHA2_256 of exactly these control bytes;
+  # anything absent, undecodable or different stops the apk (exit 1, no .SIGN written)
+  rc=0; "$PY3" -I -B - "$w/sig.bundle" "$w/control.gz" "$w/sig.bin" <<'PY' || rc=$?
+import base64, binascii, hashlib, json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+    ms = doc["messageSignature"]
+    sig = base64.b64decode(ms["signature"], validate=True)
+    if not sig:
+        raise ValueError("empty")
+except (OSError, ValueError, KeyError, TypeError, AttributeError, binascii.Error):
+    sys.exit(11)
+try:
+    md = ms["messageDigest"]
+    want = base64.b64decode(md["digest"], validate=True)
+    ok = md["algorithm"] == "SHA2_256" and want == hashlib.sha256(open(sys.argv[2], "rb").read()).digest()
+except (OSError, ValueError, KeyError, TypeError, AttributeError, binascii.Error):
+    ok = False
+if not ok:
+    sys.exit(12)
+fd = open(sys.argv[3], "xb"); fd.write(sig); fd.close()
+PY
+  case $rc in
+    0) ;;
+    11) die "the bundle of ${rel#./} holds no messageSignature signature that decodes as base64; $kept" 1;;
+    12) die "the messageDigest of the bundle of ${rel#./} is not the SHA2_256 of the control stream that was signed; $kept" 1;;
+    *) die "cannot read the bundle of ${rel#./}; $kept" 1;;
+  esac
+  # the one Rekor entry is checked by the same function kms-sign used: exactly one tlogEntries item, a hashedrekord 0.0.1 for THIS digest, THIS signature and the release public key,
+  # with a logIndex and an integratedTime, and its signed entry timestamp verifying against the Rekor key pinned beside the signing config
+  "$PY3" -I -B "$KMSSIGN" bundle-check --bundle "$w/sig.bundle" --digest "$dg" --public-key "$KEYS_DIR/release.rsa.pub" --signing-config "$SIGNING_CONFIG" ||
+    die "the tlogEntries of the bundle of ${rel#./} are not the one Rekor entry of this signature; $kept" 1
   # RSA PKCS#1 v1.5 SHA-256 only: a signature of another form (PSS, from a key that lists PSS first) is refused, no .SIGN is written
   "$OPENSSL" dgst -sha256 -verify "$KEYS_DIR/release.rsa.pub" -signature "$w/sig.bin" "$w/control.gz" >/dev/null ||
     die "the KMS signature of ${rel#./} is not RSA PKCS#1 v1.5 SHA-256 under build/keys/release.rsa.pub (a PSS key, another key, "\
 "or a bad signature); $kept" 1
-  # the bundle carries exactly one Rekor entry (release refuses a signature that has none)
-  "$PY3" -I -B - "$w/sig.bundle" <<'PY' || die "the bundle of ${rel#./} does not hold exactly one tlogEntries item (Rekor entry); $kept" 1
-import json, sys
-try:
-    doc = json.load(open(sys.argv[1]))
-    entries = doc.get("verificationMaterial", {}).get("tlogEntries")
-except (OSError, ValueError, AttributeError):
-    sys.exit(1)
-sys.exit(0 if isinstance(entries, list) and len(entries) == 1 else 1)
-PY
   "$PY3" -I -B bin/apk-tool.py attach-signature "$copy/$rel" "$w/sig.bin" "$w/signed.apk" ||
     die "cannot attach the signature to ${rel#./}; $kept" 1
   mv -f "$w/signed.apk" "$copy/$rel" || die "cannot place the signed ${rel#./}; $kept" 1

@@ -117,7 +117,7 @@ def witness_block(spec_):       # the stage's Witness step(s): one line through 
 
 def witnessed_text():           # bin/witnessed.sh, the witness line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
-    i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
+    i = next(n for n, l in enumerate(lines) if l.startswith("env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run "))
     for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
     comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
@@ -390,6 +390,7 @@ st s_bt_other  "004-AC3 another install command in place of melange's (not the p
 st s_bt_tool   "004-AC3 a third build tool through the same installer" "download-artifact" "$APKINST" "$APKINST      - name: install helm\n        run: bash bin/install-build-tools.sh helm\n"
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
 st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
+st s_bt_menv   "004-AC3 an env on the melange installer step (a token or secret could reach it before admission; the melange half of s_bt_env, no env, no secret)" "no env, no secret" "$MELINST" '      - name: install melange (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh melange\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
 # rule 1 of the sandboxed build: the freeze job's grammar (mode guard first, every other step and apk's download
 # release-only)
@@ -752,9 +753,10 @@ hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts
 hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
 hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 the wrapped script keeps both AWS variables" 'wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)' 'wrap=()'
-hm kwrap1  "AC2 only one of the two AWS variables is removed from the wrapped script" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
-hm ksignall "AC2 every step keeps the variables, not release-sign alone" 'if [ "$step" = release-sign ]; then' 'if [ "$step" != apk ]; then'
+hm kwrap0  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap2  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$AWS_ROLE_ARN" bash "$@"'
+hm kwrap1  "AC2 only one of the two AWS variables is removed from Witness's own environment" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
+hm ksignall "AC2 every step is handed the variables, not release-sign and release-apks alone" '  release-sign|release-apks) export' '  *) export'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
 hm kghenv  "AC2 the token file written to GITHUB_ENV" 'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"' $'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"\necho "AWS_WEB_IDENTITY_TOKEN_FILE=$td/token" >> "$GITHUB_ENV"'

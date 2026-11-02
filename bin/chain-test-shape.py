@@ -590,13 +590,16 @@ STEPS = ("apk", "build", "rapk", "rebuild",
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # Handoff 0713: Witness signs with the release KMS key by its alias. The identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 # file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; every step but
-# release-sign runs its script under `env -u` of both variables; both are sensitive keys of the record.
+# release-sign and release-apks (the two scripts that sign with the key) runs its script without both variables; Witness itself runs under `env -u` of both on every step, and only those two
+# scripts are handed the values, as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names no record holds), which each maps onto the two variables itself; the wrapped command is the plain `bash SCRIPT`,
+# because the command-run record keeps it and record-env refuses a record that names the variables; all four names are sensitive keys of the record.
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
+RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
 
 
 def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
@@ -616,17 +619,15 @@ def witnessed_lines():
             'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"',
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            'if [ "$step" = release-sign ]; then',
-            "  wrap=()",
-            "else",
-            "  wrap=(env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN)",
-            "fi",
+            'case "$step" in',
+            '  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE" ;;',
+            "esac",
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",
-            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
+            'env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step "$step" --signer-file-key-path "$td/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?' % keys,
+            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
             'if [ "$rc" -eq 0 ]; then',
             '  jq -r .payload "$local_record" | base64 -d > "$td/payload" || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
             '  python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
@@ -679,7 +680,15 @@ def helper(path):
     """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags and `timeout 540` live."""
     raw = read_exact(path)
     commands, faults = commands_of(raw)
-    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + compare(commands, witnessed_lines(), "the helper")
+    # P11 round 3 (REQ-CHAIN-007-AC12, AC15): the command-run attestor records the wrapped command, and record-env refuses a record that names the AWS role or token-file variables; so no AWS_ name stands in the
+    # wrapped command (after `--`), and --trace (which would put the child's environment in the record) is never given. The exact lines above already pin both; these name the reason.
+    why = []
+    if "--trace" in raw:
+        why.append("the helper gives Witness --trace (the command-run record would hold the wrapped script's environment)")
+    for c in commands:
+        if c.startswith("env -u ") and " witness run " in c and " -- " in c and "AWS_" in c.split(" -- ", 1)[1]:
+            why.append("the wrapped command of the helper names an AWS_ variable (the command-run record would hold the name, and record-env refuses it)")
+    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + why + compare(commands, witnessed_lines(), "the helper")
 
 
 def directwitness(files):
@@ -882,7 +891,7 @@ def ns_shell(path, name):
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "e3df12b9a6dc8d83f24572f2c3a5fe9f11db859d435ae630c785fe5d5b3f2145",
-    "bin/apk-tool.py": "1349b0dfd5ab512fde81bd5e2a17ea8214760f7683d3f1bb0ee6bd8409278fe8",
+    "bin/apk-tool.py": "c394ca362da33d798358e497012804d44caf0b9d766a5ee0684fa90e260cfc42",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "0d8a8273d334bcf90e64bec45aa5d469e152cc2b24e0a7b517fec18a6c226f8f",
@@ -892,7 +901,7 @@ NS_SHA = {
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
     "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
-    "bin/chain-verify.py": "0631cb29e883e8a9e19898c7a253bf7696037cca6a91cc70a03b7e8a8d1240e6",
+    "bin/chain-verify.py": "cd410e6c56341ad93918133e0fe7fc46290c869746bd946e115cf4880f52eae4",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
     "bin/chain_items.py": "65361e57ce3725650ca8d04909c73b48dd4393fb437c76672ff959e2a4cad085",

@@ -10,6 +10,10 @@ for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN RELEASE_KMS_KEY_REF; do
 done
 # the job pins the key's reference (awskms:///<name>); the name of the KMS key is not written here, because the chain's text scan refuses a word in it
 case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) echo "release-sign: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1 ;; esac
+# RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS SDK reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
+case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) echo "release-sign: RELEASE_ROLE_ARN is unset" >&2; exit 2;; esac
+case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) echo "release-sign: RELEASE_TOKEN_FILE is unset" >&2; exit 2;; esac
+export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 # REQ-CHAIN-007-AC21 (Astra R3): checksums.txt has no other producer. Before any evidence is made or anything is signed, the four archives in dist are bound to Build's digests.json
 # and the file release-assets attaches and this step signs is written from them; an archive that is missing, extra or not Build's stops the step here
