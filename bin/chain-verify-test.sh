@@ -912,6 +912,7 @@ chmod +x "$work/fakebin/cosign"
 cat > "$work/fakebin/aws" <<FAKEAWS
 #!/bin/sh
 echo "\$*" >> $work/aws-argv.log
+[ -z "\${FAKE_AWS_RC:-}" ] || exit "\$FAKE_AWS_RC"
 printf '%s\\n' "\${FAKE_ALGS:-[\\"RSASSA_PKCS1_V1_5_SHA_256\\"]}"
 FAKEAWS
 chmod +x "$work/fakebin/aws"
@@ -929,7 +930,7 @@ run() { : > "$work/cosign-argv.log"; local rc=0
     GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
-    ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${FAKE_ALGS:+FAKE_ALGS=$FAKE_ALGS} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
+    ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${FAKE_ALGS:+FAKE_ALGS=$FAKE_ALGS} ${FAKE_AWS_RC:+FAKE_AWS_RC=$FAKE_AWS_RC} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
     AWS_SECRET_ACCESS_KEY="$SENT_AWS" \
     "$PY3" "$cvr" "$@" 2> "$work/err" > "$work/out" || rc=$?
@@ -1672,6 +1673,7 @@ expect_refuse "R2-4 check-build-record: Build's product subject whose digest is 
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
 WFREF=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
+ln -s "$work/fakebin/aws" "$work/nocosign/aws"      # KA-0 asks the aws CLI before cosign is looked for: this case has the fake aws and no cosign
 rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
@@ -2073,6 +2075,24 @@ rc=0; FAKE_ALGS='["RSASSA_PSS_SHA_256","RSASSA_PKCS1_V1_5_SHA_256"]' SR ka0 || r
 [ "$rc" = 2 ] && grep -q 'cosign signs with the first algorithm the release key lists (RSASSA_PSS_SHA_256), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path' "$work/err" && [ ! -s "$work/cosign-argv.log" ] \
   && [ ! -e "$work/sr/ka0/build-collection.json" ] && ok "KA-0 sign-record: a release key that lists another algorithm first is refused (exit 2) before cosign is asked, and no record is written" \
   || bad "KA-0 sign-record with a key listing PSS first (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); cosign argv $(head -c 100 "$work/cosign-argv.log"))"
+# KA-0 on sign (the provenance reaches cosign attest-blob with the same key): the same guard runs before the output folder is made and before cosign is asked; sign never reads RELEASE_KMS_KEY_REF, so W2's reference check is not part of it
+SGK() { run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/$1"; }
+rc=0; FAKE_ALGS='["RSASSA_PSS_SHA_256","RSASSA_PKCS1_V1_5_SHA_256"]' SGK ka0s-pss || rc=$?
+[ "$rc" = 2 ] && grep -q 'cosign signs with the first algorithm the release key lists (RSASSA_PSS_SHA_256), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path' "$work/err" && [ ! -s "$work/cosign-argv.log" ] \
+  && [ ! -e "$work/sd/ka0s-pss" ] && ok "KA-0 sign: a release key that lists another algorithm first is refused (exit 2) before cosign is asked, and no output folder is made" \
+  || bad "KA-0 sign with a key listing PSS first (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); cosign argv $(head -c 100 "$work/cosign-argv.log"); out $(ls -d "$work/sd/ka0s-pss" 2> /dev/null))"
+rc=0; FAKE_ALGS='["RSASSA_PSS_SHA_256"]' SGK ka0s-nopkcs1 || rc=$?
+[ "$rc" = 2 ] && grep -q 'does not support RSASSA_PKCS1_V1_5_SHA_256' "$work/err" && [ ! -s "$work/cosign-argv.log" ] \
+  && [ ! -e "$work/sd/ka0s-nopkcs1" ] && ok "KA-0 sign: a release key that does not list RSASSA_PKCS1_V1_5_SHA_256 is refused (exit 2) before cosign is asked, and no output folder is made" \
+  || bad "KA-0 sign with a key not listing PKCS1 (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); cosign argv $(head -c 100 "$work/cosign-argv.log"); out $(ls -d "$work/sd/ka0s-nopkcs1" 2> /dev/null))"
+rc=0; FAKE_AWS_RC=255 SGK ka0s-awsfail || rc=$?
+[ "$rc" = 1 ] && [ ! -s "$work/cosign-argv.log" ] && [ ! -e "$work/sd/ka0s-awsfail" ] \
+  && ok "KA-0 sign: an aws CLI that fails is refused (exit 1) with no cosign call and no output folder" \
+  || bad "KA-0 sign with a failing aws CLI (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); cosign argv $(head -c 100 "$work/cosign-argv.log"); out $(ls -d "$work/sd/ka0s-awsfail" 2> /dev/null))"
+rc=0; SGK ka0s-ok || rc=$?
+[ "$rc" = 0 ] && [ "$(wc -l < "$work/cosign-argv.log")" = 1 ] && grep -Eq "$ARGV_RE" "$work/cosign-argv.log" && [ -s "$work/sd/ka0s-ok/provenance.bundle.json" ] \
+  && ok "KA-0 sign: a key that lists RSASSA_PKCS1_V1_5_SHA_256 first proceeds: cosign attest-blob is called once with the pinned key and the provenance is written" \
+  || bad "KA-0 sign with PKCS1 first (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); cosign argv $(head -c 300 "$work/cosign-argv.log"))"
 rc=0; SR ok || rc=$?
 [ "$rc" = 1 ] && grep -q 'exists' "$work/err" && [ ! -s "$work/cosign-argv.log" ] && ok "P2 sign-record: an existing record is refused before cosign is asked" \
   || bad "P2 sign-record over an existing record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
@@ -2090,7 +2110,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=782
+EXPECT=786
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
