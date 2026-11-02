@@ -1859,35 +1859,42 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "c55e049c80aa4a2d0873d6eae090793ba132ec5630b7544cf0194b405ab76d4d",
-      "reads_env": [
-        "GH_TOKEN"
-      ],
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "[ -n \"${GH_TOKEN:-}\" ] || { echo \"release-postverify: GH_TOKEN is unset\" >&2; exit 2; }",
-          "line_sha256": "69ef7a2b92d28fd0326c990cc64034e02be75883511cce8a2b83552418ea8c9a",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
+      "sha256": "4f89daaa659d30a16dc5c4bcb31e9535d65c259227ec6416b677d92902aa621e",
+      "reads_env": []
     },
     {
       "path": "bin/release-postverify.py",
       "tools": [
         "at",
-        "bash",
         "command",
         "cosign",
+        "exec",
         "gh",
         "jq",
         "just"
       ],
-      "runs": [],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
       "signs": false,
-      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "f0f2083bca437f02dece6af7dce3fb03bd40d9f5e667c4fe0bbc236949e96a46",
+      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
+      "sha256": "fecd013212d50663a026f2cc4655c25ac30a3df06bf36ef083434127fad07004",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "            return \"a # outside quotes (a shell comment would hide what follows from this check and not from bash)\"",
+          "line_sha256": "4f0ed76b7e3308c8638ba6e3ed8d151699a3f12ba6fb7f3f220b2db554f3dd21",
+          "count": 1,
+          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        },
+        {
+          "rule": "deny",
+          "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
+          "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
+          "count": 1,
+          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        }
+      ],
       "env_mentions": [
         {
           "name": "ENV",
@@ -2703,13 +2710,6 @@
     {
       "name": "GH_TOKEN",
       "script": "bin/release-assets.sh",
-      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "GH_TOKEN",
-      "script": "bin/release-postverify.sh",
       "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
       "file": ".github/workflows/stage-promote.yml",
       "job": "release"

@@ -222,8 +222,6 @@ jobs:
         run: bash bin/witnessed.sh release-assets bin/release-assets.sh
       - name: release-postverify under Witness
         if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
         run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json

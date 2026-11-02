@@ -995,6 +995,20 @@ expect_refuse "KEY a policy made from another manifest refuses a record signed b
 expect_refuse "KEY an old-form record that still carries a certificate is refused, not read as a new one" "envelope|certificate" verify $(V) --stage sign $(rec sign_old_cert)
 expect_refuse "KEY an old-form record that still carries intermediates is refused" "envelope|intermediates" verify $(V) --stage sign $(rec sign_old_inter)
 expect_refuse "KEY an old-form record that still carries timestamps is refused" "envelope|timestamps" verify $(V) --stage sign $(rec sign_old_stamps)
+# KL-1 guards (payments, Nov 1): verify and stage-start take a RECORD, never a bundle. A keyless bundle (a certificate and a tlog entry of the right shape)
+# handed to either as the record is refused: exit 1, nothing written beside it, any message. This holds on the parent too: a guard, not a red.
+mkdir -p "$work/kl1"
+python3 - "$work/kl1/keyless.bundle.json" <<'PY'
+import json, sys
+json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+           "verificationMaterial": {"certificate": {"rawBytes": "eA=="}, "tlogEntries": [{"logIndex": "7"}]},
+           "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": "e30=", "signatures": [{"sig": "eA==", "keyid": ""}]}}, open(sys.argv[1], "w"))
+PY
+expect_guard() { local l=$1; shift; local rc=0 b a; b=$(ls -A "$work/kl1" | md5sum); run "$@" || rc=$?; a=$(ls -A "$work/kl1" | md5sum)
+  if [ "$rc" = 1 ] && [ "$b" = "$a" ] && ! crashed; then ok "$l [$(head -n 1 "$work/err" | head -c 150)]"
+  else bad "$l (exit $rc, wanted 1 with nothing written beside the record; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
+expect_guard "KL-1 guard: verify given a keyless bundle as the record exits 1 and writes nothing (a bundle is not its input)" verify $(V) --stage sign --record "$work/kl1/keyless.bundle.json"
+expect_guard "KL-1 guard: stage-start given a keyless bundle as the record exits 1 and writes nothing" $(ST rebuild build) --record "$work/kl1/keyless.bundle.json" --digests "$work/digests.json"
 expect_refuse "KEY a keyid that is not a string is refused" "envelope|keyid" verify $(V) --stage sign $(rec sign_keyid_num)
 expect_refuse "KEY a signature entry with a field the form does not have is refused" "envelope|note" verify $(V) --stage sign $(rec sign_extra_field)
 expect_ok     "KEY the keyid is never used to find a key: a record whose keyid names another reference is judged by its signature alone" verify $(V) --stage sign --record "$work/sign_prov_keyid_other.json"
@@ -2061,7 +2075,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=778
+EXPECT=780
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -10,18 +10,20 @@ workflow identity at the tag.
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
 verify-attestation, verify-blob, verify-blob-attestation, gh attestation verify) and jq, with at least one verify
 form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. A command that fails
-fails the run (exit 1) after all have run. The step holds the job's GITHUB_TOKEN (the Release job's own
-contents/packages/id-token grant) and no registry credential.
+fails the run (exit 1) after all have run. The step holds no token and no registry credential.
 
 Every command runs with release-published/ (the assets just downloaded from the published release) as its working
 directory, so the guide's bare file names resolve as a customer's do (REQ-CHAIN-007-AC20). A command made only of jq is
 accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run
-time only after that verify exited 0.
+time only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv,
+so nothing (brace, glob, tilde, variable, backslash-newline) is expanded after the check.
 """
-import json, os, re, shlex, subprocess, sys
+import hashlib, json, os, re, shlex, subprocess, sys, types
 
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
+VERIFIER = "bin/chain-verify.py"   # holds the bundle check; loaded only when a listed command names a bundle
+LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the chain that runs
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
@@ -73,8 +75,8 @@ def split_pipe(words):
 
 
 def quote_error(c):
-    """Why bash would run something else than the words we judge (a backquote, an expansion, a comment, a newline),
-    or None. We walk the quotes ourselves because shlex does not know bash's expansions."""
+    """Why a shell would run something else than the words we judge (a backquote, an expansion, a comment, a newline),
+    or None. We walk the quotes ourselves because shlex does not know a shell's expansions."""
     if "`" in c:
         return "a backquote"
     quote, i = None, 0
@@ -313,23 +315,43 @@ def verify_files(c):
     return out
 
 
+def run_pipe(segs):
+    """Runs the argv of each segment of a pipe WITHOUT a shell: the words the judge read are the argv, so nothing
+    (brace, glob, tilde, variable, backslash-newline) can change them after the check. Every command of the pipe must
+    exit 0 (pipefail); a command that cannot start fails the run."""
+    procs, prev = [], subprocess.DEVNULL
+    try:
+        for n, argv in enumerate(segs):
+            last = n == len(segs) - 1
+            p = subprocess.Popen(argv, stdin=prev, stdout=None if last else subprocess.PIPE, cwd=ASSETS)
+            if prev is not subprocess.DEVNULL:
+                prev.close()
+            prev = p.stdout
+            procs.append(p)
+    except OSError as e:
+        print("release-postverify: %s cannot be started (%s)" % (segs[len(procs)][0], type(e).__name__),
+              file=sys.stderr)
+        for p in procs:
+            p.kill()
+        for p in procs:
+            p.wait()
+        return 127
+    codes = [p.wait() for p in procs]
+    return next((rc for rc in codes if rc != 0), 0)
+
+
 def run_jq(run):
-    """Runs a judged jq-only command WITHOUT a shell: the validated words are the argv, so no expansion (brace, glob,
-    tilde, variable) can add an option or a file after the check. Every jq of a pipe must exit 0 (pipefail)."""
+    """Runs a judged jq-only command (see run_pipe)."""
     files, why, segs = jq_files(run)
     if files is None:
         print("release-postverify: %s" % why, file=sys.stderr)
         return 1
-    procs, prev = [], subprocess.DEVNULL
-    for n, argv in enumerate(segs):
-        last = n == len(segs) - 1
-        p = subprocess.Popen(argv, stdin=prev, stdout=None if last else subprocess.PIPE, cwd=ASSETS)
-        if prev is not subprocess.DEVNULL:
-            prev.close()
-        prev = p.stdout
-        procs.append(p)
-    codes = [p.wait() for p in procs]
-    return next((rc for rc in codes if rc != 0), 0)
+    return run_pipe(segs)
+
+
+def run_verify(run):
+    """Runs a judged command made of verify forms (see run_pipe): the argv are the shell words the judge read."""
+    return run_pipe(split_pipe(words_of(run, PHM)))
 
 
 def read_commands():
@@ -440,7 +462,7 @@ def run_plan(plan):
         if files is not None:
             rc = run_jq(run)
         else:
-            rc = subprocess.run(["bash", "-o", "pipefail", "-c", run], stdin=subprocess.DEVNULL, cwd=ASSETS).returncode
+            rc = run_verify(run)
         if rc != 0:
             failed.append((reg, c, rc))
             print("::error::post-publish verification failed against %s: `%s` exited %d" % (reg, c, rc),
@@ -448,6 +470,100 @@ def run_plan(plan):
         elif files is None:
             passed |= verify_files(c)
     return failed
+
+
+def bundle_files(c):
+    """The --bundle values of the verify forms of a (filled) command: the bundle files this run reads. Not
+    file_operands' walk: that one takes the word after an unknown flag as its value, which is the safe reading when it
+    decides which files jq may read and the unsafe one here, where a boolean flag before --bundle would hide it. Here
+    every --bundle word takes the next word and every --bundle=X word its value; a --bundle with no word after it is
+    refused."""
+    try:
+        words = words_of(c, PHM)
+    except ValueError:
+        return []
+    out = set()
+    for seg in split_pipe(words):
+        form = next((f for f in FORMS if tuple(seg[:len(f)]) == f), None)
+        rest = seg[len(form):] if form else []
+        for i, w in enumerate(rest):
+            if w == "--bundle" and i + 1 < len(rest):
+                out.add(rest[i + 1])
+            elif w == "--bundle":
+                refuse("`%s`: --bundle has no file name after it" % c)
+            elif w.startswith("--bundle="):
+                out.add(w.partition("=")[2])
+    return sorted(out)
+
+
+def load_verifier():
+    """bin/chain-verify.py as a module, never run as a program: its bytes must carry the sha256 listed for it in
+    .github/policy/chain-scripts.json, and those same bytes are compiled and run (no bytecode cache stands in)."""
+    try:
+        with open(VERIFIER, "rb") as f:
+            src = f.read()
+        with open(LISTED, "rb") as f:
+            listed = {r["path"]: r["sha256"] for r in json.load(f)["scripts"]}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        refuse("%s cannot be loaded (%s): a bundle is named and cannot be checked" % (VERIFIER, type(e).__name__))
+    if listed.get(VERIFIER) != hashlib.sha256(src).hexdigest():
+        refuse("%s does not match its sha256 in %s: refusing to run it" % (VERIFIER, LISTED))
+    mod = types.ModuleType("chain_verify")
+    mod.__file__ = os.path.abspath(VERIFIER)
+    try:
+        exec(compile(src, mod.__file__, "exec"), mod.__dict__)
+    except (Exception, SystemExit) as e:
+        # SystemExit: the verifier's own helper loader exits when a helper fails its sha256
+        refuse("%s cannot be loaded (%s: %s): a bundle is named and cannot be checked"
+               % (VERIFIER, type(e).__name__, e))
+    return mod
+
+
+# what a bundle signed with a key holds at the top, and in its verificationMaterial
+# (no certificate, whatever the spelling)
+BUNDLE_KEYS = {"mediaType", "verificationMaterial", "messageSignature", "dsseEnvelope"}
+MATERIAL_KEYS = {"publicKey", "tlogEntries", "timestampVerificationData"}
+
+
+def refuse_certificate_bundles(plan):
+    """Every --bundle operand of the filled commands must be a plain file name. A named file that is present is read as
+    strict JSON and refused unless it is a bundle signed with a key: a certificate is refused by the check
+    bin/chain-verify.py holds, then any key outside the two allowed sets. A list that names no present bundle loads
+    nothing, and a named file that is absent is not read: the command that names it fails the run
+    (REQ-CHAIN-007-AC20)."""
+    names = []
+    for _reg, _c, run, _files in plan:
+        names += [n for n in bundle_files(run) if n not in names]
+    root = os.path.realpath(ASSETS)
+    present = []
+    for n in names:
+        if not JQ_FILE.fullmatch(n):
+            refuse("%s: not a plain file name in %s/ (letters, digits, . _ - only)" % (n, ASSETS))
+        path = os.path.realpath(os.path.join(ASSETS, n))
+        if os.path.commonpath([root, path]) != root:   # a plain name that is a link out
+            refuse("%s: resolves outside %s/" % (n, ASSETS))
+        if os.path.lexists(path):
+            present.append((n, path))
+    if not present:
+        return
+    check = load_verifier()
+    for n, path in present:
+        try:
+            with open(path, "rb") as f:
+                bundle = check.strict_json(f.read())
+        except (OSError, ValueError) as e:
+            refuse("%s: cannot be read as strict JSON (%s)" % (n, type(e).__name__))
+        material = bundle.get("verificationMaterial") if isinstance(bundle, dict) else None
+        if not isinstance(material, dict):
+            refuse("%s: not a bundle: an object with an object verificationMaterial is required" % n)
+        why = check.bundle_certificate_why(material)
+        if why:
+            refuse("%s: %s" % (n, why))
+        for key in sorted(set(material) - MATERIAL_KEYS):
+            refuse("%s: verificationMaterial.%s is not allowed (a bundle signed with a key holds %s)"
+                   % (n, key, ", ".join(sorted(MATERIAL_KEYS))))
+        for key in sorted(set(bundle) - BUNDLE_KEYS):
+            refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
 
 
 def main():
@@ -459,6 +575,7 @@ def main():
     if not os.path.isdir(ASSETS):
         refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can "
                "resolve its files; nothing is run" % ASSETS)
+    refuse_certificate_bundles(plan)
     failed = run_plan(plan)
     if failed:
         refuse("post-publish verification failed: %d of %d runs failed: %s"

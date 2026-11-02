@@ -41,8 +41,10 @@ UP = {"release-evidence", "witness-release", "witness-release-verify"}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
+# release-postverify holds no token and no registry credential: the listed commands read the published image and the
+# downloaded assets only (rule 66)
 WHO = {"release-apks": set(), "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
-       "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
+       "release-postverify": set()}
 CREDS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
@@ -79,7 +81,7 @@ ROWS = {
     "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
     "bin/release-assets.sh":  {"tools": ["gh", "git", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # git reads the tag object; release-metadata.py tag-notes extracts its notes
     "bin/release-postverify.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-postverify.py"]},   # rule 79 amended
-    "bin/release-postverify.py": {"tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": []},   # runs only verify forms, judged first
+    "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"]},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
