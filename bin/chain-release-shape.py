@@ -46,6 +46,20 @@ REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": set(), "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": set()}
 CREDS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+# W1 (#822 round 1): every witnessed step of the release job signs its record through the one signing function (bin/chain-verify.py sign-record), so it carries the three non-secret
+# federation entries as step env, literals: the AWS role of the release Sign identity (ops/terraform/aws-apply/main.tf), its region, and the release key's reference, which must be
+# the verifier's own RELEASE_KEY_REF. They are not credentials: the identity token the role is assumed with is fetched by the helper just before each signing call.
+FED_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+FED_REGION = "us-east-1"
+
+
+def fed_env():
+    """The exact step env of a witnessed step: the key reference is read from bin/chain-verify.py next to this file (a literal in the workflow that differs from it is refused)."""
+    try:
+        m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
+    except OSError:
+        m = None
+    return {"AWS_ROLE_ARN": FED_ROLE, "AWS_REGION": FED_REGION, "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
@@ -89,8 +103,24 @@ DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko
 OLD = ["bin/authorize-acceptance-check.py", "bin/authorize-acceptance-check-test.sh"]
 
 
+class DuplicateKey(Exception):
+    pass
+
+
+class _NoDuplicateKeys(yaml.BaseLoader):
+    """The one load of a workflow: a loader keeps the LAST of two equal mapping keys, so a second env: (or any key) would hide the first from every judge below. A repeated key refuses the file."""
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise DuplicateKey("duplicate key %r at line %d of %s (the loader keeps the last one, so the first would be hidden)" % (key, key_node.start_mark.line + 1, key_node.start_mark.name))
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load(path):
-    return yaml.load(open(path), Loader=yaml.BaseLoader)
+    return yaml.load(open(path), Loader=_NoDuplicateKeys)
 
 
 def has_expression(obj):
@@ -181,7 +211,7 @@ def compare_job(j):
     """The owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks runs in a job with no secrets, no
     publish permission and no identity token: contents read ONLY (an id-token can assume the signing role), no environment, no env, no needs, no condition. Its steps are
     exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
-    under Witness: Witness signs through the identity token) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
+    under Witness: a Witness record is signed with the release KMS key, which needs the identity token this job must not hold) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []
     allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes"}
     if set(j) - allowed:
@@ -346,19 +376,28 @@ def credentials(path):
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
+            if name == "release-verify":      # the release job's own re-run: no credential, only the three federation entries (it signs its record)
+                seen_verify = True
+                if env != fed_env() or CRED_RE.search(blob) or has_expression(s):
+                    bad.append("release-verify must carry exactly the step env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), env))
+                continue
             if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
-            seen_verify = name == "release-verify"
             continue
         if name is None:
             if env is not None or CRED_RE.search(blob):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
+        fed = fed_env()
         got = set((env or {}).keys())
-        if got != want:
-            bad.append("%s must get exactly the credentials %s, got %s" % (name, sorted(want), sorted(got)))
+        if got != want | set(fed):
+            bad.append("%s must get exactly the credentials %s and the federation entries %s, got %s" % (name, sorted(want), sorted(fed), sorted(got)))
         for k, v in (env or {}).items():
+            if k in fed:
+                if v != fed[k]:
+                    bad.append("%s in %s must be the literal %r, got %r" % (k, name, fed[k], v))
+                continue
             ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
             if k in CREDS and not ok:
                 bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))
@@ -599,6 +638,9 @@ if __name__ == "__main__":
     fn = {"stage": lambda: stage(a[0]), "credentials": lambda: credentials(a[0]), "others": lambda: others(a[0]),
           "graph": lambda: graph(a[0]), "verify": lambda: verify(a[0]), "scan": lambda: scan(a[0], a[1]),
           "listed": lambda: listed(a[0], a[1]), "metadata": lambda: metadata(a[0]), "record": lambda: record(a[0], a[1:]), "removed": lambda: removed(a[0])}[cmd]
-    bad = fn()
+    try:
+        bad = fn()
+    except DuplicateKey as e:
+        bad = [str(e)]
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

@@ -117,7 +117,7 @@ def witness_block(spec_):       # the stage's Witness step(s): one line through 
 
 def witnessed_text():           # bin/witnessed.sh, the witness line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
-    i = next(n for n, l in enumerate(lines) if l.startswith("env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run "))
+    i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
     for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
     comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
@@ -753,17 +753,18 @@ hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts
 hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
 hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
-hm kwrap2  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$AWS_ROLE_ARN" bash "$@"'
-hm kwrap1  "AC2 only one of the two AWS variables is removed from Witness's own environment" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
-hm ksignall "AC2 every step is handed the variables, not release-sign and release-apks alone" '  release-sign|release-apks) export' '  *) export'
+hm kwrap0  "AC2 Witness and the wrapped script keep the AWS variables" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'
+hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE' 'unset AWS_ROLE_ARN'
+hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$role" bash "$@"'
+hm ksignall "AC2 every step gets the signing variables, not release-sign and release-apks alone" 'signers=" release-sign release-apks "' 'signers=" release-verify release-apks release-publish release-sign release-assets release-postverify "'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
-hm kghenv  "AC2 the token file written to GITHUB_ENV" 'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"' $'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"\necho "AWS_WEB_IDENTITY_TOKEN_FILE=$td/token" >> "$GITHUB_ENV"'
+hm kghenv  "AC2 the token file written to GITHUB_ENV" 'mv "$td/token" "$td/step/token";' 'mv "$td/token" "$td/step/token"; echo "AWS_WEB_IDENTITY_TOKEN_FILE=$td/step/token" >> "$GITHUB_ENV";'
 hm kclean  "AC2 the token directory not removed after Witness returns" $'rm -rf "$td"\n[ ! -e' '[ ! -e'
 hm fexec   "AC2 witness exec'd (the cleanup after it would never run)" 'witness run --step' 'exec witness run --step'
 hm fignore "AC2 a failure of the witnessed command is ignored" '|| rc=$?' '|| true'
-hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
+hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
@@ -3592,7 +3593,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1285
+EXPECT=1288
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

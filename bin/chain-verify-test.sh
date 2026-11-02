@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4, REQ-CHAIN-007-AC16, REQ-CHAIN-001-AC6
+# proves: REQ-CHAIN-004-AC10 — a signed Build record is checked against the release key; wording pending the owner's approval where the one-key change makes the approved sentence false
 # proves: REQ-CHAIN-005-AC4 — apk-compare: the comparison job's result file is accepted only as a pass for Build's attested apk digests
 #
 # Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67), after the move to ONE
@@ -2045,7 +2046,7 @@ done
 [ "$(PATH="$work/fakebin:$PATH" command -v cosign)" = "$work/fakebin/cosign" ] && ok "P2 the cosign every sign-record case reaches is the fake in the test's own folder (no public write)" \
   || bad "P2 cosign on the PATH is not the fake: $(PATH="$work/fakebin:$PATH" command -v cosign)"
 printf '{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"x","subject":[],"predicate":{}}' > "$work/sr-payload.json"
-SR() { run sign-record --payload "$work/sr-payload.json" --out "$work/sr/$1/build-collection.json" --template "$work/template.json"; }
+SR() { RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing run sign-record --payload "$work/sr-payload.json" --out "$work/sr/$1/build-collection.json" --template "$work/template.json"; }
 mkdir -p "$work/sr"; rc=0; SR ok || rc=$?
 SR_RE='^attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config [^ ]+/cosign-signing-config\.json --statement [^ ]+/sr-payload\.json --bundle [^ ]+\.bundle\.json$'
 [ "$rc" = 0 ] && [ -s "$work/sr/ok/build-collection.json" ] && [ -s "$work/sr/ok/build-collection.rekor.json" ] && [ "$(wc -l < "$work/cosign-argv.log")" = 1 ] \

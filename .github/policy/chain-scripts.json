@@ -320,11 +320,11 @@
         "exec"
       ],
       "runs": [
-        "bin/loopback-get.sh",
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs Witness itself and the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN on every step; only release-sign and release-apks (the two scripts that sign with the key) are handed the values, as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names no record holds), and each maps them onto the two variables itself; the wrapped command is the plain bash SCRIPT, so the command-run record names no AWS variable; a Witness collection is not a provenance statement",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key; Witness's own environment holds no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE for any step, and the wrapped command is the plain bash SCRIPT, so no AWS role or token-path name stands in the command-run record (attestors environment, git, material, product; never slsa; the steps whose scripts sign with the key themselves, release-sign and release-apks, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive keys of the record, and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the AWS variables themselves, REQ-CHAIN-007-AC15; the token made for it is removed when Witness returns), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
       "sha256": "6dcebff114dd8af1f815db68720335700d71311597bf1146864f56ba914df8cc",
       "reads_env": [
         "GH_TOKEN",
@@ -343,11 +343,6 @@
         "release-postverify": "bin/release-postverify.sh"
       },
       "exceptions": [
-        {
-          "rule": "launcher",
-          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step \"$step\" --signer-file-key-path \"$td/key.pem\"   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE   --env-add-sensitive-key AWS_ROLE_ARN   --env-add-sensitive-key RELEASE_ROLE_ARN   --env-add-sensitive-key RELEASE_TOKEN_FILE   -o \"$local_record\" -- bash \"$@\"",
-          "why": "Witness itself runs without the two AWS variables for every step (env -u of exactly those two names) and its wrapped command is the plain bash STEP-SCRIPT, so no AWS name stands in the recorded command; env is given exactly this text, the one Witness command"
-        },
         {
           "rule": "witness-target",
           "text": "bash \"$@\" || rc=$?",
@@ -413,21 +408,18 @@
         "at",
         "bash",
         "cp",
-        "jq",
         "make",
         "mkdir",
         "python3",
-        "script",
-        "sh",
-        "trap"
+        "script"
       ],
       "runs": [
-        "bin/loopback-get.sh",
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/with-aws-token.sh"
       ],
       "signs": "other",
-      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): takes the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness sign with the release KMS key (RELEASE_KMS_KEY_REF) over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record against the release key; builds nothing",
-      "sha256": "064c339b95c7063cd149e37b4b5862a811a2d5bcf6bc0c89d0d108ee14c4841d",
+      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
+      "sha256": "5dfad7699ead5c05f22ca89a326605ace63b13b9529911963a418274eb487cff",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -1911,7 +1903,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
+      "sha256": "0da39b1df891aec539bbe73aa36023d6ae516a5773f1bbcbbb60e3cc064367cd"
     },
     {
       "path": "bin/vex-forms.py",
@@ -2661,6 +2653,29 @@
       "signs": false,
       "runs": [],
       "reason": "the one builder of the docker-save tar of an OCI layout's linux/ARCH image, which check-scan.sh gives to the scanners: it copies each blob to a private stage, re-hashes it and packs only the config and layers (REQ-CHAIN-006-AC4)"
+    },
+    {
+      "path": "bin/with-aws-token.sh",
+      "tools": [
+        "at",
+        "bash",
+        "jq",
+        "python3",
+        "sh",
+        "trap"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/loopback-get.sh"
+      ],
+      "signs": "other",
+      "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record or sign (the one signing function, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
+      "sha256": "7f8ddd2ad254ad4245afdcdc71e907f93228e6024dfb7bbe698df57d06c34846",
+      "reads_env": [
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "RELEASE_KMS_KEY_REF"
+      ]
     }
   ],
   "ambient_env": [
