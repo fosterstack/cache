@@ -1730,7 +1730,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures with the release KMS key (--key RELEASE_KMS_KEY_REF) and a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists), else exit 2; KA-2 removes this path",
-      "sha256": "ab6f6a0a9425a8491eceb89e50326c313c7c2c34356966fb6bf139cfb0b3cc8d",
+      "sha256": "da0fe7a02f3d69a04d1edba70ee2538a6f9c6966b67a61b2a5633969a8bf4870",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",

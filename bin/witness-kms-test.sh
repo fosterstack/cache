@@ -13,8 +13,8 @@
 # What it proves, by running the real helper against the doubles (the doubles record what they were given):
 #   - Witness runs with a throwaway key file made for the step (never the KMS key, no Fulcio, timestamp or certificate flag); the collection's payload is then signed by
 #     `sign-record` (the key named by RELEASE_KMS_KEY_REF, the job pins the value awskms:///alias/fosterstack-release-signing); a failing Witness is not signed; a failing signature fails the helper
-#   - the identity token is asked for exactly once, with audience sts.amazonaws.com (the audience the AWS trust requires), and lands in a file of mode 0600 in a
-#     directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
+#   - the identity token is asked for once for the step and once for the signing call on release-sign and release-apks, exactly once on every other step, with audience sts.amazonaws.com (the audience the AWS
+#     trust requires), and lands in a file of mode 0600 in a directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
 #   - Witness's own environment holds no AWS role or token-path variable, no AWS_ name at all on a step that does not sign, and no request variable, for every step; the AWS SDK is pointed at a token file by
 #     AWS_WEB_IDENTITY_TOKEN_FILE and at the role by AWS_ROLE_ARN for the signing call only (sign-record, with a fresh token). The wrapped command is the plain `bash SCRIPT` for every step (the command-run
 #     attestor records it, and record-env refuses a record that names the AWS role or token-file variables). release-sign and release-apks only are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE
