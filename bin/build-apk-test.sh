@@ -370,9 +370,15 @@ class H(http.server.BaseHTTPRequestHandler):
         for k, v in headers: self.send_header(k, v)
         self.end_headers(); self.wfile.write(data)
     def do_GET(self):
-        open(log_f, "ab").write(b"GET " + self.path.encode() + b"\n")
-        uuid = self.path.rsplit("/", 1)[-1]
+        open(log_f, "ab").write(b"GET " + self.path.encode() + b" HOST=" + (self.headers.get("Host") or "").encode() + b"\n")
+        path, _, query = self.path.partition("?")
+        uuid = path.rsplit("/", 1)[-1][-64:]
         mode = open(mode_f).read().strip() or "ok"
+        p = srv.server_address[1]
+        if mode == "conflict-redirect" and query != "r=1":   # a 302 to a reachable origin that is not the pinned one (localhost, not 127.0.0.1)
+            return self.reply(302, {}, [("Location", "http://localhost:%d%s?r=1" % (p, path))])
+        if mode == "conflict-redirect-back" and query != "r=1":   # a 302 back to the pinned origin
+            return self.reply(302, {}, [("Location", "http://127.0.0.1:%d%s?r=1" % (p, path))])
         if uuid in seen:
             body, ent = seen[uuid]
             return self.reply(200, {uuid: self.entry(body, 0, "otherbody") if mode == "conflict-otherbody" else ent})
@@ -384,8 +390,16 @@ class H(http.server.BaseHTTPRequestHandler):
         if mode.startswith("conflict"):
             uuid = hashlib.sha256(body).hexdigest()
             if uuid in seen:
-                loc = "http://127.0.0.1:%d/api/v1/log/entries/%s" % (srv.server_address[1], uuid)
-                if mode == "conflict-foreign": loc = "http://127.0.0.1:1/api/v1/log/entries/" + uuid
+                p = srv.server_address[1]
+                if mode == "conflict-post-redirect":   # the POST itself answered with a 303 to a reachable origin that is not the pinned one
+                    return self.reply(303, {}, [("Location", "http://localhost:%d/api/v1/log/entries/%s" % (p, uuid))])
+                # Rekor v1 builds the 409 Location from the request URL, which has only a path: root-relative, with the entry id (tree id + uuid = 80 hex)
+                rel = "/api/v1/log/entries/" + ("0" * 16 + uuid if mode == "conflict-id80" else uuid[:63] if mode == "conflict-id63" else uuid)
+                loc = rel
+                if mode in ("conflict-abs", "conflict-redirect", "conflict-redirect-back"): loc = "http://127.0.0.1:%d%s" % (p, rel)   # the redirect modes use the absolute form so that the GET is issued whatever the Location rules
+                elif mode == "conflict-foreign": loc = "http://localhost:%d%s" % (p, rel)
+                elif mode == "conflict-dslash": loc = "//localhost:%d%s" % (p, rel)
+                elif mode == "conflict-query": loc = rel + "?x=1"
                 return self.reply(409, {"code": 409, "message": "an equivalent entry already exists in the transparency log"}, [] if mode == "conflict-noloc" else [("Location", loc)])
             ent = self.entry(body, 0, "ok")
             seen[uuid] = (body, ent)
@@ -557,14 +571,35 @@ kscase() { # <ac> <desc> <keyword> <rekor mode> <name> [seed]: exit 1 naming the
   [ -z "$seed" ] || ks "$name-seed" --out "$work/ks/$name-seed.sig" --bundle "$work/ks/$name-seed.bundle" "${ksfull[@]}"
   ks "$name" --out "$work/ks/$name.sig" --bundle "$work/ks/$name.bundle" "${ksfull[@]}"; echo ok >"$work/rekor.mode"
   if [ "$(rc)" = 1 ] && grep -Eqi -- "$kw" "$work/log" && [ ! -e "$work/ks/$name.sig" ] && [ ! -e "$work/ks/$name.bundle" ]; then ok; else bad "$ac" "$d (exit $(rc), wanted 1 naming '$kw', no signature file and no bundle)"; fi; }
-# F2: the signature is deterministic (PKCS#1 v1.5), so a retry posts the same hashedrekord and Rekor answers 409 with the existing entry's Location
-KD=$(kdig f2same); echo conflict >"$work/rekor.mode"; : >"$work/rekor.log"
-ks f2a --out "$work/ks/f2a.sig" --bundle "$work/ks/f2a.bundle" "${ksfull[@]}"; f2r1=$(rc)
-ks f2b --out "$work/ks/f2b.sig" --bundle "$work/ks/f2b.bundle" "${ksfull[@]}"; f2r2=$(rc); echo ok >"$work/rekor.mode"
-t "rule 22" "release signing (round 3 F2): the same digest signed twice -> the second POST is answered 409, the existing entry is fetched from the Location (one GET) and checked: both exit 0, the two signatures and the two bundles are equal" bash -c "test '$f2r1' = 0 && test '$f2r2' = 0 && cmp -s '$work/ks/f2a.sig' '$work/ks/f2b.sig' && cmp -s '$work/ks/f2a.bundle' '$work/ks/f2b.bundle' && test \"\$(grep -c '^GET /api/v1/log/entries/' '$work/rekor.log')\" = 1 && test \"\$(grep -c '^/api/v1/log/entries ' '$work/rekor.log')\" = 2"
+# F2 (round 4: R1 the Location in the form Rekor sends, R2 no redirect): the signature is deterministic (PKCS#1 v1.5), so a retry posts the same hashedrekord and Rekor answers 409 with the existing entry's Location
+pinhost="127.0.0.1:$(cat "$work/rekor.port")"
+gets() { grep -c '^GET ' "$work/rekor.log"; }            # the GETs the stub saw
+fgets() { grep '^GET ' "$work/rekor.log" | grep -vc "HOST=$pinhost\$"; }   # the GETs that reached the stub under another origin than the pinned one
+ksretry() { # <desc> <name> <rekor mode>: the same digest signed twice -> the second POST is answered 409, the entry is fetched ONCE from the pinned origin and checked: both exit 0, equal signatures and bundles
+  local d=$1 n=$2 m=$3; KD=$(kdig "$n"); rm -f "$work/ks/$n".*; echo "$m" >"$work/rekor.mode"; : >"$work/rekor.log"
+  ks "$n-a" --out "$work/ks/$n-a.sig" --bundle "$work/ks/$n-a.bundle" "${ksfull[@]}"; local r1; r1=$(rc)
+  ks "$n-b" --out "$work/ks/$n-b.sig" --bundle "$work/ks/$n-b.bundle" "${ksfull[@]}"; local r2; r2=$(rc); echo ok >"$work/rekor.mode"
+  if [ "$r1" = 0 ] && [ "$r2" = 0 ] && cmp -s "$work/ks/$n-a.sig" "$work/ks/$n-b.sig" && cmp -s "$work/ks/$n-a.bundle" "$work/ks/$n-b.bundle" \
+     && [ "$(gets)" = 1 ] && [ "$(fgets)" = 0 ] && [ "$(grep -c '^/api/v1/log/entries ' "$work/rekor.log")" = 2 ]; then ok
+  else bad "rule 22" "$d (exits $r1 and $r2, wanted 0 and 0 with equal files, one GET to the pinned origin and two POSTs; GETs $(gets), to another origin $(fgets))"; fi; }
+ksrefuse() { # <desc> <keyword> <rekor mode> <name> <GETs>: a seed signing, then the same digest again under the mode -> exit 1 naming the reason, no files, exactly <GETs> GET(s) reached the stub and none under another origin
+  local d=$1 kw=$2 m=$3 n=$4 ng=$5; KD=$(kdig "$n"); rm -f "$work/ks/$n".*; echo "$m" >"$work/rekor.mode"
+  ks "$n-seed" --out "$work/ks/$n-seed.sig" --bundle "$work/ks/$n-seed.bundle" "${ksfull[@]}"; : >"$work/rekor.log"
+  ks "$n" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" "${ksfull[@]}"; echo ok >"$work/rekor.mode"
+  if [ "$(rc)" = 1 ] && grep -Eqi -- "$kw" "$work/log" && [ ! -e "$work/ks/$n.sig" ] && [ ! -e "$work/ks/$n.bundle" ] && [ "$(gets)" = "$ng" ] && [ "$(fgets)" = 0 ]; then ok
+  else bad "rule 22" "$d (exit $(rc), wanted 1 naming '$kw', no files, $ng GET(s) and none to another origin; GETs $(gets), to another origin $(fgets))"; fi; }
+ksretry "release signing (round 4 R1): the same digest signed twice, Rekor's 409 Location root-relative (/api/v1/log/entries/<id>, as Rekor sends it) -> the entry is fetched from the pinned origin: both exit 0, the signatures and the bundles are equal" f2rel conflict
+ksretry "release signing (round 4 R1): an absolute Location on the pinned origin still works" f2abs conflict-abs
+ksretry "release signing (round 4 R1): an 80-hex entry id (tree id + uuid, what Rekor v1 prints) works" f2id80 conflict-id80
 kscase "rule 22" "release signing (round 3 F2): a 409 whose Location entry is for another body than the one signed -> refused (exit 1, no files)" 'rekor' conflict-otherbody f2other seed
-kscase "rule 22" "release signing (round 3 F2): a 409 whose Location is on another host than the pinned Rekor -> refused, nothing fetched from it" 'rekor' conflict-foreign f2foreign seed
-kscase "rule 22" "release signing (round 3 F2): a 409 with no Location -> refused" 'rekor' conflict-noloc f2noloc seed
+ksrefuse "release signing (round 4 R1/R4C-2): a 409 whose absolute Location is on a reachable origin that is not the pinned Rekor -> refused naming the Location, nothing fetched" 'no Location under the pinned Rekor' conflict-foreign f2foreign 0
+ksrefuse "release signing (round 4 R1/R4C-2): a 409 whose Location is scheme-relative (//host/api/...) -> refused naming the Location, nothing fetched" 'no Location under the pinned Rekor' conflict-dslash f2dslash 0
+ksrefuse "release signing (round 4 R4C-2): a 409 with no Location -> refused naming the missing Location, nothing fetched" 'no Location under the pinned Rekor' conflict-noloc f2noloc 0
+ksrefuse "release signing (round 4 R1): a 409 whose Location id has 63 hex characters -> refused as not an entry id, nothing fetched" 'not an entry id' conflict-id63 f2id63 0
+ksrefuse "release signing (round 4 R1): a 409 whose Location carries a query -> refused as not an entry id, nothing fetched" 'not an entry id' conflict-query f2query 0
+ksrefuse "release signing (round 4 R2): the GET answered with a 302 to a reachable origin that is not the pinned one -> refused, and no request followed the 302" 'could not be fetched' conflict-redirect f2redir 1
+ksrefuse "release signing (round 4 R2): the GET answered with a 302 back to the pinned origin -> refused, and no request followed the 302" 'could not be fetched' conflict-redirect-back f2redirback 1
+ksrefuse "release signing (round 4 R2): the POST answered with a 303 to a reachable origin that is not the pinned one -> refused as not accepted, and no request followed the 303" 'did not accept' conflict-post-redirect f2postredir 0
 # B2: the inclusion proof is required and checked by the existing check_inclusion
 kscase "rule 22" "release signing (round 3 B2): a Rekor answer with no inclusion proof -> refused naming the proof (exit 1, no files)" 'inclusion proof' noproof b2noproof
 kscase "rule 22" "release signing (round 3 B2): a Rekor answer whose rootHash is not the tree's -> refused (exit 1, no files)" 'inclusion proof|audit path|root hash' badroot b2badroot
@@ -587,6 +622,47 @@ KD=$(kdig f3mut1); echo badset >"$work/rekor.mode"; KS_CV="$work/mutroot1/bin/ch
 t "rule 22" "release signing (round 3 F3): a kms-sign whose rekor_set_check returns None accepts the bad timestamp (the badset case above turns red without the check)" test "$f3m1" = 0
 KD=$(kdig f3mut2); echo otherbody >"$work/rekor.mode"; KS_CV="$work/mutroot2/bin/chain-verify.py" ks f3mut2 --out "$work/ks/f3mut2.sig" --bundle "$work/ks/f3mut2.bundle" "${ksfull[@]}"; f3m2=$(rc); echo ok >"$work/rekor.mode"
 t "rule 22" "release signing (round 3 F3): a kms-sign without the entry check on Rekor's answer accepts the entry for another digest (the otherbody case above turns red without the check)" test "$f3m2" = 0
+# round 4: the checks of the 409 path and of rekor_set_check, each turned off in a copy of the verifier; the case above that guards it must then fail (so a revert is red)
+mkmut() { # <name> <old> <new>: a copy of bin and .github/policy under $work/<name> whose chain-verify.py has <old> replaced by <new> (exactly once; a missing <old> makes the copy fail)
+  rm -rf "$work/$1"; mkdir -p "$work/$1/.github"; cp -R "$root/bin" "$work/$1/bin"; cp -R "$root/.github/policy" "$work/$1/.github/policy"
+  python3 - "$work/$1/bin/chain-verify.py" "$2" "$3" <<'P' || return 1
+import sys
+f, old, new = sys.argv[1:4]
+t = open(f).read()
+assert t.count(old) == 1, "the line to mutate is not there exactly once: " + old
+open(f, "w").write(t.replace(old, new, 1))
+P
+}
+ksmut() { # <mutroot> <rekor mode> <name>: a seed signing by the real verifier, then the same digest through the mutated copy; sets MR (its exit) and leaves its output in $work/log
+  local m=$1 mode=$2 n=$3; KD=$(kdig "$n"); rm -f "$work/ks/$n".*; echo "$mode" >"$work/rekor.mode"
+  ks "$n-seed" --out "$work/ks/$n-seed.sig" --bundle "$work/ks/$n-seed.bundle" "${ksfull[@]}"; : >"$work/rekor.log"
+  KS_CV="$work/$m/bin/chain-verify.py" ks "$n" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" "${ksfull[@]}"; MR=$(rc); echo ok >"$work/rekor.mode"; }
+mkslice() { # <name>: the copy whose rekor_get_existing GETs the Location text itself (everything between 'rest = None' and 'url = base + pre + rest' replaced by 'url = location')
+  rm -rf "$work/$1"; mkdir -p "$work/$1/.github"; cp -R "$root/bin" "$work/$1/bin"; cp -R "$root/.github/policy" "$work/$1/.github/policy"
+  python3 - "$work/$1/bin/chain-verify.py" <<'P' || return 1
+import sys
+f = sys.argv[1]
+t = open(f).read()
+end = "    url = base + pre + rest\n"
+a, b = t.index("    rest = None\n"), t.index(end)
+assert 0 < a < b and t.count(end) == 1
+open(f, "w").write(t[:a] + "    url = location\n" + t[b + len(end):])
+P
+}
+runmut() { # <name> <rekor mode>: MK=1 when the mutated copy was made (else the case below is red), then the seed-and-retry through it
+  if [ -d "$work/$1" ] && [ "$MK" = 1 ]; then ksmut "$1" "$2" "r4$1"; else MR=none; fi; }
+MK=0; mkslice mutloc 2>/dev/null && MK=1; runmut mutloc conflict-foreign
+t "rule 22" "release signing (round 4 R4C-2): a kms-sign without the Location check fetches from the Location's own origin and accepts (the foreign-origin case above turns red without the check)" test "$MK" = 1 -a "$MR" = 0
+MK=0; mkmut mutiso '    if isinstance(location, str):
+' '    if True:
+' 2>/dev/null && MK=1; runmut mutiso conflict-noloc
+t "rule 22" "release signing (round 4 R4C-2): a kms-sign without the Location type check fails with a traceback, not the refusal (the no-Location case above turns red without the check)" bash -c "test '$MK' = 1 && test '$MR' != 0 && ! grep -q 'no Location under the pinned Rekor' '$work/log'"
+MK=0; mkmut mutredir 'build_opener(NoRedirect)' 'build_opener()' 2>/dev/null && MK=1; runmut mutredir conflict-redirect
+t "rule 22" "release signing (round 4 R2): a kms-sign whose opener follows redirects issues the second GET to the other origin (the redirect case above turns red without the no-redirect opener)" test "$MK" = 1 -a "$(fgets)" -ge 1
+MK=0; mkmut mutlogid '        if der is None or rekor_entry_fields(item)["logID"] != hashlib.sha256(der).hexdigest():
+' '        if der is None:
+' 2>/dev/null && MK=1; runmut mutlogid otherlog
+t "rule 22" "release signing (round 4 R4C-5): a kms-sign whose rekor_set_check skips only the log-ID comparison accepts an entry of another log (the otherlog case above turns red without that comparison)" test "$MK" = 1 -a "$MR" = 0
 # B3: existing outputs are refused up front and never deleted
 kspre() { # <desc> <which: out|bundle|both>
   local d=$2 w=$1 n="pre-$1"; KD=$(kdig "$n"); rm -f "$work/ks/$n".*
@@ -608,6 +684,23 @@ ksreq bundle; ksreq signing-config; ksreq public-key
 # F6: the aws stderr text is never repeated (an AccessDenied text names the assumed-role ARN, and the command-run record keeps stderr)
 KD=$(kdig f6err); STUB_AWS_ERR='An error occurred (AccessDeniedException) when calling the Sign operation: User: arn:aws:sts::111122223333:assumed-role/release-signing/session is not authorized to perform: kms:Sign' ks f6err --out "$work/ks/f6err.sig" --bundle "$work/ks/f6err.bundle" "${ksfull[@]}"
 t "rule 22" "release signing (round 3 F6): a failing aws call is reported as its operation, exit status and error code (AccessDeniedException) and nothing else: no arn: and no role name in the output" bash -c "test '$(rc)' = 1 && grep -q 'AccessDeniedException' '$work/log' && ! grep -q 'arn:' '$work/log' && ! grep -q 'assumed-role' '$work/log'"
+# round 4 R3 / R4C-6: the text says what the code does (comments and the two policy reasons; no check changes)
+POL="$root/.github/policy/chain-scripts.json"
+reasonhas() { # <script> <word>...: the policy row of <script> has a reason holding every word; a word beginning with ! must not be there
+  python3 - "$POL" "$@" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); row = [r for r in d["scripts"] if r["path"] == sys.argv[2]]
+if len(row) != 1: sys.exit(1)
+why = row[0]["reason"]
+for w in sys.argv[3:]:
+    if (w[1:] in why) if w.startswith("!") else (w not in why): sys.exit(1)
+P
+}
+t "rule 22" "release signing (round 4 R3): the release-sign.sh policy row says it refuses an empty RELEASE_ROLE_ARN / RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE itself" reasonhas bin/release-sign.sh RELEASE_ROLE_ARN RELEASE_TOKEN_FILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE
+t "rule 22" "release signing (round 4 R3): the release-sign-apks.sh policy row says the same" reasonhas bin/release-sign-apks.sh RELEASE_ROLE_ARN RELEASE_TOKEN_FILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE
+t "rule 22" "release signing (round 4 R4C-6): the release-sign.sh policy row no longer says keyless; it names the release KMS key (--key RELEASE_KMS_KEY_REF)" reasonhas bin/release-sign.sh '!keyless' 'RELEASE_KMS_KEY_REF'
+t "rule 22" "release signing (round 4 R4C-6): witnessed.sh and the witness-kms suite header say the signers map the variables before their first aws or cosign call, not on their first line" bash -c "grep -q 'before its first aws or cosign call' '$root/bin/witnessed.sh' && grep -q 'before its first aws or cosign call' '$root/bin/witness-kms-test.sh' && ! grep -q 'on its first line' '$root/bin/witnessed.sh' '$root/bin/witness-kms-test.sh'"
+t "rule 22" "release signing (round 4 R4C-6): the usage and exit-code lines of release-sign-apks.sh name RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE" bash -c "sed -n 1,30p '$RS' | grep -q 'RELEASE_ROLE_ARN' && sed -n 1,30p '$RS' | grep -q 'RELEASE_TOKEN_FILE'"
 # F8b: bundle-check names itself in its refusals
 fmutant "rule 22" "release signing (round 3 F8b): the refusal of a bad bundle names bundle-check, not kms-sign" 'bundle-check: refused' m42 STUB_FAKEKMS_OTHERDIGEST=1
 # F1: the signer maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE onto the AWS variables itself (the wrapped command Witness records holds no AWS name)
