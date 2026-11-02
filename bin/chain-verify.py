@@ -1678,6 +1678,12 @@ def release_key_ref_check(who, aws=None):
         sys.exit(2)
     if aws is None:
         return
+    release_key_algorithm_guard(who, aws)
+
+
+def release_key_algorithm_guard(who, aws):
+    """The KA-0 half of the guard, alone: the release key must list RSASSA_PKCS1_V1_5_SHA_256 first (exit 2), only GetPublicKey is asked, a failing or missing aws CLI refuses (exit 1). Called by key-ref-check
+    --algorithm-guard and sign-record (after the reference check) and by `sign`, which reaches cosign with the constant key and never reads RELEASE_KMS_KEY_REF, so W2's check is not part of it there."""
     try:
         algs = json.loads(kms_aws(aws, ["kms", "get-public-key", "--key-id", RELEASE_KEY_REF[len("awskms:///"):], "--query", "SigningAlgorithms", "--output", "json"], who))
         assert isinstance(algs, list) and all(isinstance(x, str) for x in algs)
@@ -1753,6 +1759,7 @@ def cmd_sign(a):
         statement = provenance_statement(pol, obj, dry, byproducts)
         with open(sp, "w") as f:
             json.dump(statement, f, sort_keys=True)
+        release_key_algorithm_guard("sign", a.aws)      # KA-0: after every other refusal, before the output folder is made and before cosign is asked
         make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         try:
@@ -2266,6 +2273,7 @@ def build_parser():
         if name == "sign":
             s.add_argument("--check", action="store_true")
             s.add_argument("--signer", default="")
+            s.add_argument("--aws", default="aws")      # the aws CLI the KA-0 guard asks (GetPublicKey only), found by name as cosign is
             s.add_argument("--out", required=True)
             s.add_argument("--items", required=True)    # the items.json Build's record holds (the SBOM byproducts)
         s.add_argument("--digests", required=True)
