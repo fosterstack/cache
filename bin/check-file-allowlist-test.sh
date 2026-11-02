@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-005-AC1
+# proves: REQ-DEP-005-AC1, REQ-BUILDAPK-001-AC10
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
 # scoping of the daily CVE auditor's suppression outputs (.snyk,
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
@@ -132,7 +132,7 @@ ALLOWED_MENTIONS = {
 # 207 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
 # plus the two outbound-check patterns (0710), the recorded publisher signatures (REQ-SUP-001), the kept Fulcio chain, the real-record
 # fixtures and the one P2 file, the three base-layout patterns, the two of the base-layout builder, and the recipe template and members list (0710)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 221, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 222, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "6508644c981a486ac26c13407e2bc647426924ef40e2b297756c986cdda93eb5"
+PINNED_SHA256 = "faf1e02e06ef1f06008d993232d8dbb89d0c1964c12bd2c3e1352e4ab85922b2"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -755,6 +755,11 @@ runeach fail "feature/x" "v030: uppercase key refused"   "build/keys/Assembly.rs
 runeach fail "feature/x" "v030: key one directory up refused" "build/assembly.rsa" "assembly.rsa" "keys/assembly.rsa.pub"
 runeach fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
 runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
+passfam "feature/x" "v030: a retired release key public half under the day it was retired (SECURITY.md)" "build/keys/retired/2027-11-01/release.rsa.pub"
+runeach fail "feature/x" "v030: a retired key outside a dated directory refused" "build/keys/retired/release.rsa.pub" "build/keys/retired/x/release.rsa.pub" "build/keys/retired/27-11-01/release.rsa.pub" "build/keys/retired/2027-11-01-extra/release.rsa.pub"
+runeach fail "feature/x" "v030: only release.rsa.pub is admitted in a retired directory" "build/keys/retired/2027-11-01/other.rsa.pub" "build/keys/retired/2027-11-01/release.rsa" "build/keys/retired/2027-11-01/assembly.rsa.pub" "build/keys/retired/2027-11-01/release.rsa.pub.bak"
+runeach fail "feature/x" "v030: nothing nested below a dated retired directory" "build/keys/retired/2027-11-01/sub/release.rsa.pub" "build/keys/retired/2027-11-01/release.rsa.pub/x"
+runeach fail "feature/x" "v030: retired traversal refused" "build/keys/retired/../release.rsa" "build/keys/retired/2027-11-01/../x.rsa"
 
 passfam "feature/x" "v030: the recipe template" "build/melange.yaml.tmpl"
 runeach fail "feature/x" "v030: other template names refused" "build/melange-fips.yaml.tmpl" "build/apko.yaml.tmpl" "build/melange.yaml.tmpl.bak" "build/x/melange.yaml.tmpl" "melange.yaml.tmpl" "build/Melange.yaml.tmpl" "build/../melange.yaml.tmpl"

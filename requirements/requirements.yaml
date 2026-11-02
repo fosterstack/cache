@@ -4412,6 +4412,14 @@ requirements:
         then: "a run with every fixed-path tool in place completes exactly as the run with the ordinary search path does, and a copy that calls any named tool by bare name, however the name is spelled or assembled, fails with that tool 'not found' (a command the script hands to a stub or to sudo, env or unshare is resolved as exec would, under the same restricted path, and the stubs answer an unresolved operand with exit 127 and '<name>: command not found'; every named-tool call site, the commit-time, cleanup-fallback and network-probe sites included, is reached by its own restricted scenario that always runs, whoever the user is; the calls that are deliberately nonfatal or degrade are proved by their named evidence: the sysctl relaxation prints 'sudo: command not found' and 'could not relax' and makes no sysctl call, the cleanup fallback prints 'sudo: command not found', makes no sudo rm call and keeps the build's own status, and a bare go or env at the Go check ends the run as AC4 states: in CI it fails with 'no Go toolchain on PATH in CI', outside CI it exits 0 saying 'not verified' and the go stub is never called); this holds for the tools the scripts hand to a python subprocess as well (such a subprocess runs with a search path that names no directory); STATED RESIDUAL as AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's"
         verification: { method: unit, release_blocking: false }
         status: approved
+      # NEW (RK-1, owner-ratified sentence in SECURITY.md: "A retired key's public half stays published, so the apks it signed stay verifiable."): wording pending the owner's approval (carried by the one approved-text sitting).
+      # The status below is "approved" only because the schema allows one status under an approved baseline; it is not ratified until the owner says so.
+      - id: REQ-BUILDAPK-001-AC10
+        given: "a release key that has been replaced by a new one, and an apk the old key signed"
+        when: "the old key's public half is kept under build/keys/retired/<YYYY-MM-DD>/release.rsa.pub and the new public key is at build/keys/release.rsa.pub"
+        then: "a retired release key's public half stays published at build/keys/retired/<YYYY-MM-DD>/release.rsa.pub, so the apks it signed stay verifiable: the file allowlist admits that path and no other under build/keys/retired, the key scan accepts only a real public key there (never the placeholder), the apk verifies against the retired file and is refused by the new key"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-REFRESH-001
     title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
     statement: >

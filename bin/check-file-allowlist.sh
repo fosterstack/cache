@@ -354,6 +354,11 @@ ALLOW_PATTERNS=(
 
   # The real Maven project the Maven acceptance workflow builds.
   '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
+
+  # A retired release key's public half, under the day it was retired, kept so the apks it signed stay verifiable
+  # (SECURITY.md); never deleted. Matches build/keys/retired/2027-11-01/release.rsa.pub; refuses
+  # build/keys/retired/x/release.rsa.pub.
+  '^build/keys/retired/[0-9]{4}-[0-9]{2}-[0-9]{2}/release\.rsa\.pub$'
 )
 
 # Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore

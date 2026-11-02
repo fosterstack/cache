@@ -1713,6 +1713,10 @@ mappings:
   - ac: REQ-BUILDAPK-001-AC9
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+      - { type: shell-test, ref: "bin/check-file-allowlist-test.sh" }
   - ac: REQ-IMAGE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }

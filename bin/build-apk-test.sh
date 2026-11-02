@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8, REQ-BUILDAPK-001-AC9, REQ-CHAIN-005-AC4
+# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8, REQ-BUILDAPK-001-AC9, REQ-CHAIN-005-AC4, REQ-BUILDAPK-001-AC10
 # Tests of the PR: melange recipes, the apk build driver, release signing and the key files.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -1169,7 +1169,7 @@ t "rule 22" "release signing: many symlinks in Build give exit 2 and a message n
 t "rule 22" "build/keys/assembly.rsa.pub is the public half of build/keys/assembly.rsa (a matching pair; both outputs non-empty)" bash -c "a=\$(openssl rsa -in '$root/build/keys/assembly.rsa' -pubout 2>/dev/null); b=\$(openssl rsa -pubin -in '$root/build/keys/assembly.rsa.pub' -pubout 2>/dev/null); test -n \"\$a\" && test \"\$a\" = \"\$b\""
 t "rule 22" "build/keys/release.rsa.pub is a placeholder that is NOT a key (no PEM block of any kind): nobody holds a private half of it" bash -c "! grep -q -- '-----BEGIN' '$root/build/keys/release.rsa.pub' && grep -q PLACEHOLDER '$root/build/keys/release.rsa.pub'"
 
-# no key-shaped block of ANY label under build/keys, except in the committed non-secret assembly pair (assembly.rsa and its public half assembly.rsa.pub)
+# no key-shaped block of ANY label under build/keys, except the committed non-secret assembly pair (assembly.rsa and assembly.rsa.pub) and the real public keys release.rsa.pub and retired/<day>/release.rsa.pub
 cat >"$work/keyscan.py" <<'P'
 import base64, hashlib, os, re, subprocess, sys, tempfile
 def _tlv(b, i, end):
@@ -1209,22 +1209,30 @@ def der_rsa_public(b):
     k = _children(inner, s2, e2)
     if t2 != 0x30 or e2 != len(inner) or len(k) != 2 or any(c[0] != 0x02 for c in k): raise ValueError("not RSAPublicKey (two INTEGERs) spanning the bit string")
 d = sys.argv[1]; bad = []
-PLACEHOLDER_SHA = "4c1b4fee97806b9659f4c0dbd84f4bd97d46d08df1b3df2c3f774442ebac3673"   # the committed placeholder; committing the real release public key edits this line and the placeholder test
+PLACEHOLDER_SHA = "4c1b4fee97806b9659f4c0dbd84f4bd97d46d08df1b3df2c3f774442ebac3673"   # the committed placeholder; committing the real release public key edits this line, the placeholder test and the ret-placeholder case
 B64 = re.compile(rb"[A-Za-z0-9+/]{1,76}={0,2}")
 HEADER = re.compile(rb"NON-SECRET assembly key[ -~]{0,160}")
 FILES = {"assembly.rsa": b"RSA PRIVATE KEY", "assembly.rsa.pub": b"PUBLIC KEY", "release.rsa.pub": None}
-seen = set()
+RETIRED_DIR = re.compile(r"retired/[0-9]{4}-[0-9]{2}-[0-9]{2}")   # a retired release key's public half stays published under the day it was retired (SECURITY.md)
+RETIRED_FILE = re.compile(RETIRED_DIR.pattern + r"/release\.rsa\.pub")
+seen = set(); dated = set()
 for root_, dirs, files in os.walk(d):
     for f in files + dirs:
         pth = os.path.join(root_, f); rel = os.path.relpath(pth, d)
         if os.path.islink(pth): bad.append(rel + " (a symlink)"); continue
-        if os.path.isdir(pth): bad.append(rel + " (a directory)"); continue
+        if os.path.isdir(pth):
+            if rel == "retired": continue
+            if RETIRED_DIR.fullmatch(rel): dated.add(rel); continue
+            bad.append(rel + " (a directory)"); continue
         seen.add(rel)
-        if rel not in FILES: bad.append(rel + " (not one of the three allowed files)"); continue
+        retired = RETIRED_FILE.fullmatch(rel) is not None
+        if rel not in FILES and not retired: bad.append(rel + " (not one of the three allowed files)"); continue
         raw = open(pth, "rb").read()
         if len(raw) > 8192: bad.append(rel + " (larger than 8 KiB)"); continue
         if any(c >= 0x80 for c in raw) or b"\r" in raw or b"\0" in raw: bad.append(rel + " (not plain ASCII text: a high byte, a NUL or a carriage return)"); continue
-        label = FILES[rel]
+        label = None if retired else FILES[rel]
+        if retired and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
+            bad.append(rel + " (the placeholder is not a key: a retired key must be a real public key)"); continue
         if label is None and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
             continue   # the committed placeholder, byte for byte
         if label is None: label = b"PUBLIC KEY"   # the real release public key: exactly one public key block that OpenSSL parses
@@ -1232,7 +1240,7 @@ for root_, dirs, files in os.walk(d):
         lines = raw.split(b"\n")
         if lines[-1] != b"": bad.append(rel + " (no final newline)"); continue
         lines = lines[:-1]
-        if rel != "release.rsa.pub":
+        if rel != "release.rsa.pub" and not retired:
             if not lines or not HEADER.fullmatch(lines[0]): bad.append(rel + " (the NON-SECRET header line is required as the first line)"); continue
             lines = lines[1:]
         beg, end = b"-----BEGIN " + label + b"-----", b"-----END " + label + b"-----"
@@ -1243,14 +1251,14 @@ for root_, dirs, files in os.walk(d):
             (der_rsa_private if label == b"RSA PRIVATE KEY" else der_rsa_public)(raw_der)   # exactly ONE complete key of the expected type, nothing after it
         except Exception as ex:
             bad.append(rel + " (the block is not exactly one %s: %s)" % (label.decode(), ex)); continue
-        if rel == "release.rsa.pub":
+        if rel == "release.rsa.pub" or retired:
             r = subprocess.run(["openssl", "rsa", "-pubin", "-in", pth, "-noout"], capture_output=True)
             if r.returncode != 0: bad.append(rel + " (not a public key that OpenSSL parses)")
-for need in FILES:
+for need in list(FILES) + [dd + "/release.rsa.pub" for dd in sorted(dated)]:
     if need not in seen: bad.append(need + " (missing)")
 if bad: print("key files: " + "; ".join(bad), file=sys.stderr); sys.exit(1)
 P
-t "rule 22" "no key-shaped block of any label under build/keys except in assembly.rsa and assembly.rsa.pub (the committed non-secret pair)" python3 "$work/keyscan.py" "$root/build/keys"
+t "rule 22" "no key-shaped block of any label under build/keys except the assembly pair and the real public keys release.rsa.pub and retired/<day>/release.rsa.pub" python3 "$work/keyscan.py" "$root/build/keys"
 kmut() { rm -rf "$work/km-$1"; cp -R "$root/build/keys" "$work/km-$1"; }
 B1='-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----'
 kmut pub; printf -- '-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n' >>"$work/km-pub/release.rsa.pub"
@@ -1280,6 +1288,29 @@ kmut realrel; openssl genrsa 2048 2>/dev/null | openssl rsa -pubout 2>/dev/null 
 t "rule 22" "a real release public key (one PUBLIC KEY block OpenSSL parses) is ACCEPTED in release.rsa.pub once a human commits it" python3 "$work/keyscan.py" "$work/km-realrel"
 kmut garbage; printf -- '-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n' >"$work/km-garbage/release.rsa.pub"
 fails "rule 22" "...a PUBLIC KEY block that OpenSSL cannot parse is refused" 'not exactly one PUBLIC KEY' python3 "$work/keyscan.py" "$work/km-garbage"
+# SECURITY.md: a retired key's public half stays published, so the apks it signed stay verifiable (REQ-BUILDAPK-001, wording pending the owner's approval).
+# A rotated copy of build/keys: the retired half under retired/<day>/release.rsa.pub, the new key at release.rsa.pub.
+mkdir -p "$work/rot"; openssl genrsa -out "$work/rotA.pem" 2048 2>/dev/null; openssl genrsa -out "$work/rotB.pem" 2048 2>/dev/null
+openssl rsa -in "$work/rotA.pem" -pubout -out "$work/rotA.pub" 2>/dev/null; openssl rsa -in "$work/rotB.pem" -pubout -out "$work/rotB.pub" 2>/dev/null
+python3 "$AT" control "$work/at1/x86_64/fscache-0.3.0-r0.apk" "$work/rot.ctl" && openssl dgst -sha256 -sign "$work/rotA.pem" -out "$work/rot.sig" "$work/rot.ctl" \
+  && python3 "$AT" attach-signature "$work/at1/x86_64/fscache-0.3.0-r0.apk" "$work/rot.sig" "$work/rot-old.apk"
+kmut rotated; mkdir -p "$work/km-rotated/retired/2000-01-01"; cp "$work/rotA.pub" "$work/km-rotated/retired/2000-01-01/release.rsa.pub"; cp "$work/rotB.pub" "$work/km-rotated/release.rsa.pub"
+t "rule 22" "SECURITY.md: a retired key's public half stays published, so the apks it signed stay verifiable: the key scan ACCEPTS a rotated copy (new key in place, the old half under retired/<day>/)" python3 "$work/keyscan.py" "$work/km-rotated"
+t "rule 22" "...the apk signed with the retired key A verifies against the retired half (exit 0)" python3 "$AT" verify "$work/rot-old.apk" "$work/km-rotated/retired/2000-01-01/release.rsa.pub"
+fails "rule 22" "...and the same apk is refused by the new key B in place (exit 1)" '' python3 "$AT" verify "$work/rot-old.apk" "$work/km-rotated/release.rsa.pub"
+# the live release.rsa.pub is the placeholder today: committing the real key makes this copy a real key, so that commit edits this case
+kmut ret-placeholder; mkdir -p "$work/km-ret-placeholder/retired/2000-01-01"; cp "$root/build/keys/release.rsa.pub" "$work/km-ret-placeholder/retired/2000-01-01/release.rsa.pub"
+fails "rule 22" "...the placeholder under retired/<day>/ is refused (a retired key must be a real public key)" 'placeholder' python3 "$work/keyscan.py" "$work/km-ret-placeholder"
+kmut ret-notkey; mkdir -p "$work/km-ret-notkey/retired/2000-01-01"; printf 'not a key\n' >"$work/km-ret-notkey/retired/2000-01-01/release.rsa.pub"
+fails "rule 22" "...a non-key file as the retired release.rsa.pub is refused" 'every line must be' python3 "$work/keyscan.py" "$work/km-ret-notkey"
+kmut ret-other; mkdir -p "$work/km-ret-other/retired/2000-01-01"; cp "$work/rotA.pub" "$work/km-ret-other/retired/2000-01-01/other.pub"; cp "$work/rotA.pub" "$work/km-ret-other/retired/2000-01-01/release.rsa.pub"
+fails "rule 22" "...retired/<day>/other.pub is refused by name" 'not one of the three' python3 "$work/keyscan.py" "$work/km-ret-other"
+kmut ret-direct; mkdir -p "$work/km-ret-direct/retired"; cp "$work/rotA.pub" "$work/km-ret-direct/retired/release.rsa.pub"
+fails "rule 22" "...a key file directly in retired/ (no day) is refused by name" 'not one of the three' python3 "$work/keyscan.py" "$work/km-ret-direct"
+kmut ret-undated; mkdir -p "$work/km-ret-undated/retired/old"; cp "$work/rotA.pub" "$work/km-ret-undated/retired/old/release.rsa.pub"
+fails "rule 22" "...an undated directory under retired/ is refused" 'a directory' python3 "$work/keyscan.py" "$work/km-ret-undated"
+kmut ret-empty; mkdir -p "$work/km-ret-empty/retired/2000-01-01"
+fails "rule 22" "...a dated retired directory without its release.rsa.pub is refused" 'missing' python3 "$work/keyscan.py" "$work/km-ret-empty"
 t "rule 22" "the committed assembly public half has the pinned fingerprint (an accidental swap of the pair fails; rotating the assembly key edits this pin)" bash -c "test \"\$(shasum -a 256 '$root/build/keys/assembly.rsa.pub' | cut -d' ' -f1)\" = 87fbcae7d56920b718980d702c0fefa8a4959a018955088df6f38b886e24deb5"
 
 
