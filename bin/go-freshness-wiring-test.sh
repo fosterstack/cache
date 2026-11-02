@@ -39,6 +39,9 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # (handoff 0713 P8); patch-notes alone mints the auditor App's token (contents + pull-requests) for the
            # changelog PR
            ("release.yml", "patch-notes"),
+           # REQ-DEP-005-AC3: queue-publish mints the App token with checks:write only to publish the merge-queue
+           # verdict (queue-judge holds no credential) - a new consumer, reviewed and listed here
+           ("agent-review-gate.yml", "queue-publish"),
            # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
            # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
            # on main

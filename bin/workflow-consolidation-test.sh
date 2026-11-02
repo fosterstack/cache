@@ -106,7 +106,9 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
+    "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
+    "drift-issue": ("open the required-check drift issue", {"contents": "read", "issues": "write"}, None, None,
+                    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
     "dependency-review": (None, {"contents": "read"}, None, None,
                           "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
