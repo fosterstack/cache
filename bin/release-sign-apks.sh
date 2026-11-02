@@ -55,6 +55,10 @@ done
 # the key is the KMS reference the job pins (as the release signing step reads it); checked before any tool runs
 [ -n "${RELEASE_KMS_KEY_REF:-}" ] || die "RELEASE_KMS_KEY_REF is unset"
 case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) die "RELEASE_KMS_KEY_REF is not a KMS key reference (awskms:///<name>)";; esac
+# RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS CLI reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
+case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) die "RELEASE_ROLE_ARN is unset (the release job's signing role)";; esac
+case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) die "RELEASE_TOKEN_FILE is unset (the release job's identity-token file)";; esac
+export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
 kept="nothing in $build_dir was changed"
 [ -d "$build_dir" ] || die "--build-dir is not a directory: $build_dir"
 # Everything below reads PRIVATE COPIES (a 0700 temp directory): Build's apks are copied once, and the checks and

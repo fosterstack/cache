@@ -68,7 +68,7 @@ RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names rel
 def witnessed_lines():
     """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list. Handoff 0713: Witness signs with the release KMS key
     by its alias; the identity token (audience sts.amazonaws.com) goes to a file in a private directory under RUNNER_TEMP that a trap removes, the AWS SDK reads it through
-    AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN, Witness itself runs without them for every step, and only the wrapped command of release-sign and release-apks is handed them."""
+    AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN, Witness itself and every wrapped script run without them, and only release-sign and release-apks are handed the values, as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in %s) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac' % STEP_LIST,
@@ -89,16 +89,14 @@ def witnessed_lines():
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
             'case "$step" in',
-            '  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"; '
-            "wrap=(bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec \"$@\"' release-creds) ;;",
-            "  *) wrap=() ;;",
+            '  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE" ;;',
             "esac",
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",
             'env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step "$step" --signer-file-key-path "$td/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?' % keys,
+            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
             'if [ "$rc" -eq 0 ]; then',
             '  jq -r .payload "$local_record" | base64 -d > "$td/payload" || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
             '  python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '

@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "1cdddb2f346f27800b81e8b5dd744362e32d08115f7e73ad4c41cdf4ad4f6cef",
+      "sha256": "a580ebe203843653c99adf8ffd9562dcad8ff954b45d2c511d4f19a1a1bf2215",
       "tools": [
         "make",
         "at",
@@ -69,7 +69,7 @@
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs; `aws` is the aws CLI that the kms-sign subcommand runs at the fixed path its caller gives (kms get-public-key and kms sign, REQ-BUILDAPK-001-AC7), and `timeout` is the keyword argument of its subprocess and urllib calls, not a command",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs; `aws` is the aws CLI that the kms-sign subcommand runs at the fixed path its caller gives (kms get-public-key and kms sign, REQ-BUILDAPK-001-AC7), and `timeout` is the keyword argument of its subprocess and urllib calls, not a command; tool choice for aws (rules 12-15): it is the one tool present on the runner image that takes the signing algorithm on the call (kms sign --signing-algorithm; cosign 3.1.3 signs with the first algorithm the key lists), it is not installed here, boto3 is absent from the runner's python, and hand-made SigV4 requests would be a longer path with more of our own code; its path and version on the runner image are UNVERIFIED until a job log shows them",
       "env_mentions": [
         {
           "name": "PATH",
@@ -324,8 +324,8 @@
         "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs Witness itself without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN on every step; only release-sign and release-apks (the two scripts that sign with the key) get them, through the release-creds literal, from RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive names no record holds; a Witness collection is not a provenance statement",
-      "sha256": "b8304f2b71aa82fa7a5313ee3f8ae9d39120128f3c74485d5d73f0f5ff4e52da",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs Witness itself and the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN on every step; only release-sign and release-apks (the two scripts that sign with the key) are handed the values, as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names no record holds), and each maps them onto the two variables itself; the wrapped command is the plain bash SCRIPT, so the command-run record names no AWS variable; a Witness collection is not a provenance statement",
+      "sha256": "3f086905e294204831e4b6de0d84a7b4667a69b4d722609b7e2c71674a88911d",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -345,18 +345,13 @@
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step \"$step\" --signer-file-key-path \"$td/key.pem\"   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE   --env-add-sensitive-key AWS_ROLE_ARN   --env-add-sensitive-key RELEASE_ROLE_ARN   --env-add-sensitive-key RELEASE_TOKEN_FILE   -o \"$local_record\" -- ${wrap[@]+\"${wrap[@]}\"} bash \"$@\"",
-          "why": "Witness itself runs without the two AWS variables for every step (env -u of exactly those two names), so only the wrapped command (the release-creds literal of release-sign and release-apks) can reach AWS; env is given exactly this text, the one Witness command"
-        },
-        {
-          "rule": "script-name",
-          "text": "bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec \"$@\"' release-creds",
-          "why": "the release-creds literal of release-sign and release-apks (the two scripts that sign with the key): it is single-quoted, so the role and the token path are expanded in the child from RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and never stand in an argument Witness records; the child execs the wrapped command with exactly those two variables set (REQ-CHAIN-007-AC15)"
+          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step \"$step\" --signer-file-key-path \"$td/key.pem\"   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE   --env-add-sensitive-key AWS_ROLE_ARN   --env-add-sensitive-key RELEASE_ROLE_ARN   --env-add-sensitive-key RELEASE_TOKEN_FILE   -o \"$local_record\" -- bash \"$@\"",
+          "why": "Witness itself runs without the two AWS variables for every step (env -u of exactly those two names) and its wrapped command is the plain bash STEP-SCRIPT, so no AWS name stands in the recorded command; env is given exactly this text, the one Witness command"
         },
         {
           "rule": "witness-target",
-          "text": "${wrap[@]+\"${wrap[@]}\"} bash \"$@\" || rc=$?",
-          "why": "REQ-CHAIN-004-AC2 (handoff 0713): the wrapped command is `bash STEP-SCRIPT`, optionally under the env text above; the target is one of the arg_map scripts, bound by the stage line"
+          "text": "bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2 (handoff 0713): the wrapped command is `bash STEP-SCRIPT`; the target is one of the arg_map scripts, bound by the stage line"
         },
         {
           "rule": "script-name",
@@ -1721,7 +1716,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "c502757722331900fbb6a60d7d7b3c65d9b97a6e0610294da48462520e95c293",
+      "sha256": "b42603141085583e80f581d186258176462624dfcd71f20825eb66fe7c4ca0ac",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -2197,7 +2192,7 @@
       ],
       "signs": "other",
       "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) by chain-verify.py kms-sign (KMS Sign through the aws CLI, RSASSA_PKCS1_V1_5_SHA_256 named on every call) on each apk's control section, posts one Rekor entry, and checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (chain-verify.py bundle-check) (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "c5738b698ae2d51adeacfae0dcc422e49db274682a7c57fb4fe15aefcd562649",
+      "sha256": "c509c61a0e2f23aa40e1aca9e5af875f15a39e717b18a5d04c4122d8195dd304",
       "exceptions": [
         {
           "rule": "script-name",

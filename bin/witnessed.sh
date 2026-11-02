@@ -11,11 +11,11 @@
 #    job's identity token for short-lived credentials: the token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 #    file in a private directory under RUNNER_TEMP, outside the repository tree, and AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN point the SDK
 #    at it. They are never written to GITHUB_ENV. The directory is removed when Witness returns or the shell gets EXIT, HUP, INT or TERM.
-#  - Witness itself runs without either variable (env -u), for every step. Only the wrapped command of release-sign and release-apks, the two
-#    scripts that sign with the key itself (KMS Sign through the aws CLI, cosign), is handed both, through the one release-creds literal: the job's values travel in
-#    RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (names the AWS SDK does not read, exported for these two steps only and sensitive keys, so no record holds them), and the
-#    single-quoted literal expands them in the child, never in an argument Witness records. The request variables are unset, so no script can ask
-#    for a second token.
+#  - Witness itself and every wrapped script run without either variable (env -u), for every step. Only release-sign and release-apks, the two
+#    scripts that sign with the key (KMS Sign through the aws CLI, cosign), are handed the job's values, as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (names the AWS SDK does not read,
+#    exported for these two steps only and sensitive keys, so no record holds them); each of those two scripts maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE
+#    itself, on its first line. The wrapped command is the plain `bash SCRIPT`: no AWS name, role value or token path stands in an argument, because the command-run attestor records the
+#    command and record-env refuses a record that names the variables. The request variables are unset, so no script can ask for a second token.
 #  - The AWS role, region and key reference come from the job (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); a job that lacks one stops here, before any token is asked for.
 #    The key reference is not written in this file: a KMS key's name form contains a word the script scan of the release chain refuses, so the workflow pins it.
 #  - Attestors: environment, git, material, product. Never github (its record embeds the raw token), never slsa
@@ -46,8 +46,7 @@ export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 case "$step" in
-  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"; wrap=(bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"' release-creds) ;;
-  *) wrap=() ;;
+  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE" ;;
 esac
 openssl genpkey -algorithm ed25519 -out "$td/key.pem"
 local_record="$td/$step-collection.json"
@@ -65,7 +64,7 @@ env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step "$step" --
   --env-add-sensitive-key AWS_ROLE_ARN \
   --env-add-sensitive-key RELEASE_ROLE_ARN \
   --env-add-sensitive-key RELEASE_TOKEN_FILE \
-  -o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?
+  -o "$local_record" -- bash "$@" || rc=$?
 if [ "$rc" -eq 0 ]; then
   # the step ran: the one signing function signs the collection's payload with the release key; a failure here ends the job (nothing is left unsigned and unnoticed)
   jq -r .payload "$local_record" | base64 -d > "$td/payload" || { echo "witnessed: the collection has no payload" >&2; exit 1; }
