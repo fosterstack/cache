@@ -623,6 +623,8 @@ hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witn
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
 hm kwrap0  "AC2 Witness and the wrapped script keep the AWS variables" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'
 hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE' 'unset AWS_ROLE_ARN'
+hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$role" bash "$@"'
 hm ksignall "AC2 every step gets the signing variables, not release-sign alone" 'signers=" release-sign "' 'signers=" release-verify release-apks release-publish release-sign release-assets release-postverify "'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
@@ -3425,7 +3427,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1233
+EXPECT=1235
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
