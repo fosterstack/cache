@@ -12,7 +12,7 @@
 #     directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
 #   - the AWS SDK is pointed at that file by AWS_WEB_IDENTITY_TOKEN_FILE and at the role by AWS_ROLE_ARN, for the helper; Witness and the wrapped script of every step have neither (no AWS name stands in Witness's argv, which the command-run attestor
 #     records: record-env refuses a record that names them). release-sign and release-apks only are handed the role and the token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive keys), and each of those two scripts maps them onto
-#     the two AWS variables itself, on its first line, refusing (naming only RELEASE_*) when either is empty; the request variables are gone for all; nothing is written to GITHUB_ENV
+#     the two AWS variables itself, before its first aws or cosign call, refusing (naming only RELEASE_*) when either is empty; the request variables are gone for all; nothing is written to GITHUB_ENV
 #   - both variables are sensitive keys of the record; no SIGSTORE_ID_TOKEN is used
 #   - the token directory is gone after success, after a failing Witness (its exit status is kept), and after a refusal
 #   - a job with no role or region, a missing RUNNER_TEMP, or an empty or null token stops before Witness runs

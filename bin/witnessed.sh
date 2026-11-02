@@ -14,7 +14,7 @@
 #  - Witness itself and every wrapped script run without either variable (env -u), for every step. Only release-sign and release-apks, the two
 #    scripts that sign with the key (KMS Sign through the aws CLI, cosign), are handed the job's values, as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (names the AWS SDK does not read,
 #    exported for these two steps only and sensitive keys, so no record holds them); each of those two scripts maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE
-#    itself, on its first line. The wrapped command is the plain `bash SCRIPT`: no AWS name, role value or token path stands in an argument, because the command-run attestor records the
+#    itself, before its first aws or cosign call. The wrapped command is the plain `bash SCRIPT`: no AWS name, role value or token path stands in an argument, because the command-run attestor records the
 #    command and record-env refuses a record that names the variables. The request variables are unset, so no script can ask for a second token.
 #  - The AWS role, region and key reference come from the job (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); a job that lacks one stops here, before any token is asked for.
 #    The key reference is not written in this file: a KMS key's name form contains a word the script scan of the release chain refuses, so the workflow pins it.

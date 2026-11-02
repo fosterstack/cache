@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sign the released apks with the release KMS key (v0.3.0 rules 17, 22; the one-key rule: no stored apk key exists).
 #
-#   RELEASE_KMS_KEY_REF=awskms:///<key> release-sign-apks.sh --build-dir A
+#   RELEASE_KMS_KEY_REF=awskms:///<key> RELEASE_ROLE_ARN=<role> RELEASE_TOKEN_FILE=<file> release-sign-apks.sh --build-dir A
 #
 # A is the output directory of Build (<dir>/<arch>/<name>-<version>.apk, signed with the non-secret assembly key).
 # Each apk in A is re-signed in place: the sha256 of its control stream is signed by KMS Sign with the algorithm
@@ -21,7 +21,8 @@
 # Only files named *.apk are signed. An APKINDEX.tar.gz in Build keeps its assembly-key signature, so the release
 # workflow must not ship it as it is.
 # Exit codes: 0 all signed | 1 a signing step failed (nothing in Build's directory was changed) |
-# 2 refused: a missing or unknown argument (--key is unknown), RELEASE_KMS_KEY_REF unset or not awskms:///<name>, a
+# 2 refused: a missing or unknown argument (--key is unknown), RELEASE_KMS_KEY_REF unset or not awskms:///<name>, RELEASE_ROLE_ARN or
+# RELEASE_TOKEN_FILE unset or empty (the Witness wrapper hands them over; the signer maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE), a
 # missing file, a symlink, build/keys/release.rsa.pub is not a readable public key (the committed placeholder, until a
 # human commits the real half: every release is refused) or is the assembly public key, or Build carries a signature
 # other than the assembly key's (no tool run).

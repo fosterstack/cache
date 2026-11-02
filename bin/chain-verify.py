@@ -1470,25 +1470,41 @@ def kms_aws(aws, argv):
     return r.stdout
 
 
-def rekor_get_existing(base, location):
-    """HTTP 409 on the POST: the equivalent entry is already in the log (a deterministic signature signs the same hashedrekord again on a retry). Fetch it ONCE from the Location Rekor named, which
-    must be the pinned Rekor's own entry URL: the pinned base + /api/v1/log/entries/ + a hex uuid (a plain prefix and hex check). Returns the answer's JSON or refuses."""
+def rekor_open(req):
+    """The one way kms-sign talks to the log, for the POST and for the GET: no redirect is followed (a 3xx is an HTTPError), so no request leaves for any address but the one asked for."""
     import urllib.request
-    prefix = base + "/api/v1/log/entries/"
-    if not isinstance(location, str) or not location.startswith(prefix):
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    return urllib.request.build_opener(NoRedirect).open(req, timeout=60)
+
+
+def rekor_get_existing(base, location):
+    """HTTP 409 on the POST: the equivalent entry is already in the log (a deterministic signature signs the same hashedrekord again on a retry). Rekor names it in the Location header as the
+    root-relative /api/v1/log/entries/<id> (it builds the header from the request path); the absolute pinned URL is taken too. The id is 64 or 80 lowercase hex characters (a plain length and character
+    test); anything else refuses, nothing fetched. The GET is ALWAYS built from the pinned base and that id, never from the header's text, and goes through rekor_open (no redirect). Returns the answer's JSON or refuses."""
+    import urllib.request
+    pre = "/api/v1/log/entries/"
+    rest = None
+    if isinstance(location, str):
+        if location.startswith(base + pre):
+            rest = location[len(base + pre):]
+        elif location.startswith(pre):
+            rest = location[len(pre):]
+    if rest is None:
         kms_refuse("Rekor answered 409 (the entry exists) with no Location under the pinned Rekor's entries, so it is not fetched")
-    uuid = location[len(prefix):]
-    if not uuid or any(c not in "0123456789abcdef" for c in uuid):
+    if len(rest) not in (64, 80) or any(c not in "0123456789abcdef" for c in rest):
         kms_refuse("Rekor answered 409 (the entry exists) with a Location that is not an entry id, so it is not fetched")
+    url = base + pre + rest
     try:
-        with urllib.request.urlopen(urllib.request.Request(location, method="GET", headers={"Accept": "application/json"}), timeout=60) as resp:
+        with rekor_open(urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})) as resp:
             code, raw = resp.status, resp.read(1 << 20)
-            final = resp.geturl() if hasattr(resp, "geturl") else location
         doc = json.loads(raw)
-    except Exception as ex:   # any transport, status or JSON failure is the same refusal
+    except Exception as ex:   # any transport, status (a 3xx included) or JSON failure is the same refusal
         kms_refuse("Rekor's existing entry could not be fetched (%s)" % type(ex).__name__)
-    if code != 200 or not str(final).startswith(prefix):
-        kms_refuse("Rekor's existing entry was answered with status %s from %s" % (code, "the pinned Rekor" if str(final).startswith(prefix) else "another address"))
+    if code != 200:
+        kms_refuse("Rekor's existing entry was answered with status %s" % code)
     return doc
 
 
@@ -1509,7 +1525,7 @@ def kms_rekor_entry(config_path, pub_path, digest_hex, sig, rekor_pem):
         "signature": {"content": base64.b64encode(sig).decode(), "publicKey": {"content": base64.b64encode(pem_bytes).decode()}}}}).encode()
     req = urllib.request.Request(base + "/api/v1/log/entries", data=body, method="POST", headers={"Content-Type": "application/json", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with rekor_open(req) as resp:
             code, raw = resp.status, resp.read(1 << 20)
         doc = json.loads(raw)
     except urllib.error.HTTPError as ex:

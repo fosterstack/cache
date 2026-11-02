@@ -813,7 +813,7 @@ NS_SHA = {
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
-    "bin/chain-verify.py": "a580ebe203843653c99adf8ffd9562dcad8ff954b45d2c511d4f19a1a1bf2215",
+    "bin/chain-verify.py": "cd410e6c56341ad93918133e0fe7fc46290c869746bd946e115cf4880f52eae4",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
     "bin/chain_items.py": "7cdd3d57bef8c0a452db2c295a4582577ea49394d90da329072122efcde8793b",
