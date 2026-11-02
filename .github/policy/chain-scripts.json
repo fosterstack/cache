@@ -57,17 +57,19 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "ff95cebe5fc0582b8896b4b87f52a20f71ae0f0e9081c8c88084b724be2454b0",
+      "sha256": "1cdddb2f346f27800b81e8b5dd744362e32d08115f7e73ad4c41cdf4ad4f6cef",
       "tools": [
         "make",
         "at",
         "exec",
-        "git"
+        "git",
+        "aws",
+        "timeout"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs; `aws` is the aws CLI that the kms-sign subcommand runs at the fixed path its caller gives (kms get-public-key and kms sign, REQ-BUILDAPK-001-AC7), and `timeout` is the keyword argument of its subprocess and urllib calls, not a command",
       "env_mentions": [
         {
           "name": "PATH",
@@ -313,15 +315,17 @@
         "python3",
         "script",
         "sh",
-        "trap"
+        "trap",
+        "aws",
+        "exec"
       ],
       "runs": [
         "bin/loopback-get.sh",
         "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs the wrapped script without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN unless the step is release-sign or release-apks (the two scripts that sign with the key through cosign); a Witness collection is not a provenance statement",
-      "sha256": "37521d2d20fa46b93d7c997aee6fce53ebd0f29df914fc7238c4f78533afab66",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): fetches the identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes, runs witness run once with the release KMS key (RELEASE_KMS_KEY_REF; attestors environment, git, material, product; never slsa), and runs Witness itself without AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN on every step; only release-sign and release-apks (the two scripts that sign with the key) get them, through the release-creds literal, from RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive names no record holds; a Witness collection is not a provenance statement",
+      "sha256": "b8304f2b71aa82fa7a5313ee3f8ae9d39120128f3c74485d5d73f0f5ff4e52da",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -341,13 +345,13 @@
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "env \"AWS_ROLE_ARN=$AWS_ROLE_ARN\" \"AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE\"",
-          "why": "K2 (P11 round 1): the wrapped command of release-sign and release-apks, the two scripts that sign with the key itself through cosign, is handed AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE; env is given exactly this text and nothing else"
+          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step \"$step\" --signer-file-key-path \"$td/key.pem\"   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE   --env-add-sensitive-key AWS_ROLE_ARN   --env-add-sensitive-key RELEASE_ROLE_ARN   --env-add-sensitive-key RELEASE_TOKEN_FILE   -o \"$local_record\" -- ${wrap[@]+\"${wrap[@]}\"} bash \"$@\"",
+          "why": "Witness itself runs without the two AWS variables for every step (env -u of exactly those two names), so only the wrapped command (the release-creds literal of release-sign and release-apks) can reach AWS; env is given exactly this text, the one Witness command"
         },
         {
-          "rule": "launcher",
-          "text": "env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step \"$step\" --signer-file-key-path \"$td/key.pem\"   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE   --env-add-sensitive-key AWS_ROLE_ARN   -o \"$local_record\" -- ${wrap[@]+\"${wrap[@]}\"} bash \"$@\"",
-          "why": "Witness itself runs without the two AWS variables for every step (env -u of exactly those two names), so only the wrapped command above can reach AWS; env is given exactly this text, the one Witness command"
+          "rule": "script-name",
+          "text": "bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec \"$@\"' release-creds",
+          "why": "the release-creds literal of release-sign and release-apks (the two scripts that sign with the key): it is single-quoted, so the role and the token path are expanded in the child from RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and never stand in an argument Witness records; the child execs the wrapped command with exactly those two variables set (REQ-CHAIN-007-AC15)"
         },
         {
           "rule": "witness-target",
@@ -2184,7 +2188,8 @@
         "env",
         "find",
         "make",
-        "at"
+        "at",
+        "aws"
       ],
       "runs": [
         "bin/apk-tool.py",
@@ -2238,6 +2243,13 @@
           "line_sha256": "fd2c1a6447bdf06b155ebe14a3058ff0cf8808f7303127136a2572bdab629fc5",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  read -r dg _ < <(\"$OPENSSL\" dgst -sha256 -r \"$w/control.gz\") && [ -n \"$dg\" ] || die \"cannot hash the control stream of ${rel#./}; $kept\" 1",
+          "line_sha256": "e210e997ff5fb2bd11aacf20a19e9d197bfdc94d40f02c2e598637786e53b767",
+          "count": 1,
+          "why": "a test command ([ ... ]) on this line holds a quoted expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, the digest of the control stream is read from openssl dgst -sha256 and tested non-empty)"
         },
         {
           "rule": "deny",

@@ -1378,7 +1378,7 @@ def kms_refuse(reason):
 
 def rekor_entry_check(item, digest_hex, sig, pub_pem):
     """A1: one tlogEntries item is a Rekor entry for THIS signature: its canonicalized body is a hashedrekord 0.0.1 whose data hash is the
-    sha256 of the signed bytes (algorithm sha256), whose signature content is the signature just made and whose public key is the release
+    sha256 of the signed bytes (algorithm sha256), whose signature content is the signature it made and whose public key is the release
     public key, and it carries a logIndex and an integratedTime. Returns None or the reason it is not."""
     if not isinstance(item, dict):
         return "the tlogEntries item is not an object"

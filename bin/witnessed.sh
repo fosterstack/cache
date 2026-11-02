@@ -12,7 +12,9 @@
 #    file in a private directory under RUNNER_TEMP, outside the repository tree, and AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN point the SDK
 #    at it. They are never written to GITHUB_ENV. The directory is removed when Witness returns or the shell gets EXIT, HUP, INT or TERM.
 #  - Witness itself runs without either variable (env -u), for every step. Only the wrapped command of release-sign and release-apks, the two
-#    scripts that sign with the key itself (cosign), is handed both (env VAR=value in front of the script); they are sensitive keys, so no record holds them. The request variables are unset, so no script can ask
+#    scripts that sign with the key itself (KMS Sign through the aws CLI, cosign), is handed both, through the one release-creds literal: the job's values travel in
+#    RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (names the AWS SDK does not read, exported for these two steps only and sensitive keys, so no record holds them), and the
+#    single-quoted literal expands them in the child, never in an argument Witness records. The request variables are unset, so no script can ask
 #    for a second token.
 #  - The AWS role, region and key reference come from the job (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); a job that lacks one stops here, before any token is asked for.
 #    The key reference is not written in this file: a KMS key's name form contains a word the script scan of the release chain refuses, so the workflow pins it.
@@ -44,7 +46,7 @@ export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 case "$step" in
-  release-sign|release-apks) wrap=(env "AWS_ROLE_ARN=$AWS_ROLE_ARN" "AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE") ;;
+  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"; wrap=(bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"' release-creds) ;;
   *) wrap=() ;;
 esac
 openssl genpkey -algorithm ed25519 -out "$td/key.pem"
@@ -61,6 +63,8 @@ env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run --step "$step" --
   --env-add-sensitive-key DOCKERHUB_TOKEN \
   --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE \
   --env-add-sensitive-key AWS_ROLE_ARN \
+  --env-add-sensitive-key RELEASE_ROLE_ARN \
+  --env-add-sensitive-key RELEASE_TOKEN_FILE \
   -o "$local_record" -- ${wrap[@]+"${wrap[@]}"} bash "$@" || rc=$?
 if [ "$rc" -eq 0 ]; then
   # the step ran: the one signing function signs the collection's payload with the release key; a failure here ends the job (nothing is left unsigned and unnoticed)
