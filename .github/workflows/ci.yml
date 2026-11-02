@@ -598,7 +598,7 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
       - name: apk build driver and release signing regressions
-        run: bash bin/build-apk-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json build-apk-test.sh bin/build-apk-test.sh
 
       - name: input refresh script regressions
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json refresh-inputs-test.sh bin/refresh-inputs-test.sh

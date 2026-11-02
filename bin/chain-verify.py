@@ -1462,6 +1462,9 @@ def cmd_bundle_check(a):
         kms_refuse("the bundle %s is not readable with its signature and tlogEntries" % a.bundle, who)
     if pem is None:
         kms_refuse("cannot read the public key %s" % a.public_key, who)
+    why = bundle_certificate_why(doc["verificationMaterial"])
+    if why:
+        kms_refuse(why, who)
     if not (isinstance(entries, list) and len(entries) == 1):
         kms_refuse("the bundle does not hold exactly one tlogEntries item (Rekor entry)", who)
     why = rekor_entry_check(entries[0], a.digest, sig, pem)
