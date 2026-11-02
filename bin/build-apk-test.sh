@@ -303,11 +303,13 @@ mkdir -p "$work/keysfx"; cp "$root/build/keys/assembly.rsa" "$root/build/keys/as
 RS_REAL=$RS; RS="$work/rs-copy.sh"
 # ---- KA-1: the apks are signed by KMS Sign with RSASSA_PKCS1_V1_5_SHA_256 named on every call (the one-key rule + the owner's strict algorithm); the fake aws signs with a suite-made RSA key ----
 # RK is the call prefix: the KMS reference the job pins and the key the fake aws signs with (a fake: nothing here reaches KMS, the real Rekor or any network but the suite's own localhost stub)
-RK=(env RELEASE_KMS_KEY_REF=awskms:///test-release-ref STUB_AWS_KEY="$work/release.rsa")
+RK=(env RELEASE_KMS_KEY_REF=awskms:///test-release-ref STUB_AWS_KEY="$work/release.rsa" RELEASE_ROLE_ARN=arn:aws:iam::111122223333:role/test-release RELEASE_TOKEN_FILE="$work/idtoken")
+printf 'identity-token\n' >"$work/idtoken"; chmod 600 "$work/idtoken"
 cat >"$stubs/aws" <<'EOF2'
 #!/bin/bash
 # a fake of the aws CLI: --version, kms get-public-key (the SigningAlgorithms list the suite configures) and kms sign (it refuses unless the call names the PKCS#1 v1.5 SHA-256 algorithm and a DIGEST message, and signs the 32-byte digest with the suite key)
 echo "aws $*" >>"$CALLS"
+echo "AWSENV role=${AWS_ROLE_ARN-UNSET} tokfile=${AWS_WEB_IDENTITY_TOKEN_FILE-UNSET}" >>"${STUB_AWS_ENVLOG:-/dev/null}"
 if [ "${1:-}" = --version ]; then echo "aws-cli/${STUB_AWS_VERSION:-2.17.0} Python/3.11.8 Linux/6.5.0 exe/x86_64.ubuntu.24"; exit 0; fi
 [ "${1:-}" = kms ] || { echo "stub aws: only kms is faked" >&2; exit 252; }
 sub=${2:-}; shift 2
@@ -320,6 +322,7 @@ alg= mt= msg=
 while [ $# -gt 0 ]; do case $1 in
   --signing-algorithm) alg=$2; shift 2;; --message-type) mt=$2; shift 2;; --message) msg=${2#fileb://}; shift 2;; *) shift;; esac; done
 [ "$alg" = RSASSA_PKCS1_V1_5_SHA_256 ] && [ "$mt" = DIGEST ] || { echo "stub aws: KMS refuses the call: the signing algorithm and the message type must be named" >&2; exit 254; }
+if [ -n "${STUB_AWS_ERR:-}" ]; then echo "$STUB_AWS_ERR" >&2; exit 254; fi
 if [ -n "${STUB_AWS_FAIL_AT:-}" ] && [ "$(grep -c '^aws kms sign ' "$CALLS")" = "$STUB_AWS_FAIL_AT" ]; then echo "stub aws kms sign: failed" >&2; exit 255; fi
 [ -f "$msg" ] && [ "$(ls -l "$msg" | awk '{print $5}')" = 32 ] || { echo "stub aws: the message is not a 32-byte digest file" >&2; exit 254; }
 sigf=$(mktemp)
@@ -336,31 +339,66 @@ cat >"$work/rekor-stub.py" <<'P'
 import base64, hashlib, http.server, json, os, sys
 mode_f, log_f, port_f, parent, rkey, rlogid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6]
 import subprocess, tempfile
+seen = {}   # the conflict modes: the entries this stub made, by uuid, and the posted bodies it has seen
+def sign(data):
+    with tempfile.TemporaryDirectory() as d:
+        open(d + "/m", "wb").write(data)
+        return subprocess.run(["@OPENSSL@", "dgst", "-sha256", "-sign", rkey, d + "/m"], capture_output=True).stdout
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def entry(self, body, i, mode):
+        # a Rekor v1 entry for the posted hashedrekord, with a signed entry timestamp and a REAL inclusion proof (a one-leaf tree: the root is the leaf hash) under a checkpoint signed by the suite's Rekor key;
+        # the modes break one thing each: badset, otherlog, otherbody, noproof, badroot
+        doc = json.loads(body)
+        if mode == "otherbody":
+            doc["spec"]["data"]["hash"]["value"] = "0" * 64
+        ebody = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode() if mode == "otherbody" else body
+        b64 = base64.b64encode(ebody).decode()
+        lid = "ab" * 32 if mode == "otherlog" else rlogid
+        canon = json.dumps({"body": b64, "integratedTime": 1700000000 + i, "logID": lid, "logIndex": 1000 + i}, sort_keys=True, separators=(",", ":")).encode()
+        set_sig = sign(canon + b"x" if mode == "badset" else canon)
+        leaf = hashlib.sha256(b"\x00" + ebody).digest()
+        note = "rekor.sigstore.dev - 1\n1\n" + base64.b64encode(leaf).decode() + "\n"
+        ck = note + "\n— rekor.sigstore.dev " + base64.b64encode(bytes.fromhex(rlogid)[:4] + sign(note.encode())).decode() + "\n"
+        v = {"signedEntryTimestamp": base64.b64encode(set_sig).decode()}
+        if mode != "noproof":
+            v["inclusionProof"] = {"checkpoint": ck, "hashes": [], "logIndex": 0, "rootHash": ("cc" * 32 if mode == "badroot" else leaf.hex()), "treeSize": 1}
+        return {"body": b64, "integratedTime": 1700000000 + i, "logID": lid, "logIndex": 1000 + i, "verification": v}
+    def reply(self, code, out, headers=()):
+        data = json.dumps(out).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data)))
+        for k, v in headers: self.send_header(k, v)
+        self.end_headers(); self.wfile.write(data)
+    def do_GET(self):
+        open(log_f, "ab").write(b"GET " + self.path.encode() + b"\n")
+        uuid = self.path.rsplit("/", 1)[-1]
+        mode = open(mode_f).read().strip() or "ok"
+        if uuid in seen:
+            body, ent = seen[uuid]
+            return self.reply(200, {uuid: self.entry(body, 0, "otherbody") if mode == "conflict-otherbody" else ent})
+        self.reply(404, {"code": 404, "message": "not found"})
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         open(log_f, "ab").write(self.path.encode() + b" " + body + b"\n")
         mode = open(mode_f).read().strip() or "ok"
-        def entry(i):
-            b64 = base64.b64encode(body).decode()
-            canon = json.dumps({"body": b64, "integratedTime": 1700000000 + i, "logID": rlogid, "logIndex": 1000 + i}, sort_keys=True, separators=(",", ":")).encode()
-            with tempfile.TemporaryDirectory() as d:
-                open(d + "/m", "wb").write(canon)
-                sig = subprocess.run(["@OPENSSL@", "dgst", "-sha256", "-sign", rkey, d + "/m"], capture_output=True).stdout
-            return {"body": b64, "integratedTime": 1700000000 + i, "logID": rlogid,
-                    "logIndex": 1000 + i, "verification": {"signedEntryTimestamp": base64.b64encode(sig).decode(),
-                    "inclusionProof": {"checkpoint": "rekor.sigstore.dev - 1\n2\nAAAA\n", "hashes": ["aa" * 32], "logIndex": 1000 + i, "rootHash": "bb" * 32, "treeSize": 2000 + i}}}
+        if mode.startswith("conflict"):
+            uuid = hashlib.sha256(body).hexdigest()
+            if uuid in seen:
+                loc = "http://127.0.0.1:%d/api/v1/log/entries/%s" % (srv.server_address[1], uuid)
+                if mode == "conflict-foreign": loc = "http://127.0.0.1:1/api/v1/log/entries/" + uuid
+                return self.reply(409, {"code": 409, "message": "an equivalent entry already exists in the transparency log"}, [] if mode == "conflict-noloc" else [("Location", loc)])
+            ent = self.entry(body, 0, "ok")
+            seen[uuid] = (body, ent)
+            return self.reply(201, {uuid: ent})
         if mode == "err":
             out, code = {"code": 500, "message": "boom"}, 500
         elif mode == "empty":
             out, code = {}, 201
         elif mode == "two":
-            out, code = {hashlib.sha256(b"1").hexdigest(): entry(1), hashlib.sha256(b"2").hexdigest(): entry(2)}, 201
+            out, code = {hashlib.sha256(b"1").hexdigest(): self.entry(body, 1, "ok"), hashlib.sha256(b"2").hexdigest(): self.entry(body, 2, "ok")}, 201
         else:
-            out, code = {hashlib.sha256(body).hexdigest(): entry(0)}, 201
-        data = json.dumps(out).encode()
-        self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            out, code = {hashlib.sha256(body).hexdigest(): self.entry(body, 0, mode)}, 201
+        self.reply(code, out)
 srv = http.server.HTTPServer(("127.0.0.1", 0), H); srv.timeout = 1
 open(port_f + ".tmp", "w").write(str(srv.server_address[1])); os.rename(port_f + ".tmp", port_f)
 while True:
@@ -402,6 +440,8 @@ if e.get("STUB_FAKEKMS_NULLENTRY"): item = None
 if e.get("STUB_FAKEKMS_OTHERDIGEST"): item["canonicalizedBody"] = body_with(lambda sp: sp["data"]["hash"].update(value="0" * 64))
 if e.get("STUB_FAKEKMS_OTHERSIG"): item["canonicalizedBody"] = body_with(lambda sp: sp["signature"].update(content=base64.b64encode(b"another signature").decode()))
 if e.get("STUB_FAKEKMS_OTHERKEY"): item["canonicalizedBody"] = body_with(lambda sp: sp["signature"]["publicKey"].update(content=base64.b64encode(b"-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n").decode()))
+if e.get("STUB_FAKEKMS_NOPROOF"): del item["inclusionProof"]
+if e.get("STUB_FAKEKMS_BADROOT"): item["inclusionProof"]["rootHash"] = base64.b64encode(b"\xcc" * 32).decode()
 if e.get("STUB_FAKEKMS_NOLOGINDEX"): del item["logIndex"]
 if e.get("STUB_FAKEKMS_NOINTEGRATED"): del item["integratedTime"]
 s64 = base64.b64encode(sig).decode(); d64 = base64.b64encode(dig).decode()
@@ -503,6 +543,85 @@ fmutant "rule 22" "release signing (K1): a bundle whose messageDigest is the dig
 fmutant "rule 22" "release signing (K1): a bundle with no messageDigest is refused (exit 1, Build untouched)" 'messageDigest' m13 STUB_FAKEKMS_NODIGEST=1
 t "rule 22" "release signing (KA-1 case 6): the signer holds no cosign sign-blob, no cosign at all (its signing config file name aside) and no --key (no --output-signature either): the signature is made by chain-verify.py kms-sign through the aws CLI" bash -c "! grep -Ev '^ *#' '$RS_REAL' | sed 's/cosign-signing-config//' | grep -Eq 'cosign|sign-blob|--key( |$)|--output-signature|awskms:///[a-z]' && grep -Ev '^ *#' '$RS_REAL' | grep -q 'kms-sign'"
 # K4 re-aimed: an aws CLI that is not installed at its fixed path: exit 1, Build untouched
+# ---- P11 round 3: the kms-sign function itself (F2 an existing Rekor entry, B2 the inclusion proof, B3 the output files, F3 the checks a revert must turn red, F4 the required arguments, F6 the stderr text), the bundle-check
+# refusal prefix (F8b) and the credential mapping of the signer (F1). kms-sign runs for real, through the suite's fake aws and its localhost Rekor stub. ----
+kdig() { printf '%s' "$1" | openssl dgst -sha256 -r | { read -r h _; echo "$h"; }; }
+mkdir -p "$work/ks"
+KS_CV=$root/bin/chain-verify.py
+ks() { # <name> [kms-sign args...]: the real kms-sign, digest $KD
+  local n=$1; shift; : >"$CALLS"
+  PATH="$stubs:$PATH" CALLS="$CALLS" STUB_AWS_KEY="$work/release.rsa" python3 -I -B "$KS_CV" kms-sign --aws "$stubs/aws" --key-ref awskms:///test-release-ref --digest "$KD" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
+ksfull=(--signing-config "$work/signing-config-test.json" --public-key "$work/keysfx/release.rsa.pub")
+kscase() { # <ac> <desc> <keyword> <rekor mode> <name> [seed]: exit 1 naming the reason, no signature file and no bundle (with seed: one signing of the same digest first, to make the entry exist)
+  local ac=$1 d=$2 kw=$3 mode=$4 name=$5 seed=${6:-}; KD=$(kdig "$name"); rm -f "$work/ks/$name".*; echo "$mode" >"$work/rekor.mode"
+  [ -z "$seed" ] || ks "$name-seed" --out "$work/ks/$name-seed.sig" --bundle "$work/ks/$name-seed.bundle" "${ksfull[@]}"
+  ks "$name" --out "$work/ks/$name.sig" --bundle "$work/ks/$name.bundle" "${ksfull[@]}"; echo ok >"$work/rekor.mode"
+  if [ "$(rc)" = 1 ] && grep -Eqi -- "$kw" "$work/log" && [ ! -e "$work/ks/$name.sig" ] && [ ! -e "$work/ks/$name.bundle" ]; then ok; else bad "$ac" "$d (exit $(rc), wanted 1 naming '$kw', no signature file and no bundle)"; fi; }
+# F2: the signature is deterministic (PKCS#1 v1.5), so a retry posts the same hashedrekord and Rekor answers 409 with the existing entry's Location
+KD=$(kdig f2same); echo conflict >"$work/rekor.mode"; : >"$work/rekor.log"
+ks f2a --out "$work/ks/f2a.sig" --bundle "$work/ks/f2a.bundle" "${ksfull[@]}"; f2r1=$(rc)
+ks f2b --out "$work/ks/f2b.sig" --bundle "$work/ks/f2b.bundle" "${ksfull[@]}"; f2r2=$(rc); echo ok >"$work/rekor.mode"
+t "rule 22" "release signing (round 3 F2): the same digest signed twice -> the second POST is answered 409, the existing entry is fetched from the Location (one GET) and checked: both exit 0, the two signatures and the two bundles are equal" bash -c "test '$f2r1' = 0 && test '$f2r2' = 0 && cmp -s '$work/ks/f2a.sig' '$work/ks/f2b.sig' && cmp -s '$work/ks/f2a.bundle' '$work/ks/f2b.bundle' && test \"\$(grep -c '^GET /api/v1/log/entries/' '$work/rekor.log')\" = 1 && test \"\$(grep -c '^/api/v1/log/entries ' '$work/rekor.log')\" = 2"
+kscase "rule 22" "release signing (round 3 F2): a 409 whose Location entry is for another body than the one signed -> refused (exit 1, no files)" 'rekor' conflict-otherbody f2other seed
+kscase "rule 22" "release signing (round 3 F2): a 409 whose Location is on another host than the pinned Rekor -> refused, nothing fetched from it" 'rekor' conflict-foreign f2foreign seed
+kscase "rule 22" "release signing (round 3 F2): a 409 with no Location -> refused" 'rekor' conflict-noloc f2noloc seed
+# B2: the inclusion proof is required and checked by the existing check_inclusion
+kscase "rule 22" "release signing (round 3 B2): a Rekor answer with no inclusion proof -> refused naming the proof (exit 1, no files)" 'inclusion proof' noproof b2noproof
+kscase "rule 22" "release signing (round 3 B2): a Rekor answer whose rootHash is not the tree's -> refused (exit 1, no files)" 'inclusion proof|audit path|root hash' badroot b2badroot
+fmutant "rule 22" "release signing (round 3 B2): bundle-check refuses a bundle whose tlogEntries item has no inclusionProof" 'inclusion proof' m40 STUB_FAKEKMS_NOPROOF=1
+fmutant "rule 22" "release signing (round 3 B2): bundle-check refuses a bundle whose inclusionProof rootHash is not the tree's" 'inclusion proof|audit path|root hash' m41 STUB_FAKEKMS_BADROOT=1
+# F3: the checks a revert would leave green
+kscase "rule 22" "release signing (round 3 F3): a Rekor answer whose signed entry timestamp does not verify against the pinned Rekor key -> refused" 'signed entry timestamp' badset f3badset
+kscase "rule 22" "release signing (round 3 F3): a Rekor answer naming another log than the pinned Rekor key -> refused" 'another log' otherlog f3otherlog
+kscase "rule 22" "release signing (round 3 F3): a Rekor answer whose entry is for another digest than the one signed (timestamp and proof valid) -> refused naming the digest" 'another digest' otherbody f3otherbody
+rm -rf "$work/mutroot1" "$work/mutroot2"
+for m in mutroot1 mutroot2; do mkdir -p "$work/$m/.github"; cp -R "$root/bin" "$work/$m/bin"; cp -R "$root/.github/policy" "$work/$m/.github/policy"; done   # the verifier reads the listed hashes of its helper modules under its own root
+python3 - "$work/mutroot1/bin/chain-verify.py" "$work/mutroot2/bin/chain-verify.py" <<'P'
+import sys
+a, b = sys.argv[1:3]
+t = open(a).read(); n = t.replace("def rekor_set_check(item, rekor_pem):\n", "def rekor_set_check(item, rekor_pem):\n    return None\n\n\ndef _rekor_set_check_unused(item, rekor_pem):\n", 1); assert n != t; open(a, "w").write(n)
+t = open(b).read(); old = '    why = rekor_entry_check(item, digest_hex, sig, pem_bytes)\n    if why:\n        kms_refuse("Rekor\'s answer is not the entry of this signature: " + why)\n'
+n = t.replace(old, "    pass\n", 1); assert n != t; open(b, "w").write(n)
+P
+KD=$(kdig f3mut1); echo badset >"$work/rekor.mode"; KS_CV="$work/mutroot1/bin/chain-verify.py" ks f3mut1 --out "$work/ks/f3mut1.sig" --bundle "$work/ks/f3mut1.bundle" "${ksfull[@]}"; f3m1=$(rc); echo ok >"$work/rekor.mode"
+t "rule 22" "release signing (round 3 F3): a kms-sign whose rekor_set_check returns None accepts the bad timestamp (the badset case above turns red without the check)" test "$f3m1" = 0
+KD=$(kdig f3mut2); echo otherbody >"$work/rekor.mode"; KS_CV="$work/mutroot2/bin/chain-verify.py" ks f3mut2 --out "$work/ks/f3mut2.sig" --bundle "$work/ks/f3mut2.bundle" "${ksfull[@]}"; f3m2=$(rc); echo ok >"$work/rekor.mode"
+t "rule 22" "release signing (round 3 F3): a kms-sign without the entry check on Rekor's answer accepts the entry for another digest (the otherbody case above turns red without the check)" test "$f3m2" = 0
+# B3: existing outputs are refused up front and never deleted
+kspre() { # <desc> <which: out|bundle|both>
+  local d=$2 w=$1 n="pre-$1"; KD=$(kdig "$n"); rm -f "$work/ks/$n".*
+  case $w in out|both) printf 'OLD-SIGNATURE' >"$work/ks/$n.sig";; esac; case $w in bundle|both) printf 'OLD-BUNDLE' >"$work/ks/$n.bundle";; esac
+  local b; b=$(cd "$work/ks" && { ls "$n".* 2>/dev/null; cat "$n".* 2>/dev/null; } | cksum)
+  ks "$n" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" "${ksfull[@]}"
+  local a; a=$(cd "$work/ks" && { ls "$n".* 2>/dev/null; cat "$n".* 2>/dev/null; } | cksum)
+  if [ "$(rc)" = 1 ] && ! grep -q '^aws ' "$CALLS" && [ "$a" = "$b" ]; then ok; else bad "rule 22" "$d (exit $(rc), wanted 1, no aws call, the existing files untouched)"; fi; }
+kspre out "release signing (round 3 B3): an existing --out is refused before any aws call and left as it was"
+kspre bundle "release signing (round 3 B3): an existing --bundle is refused before any aws call and left as it was"
+kspre both "release signing (round 3 B3): existing --out and --bundle are refused before any aws call and left as they were"
+# F4: no KMS signature without its Rekor entry: the three arguments are required
+ksreq() { # <missing option>
+  local m=$1; KD=$(kdig "req$m"); local a=(--out "$work/ks/req$m.sig" --bundle "$work/ks/req$m.bundle" "${ksfull[@]}") i out=()
+  for ((i = 0; i < ${#a[@]}; i++)); do if [ "${a[i]}" = "--$m" ]; then i=$((i + 1)); else out+=("${a[i]}"); fi; done
+  rm -f "$work/ks/req$m".*; ks "req$m" "${out[@]}"
+  if [ "$(rc)" = 2 ] && ! grep -q '^aws ' "$CALLS" && [ ! -e "$work/ks/req$m.sig" ]; then ok; else bad "rule 22" "release signing (round 3 F4): kms-sign without --$m is a usage error: exit 2, no aws call, no signature (exit $(rc))"; fi; }
+ksreq bundle; ksreq signing-config; ksreq public-key
+# F6: the aws stderr text is never repeated (an AccessDenied text names the assumed-role ARN, and the command-run record keeps stderr)
+KD=$(kdig f6err); STUB_AWS_ERR='An error occurred (AccessDeniedException) when calling the Sign operation: User: arn:aws:sts::111122223333:assumed-role/release-signing/session is not authorized to perform: kms:Sign' ks f6err --out "$work/ks/f6err.sig" --bundle "$work/ks/f6err.bundle" "${ksfull[@]}"
+t "rule 22" "release signing (round 3 F6): a failing aws call is reported as its operation, exit status and error code (AccessDeniedException) and nothing else: no arn: and no role name in the output" bash -c "test '$(rc)' = 1 && grep -q 'AccessDeniedException' '$work/log' && ! grep -q 'arn:' '$work/log' && ! grep -q 'assumed-role' '$work/log'"
+# F8b: bundle-check names itself in its refusals
+fmutant "rule 22" "release signing (round 3 F8b): the refusal of a bad bundle names bundle-check, not kms-sign" 'bundle-check: refused' m42 STUB_FAKEKMS_OTHERDIGEST=1
+# F1: the signer maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE onto the AWS variables itself (the wrapped command Witness records holds no AWS name)
+rs1 c1; : >"$work/aws.env"
+run_s env -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE "${RK[@]}" STUB_AWS_ENVLOG="$work/aws.env" "$RS" --build-dir "$work/c1"; c1rc=$(rc)
+t "rule 22" "release signing (round 3 F1): with only RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE in the environment the signer signs (exit 0) and every aws call it makes sees AWS_ROLE_ARN = the role and AWS_WEB_IDENTITY_TOKEN_FILE = the token file" bash -c "test '$c1rc' = 0 && test -s '$work/aws.env' && ! grep -v '^AWSENV role=arn:aws:iam::111122223333:role/test-release tokfile=$work/idtoken\$' '$work/aws.env'"
+rs1 c2
+sr "rule 22" "release signing (round 3 F1): RELEASE_ROLE_ARN empty -> exit 2 naming RELEASE_ROLE_ARN, no tool run" 'RELEASE_ROLE_ARN' env "${RK[@]}" RELEASE_ROLE_ARN= "$RS" --build-dir "$work/c2"
+t "rule 22" "release signing (round 3 F1): ... and the refusal names no AWS_ variable" bash -c "! grep -q 'AWS_' '$work/log'"
+sr "rule 22" "release signing (round 3 F1): RELEASE_TOKEN_FILE empty -> exit 2 naming RELEASE_TOKEN_FILE, no tool run" 'RELEASE_TOKEN_FILE' env "${RK[@]}" RELEASE_TOKEN_FILE= "$RS" --build-dir "$work/c2"
+t "rule 22" "release signing (round 3 F1): ... and the refusal names no AWS_ variable" bash -c "! grep -q 'AWS_' '$work/log'"
+grep -v '^export AWS_ROLE_ARN=' "$work/rs-copy.sh" >"$work/rs-copy-noexp.sh"; chmod +x "$work/rs-copy-noexp.sh"
+rs1 c3; : >"$work/aws.env"; run_s env -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE "${RK[@]}" STUB_AWS_ENVLOG="$work/aws.env" bash "$work/rs-copy-noexp.sh" --build-dir "$work/c3"
+t "rule 22" "release signing (round 3 F1): a signer without the export line makes aws calls that see no role (the mapping case above turns red without the line)" bash -c "test -s '$work/aws.env' && grep -q 'role=UNSET' '$work/aws.env'"
 python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy-noaws.sh" \
   'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS='"$work"'/no-such-aws' 'SIGNING_CONFIG='"$work"'/signing-config-test.json' 'KMSSIGN=bin/chain-verify.py' 'KEYS_DIR='"$work"'/keysfx' || { echo "FIXTURE SETUP FAILED: release-sign noaws copy"; exit 1; }
 rs1 m14; m14b=$(snap "$work/m14"); run_s "${RK[@]}" bash "$work/rs-copy-noaws.sh" --build-dir "$work/m14"
@@ -1499,7 +1618,7 @@ rp_ba() { local script=$1; shift; : >"$CALLS"; rp_sealed
 rp_build() { rp_ba "$1" "${rp_args[@]}" --out "$2"; }
 # rp_sign SCRIPT BUILD REBUILD: the release-sign copy likewise
 rp_sign() { : >"$CALLS"
-  env -i PATH="$rp" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" TEST_AWS="$rpw/aws" RELEASE_KMS_KEY_REF=awskms:///test-release-ref STUB_AWS_KEY="$work/release.rsa" "${rp_extra[@]}" \
+  env -i PATH="$rp" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" TEST_AWS="$rpw/aws" RELEASE_KMS_KEY_REF=awskms:///test-release-ref RELEASE_ROLE_ARN=arn:aws:iam::111122223333:role/test-release RELEASE_TOKEN_FILE="$work/idtoken" STUB_AWS_KEY="$work/release.rsa" "${rp_extra[@]}" \
     "$BASH_BIN" "$1" --build-dir "$2" >"$work/rp.log" 2>&1 </dev/null
   echo $? >"$work/rp.rc"; }
 tools_called() { sed -n 's/^\([a-z0-9]*\) .*/\1/p' "$CALLS" | grep -E '^(sudo|unshare|sysctl|melange|aws|go|apko)$' | tr '\n' ' '; }
@@ -1844,7 +1963,7 @@ t "AC7" "release-sign-apks.sh: no command names a script through a variable path
 t "AC7" "release-sign-apks.sh: bin/apk-tool.py is named by its literal repo-root path at every call (six or more sites, none other)" bash -c "n=\$(grep -c -- '-I -B bin/apk-tool.py' '$RS_REAL'); [ \"\$n\" -ge 6 ] && ! grep 'PY3.*apk-tool.py' '$RS_REAL' | grep -qv -- '\"\$PY3\" -I -B bin/apk-tool.py'"
 t "AC7" "release-sign-apks.sh: no comment names bin/install-build-tools.sh" bash -c "! grep -q '#.*install-build-tools' '$RS_REAL'"
 rp_sign_dirs fcA fcB
-( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C RELEASE_KMS_KEY_REF=awskms:///test-release-ref "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" ) >"$work/fc.log" 2>&1; fc=$?
+( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C RELEASE_KMS_KEY_REF=awskms:///test-release-ref RELEASE_ROLE_ARN=arn:aws:iam::111122223333:role/test-release RELEASE_TOKEN_FILE="$work/idtoken" "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" ) >"$work/fc.log" 2>&1; fc=$?
 t "AC7" "release-sign-apks.sh: a run from another directory is refused (exit 2) with a message naming the repository root, and signs nothing" bash -c "[ '$fc' = 2 ] && grep -qi 'repository root' '$work/fc.log' && ! grep -q 'signed' '$work/fc.log'"
 
 # ===== cache#770: build-apk.sh is straight-line text; what were its loops and cases is done by the helper =====

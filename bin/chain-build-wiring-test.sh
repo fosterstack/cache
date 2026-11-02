@@ -622,7 +622,8 @@ hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts
 hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
 hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 the wrapped script of another step keeps the AWS variables" '  *) wrap=() ;;' '  *) wrap=(env AWS_ROLE_ARN=1) ;;'
+hm kwrap0  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap2  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$AWS_ROLE_ARN" bash "$@"'
 hm kwrap1  "AC2 only one of the two AWS variables is removed from Witness's own environment" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
 hm ksignall "AC2 every step is handed the variables, not release-sign and release-apks alone" '  release-sign|release-apks) export' '  *) export'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
@@ -3426,7 +3427,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1234
+EXPECT=1235
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

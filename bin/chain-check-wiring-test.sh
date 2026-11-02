@@ -397,7 +397,7 @@ hm h_fulcio  '--signer-file-key-path'                          '--signer-fulcio-
 hm h_ts      '--signer-file-key-path'                          '-t https://timestamp.example.com/api --signer-file-key-path'  'the helper'        "AC9 a timestamp authority flag"
 hm h_aud     'audience=sts.amazonaws.com'                      'audience=sigstore'                                      'the helper'        "AC9 the token asked for another audience"
 hm h_notrap  'trap [^\n]*EXIT HUP INT TERM\n'                  ''                                                       'the helper'        "AC9 no trap: the token directory outlives an interrupted run"
-hm h_wrap0   '\*\) wrap=\(\) ;;' '*) wrap=(env AWS_ROLE_ARN=1) ;;'                                    'the helper'        "AC9 the wrapped script of another step keeps the AWS variables"
+hm h_wrap0   '-- bash "\$@"' '-- env AWS_ROLE_ARN=1 bash "$@"'                                              'the helper'        "AC9 an AWS name in the wrapped command (the command-run record would name it)"
 hm h_sens    '--env-add-sensitive-key AWS_ROLE_ARN'            ''                                                       'the helper'        "AC9 the role variable is not a sensitive key"
 hm h_exec    'witness run --step'                              'exec witness run --step'                                'the helper'        "AC9 witness exec'd (the cleanup after it would never run)"
 hm h_ign     '\|\| rc=\$\?'                                    '|| true'                                                'the helper'        "AC9 a failure of the witnessed command is ignored"
