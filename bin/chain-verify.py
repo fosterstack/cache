@@ -1493,11 +1493,11 @@ def pinned_rekor_pem(signing_config):
     return rekor_pin(os.path.join(d, "sigstore-trust.json"), os.path.join(d, "rekor.pub"))
 
 
-def kms_aws(aws, argv):
+def kms_aws(aws, argv, who="kms-sign"):
     try:
         r = subprocess.run([aws] + argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
     except (OSError, subprocess.SubprocessError) as ex:
-        kms_refuse("cannot run the aws CLI %s (%s)" % (aws, type(ex).__name__))
+        kms_refuse("cannot run the aws CLI %s (%s)" % (aws, type(ex).__name__), who)
     if r.returncode != 0:
         # never the stderr text: an AccessDenied message names the assumed-role ARN, and the Witness record keeps stderr (the error code is enough to act on)
         text, code = (r.stderr or "") + (r.stdout or ""), ""
@@ -1506,7 +1506,7 @@ def kms_aws(aws, argv):
             c = text[k + len("An error occurred ("):].split(")", 1)[0]
             if 0 < len(c) <= 64 and all(ch.isalnum() or ch in "_.-" for ch in c):
                 code = ", error " + c
-        kms_refuse("aws %s failed (exit %d%s)" % (" ".join(argv[:2]), r.returncode, code))
+        kms_refuse("aws %s failed (exit %d%s)" % (" ".join(argv[:2]), r.returncode, code), who)
     return r.stdout
 
 
@@ -1668,12 +1668,36 @@ def cmd_kms_sign(a):
 
 
 
+def release_key_ref_check(who, aws=None):
+    """The one place the job's key reference is checked (W2): RELEASE_KMS_KEY_REF must be the verifier's own key, byte for byte (exit 2). With `aws` (the interim guard KA-0, which goes with KA-2) the
+    key must also list RSASSA_PKCS1_V1_5_SHA_256 first, because cosign signs with the first algorithm a key lists (exit 2, and the algorithm is named, never another used); only GetPublicKey is asked.
+    Called before any tool is run: by sign-record, and through `key-ref-check` by the two release signing scripts (the one that runs cosign with the guard; the one that calls kms-sign with the key check only, because kms-sign names the algorithm itself)."""
+    got = os.environ.get("RELEASE_KMS_KEY_REF")
+    if got != RELEASE_KEY_REF:
+        print("error: %s needs RELEASE_KMS_KEY_REF set to %s (got %s): not a KMS key reference of the release key" % (who, RELEASE_KEY_REF, json.dumps(got)), file=sys.stderr)
+        sys.exit(2)
+    if aws is None:
+        return
+    try:
+        algs = json.loads(kms_aws(aws, ["kms", "get-public-key", "--key-id", RELEASE_KEY_REF[len("awskms:///"):], "--query", "SigningAlgorithms", "--output", "json"], who))
+        assert isinstance(algs, list) and all(isinstance(x, str) for x in algs)
+    except (ValueError, AssertionError):
+        kms_refuse("the release key: get-public-key did not answer with a list of SigningAlgorithms", who)
+    if RELEASE_SIGNING_ALGORITHM not in algs:
+        print("%s: refused: the release key does not support %s (it lists: %s)" % (who, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)), file=sys.stderr)
+        sys.exit(2)
+    if algs[0] != RELEASE_SIGNING_ALGORITHM:
+        print("%s: refused: cosign signs with the first algorithm the release key lists (%s), not %s; KA-2 removes this path" % (who, algs[0], RELEASE_SIGNING_ALGORITHM), file=sys.stderr)
+        sys.exit(2)
+
+
+def cmd_key_ref_check(a):
+    release_key_ref_check("key-ref-check", a.aws if a.algorithm_guard else None)
+
+
 def cmd_sign_record(a):
     """Sign one staged Witness payload with the release key (the one signing function), write the record and its entries."""
-    # the one place the job's key reference is checked: it must be the verifier's own key, byte for byte, and is refused before cosign is asked
-    if os.environ.get("RELEASE_KMS_KEY_REF") != RELEASE_KEY_REF:
-        print("error: sign-record needs RELEASE_KMS_KEY_REF set to %s (got %s)" % (RELEASE_KEY_REF, json.dumps(os.environ.get("RELEASE_KMS_KEY_REF"))), file=sys.stderr)
-        sys.exit(2)
+    release_key_ref_check("sign-record", a.aws)
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template)), "cosign-signing-config.json")
     kms_sign(a.payload, a.out, signing_config)
 
@@ -2253,6 +2277,10 @@ def build_parser():
     sg.add_argument("--payload", required=True)      # the staged statement, signed byte for byte
     sg.add_argument("--out", required=True)          # the record to write; its Rekor entries file is written beside it
     sg.add_argument("--template", required=True)     # the release policy template: the signing config sits beside it
+    sg.add_argument("--aws", default="aws")          # the aws CLI the KA-0 guard asks (GetPublicKey only), found by name as cosign is
+    kc = sub.add_parser("key-ref-check")             # W2: the job's RELEASE_KMS_KEY_REF is the release key's reference; --algorithm-guard (KA-0) also asks the key's algorithm list
+    kc.add_argument("--algorithm-guard", action="store_true")
+    kc.add_argument("--aws", default="aws")          # the aws CLI the guard asks, found by name as cosign is
     ks = sub.add_parser("kms-sign")
     ks.add_argument("--key-ref", required=True)       # awskms:///<key>
     ks.add_argument("--digest", required=True)        # the sha256 of the signed bytes, 64 lowercase hex
@@ -2356,6 +2384,8 @@ def main(argv):
             cmd_bundle_check(a)
         elif a.cmd == "sign-record":
             cmd_sign_record(a)
+        elif a.cmd == "key-ref-check":
+            cmd_key_ref_check(a)
         elif a.cmd == "sign-records":
             cmd_sign_records(a)
         elif a.cmd == "actions":

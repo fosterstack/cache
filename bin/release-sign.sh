@@ -8,13 +8,14 @@ set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN RELEASE_KMS_KEY_REF; do
   if [ -z "${!name:-}" ]; then echo "release-sign: $name is unset" >&2; exit 2; fi
 done
-# the job pins the key's reference (awskms:///<name>); the name of the KMS key is not written here, because the chain's text scan refuses a word in it
-case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) echo "release-sign: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1 ;; esac
 # RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS SDK reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
 case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) echo "release-sign: RELEASE_ROLE_ARN is unset" >&2; exit 2;; esac
 case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) echo "release-sign: RELEASE_TOKEN_FILE is unset" >&2; exit 2;; esac
 export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+# the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte, and the key lists RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists);
+# exit 2 before anything is made or signed (the tag check above runs no tool). The interim guard goes with KA-2.
+python3 -I -B bin/chain-verify.py key-ref-check --algorithm-guard || exit 2
 # REQ-CHAIN-007-AC21 (Astra R3): checksums.txt has no other producer. Before any evidence is made or anything is signed, the four archives in dist are bound to Build's digests.json
 # and the file release-assets attaches and this step signs is written from them; an archive that is missing, extra or not Build's stops the step here
 python3 bin/release-metadata.py checksums --version "${GITHUB_REF_NAME#v}" --digests witness-build/digests.json --dist dist --out dist/checksums.txt

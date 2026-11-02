@@ -21,7 +21,7 @@
 # Only files named *.apk are signed. An APKINDEX.tar.gz in Build keeps its assembly-key signature, so the release
 # workflow must not ship it as it is.
 # Exit codes: 0 all signed | 1 a signing step failed (nothing in Build's directory was changed) |
-# 2 refused: a missing or unknown argument (--key is unknown), RELEASE_KMS_KEY_REF unset or not awskms:///<name>, RELEASE_ROLE_ARN or
+# 2 refused: a missing or unknown argument (--key is unknown), RELEASE_KMS_KEY_REF unset or not the release key's reference (bin/chain-verify.py key-ref-check, byte for byte), RELEASE_ROLE_ARN or
 # RELEASE_TOKEN_FILE unset or empty (the Witness wrapper hands them over; the signer maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE), a
 # missing file, a symlink, build/keys/release.rsa.pub is not a readable public key (the committed placeholder, until a
 # human commits the real half: every release is refused) or is the assembly public key, or Build carries a signature
@@ -53,9 +53,9 @@ while [ $# -gt 0 ]; do
   esac
   shift 2
 done
-# the key is the KMS reference the job pins (as the release signing step reads it); checked before any tool runs
+# the key is the KMS reference the job pins (as the release signing step reads it); the one check in bin/chain-verify.py (key-ref-check) refuses any other than the verifier's own, before any tool runs
 [ -n "${RELEASE_KMS_KEY_REF:-}" ] || die "RELEASE_KMS_KEY_REF is unset"
-case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) die "RELEASE_KMS_KEY_REF is not a KMS key reference (awskms:///<name>)";; esac
+"$PY3" -I -B "$KMSSIGN" key-ref-check || die "RELEASE_KMS_KEY_REF is not a KMS key reference of the release key (key-ref-check refused it)"
 # RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS CLI reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
 case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) die "RELEASE_ROLE_ARN is unset (the release job's signing role)";; esac
 case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) die "RELEASE_TOKEN_FILE is unset (the release job's identity-token file)";; esac
