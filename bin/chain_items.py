@@ -472,8 +472,29 @@ def cmd_rebuild_compare(a):
 
 
 # ---- record-env -------------------------------------------------------------------------------------------------------------------
+ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
+
+
+def env_values(payload):
+    """The values of the variables the environment attestor recorded, one per line ("" when the payload is not a statement that holds
+    one): an arn:aws: value is refused there only, since a KMS-signed record may carry its own key ARN elsewhere."""
+    try:
+        stmt = json.loads(payload)
+    except ValueError:
+        return ""
+    pred = stmt.get("predicate") if isinstance(stmt, dict) else None
+    atts = pred.get("attestations") if isinstance(pred, dict) else None
+    out = []
+    for a in atts if isinstance(atts, list) else []:
+        att = a.get("attestation") if isinstance(a, dict) and a.get("type") == ENV_ATTESTOR else None
+        variables = att.get("variables") if isinstance(att, dict) else None
+        if isinstance(variables, dict):
+            out += [json.dumps(v) for v in variables.values()]
+    return "\n".join(out)
+
+
 def check_record_env(stage, envelope, payload):
-    """AC8 on an already-read record (REQ-CHAIN-004-AC8): no ACTIONS_ID_TOKEN_REQUEST_* name (the whole prefix), runtime-token name, GH_TOKEN or GITHUB_TOKEN (and the other TOKEN_NAMES), no arn:aws: value, no compact JWT
+    """AC8 on an already-read record (REQ-CHAIN-004-AC8): no ACTIONS_ID_TOKEN_REQUEST_* name (the whole prefix), runtime-token name, GH_TOKEN or GITHUB_TOKEN (and the other TOKEN_NAMES), no arn:aws: value among the recorded environment's variables, no compact JWT
     and no GitHub token value anywhere in the envelope or the decoded payload. The verifiers call it for every verified Witness collection, naming the record's own stage."""
     text = json.dumps(envelope) + "\n" + payload.decode("utf-8", "replace")
     found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*|ACTIONS_RUNTIME_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
@@ -483,8 +504,8 @@ def check_record_env(stage, envelope, payload):
         refuse(stage, "env: the record holds a compact JWT")
     if re.search(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}", text):
         refuse(stage, "env: the record holds a GitHub token")
-    if re.search(r"\barn:aws[a-z-]*:", text):
-        refuse(stage, "env: the record holds an arn:aws: value (the signing role is not recorded)")
+    if re.search(r"\barn:aws[a-z-]*:", env_values(payload)):
+        refuse(stage, "env: the recorded environment holds an arn:aws: value (the signing role is not recorded)")
     if re.search(r"\bdckr_pat_[A-Za-z0-9_-]{20,}", text):
         refuse(stage, "env: the record holds a Docker Hub token")
     if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text.replace("\\n", "\n")):

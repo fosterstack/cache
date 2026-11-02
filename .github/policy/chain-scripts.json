@@ -634,7 +634,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "37ac4390e6e18583b853059e4119a0e76c9421672d2284401e9e1412e99c0b7a"
+      "sha256": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
