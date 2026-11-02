@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "cd410e6c56341ad93918133e0fe7fc46290c869746bd946e115cf4880f52eae4",
+      "sha256": "d52085e4388baee64ef0a54e116c18a61c04f9789ad5ed72f2e61d37026277c9",
       "tools": [
         "make",
         "at",
@@ -325,7 +325,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key; Witness's own environment holds no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE for any step, and the wrapped command is the plain bash SCRIPT, so no AWS role or token-path name stands in the command-run record (attestors environment, git, material, product; never slsa; the steps whose scripts sign with the key themselves, release-sign and release-apks, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive keys of the record, and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the AWS variables themselves, REQ-CHAIN-007-AC15; the token made for it is removed when Witness returns), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
-      "sha256": "6dcebff114dd8af1f815db68720335700d71311597bf1146864f56ba914df8cc",
+      "sha256": "b80d8c4f9b670f299a124f56069e410237afc0e6714d9f589b2e857301456683",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -1730,7 +1730,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures with the release KMS key (--key RELEASE_KMS_KEY_REF) and a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists), else exit 2; KA-2 removes this path",
-      "sha256": "b42603141085583e80f581d186258176462624dfcd71f20825eb66fe7c4ca0ac",
+      "sha256": "ab6f6a0a9425a8491eceb89e50326c313c7c2c34356966fb6bf139cfb0b3cc8d",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1765,7 +1765,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "e909714631ce5492623233de30c8c75be8aecde498b701d1d9cd12c65fd857c3",
+      "sha256": "1c30cdf7477937993532a9774fd86df95e1c94183a1e6222bb745b1c65666a4b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -2132,7 +2132,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "c394ca362da33d798358e497012804d44caf0b9d766a5ee0684fa90e260cfc42",
+      "sha256": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
       "exceptions": [
         {
           "rule": "deny",
@@ -2238,7 +2238,7 @@
       ],
       "signs": "other",
       "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) by chain-verify.py kms-sign (KMS Sign through the aws CLI, RSASSA_PKCS1_V1_5_SHA_256 named on every call) on each apk's control section, posts one Rekor entry, and checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (chain-verify.py bundle-check) (REQ-CHAIN-007-AC6); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); refuses, with exit 2 and before any tool, a RELEASE_KMS_KEY_REF that is not the verifier's own key reference, byte for byte (chain-verify.py key-ref-check); run by bin/release-apks.sh",
-      "sha256": "8e3c6cf3716b304d2dc9aea1d520347fcde405f817589e9397e39bc114ec73aa",
+      "sha256": "22d824a30c5be5c840cd01e7096e973f56fbe9ccd081420c988fe5c48d4b4abd",
       "exceptions": [
         {
           "rule": "script-name",

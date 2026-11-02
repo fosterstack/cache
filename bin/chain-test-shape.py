@@ -896,7 +896,7 @@ def ns_shell(path, name):
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "e3df12b9a6dc8d83f24572f2c3a5fe9f11db859d435ae630c785fe5d5b3f2145",
-    "bin/apk-tool.py": "c394ca362da33d798358e497012804d44caf0b9d766a5ee0684fa90e260cfc42",
+    "bin/apk-tool.py": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "0d8a8273d334bcf90e64bec45aa5d469e152cc2b24e0a7b517fec18a6c226f8f",
@@ -906,7 +906,7 @@ NS_SHA = {
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
     "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
-    "bin/chain-verify.py": "cd410e6c56341ad93918133e0fe7fc46290c869746bd946e115cf4880f52eae4",
+    "bin/chain-verify.py": "d52085e4388baee64ef0a54e116c18a61c04f9789ad5ed72f2e61d37026277c9",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
     "bin/chain_items.py": "65361e57ce3725650ca8d04909c73b48dd4393fb437c76672ff959e2a4cad085",

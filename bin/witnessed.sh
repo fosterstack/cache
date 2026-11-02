@@ -13,7 +13,7 @@
 #    at it for that one call, and the entries file of the Rekor entry stays beside the record (STEP-collection.rekor.json). Nothing goes to GITHUB_ENV. The directory is
 #    removed when the shell gets EXIT, HUP, INT or TERM.
 #  - release-sign and release-apks are the two steps whose wrapped scripts sign with the key themselves (cosign; KMS Sign through the aws CLI): the list `signers` names them. For them the role and the token path are exported under the names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (names the AWS SDK does not read; sensitive keys, so no
-#    record holds them), and each of those two scripts maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself, before its first signing call. The wrapped command is the plain
+#    record holds them), and each of those two scripts maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself, before its first aws or cosign call. The wrapped command is the plain
 #    `bash SCRIPT`: no AWS_ name, role value or token path stands in an argument, because the command-run attestor records the command and record-env refuses a record that names the variables.
 #    Witness's environment on those steps holds RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE, AWS_REGION and RELEASE_KMS_KEY_REF and no AWS role or token-path name. The token made for those scripts is
 #    in a directory of its own and is removed the moment Witness returns, before the fresh token for the signing call is fetched. The request variables are plain shell variables

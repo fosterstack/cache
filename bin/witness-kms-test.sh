@@ -17,9 +17,9 @@
 #     directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
 #   - Witness's own environment holds no AWS role or token-path variable, no AWS_ name at all on a step that does not sign, and no request variable, for every step; the AWS SDK is pointed at a token file by
 #     AWS_WEB_IDENTITY_TOKEN_FILE and at the role by AWS_ROLE_ARN for the signing call only (sign-record, with a fresh token). The wrapped command is the plain `bash SCRIPT` for every step (the command-run
-#     attestor records it, and record-env refuses a record that names the AWS role or token-file variables). release-sign and release-apks are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE
-#     (sensitive keys, so no record holds them) and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the two AWS variables themselves, refusing (naming only RELEASE_*) when either is empty; the token file is removed when Witness
-#     returns, before the fresh token for the signing call is fetched; nothing is written to GITHUB_ENV
+#     attestor records it, and record-env refuses a record that names the AWS role or token-file variables). release-sign and release-apks only are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE
+#     (sensitive keys, so no record holds them), and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the two AWS variables themselves, each before its first aws or cosign call, refusing (naming only RELEASE_*)
+#     when either is empty; the token file is removed when Witness returns, before the fresh token for the signing call is fetched; nothing is written to GITHUB_ENV
 #   - bin/with-aws-token.sh (Sign's one token fetch, of its provenance signature and of each staged record): a fresh token, mode 0600 in a 0700 directory under RUNNER_TEMP, for one call only,
 #     removed the moment the call ends, its exit status kept; no request variable reaches the call; no call on a failed, empty or null token
 #   - both variables are sensitive keys of the record; no SIGSTORE_ID_TOKEN is used
