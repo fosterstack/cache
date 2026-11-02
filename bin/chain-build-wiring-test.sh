@@ -623,7 +623,7 @@ hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witn
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
 hm kwrap0  "AC2 the wrapped script of another step keeps the AWS variables" '  *) wrap=() ;;' '  *) wrap=(env AWS_ROLE_ARN=1) ;;'
 hm kwrap1  "AC2 only one of the two AWS variables is removed from Witness's own environment" '-u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN' '-u AWS_ROLE_ARN'
-hm ksignall "AC2 every step is handed the variables, not release-sign and release-apks alone" '  release-sign|release-apks) wrap=(env' '  *) wrap=(env'
+hm ksignall "AC2 every step is handed the variables, not release-sign and release-apks alone" '  release-sign|release-apks) export' '  *) export'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
 hm kghenv  "AC2 the token file written to GITHUB_ENV" 'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"' $'export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"\necho "AWS_WEB_IDENTITY_TOKEN_FILE=$td/token" >> "$GITHUB_ENV"'

@@ -504,13 +504,15 @@ STEPS = ("apk", "build", "rapk", "rebuild",
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # Handoff 0713: Witness signs with the release KMS key by its alias. The identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a
 # file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; every step but
-# release-sign and release-apks (the two scripts that sign with the key through cosign) runs its script under `env -u` of both variables; both are sensitive keys of the record.
+# release-sign and release-apks (the two scripts that sign with the key) runs its script without both variables; Witness itself runs under `env -u` of both on every step, and only those two
+# scripts get them, through the release-creds literal, from RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive names no record holds; all four names are sensitive keys of the record.
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
+RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
 
 
 def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
@@ -531,7 +533,8 @@ def witnessed_lines():
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
             'case "$step" in',
-            '  release-sign|release-apks) wrap=(env "AWS_ROLE_ARN=$AWS_ROLE_ARN" "AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE") ;;',
+            '  release-sign|release-apks) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN" RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"; '
+            "wrap=(bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec \"$@\"' release-creds) ;;",
             "  *) wrap=() ;;",
             "esac",
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',

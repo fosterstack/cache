@@ -52,6 +52,8 @@ set -u
   echo "ROLE ${AWS_ROLE_ARN-UNSET}"
   echo "TOKFILE ${AWS_WEB_IDENTITY_TOKEN_FILE-UNSET}"
   echo "REQ ${ACTIONS_ID_TOKEN_REQUEST_TOKEN-UNSET}|${ACTIONS_ID_TOKEN_REQUEST_URL-UNSET}|${ACTIONS_RUNTIME_TOKEN-UNSET}"
+  echo "AWSNAMES $(env | grep -c -E '^AWS_(ROLE_ARN|WEB_IDENTITY_TOKEN_FILE)=')"
+  echo "RELNAMES $(env | grep -c -E '^RELEASE_(ROLE_ARN|TOKEN_FILE)=')"
   if [ -n "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
     echo "TOKEXISTS $([ -f "$AWS_WEB_IDENTITY_TOKEN_FILE" ] && echo yes || echo no)"
     echo "TOKMODE $(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE" 2> /dev/null || echo none)"
@@ -100,7 +102,9 @@ if a[:1] == ["sign-record"]:
 '''
 
 FAKE_INNER = r'''#!/usr/bin/env bash
-env | grep -E '^(AWS_|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|SIGSTORE)' | sort >> "$LOG/inner.log"
+env | grep -E '^(AWS_|RELEASE_ROLE_ARN|RELEASE_TOKEN_FILE|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|SIGSTORE)' | sort >> "$LOG/inner.log"
+f=${AWS_WEB_IDENTITY_TOKEN_FILE:-}
+if [ -n "$f" ]; then echo "INNERTOK exists=$([ -f "$f" ] && echo yes || echo no) mode=$(stat -c %a "$f" 2> /dev/null || echo none) content=$(cat "$f" 2> /dev/null)" >> "$LOG/inner.log"; fi
 echo ran >> "$LOG/inner.log"
 '''
 
@@ -212,9 +216,11 @@ def problems_witnessed(text):
         bad.append("the wrapped script did not run")
     if re.search(r"^AWS_(WEB_IDENTITY_TOKEN_FILE|ROLE_ARN)=", inner, re.M):
         bad.append("the wrapped script of release-verify still sees the AWS variables")
+    if re.search(r"^RELEASE_(ROLE_ARN|TOKEN_FILE)=", inner, re.M) or (lines(log, "witness.log", "RELNAMES") or ["0"])[0] != "0":
+        bad.append("a step that does not sign with the key has RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE exported")
     if re.search(r"^ACTIONS_ID_TOKEN|^SIGSTORE", inner, re.M):
         bad.append("the wrapped script sees a request variable or SIGSTORE_ID_TOKEN")
-    for k in ("AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"):
+    for k in ("AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"):
         if "--env-add-sensitive-key " + k not in argv:
             bad.append("%s is not a sensitive key of the record" % k)
     if "SIGSTORE_ID_TOKEN" in argv:
@@ -225,18 +231,28 @@ def problems_witnessed(text):
         bad.append("something was written to GITHUB_ENV")
     if tokdir and os.path.exists(tokdir):
         bad.append("the token directory still exists after success")
-    # release-sign: the one wrapped script that signs with the key itself keeps both variables
-    t2, repo2, log2, runner2, r2 = run_witnessed(text, "release-sign")
-    inner2 = read(os.path.join(log2, "inner.log"))
-    if not (re.search(r"^AWS_ROLE_ARN=" + re.escape(ROLE) + "$", inner2, re.M) and re.search(r"^AWS_WEB_IDENTITY_TOKEN_FILE=", inner2, re.M)):
-        bad.append("the wrapped script of release-sign does not keep AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE")
-    if len(read(os.path.join(log2, "loop.log")).splitlines()) != 1:
-        bad.append("release-sign asks for more than one token")
-    # release-apks (K2): the apk signer calls cosign with the KMS key itself, so its wrapped script keeps both variables too
-    t2b, repo2b, log2b, runner2b, r2b = run_witnessed(text, "release-apks")
-    inner2b = read(os.path.join(log2b, "inner.log"))
-    if not (re.search(r"^AWS_ROLE_ARN=" + re.escape(ROLE) + "$", inner2b, re.M) and re.search(r"^AWS_WEB_IDENTITY_TOKEN_FILE=", inner2b, re.M)):
-        bad.append("the wrapped script of release-apks does not keep AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE")
+    # release-sign and release-apks (the two scripts that sign with the key): the wrapped command is handed the role and a token file through the release-creds literal,
+    # and Witness's own argv and environment hold neither value, no AWS name and no path (REQ-CHAIN-007-AC15)
+    for stp in ("release-sign", "release-apks"):
+        t2, repo2, log2, runner2, r2 = run_witnessed(text, stp)
+        inner2 = read(os.path.join(log2, "inner.log"))
+        wargv = (lines(log2, "witness.log", "ARGV") or [""])[0]
+        if not re.search(r"^AWS_ROLE_ARN=" + re.escape(ROLE) + "$", inner2, re.M):
+            bad.append("the wrapped script of %s does not see AWS_ROLE_ARN = the role" % stp)
+        if not re.search(r"^INNERTOK exists=yes mode=600 content=" + re.escape(TOKEN) + "$", inner2, re.M):
+            bad.append("the wrapped script of %s does not see AWS_WEB_IDENTITY_TOKEN_FILE as an existing file of mode 600 holding the token, while it runs: %r" % (stp, inner2[-200:]))
+        mt = re.search(r"^AWS_WEB_IDENTITY_TOKEN_FILE=(\S+)$", inner2, re.M)   # the path the script was handed: it must not be in Witness's argv
+        if ROLE in wargv or "role/" in wargv or TOKEN in wargv or not mt or mt.group(1) in wargv or mt.group(1).rsplit("/", 1)[0] + "/token" in wargv:
+            bad.append("%s: Witness's argv holds the role value or the token path (the command-run attestor records argv): %r" % (stp, wargv[-300:]))
+        if "$RELEASE_ROLE_ARN" not in wargv or "$RELEASE_TOKEN_FILE" not in wargv:
+            bad.append("%s: Witness's argv does not hold the release-creds literal with the names only" % stp)
+        if (lines(log2, "witness.log", "AWSNAMES") or ["x"])[0] != "0":
+            bad.append("%s: Witness's own environment holds AWS_ROLE_ARN or AWS_WEB_IDENTITY_TOKEN_FILE" % stp)
+        if (lines(log2, "witness.log", "RELNAMES") or ["x"])[0] != "2":
+            bad.append("%s: RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE are not both exported to Witness (sensitive names)" % stp)
+        if len(read(os.path.join(log2, "loop.log")).splitlines()) != 1:
+            bad.append("%s asks for more than one token" % stp)
+        shutil.rmtree(t2, ignore_errors=True)
     # a failing Witness: its exit status is kept and the token directory is gone
     t3, repo3, log3, runner3, r3 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_RC": "7"})
     d3 = ""   # Witness no longer sees the token path; the failing-Witness case is judged by the runner directory being empty below
@@ -287,7 +303,7 @@ def mutant(label, fn):
 
 mutant("audience sigstore", lambda s: s.replace("audience=sts.amazonaws.com", "audience=sigstore"))
 mutant("no trap and no removal of the token directory", lambda s: re.sub(r"^trap .*\n", "", s, flags=re.M).replace('rm -rf "$td"\n', ""))
-mutant("the wrapped script keeps the AWS variables", lambda s: s.replace("  *) wrap=() ;;", '  *) wrap=(env "AWS_ROLE_ARN=$AWS_ROLE_ARN" "AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE") ;;'))
+mutant("the wrapped script keeps the AWS variables", lambda s: s.replace("  *) wrap=() ;;", '  *) wrap=(env "AWS_ROLE_ARN=$AWS_ROLE_ARN" "AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE") ;;'))   # the old env form, on a step that must not have it
 mutant("Witness itself sees the AWS variables", lambda s: s.replace("env -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN witness run", "witness run"))
 mutant("a value written to GITHUB_ENV", lambda s: s.replace("rc=0\nenv -u", 'echo "AWS_ROLE_ARN=$AWS_ROLE_ARN" >> "${GITHUB_ENV:-/dev/null}"\nrc=0\nenv -u'))
 mutant("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'))
@@ -302,8 +318,13 @@ mutant("the exit status of Witness lost", lambda s: s.replace('exit "$rc"', "exi
 mutant("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
 mutant("no role check before the token is asked for", lambda s: s.replace(': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"\n', ""))
 mutant("the token not checked for null", lambda s: s.replace('[ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }\n', ""))
-mutant("release-sign loses the variables too", lambda s: s.replace("  release-sign|release-apks) wrap=(env", "  release-apks) wrap=(env"))
-mutant("release-apks loses the variables too", lambda s: s.replace("  release-sign|release-apks) wrap=(env", "  release-sign) wrap=(env"))
+mutant("release-sign loses the variables too", lambda s: s.replace("  release-sign|release-apks) export", "  release-apks) export"))
+mutant("release-apks loses the variables too", lambda s: s.replace("  release-sign|release-apks) export", "  release-sign) export"))
+mutant("the wrapped literal expands in the parent (the values in argv)", lambda s: s.replace("""bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"' release-creds""", """bash -c "AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec \\"\\$@\\"" release-creds"""))
+mutant("a wrong token path handed on", lambda s: s.replace('RELEASE_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"', 'RELEASE_TOKEN_FILE="$td/no-such-token"'))
+mutant("RELEASE_ROLE_ARN not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key RELEASE_ROLE_ARN \\\n", ""))
+mutant("RELEASE_TOKEN_FILE not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key RELEASE_TOKEN_FILE \\\n", ""))
+mutant("RELEASE_ROLE_ARN exported for every step", lambda s: s.replace("  *) wrap=() ;;", '  *) export RELEASE_ROLE_ARN="$AWS_ROLE_ARN"; wrap=() ;;'))
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # bin/witness-sign-staged.sh: Sign's step for the records of the jobs that hold no token
@@ -406,7 +427,7 @@ mutant2("no cleanup of the token directory", lambda s: re.sub(r"^trap .*\n", "",
 mutant2("the signed record not checked", lambda s: re.sub(r"^  python3 -I -B bin/chain-verify.py verify .*\n", "", s, flags=re.M))
 mutant2("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'))
 
-EXPECT = 28
+EXPECT = 33
 print("pass=%d fail=%d" % (passn, failn))
 if passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT))

@@ -703,8 +703,12 @@ cmpmk "$work/cm17"; mkdir "$work/cm17/rapks/ubuntu-24.04-arm/aarch64/unexpected.
 cmpexpect "a directory named unexpected.apk in Rebuild -> refused (exit 2), not a regular file" 2 'not a regular file' "$work/cm17"
 cmpmk "$work/cm13"; mkdir -p "$work/cm13/elsewhere"; (cd "$work/cm13/elsewhere" && env -i PATH="$PATH" HOME=/nonexistent "$(command -v bash)" ../bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"
 t "rule 22" "release-compare: a run from another directory is refused (exit 2) naming the repository root" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi 'repository root' '$work/log'"
-t "rule 22" "release-compare reads no key, no secret and no signing tool: it names none of melange, openssl, a key file, the KMS key reference, a credential, a download tool or a network library" bash -c "test -f '$root/bin/release-compare.py' && ! cat '$root/bin/release-compare.sh' '$root/bin/release-compare.py' | grep -v '^ *#' | grep -Eqi 'melange|openssl|release\.rsa\b|RELEASE_KMS_KEY_REF|awskms|APK_RELEASE|DOCKERHUB|GH_TOKEN|cu''rl|wg''et|\bnc\b|socket|urllib|requests|crane'"
-t "rule 22" "release-compare (K5): the no-key grep catches a compare that names RELEASE_KMS_KEY_REF or an awskms reference (a mutated copy is flagged)" bash -c "for w in 'echo \$RELEASE_KMS_KEY_REF' 'x=awskms:///k'; do { cat '$root/bin/release-compare.sh'; echo \"\$w\"; } | grep -v '^ *#' | grep -Eqi 'melange|openssl|release\.rsa\b|RELEASE_KMS_KEY_REF|awskms|APK_RELEASE' || exit 1; done"
+# the no-key guard and its mutated-compare case run ONE pattern (NOKEY_PAT) through ONE function (nokey_flags): a copy of the pattern in the case would stay green when the guard's pattern is reverted
+NOKEY_PAT='melange|openssl|release\.rsa\b|RELEASE_KMS_KEY_REF|awskms|APK_RELEASE|DOCKERHUB|GH_TOKEN|cu''rl|wg''et|\bnc\b|socket|urllib|requests|crane'
+nokey_flags() { grep -v '^ *#' | grep -Eqi "$NOKEY_PAT"; }
+export NOKEY_PAT; export -f nokey_flags
+t "rule 22" "release-compare reads no key, no secret and no signing tool: it names none of melange, openssl, a key file, the KMS key reference, a credential, a download tool or a network library" bash -c "test -f '$root/bin/release-compare.py' && ! cat '$root/bin/release-compare.sh' '$root/bin/release-compare.py' | nokey_flags"
+t "rule 22" "release-compare (K5): the no-key guard (the same pattern and function) flags a compare that names RELEASE_KMS_KEY_REF or an awskms reference (a mutated copy is flagged)" bash -c "for w in 'echo \$RELEASE_KMS_KEY_REF' 'x=awskms:///k'; do { cat '$root/bin/release-compare.sh'; echo \"\$w\"; } | nokey_flags || exit 1; done"
 
 # ===== rule 17 18: key policy ===========================================================================================
 t "rule 17" "build-apk.sh names the committed assembly key (build/keys/assembly.rsa) as the only key it signs with" bash -c "test -f '$BA_PROD' && grep -q 'build/keys/assembly.rsa' '$BA_PROD'"
