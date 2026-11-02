@@ -1483,7 +1483,16 @@ leak("pem", "-----BEGIN " + "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\
 leak("dckr", "dckr_pat_" + "B" * 30)
 leak("rra", {"RELEASE_ROLE_ARN": "x"})
 leak("rtf", {"RELEASE_TOKEN_FILE": "x"})
-leak("arnv", "arn:aws:iam::111122223333:role/release-signing")
+ENVT = "https://witness.dev/attestations/environment/v0.1"
+def with_atts(name, atts):
+    q = json.loads(json.dumps(st)); q.setdefault("predicate", {})["attestations"] = atts
+    e = dict(r); e["payload"] = base64.b64encode(json.dumps(q).encode()).decode(); json.dump(e, open("%s/renv_%s.json" % (w, name), "w"))
+ARN = "arn:aws:iam::111122223333:role/release-signing"
+with_atts("arnv", [{"type": ENVT, "attestation": {"os": "linux", "variables": {"GITHUB_REF": "refs/tags/v0.3.0", "SOME_ROLE": ARN}}}])
+with_atts("arnout", [{"type": ENVT, "attestation": {"os": "linux", "variables": {"GITHUB_REF": "refs/tags/v0.3.0"}}},
+                     {"type": "https://witness.dev/attestations/command-run/v0.1", "attestation": {"cmd": ["bash", "-c", "echo " + ARN]}}])
+q = json.loads(json.dumps(st)); q.setdefault("predicate", {})["kmsKeyArn"] = "arn:aws:kms:us-east-1:111122223333:key/0000"
+e = dict(r); e["payload"] = base64.b64encode(json.dumps(q).encode()).decode(); json.dump(e, open("%s/renv_arnkms.json" % w, "w"))
 PYE
 expect_ok     "R4 record-env accepts a Witness record that carries no token" record-env --record "$work/build_coll.json"
 expect_refuse "R4 record-env refuses a Witness record that names GH_TOKEN (inside the base64 payload)" "env|gh_token" record-env --record "$work/renv_gh.json"
@@ -1497,7 +1506,9 @@ expect_refuse "R4 record-env refuses any ACTIONS_RUNTIME_ variable (a prefix, no
 expect_refuse "R4 record-env refuses a Witness record that holds a private key block" "env|private key" record-env --record "$work/renv_pem.json"
 expect_refuse "KA-2 R4C-3 record-env refuses a Witness record that names RELEASE_ROLE_ARN" "env|release_role_arn" record-env --record "$work/renv_rra.json"
 expect_refuse "KA-2 R4C-3 record-env refuses a Witness record that names RELEASE_TOKEN_FILE" "env|release_token_file" record-env --record "$work/renv_rtf.json"
-expect_refuse "KA-2 R4C-3 record-env refuses a Witness record that holds an arn:aws: value" "env|arn" record-env --record "$work/renv_arnv.json"
+expect_refuse "KA-2 R4C-3 record-env refuses a Witness record whose recorded environment holds an arn:aws: value" "env|arn" record-env --record "$work/renv_arnv.json"
+expect_ok     "KA-2 R4C-3 record-env accepts a Witness record with an arn:aws: string only outside the recorded environment (a command line)" record-env --record "$work/renv_arnout.json"
+expect_ok     "KA-2 R4C-3 record-env accepts a Witness record that carries the signing key ARN (arn:aws:kms) outside the recorded environment" record-env --record "$work/renv_arnkms.json"
 expect_refuse "R4 record-env refuses a Witness record that holds a Docker Hub token value" "env|docker hub token" record-env --record "$work/renv_dckr.json"
 # N-c: only a JOB-level `uses:` naming a .yml/.yaml file is a reusable workflow (not opened as a directory); a STEP-level reference to a
 # directory that is called thing.yml and holds an action.yml is followed
@@ -2116,7 +2127,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=789
+EXPECT=791
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
