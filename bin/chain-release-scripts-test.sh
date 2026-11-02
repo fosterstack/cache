@@ -133,6 +133,8 @@ open(os.environ["LOG"], "a").write("chain-verify %s\n" % " ".join(a))
 if a[0] == "key-ref-check":     # W2 + KA-0 (a model of the one check in bin/chain-verify.py): the job's key reference must be the release key's, byte for byte; --algorithm-guard asks the key's algorithm list
     if os.environ.get("RELEASE_KMS_KEY_REF") != "awskms:///alias/fosterstack-release-signing":
         print("error: key-ref-check needs RELEASE_KMS_KEY_REF set to the release key (got %r): not a KMS key reference of the release key" % os.environ.get("RELEASE_KMS_KEY_REF"), file=sys.stderr); sys.exit(2)
+    if "--algorithm-guard" in a and os.environ.get("KEYREF_AWS_FAIL"):     # KA-0: the aws CLI that lists the key's algorithms fails: exit 1, a different status from the refusal
+        print("error: the aws CLI failed: could not list the release key's signing algorithms", file=sys.stderr); sys.exit(1)
     if "--algorithm-guard" in a and os.environ.get("KEYREF_ALG_FAIL"):
         print("refused: cosign signs with the first algorithm the release key lists (RSASSA_PSS_SHA_256), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path", file=sys.stderr); sys.exit(2)
     sys.exit(0)
@@ -542,6 +544,8 @@ to = tree(); rc, so, se = run(to, "release-sign", creds=REG, env={"RELEASE_KMS_K
 check(rc == 2 and "not a KMS key reference of the release key" in se and not [l for l in log(to) if l.startswith(("cosign", "vendor-provenance"))], "W2 another awskms alias is refused with exit 2 before anything is made or signed", "rc=%s %s" % (rc, first(se)))
 tk = tree(); rc, so, se = run(tk, "release-sign", creds=REG, env={"KEYREF_ALG_FAIL": "1"})
 check(rc == 2 and "KA-2 removes this path" in se and not [l for l in log(tk) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 a key whose first algorithm is not RSASSA_PKCS1_V1_5_SHA_256 stops the step with exit 2 before any cosign call", "rc=%s %s" % (rc, first(se)))
+ta = tree(); rc, so, se = run(ta, "release-sign", creds=REG, env={"KEYREF_AWS_FAIL": "1"})
+check(rc == 1 and "aws CLI failed" in se and not [l for l in log(ta) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 an aws CLI failure in the algorithm guard stops the step with the guard's exit 1 (not the refusal's 2), before any cosign call", "rc=%s %s" % (rc, first(se)))
 # REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): release-sign.sh makes dist/checksums.txt itself, from the four archives Build recorded, before its first signature
 t21 = tree(); rc21, so21, se21 = run(t21, "release-sign", creds=REG)
 ARC21 = sorted((("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
@@ -1076,7 +1080,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "469"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "470"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

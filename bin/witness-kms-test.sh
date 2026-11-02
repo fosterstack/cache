@@ -393,6 +393,25 @@ def problems_witnessed(text):
     return bad
 
 
+def problems_none(text, step):
+    """A step that does not sign (S5 gap 2(a)): Witness and the wrapped script see no AWS_ or RELEASE_ variable, no token file exists while it runs, and the step exits 0."""
+    bad = []
+    t, repo, log, runner, r = run_witnessed(text, step)
+    if r.returncode != 0:
+        bad.append("%s exit %d: %s" % (step, r.returncode, r.stderr.strip()[:120]))
+    if (lines(log, "witness.log", "NAMES") or ["x"])[0].strip() != "":
+        bad.append("%s: Witness sees AWS_ or RELEASE_ variables (a step that does not sign must see none): %r" % (step, (lines(log, "witness.log", "NAMES") or [""])[0]))
+    inner = read(os.path.join(log, "inner.log"))
+    if "ran" not in inner:
+        bad.append("%s: the wrapped script did not run" % step)
+    if re.search(r"^(AWS_|RELEASE_)", inner, re.M):
+        bad.append("%s: the wrapped script sees an AWS_ or RELEASE_ variable" % step)
+    if "RTFILES 0" not in inner:
+        bad.append("%s: a token file exists while the wrapped script runs" % step)
+    shutil.rmtree(t, ignore_errors=True)
+    return bad
+
+
 src = open(os.path.join(root, "bin", "witnessed.sh")).read()
 b = problems_witnessed(src)
 check("witnessed.sh: signs with the KMS key, token to a private file, variables scoped, cleaned up", not b, "; ".join(b))
@@ -406,6 +425,13 @@ def mutant(label, fn):
     bad = problems_witnessed(text)
     check("witnessed.sh mutant caught: %s" % label, bool(bad), "caught nothing")
 
+
+NONSIGN = ("release-verify", "release-publish", "release-assets", "release-postverify")
+for stp in NONSIGN:
+    b = problems_none(src, stp)
+    check("witnessed.sh: %s is a step that does not sign: Witness and the wrapped script see no AWS_ or RELEASE_ name and no token file" % stp, not b, "; ".join(b))
+_ms = src.replace('signers=" release-sign release-apks "\n', 'signers=" release-sign release-apks release-publish "\n')
+check("witnessed.sh mutant caught: release-publish added to the signers", _ms != src and bool(problems_none(_ms, "release-publish")), "caught nothing" if _ms != src else "the mutation changed nothing")
 
 mutant("audience sigstore", lambda s: s.replace("audience=sts.amazonaws.com", "audience=sigstore"))
 mutant("no trap and no removal of the token directory", lambda s: re.sub(r"^trap .*\n", "", s, flags=re.M).replace('rm -rf "$td"\n', ""))
@@ -715,7 +741,7 @@ mutant3("the token file is set for sign-record only (the provenance call gets no
 mutant3("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
 
 
-EXPECT = 52
+EXPECT = 57
 print("pass=%d fail=%d" % (passn, failn))
 if passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT))

@@ -21,7 +21,7 @@
  "chain-records-test.sh": 104,
  "chain-rekor-key-test.sh": 121,
  "chain-release-metadata-test.sh": 111,
- "chain-release-scripts-test.sh": 469,
+ "chain-release-scripts-test.sh": 470,
  "chain-release-wiring-test.sh": 294,
  "chain-sign-wiring-test.sh": 2131,
  "chain-snapshot-test.sh": 160,
@@ -70,6 +70,6 @@
  "vex-forms-test.sh": 64,
  "vex-index-test.sh": 1159,
  "vex-scope-test.sh": 21,
- "witness-kms-test.sh": 52,
+ "witness-kms-test.sh": 57,
  "workflow-consolidation-test.sh": 151
 }
