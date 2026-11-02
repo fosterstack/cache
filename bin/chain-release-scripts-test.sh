@@ -260,6 +260,8 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     LAST[0] = 0
     e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
+    if script in ("release-sign", "release-apks"):      # bin/witnessed.sh hands these two steps the role and the identity-token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (P11 round 3); release-sign.sh maps them itself
+        e.setdefault("RELEASE_ROLE_ARN", "arn:aws:iam::111122223333:role/release-signing"); e.setdefault("RELEASE_TOKEN_FILE", os.path.join(t, "idtoken"))
     r = subprocess.run(["bash", path], cwd=t, env=e, capture_output=True, text=True)
     LAST[0] = r.returncode if r.returncode == 127 else 0
     return r.returncode, r.stdout, r.stderr

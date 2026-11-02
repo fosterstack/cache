@@ -114,7 +114,7 @@ class _NoDuplicateKeys(yaml.BaseLoader):
         for key_node, _ in node.value:
             key = self.construct_object(key_node, deep=True)
             if key in seen:
-                raise DuplicateKey("duplicate key %r in a mapping of the workflow (the loader keeps the last one, so the first would be hidden)" % (key,))
+                raise DuplicateKey("duplicate key %r at line %d of %s (the loader keeps the last one, so the first would be hidden)" % (key, key_node.start_mark.line + 1, key_node.start_mark.name))
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
 

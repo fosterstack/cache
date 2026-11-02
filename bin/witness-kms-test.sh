@@ -19,7 +19,7 @@
 #     attestor records it, and record-env refuses a record that names the AWS role or token-file variables). release-sign alone is handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE
 #     (sensitive keys, so no record holds them) and bin/release-sign.sh maps them onto the two AWS variables itself, refusing (naming only RELEASE_*) when either is empty; the token file is removed when Witness
 #     returns, before the fresh token for the signing call is fetched; nothing is written to GITHUB_ENV
-#   - bin/with-aws-token.sh (the one token fetch of Sign's provenance signature and of each staged record): a fresh token, mode 0600 in a 0700 directory under RUNNER_TEMP, for one call only,
+#   - bin/with-aws-token.sh (Sign's one token fetch, of its provenance signature and of each staged record): a fresh token, mode 0600 in a 0700 directory under RUNNER_TEMP, for one call only,
 #     removed the moment the call ends, its exit status kept; no request variable reaches the call; no call on a failed, empty or null token
 #   - both variables are sensitive keys of the record; no SIGSTORE_ID_TOKEN is used
 #   - the token directory is gone after success, after a failing Witness (its exit status is kept), and after a refusal
@@ -145,7 +145,7 @@ if a[:1] == ["sign-record"]:
     prior = ""
     try:
         for l in open(log + "/inner.log"):
-            if l.startswith("AWS_WEB_IDENTITY_TOKEN_FILE="):
+            if l.startswith("RELEASE_TOKEN_FILE="):
                 prior = l.split("=", 1)[1].strip()
     except OSError:
         pass
@@ -606,7 +606,7 @@ mutant2("the signed record not checked", lambda s: re.sub(r"^  python3 -I -B bin
 mutant2("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'), True)
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
-# bin/with-aws-token.sh CMD...: the one copy of the token fetch for a signing call of its own (A1, #822 round 2: the provenance signature of the Sign job)
+# bin/with-aws-token.sh CMD...: Sign's one copy of the token fetch for a signing call of its own (A1, #822 round 2: the provenance signature of the Sign job)
 
 WARGS = ("sign-record", "--payload", "/x/payload", "--out", "/x/out.json", "--template", "t.json")
 

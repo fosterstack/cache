@@ -5,16 +5,18 @@
 # Any other STEP exits 2 before Witness runs.
 # The record is witness-DIR/STEP-collection.json; DIR drops a leading "snapshot-" so a snapshot job uploads the same
 # directory, and the marker stays in the step name (verifiers refuse it, REQ-CHAIN-004-AC13).
-#  - Witness runs first, with a throwaway key made for the step (its own signature carries no trust), and with no identity token and no AWS variable in ITS environment, for every
-#    step; a step whose wrapped script signs with the key itself gets them in the wrapped command's environment only (see the next point). Then a fresh identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a file in a private directory under
+#  - Witness runs first, with a throwaway key made for the step (its own signature carries no trust), and with no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE in ITS environment, for
+#    every step (the region and the key reference stay for the steps that sign, they are not credentials); release-sign is handed the role and a token file under other names (see the second point). Then a
+#    fresh identity token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a file in a private directory under
 #    RUNNER_TEMP, outside the repository tree, and the one signing function (bin/chain-verify.py sign-record) signs the collection's payload with the release KMS key
 #    (RELEASE_KMS_KEY_REF, checked there) through the AWS SDK, which exchanges the token for short-lived credentials: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN point the SDK
 #    at it for that one call, and the entries file of the Rekor entry stays beside the record (STEP-collection.rekor.json). Nothing goes to GITHUB_ENV. The directory is
 #    removed when the shell gets EXIT, HUP, INT or TERM.
 #  - release-sign is the one step whose wrapped script signs with the key itself (cosign): the list `signers` names the steps that do (this one name; release-apks joins it when the apk
 #    signer calls KMS). For them the role and the token path are exported under the names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (names the AWS SDK does not read; sensitive keys, so no
-#    record holds them) and the wrapped command is the one single-quoted literal `bash -c '...' release-creds` in front of the script: the child maps them to AWS_ROLE_ARN and
-#    AWS_WEB_IDENTITY_TOKEN_FILE for the script alone, so Witness's own environment holds neither and its argument list holds names, not values. The token made for that script is
+#    record holds them), and the release-sign script maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself, before its first signing call. The wrapped command is the plain
+#    `bash SCRIPT`: no AWS_ name, role value or token path stands in an argument, because the command-run attestor records the command and record-env refuses a record that names the variables.
+#    Witness's environment on that step holds RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE, AWS_REGION and RELEASE_KMS_KEY_REF and no AWS role or token-path name. The token made for that script is
 #    in a directory of its own and is removed the moment Witness returns, before the fresh token for the signing call is fetched. The request variables are plain shell variables
 #    (never exported), so no script can ask for a token.
 #  - The AWS role, region and key reference come from the job's step env (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); a job that lacks one stops here, before any token is asked for.
@@ -49,7 +51,7 @@ oidc_token() {
 unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE
 signers=" release-sign "
 case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac
-case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token"; set -- -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"' release-creds bash "$@" ;; esac
+case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac
 openssl genpkey -algorithm ed25519 -out "$td/key.pem"
 local_record="$td/$step-collection.json"
 rc=0
@@ -69,6 +71,7 @@ witness run --step "$step" --signer-file-key-path "$td/key.pem" \
   --env-add-sensitive-key RELEASE_TOKEN_FILE \
   -o "$local_record" -- bash "$@" || rc=$?
 rm -rf "$td/step"
+unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE
 if [ "$rc" -eq 0 ]; then
   # the step ran: the one signing function signs the collection's payload with the release key, with a token fetched now; a failure here ends the job (nothing is left unsigned and unnoticed)
   jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }

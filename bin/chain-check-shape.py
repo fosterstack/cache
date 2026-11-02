@@ -66,7 +66,7 @@ SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "
 
 def witnessed_lines():
     """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list. Handoff 0713: the collection is signed with the release KMS key
-    by its alias, by the one signing function, after Witness has run with a throwaway key and no token or AWS variable of its own (release-sign's script, which signs with the key itself, gets them through the sensitive names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and one single-quoted launcher literal); a fresh identity token
+    by its alias, by the one signing function, after Witness has run with a throwaway key and no token, AWS_ROLE_ARN or AWS_WEB_IDENTITY_TOKEN_FILE of its own (release-sign's script, which signs with the key itself, is handed the sensitive names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and maps them itself; the wrapped command is the plain bash SCRIPT); a fresh identity token
     (audience sts.amazonaws.com) goes to a file in a private directory under RUNNER_TEMP that a trap removes, and the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and
     AWS_ROLE_ARN for the one signing call."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
@@ -91,7 +91,7 @@ def witnessed_lines():
             'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
             'signers=" release-sign "',
             'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
-            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token"; set -- -c \'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"\' release-creds bash "$@" ;; esac',
+            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",
@@ -99,6 +99,7 @@ def witnessed_lines():
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
             '-o "$local_record" -- bash "$@" || rc=$?' % keys,
             'rm -rf "$td/step"',
+            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
             'if [ "$rc" -eq 0 ]; then',
             '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
             "  oidc_token",

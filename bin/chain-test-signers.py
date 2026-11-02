@@ -599,7 +599,7 @@ SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}", "APK_RELEASE_SIGNING_KEY": "$
 # literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (stage-sign.yml's three jobs, Release's six witnessed steps), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
 _SS = ".github/workflows/stage-sign.yml"
-_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/chain-verify.py", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
+_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
            (_SP, "release"): {_WIT, "bin/release-verify.sh", "bin/release-apks.sh", "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}}
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 

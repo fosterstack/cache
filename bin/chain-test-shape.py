@@ -503,8 +503,10 @@ STEPS = ("apk", "build", "rapk", "rebuild",
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # Handoff 0713: the collection is signed with the release KMS key by its alias, by the one signing function (chain-verify.py sign-record), after Witness has run with a throwaway key. The identity
 # token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through
-# AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN. Witness itself runs with no token and no AWS variable, for every step; a step whose script signs with the key itself (release-sign) gets them in that script's
-# environment only, by one single-quoted launcher literal that maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names) for that script, so no value is in Witness's argument list, and the token made for it is removed when Witness returns; a fresh token is fetched just before the one signing function is called; both variables are sensitive keys of the record.
+# AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN. Witness itself runs with no token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE, for every step (on release-sign it holds RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE,
+# AWS_REGION and RELEASE_KMS_KEY_REF, none of them an AWS role or token-path name); release-sign's script, which signs with the key itself, is handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names)
+# and bin/release-sign.sh maps them onto the two AWS variables itself; the wrapped command is the plain `bash SCRIPT`, because the command-run record keeps it and record-env refuses a record that names the variables; the token made for the script is removed when Witness returns;
+# a fresh token is fetched just before the one signing function is called; both variables are sensitive keys of the record.
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # never github (raw OIDC token) and never slsa
 
 
@@ -533,7 +535,7 @@ def witnessed_lines():
             'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
             'signers=" release-sign "',
             'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
-            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token"; set -- -c \'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"\' release-creds bash "$@" ;; esac',
+            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
             'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
             'local_record="$td/$step-collection.json"',
             "rc=0",
@@ -541,6 +543,7 @@ def witnessed_lines():
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
             '-o "$local_record" -- bash "$@" || rc=$?' % keys,
             'rm -rf "$td/step"',
+            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
             'if [ "$rc" -eq 0 ]; then',
             '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
             "  oidc_token",
@@ -595,7 +598,15 @@ def helper(path):
     """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags and `timeout 540` live."""
     raw = read_exact(path)
     commands, faults = commands_of(raw)
-    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + compare(commands, witnessed_lines(), "the helper")
+    # #822 round 3 (REQ-CHAIN-007-AC12, AC15): the command-run attestor records the wrapped command, and record-env refuses a record that names the AWS role or token-file variables; so no AWS_ name and no
+    # release-creds launcher stands in the wrapped command (after `--`), and --trace (which would put the child's environment in the record) is never given. The exact lines above already pin both; these name the reason.
+    why = []
+    if "--trace" in raw:
+        why.append("the helper gives Witness --trace (the command-run record would hold the wrapped script's environment)")
+    for c in commands:
+        if c.startswith("witness run ") and " -- " in c and ("AWS_" in c.split(" -- ", 1)[1] or "release-creds" in c.split(" -- ", 1)[1]):
+            why.append("the wrapped command of the helper names an AWS_ variable or a launcher literal (the command-run record would hold the name, and record-env refuses it)")
+    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + why + compare(commands, witnessed_lines(), "the helper")
 
 
 def directwitness(files):
