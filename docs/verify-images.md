@@ -68,12 +68,11 @@ A valid signature with no provenance tells you who signed, but nothing about
 how the thing was built.
 
 From v0.3.0 the provenance is written and signed by the Sign stage <!-- pinned: historical -->
-(`stage-sign.yml`), keyless, under its own identity, and Release verifies it
-before anything is published. It is attached to the GitHub release as
+(`stage-sign.yml`), with the release key through the cloud key service (kms-sign),
+and Release verifies it before anything is published. It is attached to the GitHub release as
 `provenance.json`, with its signature bundle `provenance.bundle.json` and its
-Rekor entry `provenance.rekor.json`. The signer to pin is
-`https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v${VER}`,
-with the issuer `https://token.actions.githubusercontent.com`. The provenance
+Rekor entry `provenance.rekor.json`. The key to pin is the release public key
+`release.rsa.pub` fetched in section 1; there is no certificate identity or issuer to pin. The provenance
 names each image (`production` and `-fips`) by digest; compare those with the
 digest of the image you pulled. The step-by-step commands are in the
 v0.3.0 release guide, [`docs/verify-release.md`](verify-release.md) (the commands in it are TO-VERIFY until a release candidate has run them). <!-- pinned: historical -->
@@ -331,16 +330,12 @@ container-averse or air-gapped environments — see
 [Install FosterStack Cache](install.md), or
 ["Installing on disconnected networks"](offline-install.md) for the air-gap
 path) ship a
-`checksums.txt` covering every archive, plus a cosign keyless blob-signature
-bundle over that file:
+`checksums.txt` covering every archive, plus a kms-sign blob signature checked with
+the release key, as a bundle over that file:
 
 ```sh
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
-cosign verify-blob \
-  --bundle checksums.txt.bundle \
-  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  checksums.txt
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
 sha256sum -c checksums.txt   # verifies every archive you downloaded, transitively
 ```
