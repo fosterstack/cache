@@ -1080,7 +1080,7 @@ def kbundle(identity):
 KCERT = kbundle({"certificate": {"rawBytes": "eA=="}})
 KX509 = kbundle({"x509CertificateChain": {"certificates": [{"rawBytes": "eA=="}]}})
 KKEY = kbundle({"publicKey": {"hint": "awskms:///alias/fosterstack-release-signing"}})
-CERTMSG = "the bundle cosign wrote carries a certificate: no certificate belongs to this chain"
+CERTMSG = "the bundle kms-sign wrote carries a certificate: no certificate belongs to this chain"
 for what, kb in (("a certificate", KCERT), ("an x509CertificateChain", KX509)):
     t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kb})
     check(rc == 1 and not calls(t) and ("release-postverify: provenance.bundle.json: " + CERTMSG) in se, "KL-1 post-publish: a bundle named by --bundle that carries %s is refused (exit 1, chain-verify.py's text) and NOTHING runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))

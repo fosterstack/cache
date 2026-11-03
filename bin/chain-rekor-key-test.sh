@@ -238,7 +238,7 @@ for kind, stage_, ptype_, pred_ in (("provenance", "sign", cv.DSSE_STMT, PROV), 
 for n, f in real.items():
     setattr(cv, n, f)
 
-# Sign's output: the bundle cosign wrote carries the Rekor entries, and they go to provenance.rekor.json
+# Sign's output: the bundle kms-sign wrote carries the Rekor entries, and they go to provenance.rekor.json
 bun = {"verificationMaterial": {"tlogEntries": [e_good]}, "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": b64(payload), "signatures": [{"keyid": "", "sig": b64(sig)}]}}
 od = os.path.join(work, "out1"); os.makedirs(od)
 try:
