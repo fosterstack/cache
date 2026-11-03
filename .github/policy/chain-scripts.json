@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "6feb94b0247cba56ce217b1d28fdd54ed3e7fd9bf362c95d77d76d326f592f8c",
+      "sha256": "78703f663612e305945d37292576b2021fc2c2b1886af5625eaf57027ca984af",
       "tools": [
         "make",
         "at",
@@ -80,7 +80,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "1a513a40dda87d4c8cf09d0c2070e433b27fcdc33117ab6412ca3156f2d8286a",
+      "sha256": "7ac4f0a42f15b1c3b3558ac426aa1004a3eb8f40a197136b848917261600c150",
       "tools": [
         "at",
         "curl",
@@ -88,7 +88,8 @@
         "go",
         "source",
         "tar",
-        "trap"
+        "trap",
+        "unzip"
       ],
       "runs": [],
       "signs": "other",
@@ -1731,7 +1732,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures with the release KMS key (--key RELEASE_KMS_KEY_REF) and a Rekor entry on the images in both registries; the SBOMs, lock files, dependency evidence, checksums, release policy and release-files list are signed by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call, the one Rekor entry posted by the same call; KA-2) (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists), else exit 2; KA-2 removes this path",
-      "sha256": "f519d462f580c7610da84853559afed8394ce34eba4afb0df1cdbd6ed428aa30",
+      "sha256": "79d7fc5489377f94323f5cdd1926becced8baf47957e3cbb7a442b2ccfccdc94",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -2239,7 +2240,7 @@
       ],
       "signs": "other",
       "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) by chain-verify.py kms-sign (KMS Sign through the aws CLI, RSASSA_PKCS1_V1_5_SHA_256 named on every call) on each apk's control section, posts one Rekor entry, and checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (chain-verify.py bundle-check) (REQ-CHAIN-007-AC6); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); refuses, with exit 2 and before any tool, a RELEASE_KMS_KEY_REF that is not the verifier's own key reference, byte for byte (chain-verify.py key-ref-check); run by bin/release-apks.sh",
-      "sha256": "22d824a30c5be5c840cd01e7096e973f56fbe9ccd081420c988fe5c48d4b4abd",
+      "sha256": "df8c7e33083bad28e6f80f30318a1a327134c6ceb5e7e541f226163d9b9d2ad8",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2672,7 +2673,7 @@
       ],
       "signs": "other",
       "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record or sign (the one signing function, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
-      "sha256": "7f8ddd2ad254ad4245afdcdc71e907f93228e6024dfb7bbe698df57d06c34846",
+      "sha256": "2361353eb78a357db18aea22d0fd4c293efd0ac0e659c4640ea48b0a5fd83f05",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",

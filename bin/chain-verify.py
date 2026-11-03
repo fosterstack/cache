@@ -1408,7 +1408,7 @@ def kms_sign(statement_path, out_record, signing_config, run=subprocess.run, sle
 # cosign 3.1.3 cannot name it for a KMS key (sigstore uses SigningAlgorithms[0]), so the aws CLI does the signing and this function
 # posts the one Rekor entry itself. The name of the algorithm is written here and nowhere else.
 RELEASE_SIGNING_ALGORITHM = "RSASSA_PKCS1_V1_5_SHA_256"
-AWS_CLI_MAJOR = "2"   # the pinned major of the aws CLI; its path and version on the runner image are UNVERIFIED until a job log shows them
+AWS_CLI_MAJOR = "2"   # the pinned major of the aws CLI: the callers hand kms-sign the one bin/install-scanner.sh aws-cli installs (exact version AWSCLI_VER, checksum-pinned, at RUNNER_TEMP/aws-cli/aws); this major check is the second, coarser line
 
 
 def kms_refuse(reason, who="kms-sign"):

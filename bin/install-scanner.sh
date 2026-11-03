@@ -7,7 +7,8 @@
 # release - and was unpinned. This verifies the exact bytes.
 #
 # Usage: install-scanner.sh
-# <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|govulncheck> [dest-dir]
+# <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck> [dest-dir]
+# `aws-cli` (KA-2: the signer's KMS calls) installs the pinned AWS CLI v2 job-locally into $RUNNER_TEMP/aws-cli (the binary at $RUNNER_TEMP/aws-cli/aws) and takes no destination: nothing is left in /usr/local.
 # `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that
 # version is the pinned one (GO_VER); admission's freeze check runs it from there (the runner's own Go may be older than go.mod).
 # `govulncheck` (the Go source scan of Check, ruling G of Oct 12) is a Go MODULE, not release archives (golang/vuln publishes none): it is built from the committed module
@@ -39,6 +40,9 @@ COSIGN_VER=3.1.3
 # v0.12.0, equal to the release's witness_0.12.0_checksums.txt; both tarballs were also checked on Oct 9 2026 with `cosign verify-blob --bundle` against
 # their .sigstore.json (identity https://github.com/in-toto/witness/.github/workflows/release.yml@refs/tags/v0.12.0, issuer token.actions.githubusercontent.com).
 WITNESS_VER=0.12.0
+# The AWS CLI v2 that makes the release key's KMS calls (KA-2: bin/chain-verify.py kms-sign runs it). The sum is the sha256 of awscli-exe-linux-x86_64-2.39.3.zip as downloaded Nov 3 2026, whose detached
+# signature verified (gpg) as a good signature of the AWS CLI Team key, primary fingerprint FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C (the fingerprint AWS's install page prints). x86_64 only.
+AWSCLI_VER=2.39.3
 # The Go toolchain the freeze job's verify-freeze and the apk build need (Codex A r3 F4; advisor):
 # the exact go<ver>.linux-<arch>.tar.gz, pinned by sha256 per architecture, values
 # equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Oct 21 2026 for go1.27.3 (main's Go bump, cache#464). GO_VER must equal the version go.mod names.
@@ -50,7 +54,7 @@ GO_VER=1.27.3
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go fetch line (pin-age honours that line shape, REQ-SUP-001-AC23)
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1|cosign|witness|go|crane|govulncheck) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|govulncheck)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1|cosign|witness|go|crane|aws-cli|govulncheck) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
@@ -106,6 +110,7 @@ case "${TOOL}:${arch}" in
   witness:aarch64|witness:arm64) SUM=3043bba438276c4c2b1afff7deb97cf1c0301c77515a4b1cff15549b378d2aaf ;;
   crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;
   crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
+  aws-cli:x86_64|aws-cli:amd64) SUM=14cb35809ad7547dd3c69fa9899a3975fbd850b6a6791f3fe264856490cd9a63 ;;
   go:x86_64|go:amd64) SUM=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;;
   go:aarch64|go:arm64) SUM=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;;
   govulncheck:*) SUM="" ;;   # a module: pinned by go.sum (tools/govulncheck), not by the sum of a download
@@ -265,8 +270,22 @@ case "$TOOL" in
     tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
     "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
     ;;
+  aws-cli)
+    # the AWS CLI v2 zip, pinned by checksum, installed under RUNNER_TEMP/aws-cli (job-local; no destination argument; nothing in /usr/local) and checked to be the pinned version
+    # the release URL names the pinned version literally (pin-age dates a download from its URL)
+    [ -n "${RUNNER_TEMP:-}" ] || pipeline_fail "aws-cli needs RUNNER_TEMP (it installs under RUNNER_TEMP/aws-cli and takes no destination)"
+    AWSDIR="${RUNNER_TEMP}/aws-cli"
+    curl -fsSL -o "$tmp/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.39.3.zip" || pipeline_fail "download failed: aws-cli v${AWSCLI_VER}"
+    verify "$tmp/awscli.zip"
+    unzip -q "$tmp/awscli.zip" -d "$tmp" || pipeline_fail "extract failed for aws-cli"
+    mkdir -p "$AWSDIR"
+    "$tmp/aws/install" --install-dir "$AWSDIR/dist" --bin-dir "$AWSDIR" || pipeline_fail "install failed for aws-cli"
+    got=$("$AWSDIR/aws" --version 2>&1) || got=""
+    case "$got" in "aws-cli/${AWSCLI_VER} "*) ;; *) pipeline_fail "the installed aws CLI reports '${got}', not aws-cli/${AWSCLI_VER}" ;; esac
+    DEST="$AWSDIR"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|govulncheck)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

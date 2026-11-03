@@ -16,6 +16,11 @@ case $RELEASE_KMS_KEY_REF in
   awskms:///?*) ;;
   *) die "RELEASE_KMS_KEY_REF is not an awskms:/// reference: nothing is signed" ;;
 esac
+# KA-2 p4 group 4: the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws (bin/install-scanner.sh aws-cli installs it there, job-locally), and the signing call runs under bin/with-aws-token.sh, which needs the
+# role and the region of the signing role (this step's env); each missing name is one line and exit 2, before anything is read, signed or written
+for name in RUNNER_TEMP AWS_ROLE_ARN AWS_REGION; do
+  if [ -z "${!name:-}" ]; then echo "evidence-letter-publish: $name is unset" >&2; exit 2; fi
+done
 letter=${1:?the letter file is the first argument}
 [ -f "$letter" ] && [ ! -L "$letter" ] || die "$letter is not a regular file"
 repo=${REPO:-fosterstack/cache}
@@ -32,7 +37,7 @@ refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/r
   die "the key manifest is not accepted ($(head -n 1 <<< "$refusal")): nothing is signed"
 # KA-2: the letter is signed by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call, the one Rekor entry posted by the same call), not by cosign
 read -r dg _ < <(sha256sum "$letter") && [ -n "$dg" ] || die "cannot hash $letter: nothing is signed"
-python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
+bash bin/with-aws-token.sh kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
   --public-key build/keys/release.rsa.pub --out "$work/letter.signature" --bundle "$letter.bundle" || die "kms-sign refused to sign the letter: not published"
 refusal=$(bash bin/evidence-letter-verify.sh "$work/policy.json" "$letter" 2>&1) ||
   die "${refusal#evidence-letter-verify: }: not published"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/with-aws-token.sh sign-record|sign [ARG...]  --  run one signing call of the verifier (bin/chain-verify.py sign-record or sign, with ARG...) with a fresh identity token, for that one call only (#822 round 2: Sign's one copy of the token fetch; the Release wrapper keeps its own).
+# bin/with-aws-token.sh sign-record|sign|kms-sign [ARG...]  --  run one signing call of the verifier (bin/chain-verify.py sign-record, sign or kms-sign, with ARG...) with a fresh identity token, for that one call only (#822 round 2: Sign's one copy of the token fetch; the Release wrapper keeps its own).
 # The caller is a step whose own call signs with the release KMS key through the AWS SDK: Sign's staged-record helper (one call per record) and Sign's provenance signature.
 # A fresh token (audience sts.amazonaws.com, the audience the AWS trust requires) is fetched now and written to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the
 # repository tree; AWS_WEB_IDENTITY_TOKEN_FILE points the SDK at it for that call and for nothing else (AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF come from the job's step environment and
@@ -7,7 +7,7 @@
 # the moment the call ends (success, failure or signal), and its exit status is the exit status of this script. A job that lacks the role, the region or the key reference, a missing
 # RUNNER_TEMP, a failed, empty or null token, or nothing to run stops here, before the call runs.
 set -euo pipefail
-case "${1:-}" in sign-record|sign) ;; *) echo "with-aws-token: the first argument must be sign-record or sign" >&2; exit 2 ;; esac
+case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be sign-record, sign or kms-sign" >&2; exit 2 ;; esac
 : "${AWS_ROLE_ARN:?with-aws-token: AWS_ROLE_ARN is missing}"
 : "${AWS_REGION:?with-aws-token: AWS_REGION is missing}"
 : "${RELEASE_KMS_KEY_REF:?with-aws-token: RELEASE_KMS_KEY_REF is missing}"

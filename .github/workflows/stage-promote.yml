@@ -140,6 +140,8 @@ jobs:
         run: bash bin/install-scanner.sh cosign
       - name: install crane (pinned by checksum)
         run: bash bin/install-scanner.sh crane
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed-witness-build

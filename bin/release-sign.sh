@@ -5,7 +5,7 @@
 # step and names the file. The four release metadata files (the OpenVEX file, the CSAF file, the inspector-filters file and release-manifest.json) are made
 # from Build's verified digest list and listed, with their hashes, in release-files.sha256, which is signed too. The Witness records of the earlier stages are extra evidence and are not signed again.
 set -euo pipefail
-for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN RELEASE_KMS_KEY_REF; do
+for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN RELEASE_KMS_KEY_REF RUNNER_TEMP; do
   if [ -z "${!name:-}" ]; then echo "release-sign: $name is unset" >&2; exit 2; fi
 done
 # RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS SDK reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
@@ -70,7 +70,7 @@ kms_blob() {
   local dg _
   read -r dg _ < <(sha256sum "$2") && [ -n "$dg" ] || { echo "release-sign: cannot hash $2" >&2; exit 1; }
   ks_n=$((ks_n + 1))
-  python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
+  python3 -I -B bin/chain-verify.py kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
     --public-key build/keys/release.rsa.pub --out "$ksd/signature.$ks_n" --bundle "$1" || { echo "release-sign: kms-sign refused to sign $2" >&2; exit 1; }
 }
 has_rekor() {

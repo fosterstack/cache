@@ -28,7 +28,7 @@ import base64, hashlib, json, os, re, sys, yaml
 CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB", re.I)
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
-INSTALLS = ["witness", "cosign", "crane"]
+INSTALLS = ["witness", "cosign", "crane", "aws-cli"]   # KA-2 p4 group 4: the pinned aws CLI, the fourth install (job-local under RUNNER_TEMP, no destination argument)
 RECORD_ENV_VERIFY_LOCAL = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json"      # the verify job runs the local script: its record is unsigned and local
 RECORD_ENV_VERIFY = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json"      # rc-2 R4: the verify job's own record, checked before it is uploaded
 DOWN = {"signed-witness-build", "signed-witness-rebuild", "signed-witness-check", "signed-witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
@@ -315,9 +315,9 @@ def stage(path):
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
     ups = [i for i, k in enumerate(kinds) if k == "up"]
-    if kinds[:4] != want:
-        bad.append("steps must start with checkout and the installs of witness, cosign, crane (the release job installs no build tool: the apks are signed through cosign): got %s" % kinds[:4])
-    if not ds or ds != list(range(4, 4 + len(ds))):
+    if kinds[:len(want)] != want:
+        bad.append("steps must start with checkout and the installs of witness, cosign, crane, aws-cli (the release job installs no build tool: the apks are signed through cosign and the pinned aws CLI): got %s" % kinds[:len(want)])
+    if not ds or ds != list(range(len(want), len(want) + len(ds))):
         bad.append("the downloads must follow the installs directly and all come before Witness starts (rule 68)")
     # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
     # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/

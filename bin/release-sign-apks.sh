@@ -39,7 +39,7 @@ die() { echo "release-sign-apks.sh: $1" >&2; exit "${2:-2}"; }
 # (REQ-BUILDAPK-001-AC7, AC8).
 PY3=/usr/bin/python3            # TEST-SUBST
 OPENSSL=/usr/bin/openssl        # TEST-SUBST
-AWS=/usr/local/bin/aws          # TEST-SUBST
+AWS=${RUNNER_TEMP:-}/aws-cli/aws   # TEST-SUBST
 SIGNING_CONFIG=$PWD/.github/policy/cosign-signing-config.json   # TEST-SUBST
 KMSSIGN=bin/chain-verify.py     # TEST-SUBST
 KEYS_DIR=$PWD/build/keys        # TEST-SUBST
@@ -113,7 +113,7 @@ for rel in "${apks[@]}"; do
   [ ! -e "$build_dir/$rel.bundle.new" ] ||
     die "$build_dir/$rel.bundle.new already exists (a leftover or a planted file); refusing, $kept"
 done
-[ -x "$AWS" ] || die "aws is not installed at $AWS (the runner image has it; this step does not install it)" 1
+[ -x "$AWS" ] || die "aws is not installed at $AWS (bin/install-scanner.sh aws-cli puts the pinned aws CLI at RUNNER_TEMP/aws-cli/aws; this step does not install it)" 1
 # Sign the private copies, check each signature and signer, and only when every one succeeded replace the originals:
 # a failure leaves Build's directory untouched.
 n=0
