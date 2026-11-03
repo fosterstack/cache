@@ -46,7 +46,7 @@ export DOCKER_CONFIG
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 # KA-2: nothing here is signed by cosign: a file or an image is signed by bin/chain-verify.py kms-sign, never by cosign: RSASSA_PKCS1_V1_5_SHA_256 is named on the KMS call, the key must list it, and the same call posts the one Rekor entry
 # and writes the v0.3 bundle (<bundle>). Blob kinds: the digest is the sha256 of the file's own bytes and each call has its own signature file (kms-sign never overwrites). Image kinds (the image signature and the manifest
-# referrer): a local in-toto statement (subject = the image digest, fields in protojson order) is signed as a DSSE envelope (kms-sign --dsse-statement) and the bundle is attached to the image with `cosign attach attestation`
+# referrer): a local in-toto statement (subject = the image digest, fields in protojson order) is signed as a DSSE envelope (kms-sign --dsse-statement) and the bundle is attached to the image with cosign attach attestation
 # (a referrer; cosign makes no signature). A refusal of kms-sign ends the step.
 ksd=$(mktemp -d)
 [ -n "$ksd" ] && [ -d "$ksd" ] || { echo "release-sign: no private directory for the signature files: refusing to sign" >&2; exit 1; }
