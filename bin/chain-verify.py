@@ -1416,6 +1416,25 @@ def kms_refuse(reason, who="kms-sign"):
     sys.exit(1)
 
 
+def kms_key_file_check(key_file, kms_public_key_b64):
+    """The KA-2 key compare, in one place for every caller: the DER SubjectPublicKeyInfo of the file named by --public-key (read by `openssl pkey -pubin -outform DER`, never compared as PEM text) must be the DER the KMS answered
+    for the key (get-public-key's PublicKey, base64). A file that differs, is missing or is not a readable public key is one refusal line naming the file; it is made before the KMS Sign call and any Rekor POST."""
+    try:
+        want = base64.b64decode(kms_public_key_b64, validate=True)
+        assert want
+    except (ValueError, AssertionError, TypeError):
+        kms_refuse("get-public-key did not answer with the key's PublicKey (base64)")
+    got = None
+    try:
+        r = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", key_file, "-outform", "DER"], capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        if r.returncode == 0 and r.stdout:
+            got = r.stdout
+    except (OSError, subprocess.SubprocessError):
+        got = None
+    if got != want:
+        kms_refuse("the key file %s does not match the KMS key" % key_file)
+
+
 def rekor_entry_check(item, digest_hex, sig, pub_pem):
     """A1: one tlogEntries item is a Rekor entry for THIS signature: its canonicalized body is a hashedrekord 0.0.1 whose data hash is the
     sha256 of the signed bytes (algorithm sha256), whose signature content is the signature it made and whose public key is the release
@@ -1606,7 +1625,7 @@ def kms_rekor_entry(config_path, pub_path, digest_hex, sig, rekor_pem):
 
 def cmd_kms_sign(a):
     """Sign a 32-byte sha256 digest with the release key through `aws kms sign` naming RELEASE_SIGNING_ALGORITHM on every call, post the one Rekor entry and write the v0.3 bundle (every signature has
-    one Rekor entry: --bundle, --signing-config and --public-key are required). A refusal leaves no signature file and no bundle; an existing --out or --bundle is refused before any aws call and never
+    one Rekor entry: --bundle, --signing-config and --public-key are required; --public-key must be the KMS key's, compared as DER before anything is signed). A refusal leaves no signature file and no bundle; an existing --out or --bundle is refused before any aws call and never
     deleted: kms-sign removes only the files it made."""
     m = re.fullmatch(r"awskms:///([A-Za-z0-9:/_.-]+)", a.key_ref)
     if not m or not re.fullmatch(r"[0-9a-f]{64}", a.digest):
@@ -1624,14 +1643,17 @@ def cmd_kms_sign(a):
     if vr.returncode != 0 or not vm or vm.group(1) != AWS_CLI_MAJOR:
         kms_refuse("the aws CLI at %s is %r: version %s.x is pinned" % (a.aws, (vr.stdout + vr.stderr).strip()[:60], AWS_CLI_MAJOR))
     print("kms-sign: aws-cli %s.%s.%s (major %s pinned)" % (vm.group(1), vm.group(2), vm.group(3), AWS_CLI_MAJOR), file=sys.stderr)
-    # every call: the key must list the algorithm (GetPublicKey only; no DescribeKey, no role change)
+    # every call: the key must list the algorithm, and --public-key must be the KMS key (GetPublicKey only, one call; no DescribeKey, no role change)
     try:
-        algs = json.loads(kms_aws(a.aws, ["kms", "get-public-key", "--key-id", key_id, "--query", "SigningAlgorithms", "--output", "json"]))
+        gpk = json.loads(kms_aws(a.aws, ["kms", "get-public-key", "--key-id", key_id, "--query", "{SigningAlgorithms:SigningAlgorithms,PublicKey:PublicKey}", "--output", "json"]))
+        algs = gpk["SigningAlgorithms"]
         assert isinstance(algs, list) and all(isinstance(x, str) for x in algs)
-    except (ValueError, AssertionError):
+    except (ValueError, AssertionError, KeyError, TypeError):
         kms_refuse("the release key %s: get-public-key did not answer with a list of SigningAlgorithms" % a.key_ref)
     if RELEASE_SIGNING_ALGORITHM not in algs:
         kms_refuse("the release key %s does not support %s (it lists: %s); the release key must be RSA with usage SIGN_VERIFY" % (a.key_ref, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)))
+    # KA-2: --public-key (the file the Rekor entry carries) must be the KMS key, checked before the KMS Sign call and the Rekor POST (a refusal leaves no signature, no entry and no bundle)
+    kms_key_file_check(a.public_key, gpk.get("PublicKey"))
     with tempfile.TemporaryDirectory() as td:
         os.chmod(td, 0o700)
         msg = os.path.join(td, "digest.bin")
@@ -2298,7 +2320,7 @@ def build_parser():
     ks.add_argument("--out", required=True)           # the raw signature, created exclusively
     ks.add_argument("--aws", required=True)           # the aws CLI at its fixed path (the caller's fixed location)
     ks.add_argument("--signing-config", required=True)   # the signing config naming the Rekor v1 (the Rekor key pinned beside it judges the answer)
-    ks.add_argument("--public-key", required=True)       # the release public key (PEM)
+    ks.add_argument("--public-key", required=True)       # the release public key (PEM): the Rekor entry carries it and, before any Sign or POST, its DER must equal the key KMS answers (KA-2)
     ks.add_argument("--bundle", required=True)           # the v0.3 bundle to write, created exclusively, with the one Rekor entry
     bk = sub.add_parser("bundle-check")
     bk.add_argument("--bundle", required=True)        # <apk>.bundle written by kms-sign
