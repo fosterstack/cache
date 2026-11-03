@@ -3,5 +3,5 @@
   "writers": [
     { "login": "fosterstack-automation[bot]", "id": 333151817 }
   ],
-  "dispatchers": [ "fosterstack-admin" ]
+  "dispatchers": [ "fosterstack-admin", "fosterstack-harness[bot]" ]
 }
