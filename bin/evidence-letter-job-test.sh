@@ -133,8 +133,8 @@ mutated("draft gets an identity token", lambda d: d["jobs"]["draft"]["permission
 mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release upload --clobber\n")
 mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
 def _sign_step(d): return [st for st in d["jobs"]["sign"]["steps"] if "evidence-letter-publish.sh" in str(st.get("run", ""))][0]
-mutated("KA-2 p4 group 4: the sign step loses AWS_ROLE_ARN", lambda d: _sign_step(d)["env"].pop("AWS_ROLE_ARN"))
-mutated("KA-2 p4 group 4: the sign step loses AWS_REGION", lambda d: _sign_step(d)["env"].pop("AWS_REGION"))
+mutated("KA-2 p4 group 4: the sign step loses AWS_ROLE_ARN", lambda d: _sign_step(d).setdefault("env", {}).pop("AWS_ROLE_ARN", None))
+mutated("KA-2 p4 group 4: the sign step loses AWS_REGION", lambda d: _sign_step(d).setdefault("env", {}).pop("AWS_REGION", None))
 mutated("KA-2 p4 group 4: AWS_ROLE_ARN comes from a variable", lambda d: _sign_step(d)["env"].update({"AWS_ROLE_ARN": "${{ vars.ROLE }}"}))
 mutated("KA-2 p4 group 4: AWS_REGION is another region", lambda d: _sign_step(d)["env"].update({"AWS_REGION": "eu-west-1"}))
 mutated("KA-2 p4 group 4: the role is set at job level", lambda d: d["jobs"]["sign"].update({"env": {"AWS_ROLE_ARN": "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"}}))
