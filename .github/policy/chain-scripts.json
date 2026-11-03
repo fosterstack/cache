@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "219c589fc5ccef357ccba4791774a18d0356041b3fce1779bb15e4a85a74a720",
+      "sha256": "5f9fed33fea1a03afcac0b4f2798ac5506ce87daf3e383427036c958f8beed29",
       "tools": [
         "make",
         "at",
@@ -1726,7 +1726,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: every signature is made by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call with the release key RELEASE_KMS_KEY_REF, the one Rekor entry posted by the same call; KA-2): the images in both registries and the manifest referrer are signed as DSSE statements whose bundles cosign attach attestation attaches (cosign signs nothing here: its login and attach calls only reach the registries), the SBOMs, lock files, dependency evidence, checksums, release policy and release-files list as digests (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256, else exit 2 (kms-sign asserts it again on every signing call)",
-      "sha256": "f86313473d5b69c711b2238354c50e59c3324bae365ee9f60cb305ef166c303b",
+      "sha256": "03cf36d94939df1afa32c33a7cdb17e864c9d357d65b9a715532028e6e1c7598",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",

@@ -1464,7 +1464,10 @@ def rekor_open(req):
 def rekor_get_existing(base, location):
     """HTTP 409 on the POST: the equivalent entry is already in the log (a deterministic signature signs the same hashedrekord again on a retry). Rekor names it in the Location header as the
     root-relative /api/v1/log/entries/<id> (it builds the header from the request path); the absolute pinned URL is taken too. The id is 64 or 80 lowercase hex characters (a plain length and character
-    test); anything else refuses, nothing fetched. The GET is ALWAYS built from the pinned base and that id, never from the header's text, and goes through rekor_open (no redirect). Returns the answer's JSON or refuses."""
+    test); anything else refuses, nothing fetched. The GET is ALWAYS built from the pinned base and that id, never from the header's text, and goes through rekor_open (no redirect), and it follows the
+    retry rule of kms_rekor_post (network error, 429, 5xx on the REKOR_WAITS; any other status fails at once). Returns the answer's JSON or refuses."""
+    import http.client
+    import urllib.error
     import urllib.request
     pre = "/api/v1/log/entries/"
     rest = None
@@ -1478,15 +1481,27 @@ def rekor_get_existing(base, location):
     if len(rest) not in (64, 80) or any(c not in "0123456789abcdef" for c in rest):
         kms_refuse("Rekor answered 409 (the entry exists) with a Location that is not an entry id, so it is not fetched")
     url = base + pre + rest
-    try:
-        with rekor_open(urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})) as resp:
-            code, raw = resp.status, resp.read(1 << 20)
-        doc = json.loads(raw)
-    except Exception as ex:   # any transport, status (a 3xx included) or JSON failure is the same refusal
-        kms_refuse("Rekor's existing entry could not be fetched (%s)" % type(ex).__name__)
-    if code != 200:
-        kms_refuse("Rekor's existing entry was answered with status %s" % code)
-    return doc
+    last = ""
+    for wait in REKOR_WAITS + (None,):
+        try:
+            with rekor_open(urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})) as resp:
+                code, raw = resp.status, resp.read(1 << 20)
+            doc = json.loads(raw)
+        except urllib.error.HTTPError as ex:   # the same rule as the POST: a 429 or a 5xx is retried, any other status (a 3xx included) fails at once
+            if ex.code != 429 and ex.code < 500:
+                kms_refuse("Rekor's existing entry could not be fetched (%s, status %d)" % (type(ex).__name__, ex.code))
+            last = "status %d" % ex.code
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as ex:
+            last = type(ex).__name__
+        except Exception as ex:   # a JSON failure on the answer is a refusal
+            kms_refuse("Rekor's existing entry could not be fetched (%s)" % type(ex).__name__)
+        else:
+            if code != 200:
+                kms_refuse("Rekor's existing entry was answered with status %s" % code)
+            return doc
+        if wait is None:
+            kms_refuse("Rekor's existing entry could not be fetched after one try and six retries (the last failure: %s)" % last)
+        time.sleep(wait)
 
 
 def kms_rekor_config(config_path, pub_path):
@@ -1549,6 +1564,12 @@ def kms_rekor_item(doc, code, kind):
     return item
 
 
+def pem_der(pem_bytes):
+    """The DER of a PEM public key (its base64 body, whatever the line width): the key is compared as DER, never as PEM text (Rekor canonicalizes the verifier it stores)."""
+    lines = pem_bytes.decode().strip().splitlines()
+    return base64.b64decode("".join(lines[1:-1]), validate=True)
+
+
 def kms_pubkey_hint(pem_bytes):
     """publicKey.hint of every bundle kind: base64(sha256(DER public key))."""
     return base64.b64encode(hashlib.sha256(base64.b64decode("".join(pem_bytes.decode().splitlines()[1:-1]))).digest()).decode()
@@ -1604,7 +1625,7 @@ def rekor_dsse_entry_check(item, envelope_text, payload, sig_b64, pem_bytes):
         sigs = spec["signatures"]
         if not isinstance(sigs, list) or len(sigs) != 1 or sigs[0]["signature"] != sig_b64:
             return "the Rekor entry names another signature than the one made"
-        if base64.b64decode(sigs[0]["verifier"], validate=True) != pem_bytes:
+        if pem_der(base64.b64decode(sigs[0]["verifier"], validate=True)) != pem_der(pem_bytes):
             return "the Rekor entry names another public key (verifier) than build/keys/release.rsa.pub"
     except (KeyError, TypeError, ValueError, AttributeError):
         return "the Rekor entry carries no readable dsse body"
@@ -1636,9 +1657,9 @@ def kms_usage(reason):
     sys.exit(2)
 
 
-def kms_key_setup(aws, key_ref, public_key):
+def kms_key_setup(aws, key_ref, public_key, signing_config):
     """Every KMS signing call starts here: the key reference is awskms:///<key>, the aws CLI is the pinned major, the key lists RELEASE_SIGNING_ALGORITHM, and --public-key is the KMS key (compared as DER) before anything
-    is signed or posted (one get-public-key, no DescribeKey, no role change). Returns the key id."""
+    is signed or posted, and the signing config, the key file's PEM and the pinned Rekor key are read (one get-public-key, no DescribeKey, no role change). Returns the key id."""
     m = re.fullmatch(r"awskms:///([A-Za-z0-9:/_.-]+)", key_ref)
     if not m:
         kms_usage("needs --key-ref awskms:///<key>")
@@ -1662,6 +1683,9 @@ def kms_key_setup(aws, key_ref, public_key):
         kms_refuse("the release key %s does not support %s (it lists: %s); the release key must be RSA with usage SIGN_VERIFY" % (key_ref, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)))
     # KA-2: --public-key (the file the Rekor entry carries) must be the KMS key, checked before the KMS Sign call and the Rekor POST (a refusal leaves no signature, no entry and no bundle)
     kms_key_file_check(public_key, gpk.get("PublicKey"))
+    # the reads that can still refuse (the signing config's Rekor URL, the key file as PEM, the pinned Rekor key) are made here, before the KMS Sign call: a refusal after it would leave a signature no entry carries
+    kms_rekor_config(signing_config, public_key)
+    pinned_rekor_pem(signing_config)
     return key_id
 
 
@@ -1711,13 +1735,13 @@ def kms_dsse_bundle(aws, key_ref, statement_path, bundle_path, signing_config, p
     try:
         with open(statement_path, "rb") as f:
             statement = f.read()
-        obj = json.loads(statement)
+        obj = strict_json(statement)
         assert isinstance(obj, dict)
     except (OSError, ValueError, AssertionError):
         kms_refuse("the statement file %s is missing, empty or not one JSON object" % statement_path)
     if os.path.lexists(bundle_path):
         kms_refuse("%s already exists; kms-sign writes only files it makes and removes none of another's" % bundle_path)
-    key_id = kms_key_setup(aws, key_ref, public_key)
+    key_id = kms_key_setup(aws, key_ref, public_key, signing_config)
     sig = kms_sign_digest(aws, key_id, hashlib.sha256(dsse_pae(DSSE_PAYLOAD_TYPE, statement)).digest())
     envelope = {"payloadType": DSSE_PAYLOAD_TYPE, "payload": base64.b64encode(statement).decode(), "signatures": [{"sig": base64.b64encode(sig).decode()}]}
     item, hint = kms_rekor_dsse_entry(signing_config, public_key, envelope, statement, envelope["signatures"][0]["sig"], pinned_rekor_pem(signing_config))
@@ -1748,7 +1772,7 @@ def cmd_kms_sign(a):
     for pth in (a.out, a.bundle):
         if os.path.lexists(pth):
             kms_refuse("%s already exists; kms-sign writes only files it makes and removes none of another's" % pth)
-    key_id = kms_key_setup(a.aws, a.key_ref, a.public_key)
+    key_id = kms_key_setup(a.aws, a.key_ref, a.public_key, a.signing_config)
     sig = kms_sign_digest(a.aws, key_id, bytes.fromhex(a.digest))
     item, hint = kms_rekor_entry(a.signing_config, a.public_key, a.digest, sig, pinned_rekor_pem(a.signing_config))
     bundle = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": hint}, "tlogEntries": [item]},
