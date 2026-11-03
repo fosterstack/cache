@@ -200,7 +200,7 @@ case "$1" in
     # a signature verifies only against the key that made it: the stand-in of kms-sign writes the hash of the public key it was handed (whitespace removed) into the bundle as its hint, and this stand-in compares it with the key it is handed (a bundle with no hint, the fixtures of the fetch cases, is not compared)
     kf=; bf=; prev=
     for a in "$@"; do [ "$prev" = --key ] && kf=$a; [ "$prev" = --bundle ] && bf=$a; prev=$a; done
-    want=$(tr -d ' \n' < "$kf" | sha256sum | cut -d' ' -f1); got=$(sed -n 's/.*"hint":"\([0-9a-f]*\)".*/\1/p' "$bf")
+    want=$(tr -d ' \n' < "$kf" | sha256sum | cut -d' ' -f1); got=$(sed -n 's/.*"hint":"\([0-9a-f]*\)".*/\\1/p' "$bf")
     { [ -z "$got" ] || [ "$want" = "$got" ]; } && [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
   sign-blob) echo "cosign sign-blob must not be called: the letter is signed by chain-verify.py kms-sign (KA-2)" >&2; exit 1 ;;
 esac
