@@ -33,6 +33,11 @@ LAST = [0]   # the exit code of the last script run: a missing script (127) fail
 def check(c, l, why=""):
     if LAST[0] == 127: bad(l + " -> the script does not exist")
     else: ok(l) if c else bad(l + (" -> " + why if why else ""))
+def drop(t, rel, label):
+    """remove a file a case needs gone; when the signer left no such file the case FAILS by its label (never a FileNotFoundError that ends the suite)"""
+    pth = os.path.join(t, rel)
+    if not os.path.lexists(pth): check(False, label, "the file to remove (%s) is not there: the signing step left none" % rel); return False
+    os.remove(pth); return True
 FAKES = {
  "crane": r'''#!/usr/bin/env bash
 echo "crane $*" >> "$LOG"
@@ -143,6 +148,7 @@ if a[0] == "kms-sign":     # KA-2 (a model of the one blob signer, KA-1): the ca
     if os.path.lexists(g("--out")) or os.path.lexists(g("--bundle")): print("kms-sign: refused: %s already exists" % g("--bundle"), file=sys.stderr); sys.exit(1)
     if os.environ.get("KMSSIGN_FAIL_ON") and os.environ["KMSSIGN_FAIL_ON"] in g("--bundle"): print("kms-sign: refused: the release key does not support RSASSA_PKCS1_V1_5_SHA_256", file=sys.stderr); sys.exit(1)
     open(g("--out"), "wb").write(b"sig")
+    if os.environ.get("KMSSIGN_NOBUNDLE") in ("ALL", os.path.basename(g("--bundle"))): sys.exit(0)     # a signer that exits 0 and leaves no bundle (KA-2 p4 g3: no case may crash on the missing file, each must fail by its label)
     tl = "[]" if os.environ.get("COSIGN_NOREKOR") == os.path.basename(g("--bundle")) else '[{"logIndex":"1"}]'
     open(g("--bundle"), "w").write('{"verificationMaterial":{"tlogEntries":%s}}' % tl); sys.exit(0)
 if a[0] == "policy":
@@ -270,6 +276,7 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     LAST[0] = 0
     e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
+    if os.environ.get("KA2_MUTATE_NOBUNDLE"): e["KMSSIGN_NOBUNDLE"] = "ALL"      # the suite run with this set mutates the fake: every case that needs a bundle must FAIL by its label, none may crash
     if script in ("release-sign", "release-apks") and "RELEASE_KMS_KEY_REF" not in e and not (env or {}).get("NO_KMS_REF"): e["RELEASE_KMS_KEY_REF"] = KMS
     if script in ("release-sign", "release-apks"):      # bin/witnessed.sh hands these two steps the role and the identity-token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (P11 round 3); release-sign.sh maps them itself
         e.setdefault("RELEASE_ROLE_ARN", "arn:aws:iam::111122223333:role/release-signing"); e.setdefault("RELEASE_TOKEN_FILE", os.path.join(t, "idtoken"))
@@ -640,6 +647,7 @@ first_sig = next((i for i, l in enumerate(L) if l.startswith(("cosign", "chain-v
 check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
 check(any(l.startswith("chain-verify kms-sign") and l.endswith(" --bundle release-evidence/release-files.sha256.bundle") for l in L), "AC13 release-files.sha256 is signed with a bundle in release-evidence/", str([l for l in L if "release-files" in l]))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": "release-files.sha256.bundle"}); check(rc != 0 and "rekor" in se.lower() and "release-files.sha256" in se, "AC13 a release-files bundle with no Rekor entry fails, naming it", "rc=%s %s" % (rc, first(se)))
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"KMSSIGN_NOBUNDLE": "release-files.sha256.bundle"}); check(rc != 0 and "release-files.sha256.bundle" in se and "Traceback" not in se, "KA-2 p4 a signer that exits 0 and leaves no bundle stops the step, naming the missing bundle", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"VEXFORMS_FAIL": "1"}); check(rc != 0 and not signs(t), "AC13 failing VEX generation stops everything before anything is signed")
 t = tree(); open(os.path.join(t, "images/fips.manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\n"); rc, so, se = run(t, "release-sign", creds=REG); check(rc != 0 and "fips.manifests" in se and not signs(t), "AC13 an images/<variant>.manifests that is not complete stops before anything is signed")
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
@@ -732,7 +740,7 @@ check("--clobber" not in src and not [l for t_ in (tb, tc) for l in log(t_) if "
       "AC9 release-assets.sh never passes --clobber, in the source or in any run above")
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0 and "release-upload/release-files.sha256 " in L + " " and "release-upload/release-manifest.json" in L and "release-upload/release-files.sha256.bundle" in L, "AC13 the four metadata files, release-files.sha256 and its bundle are attached", "rc=%s %s" % (rc, first(se)))
-t = full_assets(); os.remove(os.path.join(t, "release-evidence/release-files.sha256.bundle")); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+t = full_assets(); drop(t, "release-evidence/release-files.sha256.bundle", "AC13 (setup) release-sign leaves release-evidence/release-files.sha256.bundle for the gate case to remove"); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
 check(rc != 0 and "release-files.sha256.bundle" in se and not [l for l in log(t) if l.startswith("gh release upload")], "AC13 the coverage gate runs BEFORE the upload: a release without the signed list is refused, nothing is uploaded", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); os.makedirs(os.path.join(t, "release-evidence"), exist_ok=True); open(os.path.join(t, "release-evidence/stray.json"), "w").write("{}"); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
 check(rc != 0 and "stray.json" in se and not [l for l in log(t) if l.startswith("gh release upload")], "AC13 an asset covered by nothing stops the release before the upload, naming it", "rc=%s %s" % (rc, first(se)))
@@ -1105,7 +1113,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "474"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "475"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

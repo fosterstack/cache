@@ -197,7 +197,11 @@ done
 case "$1" in
   verify-blob)
     n=$(grep -c "^cosign verify-blob" "$LOG")
-    [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
+    # a signature verifies only against the key that made it: the stand-in of kms-sign writes the hash of the public key it was handed (whitespace removed) into the bundle as its hint, and this stand-in compares it with the key it is handed (a bundle with no hint, the fixtures of the fetch cases, is not compared)
+    kf=; bf=; prev=
+    for a in "$@"; do [ "$prev" = --key ] && kf=$a; [ "$prev" = --bundle ] && bf=$a; prev=$a; done
+    want=$(tr -d ' \n' < "$kf" | sha256sum | cut -d' ' -f1); got=$(sed -n 's/.*"hint":"\([0-9a-f]*\)".*/\1/p' "$bf")
+    { [ -z "$got" ] || [ "$want" = "$got" ]; } && [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
   sign-blob) echo "cosign sign-blob must not be called: the letter is signed by chain-verify.py kms-sign (KA-2)" >&2; exit 1 ;;
 esac
 """,
@@ -215,7 +219,8 @@ case "$*" in
     [ -f "$pk" ] || { echo "kms-sign: refused: cannot read the Rekor URL of the signing config or the public key $pk" >&2; exit 1; }
     echo "signed-sha256: $d" >> "$LOG"
     echo sig > "$o"
-    echo '{"verificationMaterial":{"tlogEntries":'"$TLOG"'}}' > "$b" ;;
+    h=$(tr -d ' \n' < "$pk" | sha256sum | cut -d' ' -f1)
+    echo '{"verificationMaterial":{"publicKey":{"hint":"'"$h"'"},"tlogEntries":'"$TLOG"'}}' > "$b" ;;
   *chain-verify.py*check-list*)
     [ -z "$REAL_CHECKLIST" ] || exec "$REAL_PYTHON" "$@"
     echo "python3 $*" >> "$LOG"
@@ -651,6 +656,14 @@ for label, edit in (("a missing release public key", key_unreadable),):
     pk_, lk_, upk_, _l = publish(edit=edit)
     check("KA-2: %s fails closed in one line: kms-sign refuses, no bundle is verified, nothing is uploaded" % label,
           pk_.returncode == 1 and upk_ == [] and not any(x.startswith("cosign verify-blob") for x in lk_) and any("kms-sign" in x for x in lk_), (pk_.returncode, pk_.stderr, lk_))
+def keys_differ(fix, env):      # KA-2 p4: the letter is signed with the committed build/keys/release.rsa.pub, the policy (and verify) holds the manifest key: here they are two different keys
+    k = os.path.join(os.path.dirname(env["REPO_DIR"]), "other.key")
+    openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", k)
+    open(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"), "wb").write(openssl("pkey", "-in", k, "-pubout"))
+pkd, lkd, upkd, _l = publish(edit=keys_differ)
+check("KA-2 p4: a committed release public key that is not the manifest key is refused by the verify step in one line, and nothing is uploaded",
+      pkd.returncode == 1 and len(pkd.stderr.strip().splitlines()) == 1 and "does not verify" in pkd.stderr and upkd == []
+      and any("kms-sign" in x for x in lkd) and any(x.startswith("cosign verify-blob") for x in lkd) and not any("release upload" in x for x in lkd), (pkd.returncode, pkd.stderr, lkd))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
 check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",
       one_line(pb) and "HTTP 422" in pb.stderr and "second line" not in pb.stderr and upb == [], (pb.stderr, upb))

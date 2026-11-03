@@ -336,9 +336,10 @@ EOF2
 sed -i "s|@OPENSSL@|$(command -v openssl)|g" "$stubs/aws"; chmod +x "$stubs/aws"
 # the suite's own localhost Rekor stub (hashedrekord POSTs; its mode file says ok, err, empty or two); it exits when this shell is gone
 cat >"$work/rekor-stub.py" <<'P'
-import base64, hashlib, http.server, json, os, sys
+import base64, hashlib, http.server, json, os, socket, sys
 mode_f, log_f, port_f, parent, rkey, rlogid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6]
 import subprocess, tempfile
+flaky = {}   # KA-2 p4 g3: the POSTs seen per flaky-<code>-<n>-<tag> mode (a unique tag per case starts the count again)
 seen = {}   # the conflict modes: the entries this stub made, by uuid, and the posted bodies it has seen
 def sign(data):
     with tempfile.TemporaryDirectory() as d:
@@ -350,9 +351,18 @@ class H(http.server.BaseHTTPRequestHandler):
         # a Rekor v1 entry for the posted hashedrekord, with a signed entry timestamp and a REAL inclusion proof (a one-leaf tree: the root is the leaf hash) under a checkpoint signed by the suite's Rekor key;
         # the modes break one thing each: badset, otherlog, otherbody, noproof, badroot
         doc = json.loads(body)
-        if mode == "otherbody":
-            doc["spec"]["data"]["hash"]["value"] = "0" * 64
-        ebody = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode() if mode == "otherbody" else body
+        if mode == "kindswap":   # KA-2 p4 g3: an answer of the other entry kind than the one posted
+            ebody = json.dumps({"apiVersion": "0.0.1", "kind": "intoto" if doc.get("kind") == "dsse" else "dsse", "spec": {}}, sort_keys=True, separators=(",", ":")).encode()
+        elif doc.get("kind") == "dsse":   # a dsse 0.0.1 entry as Rekor v1.5.3 pkg/types/dsse/v0.0.1/entry.go Canonicalize writes it: envelopeHash, payloadHash, signatures[signature, verifier]
+            pc = doc["spec"]["proposedContent"]; env = json.loads(pc["envelope"])
+            ebody = json.dumps({"apiVersion": "0.0.1", "kind": "dsse", "spec": {
+                "envelopeHash": {"algorithm": "sha256", "value": "0" * 64 if mode == "otherbody" else hashlib.sha256(pc["envelope"].encode()).hexdigest()},
+                "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(base64.b64decode(env["payload"])).hexdigest()},
+                "signatures": [{"signature": env["signatures"][0]["sig"], "verifier": "QUFB" if mode == "dsse-otherkey" else pc["verifiers"][0]}]}}, sort_keys=True, separators=(",", ":")).encode()
+        else:
+            if mode == "otherbody":
+                doc["spec"]["data"]["hash"]["value"] = "0" * 64
+            ebody = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode() if mode == "otherbody" else body
         b64 = base64.b64encode(ebody).decode()
         lid = "ab" * 32 if mode == "otherlog" else rlogid
         canon = json.dumps({"body": b64, "integratedTime": 1700000000 + i, "logID": lid, "logIndex": 1000 + i}, sort_keys=True, separators=(",", ":")).encode()
@@ -360,7 +370,7 @@ class H(http.server.BaseHTTPRequestHandler):
         leaf = hashlib.sha256(b"\x00" + ebody).digest()
         note = "rekor.sigstore.dev - 1\n1\n" + base64.b64encode(leaf).decode() + "\n"
         ck = note + "\n— rekor.sigstore.dev " + base64.b64encode(bytes.fromhex(rlogid)[:4] + sign(note.encode())).decode() + "\n"
-        v = {"signedEntryTimestamp": base64.b64encode(set_sig).decode()}
+        v = {} if mode == "noset" else {"signedEntryTimestamp": base64.b64encode(set_sig).decode()}
         if mode != "noproof":
             v["inclusionProof"] = {"checkpoint": ck, "hashes": [], "logIndex": 0, "rootHash": ("cc" * 32 if mode == "badroot" else leaf.hex()), "treeSize": 1}
         return {"body": b64, "integratedTime": 1700000000 + i, "logID": lid, "logIndex": 1000 + i, "verification": v}
@@ -387,6 +397,17 @@ class H(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         open(log_f, "ab").write(self.path.encode() + b" " + body + b"\n")
         mode = open(mode_f).read().strip() or "ok"
+        if mode.startswith(("flaky-", "always-")):   # KA-2 p4 g3: always-<code>: that status every time; flaky-<code>-<n>-<tag>: <n> POSTs get that status (drop: the connection is closed unanswered), then the entry
+            kind_, code_ = mode.split("-")[:2]
+            if kind_ == "always": return self.reply(int(code_), {"code": int(code_), "message": "always"})
+            flaky[mode] = flaky.get(mode, 0) + 1
+            if flaky[mode] <= int(mode.split("-")[2]):
+                if code_ == "drop":
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    return
+                return self.reply(int(code_), {"code": int(code_), "message": "flaky"})
+            mode = "ok"
         if mode.startswith("conflict"):
             uuid = hashlib.sha256(body).hexdigest()
             if uuid in seen:
@@ -405,7 +426,7 @@ class H(http.server.BaseHTTPRequestHandler):
             seen[uuid] = (body, ent)
             return self.reply(201, {uuid: ent})
         if mode == "err":
-            out, code = {"code": 500, "message": "boom"}, 500
+            out, code = {"code": 400, "message": "boom"}, 400   # KA-2 p4 g3: a status that is never retried (5xx is retried now, on the 1..32 s schedule, which the rule tests below pin with a fake sleep)
         elif mode == "empty":
             out, code = {}, 201
         elif mode == "two":
@@ -687,6 +708,153 @@ ksreq bundle; ksreq signing-config; ksreq public-key
 # F6: the aws stderr text is never repeated (an AccessDenied text names the assumed-role ARN, and the command-run record keeps stderr)
 KD=$(kdig f6err); STUB_AWS_ERR='An error occurred (AccessDeniedException) when calling the Sign operation: User: arn:aws:sts::111122223333:assumed-role/release-signing/session is not authorized to perform: kms:Sign' ks f6err --out "$work/ks/f6err.sig" --bundle "$work/ks/f6err.bundle" "${ksfull[@]}"
 t "rule 22" "release signing (round 3 F6): a failing aws call is reported as its operation, exit status and error code (AccessDeniedException) and nothing else: no arn: and no role name in the output" bash -c "test '$(rc)' = 1 && grep -q 'AccessDeniedException' '$work/log' && ! grep -q 'arn:' '$work/log' && ! grep -q 'assumed-role' '$work/log'"
+# ---- KA-2 p4 group 3 (tests first, red until the code lands): the DSSE mode of kms-sign (`kms-sign --dsse-statement FILE --key-ref K --signing-config C --public-key P --bundle OUT`, no --digest and no --out) and ONE Rekor
+# retry rule for both entry kinds. The contract these cases pin (shape ruling 2026-11-03T00:37:00Z items 3a-3e): payload = the statement file's bytes verbatim; envelope {payloadType application/vnd.in-toto+json, payload base64, signatures [{sig}]};
+# the KMS call (RSASSA_PKCS1_V1_5_SHA_256 named, DIGEST) signs sha256 of PAE = "DSSEv1 <len type> <type> <len payload> <payload>" ONCE, whatever Rekor does; ONE dsse 0.0.1 entry is posted (proposedContent.envelope = the envelope JSON string, verifiers =
+# [base64 of the PEM public key]); the answer is checked like the hashedrekord answer (this envelope, this key, signed entry timestamp, inclusion proof, the pinned log); the bundle is v0.3 with dsseEnvelope, one tlogEntries item of kind dsse
+# 0.0.1, publicKey.hint = base64(sha256(DER public key)) and no certificate. Retry rule (hashedrekord and dsse alike): a network error, 429 or 5xx is retried on the waits 1,2,4,8,16,32 s (made by time.sleep, looked up at call time: the cases here
+# replace time.sleep), 409 fetches the existing entry (no wait), any other 4xx fails at once, the last failure is a refusal that names Rekor, and the KMS Sign call is never repeated. ----
+cat >"$work/ksp.py" <<'P'
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("cv", sys.argv[1]); cv = importlib.util.module_from_spec(spec); spec.loader.exec_module(cv)
+rec = []
+time.sleep = lambda s: rec.append(s)   # the waits of the retry rule are time.sleep calls; nothing here waits
+try:
+    r = cv.main(sys.argv[3:])
+except SystemExit as e:
+    r = e.code
+open(sys.argv[2], "w").write(json.dumps(rec))
+sys.exit(r if isinstance(r, int) else (0 if r is None else 1))
+P
+cat >"$work/dssecheck.py" <<'P'
+import base64, hashlib, json, re, subprocess, sys, tempfile
+bundle_p, stmt_p, pub_p, rlog_p, mode = sys.argv[1:6]
+def fail(m): print(m); sys.exit(1)
+try:
+    b = json.load(open(bundle_p))
+except (OSError, ValueError):
+    fail("no readable bundle")
+stmt = open(stmt_p, "rb").read()
+if b.get("mediaType") != "application/vnd.dev.sigstore.bundle.v0.3+json": fail("mediaType is %r" % b.get("mediaType"))
+env = b.get("dsseEnvelope")
+if not isinstance(env, dict): fail("no dsseEnvelope")
+if "messageSignature" in b: fail("a messageSignature beside the dsseEnvelope")
+if env.get("payloadType") != "application/vnd.in-toto+json": fail("payloadType is %r" % env.get("payloadType"))
+if base64.b64decode(env["payload"]) != stmt: fail("the envelope payload is not the statement file's bytes")
+if not isinstance(env.get("signatures"), list) or len(env["signatures"]) != 1: fail("not exactly one signature")
+pem = re.search(r"-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+?-----END PUBLIC KEY-----\n", open(pub_p).read()).group(0).encode()
+if mode == "bundle":
+    pae = b"DSSEv1 %d %s %d " % (len(env["payloadType"]), env["payloadType"].encode(), len(stmt)) + stmt
+    with tempfile.TemporaryDirectory() as d:
+        open(d + "/m", "wb").write(pae); open(d + "/s", "wb").write(base64.b64decode(env["signatures"][0]["sig"]))
+        r = subprocess.run(["openssl", "dgst", "-sha256", "-verify", pub_p, "-signature", d + "/s", d + "/m"], capture_output=True)
+        if r.returncode != 0: fail("the signature does not verify over the PAE of the statement with the release key")
+    vm = b.get("verificationMaterial", {})
+    if "certificate" in vm or "x509CertificateChain" in vm: fail("a certificate in the verification material")
+    der = subprocess.run(["openssl", "pkey", "-pubin", "-in", pub_p, "-outform", "DER"], capture_output=True).stdout
+    if vm.get("publicKey", {}).get("hint") != base64.b64encode(hashlib.sha256(der).digest()).decode(): fail("publicKey.hint is not base64(sha256(DER public key))")
+    tl = vm.get("tlogEntries")
+    if not isinstance(tl, list) or len(tl) != 1: fail("not exactly one tlogEntries item")
+    if tl[0].get("kindVersion") != {"kind": "dsse", "version": "0.0.1"}: fail("kindVersion is %r" % tl[0].get("kindVersion"))
+else:   # posted: the one entry the stub saw
+    posts = [l for l in open(rlog_p, "rb").read().split(b"\n") if l.startswith(b"/api/v1/log/entries ")]
+    if len(posts) != 1: fail("%d entries posted, wanted 1" % len(posts))
+    doc = json.loads(posts[0].split(b" ", 1)[1])
+    if doc.get("apiVersion") != "0.0.1" or doc.get("kind") != "dsse": fail("posted %r %r, wanted dsse 0.0.1" % (doc.get("apiVersion"), doc.get("kind")))
+    pc = doc["spec"]["proposedContent"]
+    if not isinstance(pc.get("envelope"), str): fail("proposedContent.envelope is not a string")
+    pe = json.loads(pc["envelope"])
+    if pe.get("payload") != env["payload"] or pe["payload"] != base64.b64encode(stmt).decode(): fail("the posted envelope's payload is not the bundle's and the statement file's")
+    if pe.get("payloadType") != env["payloadType"] or pe["signatures"][0]["sig"] != env["signatures"][0]["sig"]: fail("the posted envelope is not the bundle's envelope")
+    if pc.get("verifiers") != [base64.b64encode(pem).decode()]: fail("verifiers is not [base64 of the PEM public key]")
+P
+mkdir -p "$work/ks"
+kspy() { # <name> [kms-sign args...]: the real kms-sign through the launcher that replaces time.sleep (the waits it asked for are in $work/sleeps.json); the rekor log starts empty
+  local n=$1; shift; : >"$CALLS"; : >"$work/rekor.log"; rm -f "$work/sleeps.json"
+  PATH="$stubs:$PATH" CALLS="$CALLS" STUB_AWS_KEY="$work/release.rsa" python3 -B "$work/ksp.py" "$KS_CV" "$work/sleeps.json" kms-sign --aws "$stubs/aws" --key-ref awskms:///alias/fosterstack-release-signing "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
+sleeps_are() { python3 - "$work/sleeps.json" "$@" <<'P'
+import json, sys
+try: got = [float(x) for x in json.load(open(sys.argv[1]))]
+except (OSError, ValueError): sys.exit(1)
+sys.exit(0 if got == [float(x) for x in sys.argv[2:]] else 1)
+P
+}
+signs_n() { grep -c '^aws kms sign ' "$CALLS" || true; }
+posts_n() { grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true; }
+stmt() { # <name>: a statement file whose bytes are not canonical on purpose (spaces, key order), so "verbatim" is tested
+  printf '{ "predicateType": "https://sigstore.dev/cosign/sign/v1",\n  "subject": [{"digest": {"sha256": "%s"}, "name": "x"}], "_type": "https://in-toto.io/Statement/v1", "predicate": {} }\n' "$(kdig "$1")" >"$work/ks/$1.stmt"; }
+dsse_args() { echo --dsse-statement "$work/ks/$1.stmt" --bundle "$work/ks/$1.bundle" --signing-config "$work/signing-config-test.json" --public-key "$work/keysfx/release.rsa.pub"; }
+dcase() { # <desc> <keyword> <rekor mode> <name>: the dsse mode under a Rekor mode -> exit 1 naming the reason, no bundle, one KMS Sign
+  local d=$1 kw=$2 m=$3 n=$4; stmt "$n"; rm -f "$work/ks/$n.bundle"; echo "$m" >"$work/rekor.mode"
+  kspy "$n" $(dsse_args "$n"); echo ok >"$work/rekor.mode"
+  if [ "$(rc)" = 1 ] && grep -Eqi -- "$kw" "$work/log" && [ ! -e "$work/ks/$n.bundle" ] && [ "$(signs_n)" = 1 ]; then ok
+  else bad "rule 22" "$d (exit $(rc), wanted 1 naming '$kw', no bundle, one KMS Sign; signs $(signs_n); $(head -c 160 "$work/log" | tr '\n' ' '))"; fi; }
+# 3b/3c: the happy path, the statement bytes verbatim, the PAE signature, the hint, the one dsse entry
+stmt g3dsse; rm -f "$work/ks/g3dsse.bundle"; echo ok >"$work/rekor.mode"; kspy g3dsse $(dsse_args g3dsse); g3rc=$(rc); g3signs=$(signs_n)
+t "rule 22" "KA-2 p4 3b: kms-sign --dsse-statement exits 0 and writes a v0.3 bundle whose DSSE payload is the statement file's bytes verbatim, with one signature that verifies over the PAE with the release key, publicKey.hint = base64(sha256(DER key)), no certificate, one tlogEntries item of kind dsse 0.0.1" \
+  bash -c "test '$g3rc' = 0 && python3 '$work/dssecheck.py' '$work/ks/g3dsse.bundle' '$work/ks/g3dsse.stmt' '$work/keysfx/release.rsa.pub' '$work/rekor.log' bundle"
+t "rule 22" "KA-2 p4 3b: the ONE entry posted to Rekor is a dsse 0.0.1 entry whose proposedContent.envelope is the bundle's envelope (same payload as the statement file, same signature) and whose verifiers are [base64 of the PEM public key]" \
+  bash -c "test '$g3rc' = 0 && python3 '$work/dssecheck.py' '$work/ks/g3dsse.bundle' '$work/ks/g3dsse.stmt' '$work/keysfx/release.rsa.pub' '$work/rekor.log' posted"
+t "rule 22" "KA-2 p4 3b: the dsse mode asks KMS to sign once (the algorithm named: the stub aws refuses a call that does not name it) after one get-public-key" test "$g3signs" = 1 -a "$(grep -c '^aws kms get-public-key ' "$CALLS")" -ge 1
+# usage and input refusals: before any aws call, no bundle
+dusage() { # <desc> <expected rc> <keyword> <args...>
+  local d=$1 want=$2 kw=$3; shift 3; kspy gu "$@"
+  if [ "$(rc)" = "$want" ] && grep -Eqi -- "$kw" "$work/log" && ! grep -q '^aws ' "$CALLS" && [ "$(posts_n)" = 0 ]; then ok; else bad "rule 22" "$d (exit $(rc), wanted $want naming '$kw', no aws call, no Rekor POST; $(head -c 160 "$work/log" | tr '\n' ' '))"; fi; }
+stmt g3u; rm -f "$work/ks/g3u.bundle"
+dusage "KA-2 p4 3b: --dsse-statement together with --digest is a usage error (exit 2)" 2 'dsse-statement|digest|usage' --dsse-statement "$work/ks/g3u.stmt" --digest "$(kdig g3u)" --bundle "$work/ks/g3u.bundle" "${ksfull[@]}"
+dusage "KA-2 p4 3b: --dsse-statement together with --out is a usage error (exit 2)" 2 'dsse-statement|out|usage' --dsse-statement "$work/ks/g3u.stmt" --out "$work/ks/g3u.sig" --bundle "$work/ks/g3u.bundle" "${ksfull[@]}"
+dusage "KA-2 p4 3b: --dsse-statement without --bundle is a usage error (exit 2)" 2 'bundle|usage' --dsse-statement "$work/ks/g3u.stmt" "${ksfull[@]}"
+dusage "KA-2 p4 3b: a statement file that is not there is refused (exit 1)" 1 'statement' --dsse-statement "$work/ks/none.stmt" --bundle "$work/ks/g3u.bundle" "${ksfull[@]}"
+: >"$work/ks/empty.stmt"
+dusage "KA-2 p4 3b: an empty statement file is refused (exit 1)" 1 'statement' --dsse-statement "$work/ks/empty.stmt" --bundle "$work/ks/g3u.bundle" "${ksfull[@]}"
+printf 'not json' >"$work/ks/notjson.stmt"
+dusage "KA-2 p4 3b: a statement file that is not JSON is refused (exit 1), as cosign attest-blob refuses it" 1 'statement|json' --dsse-statement "$work/ks/notjson.stmt" --bundle "$work/ks/g3u.bundle" "${ksfull[@]}"
+echo existing >"$work/ks/g3ex.bundle"
+dusage "KA-2 p4 3b: an existing bundle path is refused before any aws call and is left as it was" 1 'already exists' --dsse-statement "$work/ks/g3u.stmt" --bundle "$work/ks/g3ex.bundle" "${ksfull[@]}"
+t "rule 22" "KA-2 p4 3b: the existing bundle was not touched" test "$(cat "$work/ks/g3ex.bundle")" = existing
+# 3d: the dsse answer is checked like the hashedrekord answer
+dcase "KA-2 p4 3d: an answer for another envelope (envelopeHash differs; timestamp and proof valid) -> refused naming the envelope" 'envelope' otherbody g3d1
+dcase "KA-2 p4 3d: an answer whose verifier is another key -> refused naming the key" 'key|verifier' dsse-otherkey g3d2
+dcase "KA-2 p4 3d: an answer with no signed entry timestamp -> refused naming it" 'signed entry timestamp' noset g3d3
+dcase "KA-2 p4 3d: a signed entry timestamp that does not verify against the pinned Rekor key -> refused" 'signed entry timestamp' badset g3d4
+dcase "KA-2 p4 3d: an answer naming another log than the pinned one -> refused" 'another log' otherlog g3d5
+dcase "KA-2 p4 3d: an answer with no inclusion proof -> refused naming the proof" 'inclusion proof' noproof g3d6
+dcase "KA-2 p4 3d: an answer whose rootHash is not the tree's -> refused" 'inclusion proof|audit path|root hash' badroot g3d7
+dcase "KA-2 p4 3d: an answer of another entry kind than dsse -> refused naming the kind" 'kind|dsse' kindswap g3d8
+dcase "KA-2 p4 3d: an answer with two entries -> refused naming Rekor" 'rekor' two g3d9
+dcase "KA-2 p4 3d: an answer with no entry -> refused naming Rekor" 'rekor' empty g3d10
+# 3e: 409 on a dsse entry: the existing entry is fetched and judged by the same checks; no wait
+stmt g3d409; rm -f "$work/ks/g3d409a.bundle" "$work/ks/g3d409b.bundle"; echo conflict >"$work/rekor.mode"
+kspy g3d409a --dsse-statement "$work/ks/g3d409.stmt" --bundle "$work/ks/g3d409a.bundle" "${ksfull[@]}"; r1=$(rc)
+: >"$work/rekor.log"; kspy g3d409b --dsse-statement "$work/ks/g3d409.stmt" --bundle "$work/ks/g3d409b.bundle" "${ksfull[@]}"; r2=$(rc); echo ok >"$work/rekor.mode"
+t "rule 22" "KA-2 p4 3e: the same dsse statement signed twice -> the second POST is answered 409, the existing entry is fetched once and judged: both exit 0, the bundles are equal, no wait was made" \
+  bash -c "test '$r1' = 0 -a '$r2' = 0 && cmp -s '$work/ks/g3d409a.bundle' '$work/ks/g3d409b.bundle' && test \"\$(grep -c '^GET ' '$work/rekor.log')\" = 1" 
+sleeps_are && ok || bad "rule 22" "KA-2 p4 3e: a 409 makes no wait (sleeps: $(cat "$work/sleeps.json" 2>/dev/null))"
+stmt g3d409o; rm -f "$work/ks/g3d409o"*.bundle; echo conflict-otherbody >"$work/rekor.mode"
+kspy g3d409o1 --dsse-statement "$work/ks/g3d409o.stmt" --bundle "$work/ks/g3d409o1.bundle" "${ksfull[@]}"
+kspy g3d409o2 --dsse-statement "$work/ks/g3d409o.stmt" --bundle "$work/ks/g3d409o2.bundle" "${ksfull[@]}"; echo ok >"$work/rekor.mode"
+t "rule 22" "KA-2 p4 3e: a 409 whose existing entry is for another envelope -> refused (exit 1, no bundle)" bash -c "test '$(rc)' = 1 && test ! -e '$work/ks/g3d409o2.bundle'"
+# 3e: ONE retry rule, both kinds. rok: <desc> <kind> <rekor mode> <waits...>: exit 0, the waits asked for are exactly these, KMS Sign once, one POST per try
+rok() {
+  local d=$1 kind=$2 m=$3; shift 3; local n="g3r$RANDOM"; local tries=$(($# + 1)); rm -f "$work/ks/$n".*; echo "$m" >"$work/rekor.mode"
+  if [ "$kind" = dsse ]; then stmt "$n"; kspy "$n" $(dsse_args "$n"); else KD=$(kdig "$n"); kspy "$n" --digest "$KD" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" "${ksfull[@]}"; fi; echo ok >"$work/rekor.mode"
+  if [ "$(rc)" = 0 ] && [ -s "$work/ks/$n.bundle" ] && sleeps_are "$@" && [ "$(signs_n)" = 1 ] && [ "$(posts_n)" = "$tries" ]; then ok
+  else bad "rule 22" "$d (exit $(rc), wanted 0 with waits [$*], one KMS Sign, $tries POSTs; waits $(cat "$work/sleeps.json" 2>/dev/null), signs $(signs_n), POSTs $(posts_n); $(head -c 140 "$work/log" | tr '\n' ' '))"; fi; }
+rfail() { # <desc> <kind> <rekor mode> <expected POSTs> <waits...>: exit 1 naming Rekor, no files, these waits, KMS Sign once
+  local d=$1 kind=$2 m=$3 np=$4; shift 4; local n="g3f$RANDOM"; rm -f "$work/ks/$n".*; echo "$m" >"$work/rekor.mode"
+  if [ "$kind" = dsse ]; then stmt "$n"; kspy "$n" $(dsse_args "$n"); else KD=$(kdig "$n"); kspy "$n" --digest "$KD" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" "${ksfull[@]}"; fi; echo ok >"$work/rekor.mode"
+  if [ "$(rc)" = 1 ] && grep -qi rekor "$work/log" && [ ! -e "$work/ks/$n.bundle" ] && [ ! -e "$work/ks/$n.sig" ] && sleeps_are "$@" && [ "$(signs_n)" = 1 ] && [ "$(posts_n)" = "$np" ]; then ok
+  else bad "rule 22" "$d (exit $(rc), wanted 1 naming Rekor, no files, waits [$*], one KMS Sign, $np POST(s); waits $(cat "$work/sleeps.json" 2>/dev/null), signs $(signs_n), POSTs $(posts_n); $(head -c 140 "$work/log" | tr '\n' ' '))"; fi; }
+for kind in hashedrekord dsse; do
+  rok "KA-2 p4 3e ($kind): three 503 answers then the entry -> exit 0 after the waits 1, 2, 4, KMS Sign called once" $kind flaky-503-3-$kind 1 2 4
+  rok "KA-2 p4 3e ($kind): two 429 answers then the entry -> exit 0 after the waits 1, 2" $kind flaky-429-2-$kind 1 2
+  rok "KA-2 p4 3e ($kind): one 500 answer then the entry -> exit 0 after the wait 1" $kind flaky-500-1-$kind 1
+  rok "KA-2 p4 3e ($kind): two dropped connections (a network error) then the entry -> exit 0 after the waits 1, 2" $kind flaky-drop-2-$kind 1 2
+  rok "KA-2 p4 3e ($kind): five 502 answers then the entry -> exit 0 after the waits 1, 2, 4, 8, 16" $kind flaky-502-5-$kind 1 2 4 8 16
+  rfail "KA-2 p4 3e ($kind): 503 on every try -> after the waits 1, 2, 4, 8, 16, 32 (seven POSTs) a refusal that names Rekor, exit 1, no files, KMS Sign called once" $kind always-503 7 1 2 4 8 16 32
+  rfail "KA-2 p4 3e ($kind): a 400 answer fails at once: no wait, one POST, a refusal that names Rekor" $kind always-400 1
+  rfail "KA-2 p4 3e ($kind): a 403 answer fails at once: no wait, one POST, a refusal that names Rekor" $kind always-403 1
+done
 # round 4 R3 / R4C-6: the text says what the code does (comments and the two policy reasons; no check changes)
 POL="$root/.github/policy/chain-scripts.json"
 reasonhas() { # <script> <word>...: the policy row of <script> has a reason holding every word; a word beginning with ! must not be there
