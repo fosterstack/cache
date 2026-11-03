@@ -122,6 +122,12 @@ mutated("sign downloads another artifact", lambda d: [s["with"].update(name="oth
 mutated("draft gets an identity token", lambda d: d["jobs"]["draft"]["permissions"].update({"id-token": "write"}))
 mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release upload --clobber\n")
 mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
+# B-6: the triggers are the one monthly schedule and the hand dispatch, nothing else
+for trig in ("workflow_call", "pull_request_target", "workflow_run", "issue_comment"):
+    mutated("the trigger %s is added" % trig, lambda d, t=trig: (d.get(True) or d["on"]).update({t: {}}))
+mutated("a second schedule is added", lambda d: (d.get(True) or d["on"])["schedule"].append({"cron": "0 0 * * *"}))
+mutated("the schedule is removed", lambda d: (d.get(True) or d["on"]).pop("schedule"))
+mutated("the hand dispatch is removed", lambda d: (d.get(True) or d["on"]).pop("workflow_dispatch"))
 
 pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
 check("AC9: the key comes from RELEASE_KMS_KEY_REF and the signing config is the committed one",
