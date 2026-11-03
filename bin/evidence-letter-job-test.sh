@@ -42,7 +42,8 @@ def judge(doc, text):
     """Everything the workflow must keep; the list of what it does not."""
     bad = []
     on = doc.get(True, doc.get("on"))
-    if sorted(on) != ["schedule", "workflow_dispatch"] or len(on["schedule"]) != 1:
+    if (sorted(on) != ["schedule", "workflow_dispatch"] or len(on["schedule"]) != 1
+            or on["schedule"] != [{"cron": "17 6 2 * *"}]):
         bad.append("it must start only on one monthly schedule or by hand")
     if doc["permissions"] != {"contents": "read"}:
         bad.append("the workflow token must only read")
@@ -128,6 +129,8 @@ for trig in ("workflow_call", "pull_request_target", "workflow_run", "issue_comm
 mutated("a second schedule is added", lambda d: (d.get(True) or d["on"])["schedule"].append({"cron": "0 0 * * *"}))
 mutated("the schedule is removed", lambda d: (d.get(True) or d["on"]).pop("schedule"))
 mutated("the hand dispatch is removed", lambda d: (d.get(True) or d["on"]).pop("workflow_dispatch"))
+mutated("the schedule is daily", lambda d: (d.get(True) or d["on"])["schedule"][0].update(cron="0 0 * * *"))
+mutated("a pull_request text appears", lambda d: None, lambda t: t + "\n# pull_request\n")
 
 pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
 check("AC9: the key comes from RELEASE_KMS_KEY_REF and the signing config is the committed one",
