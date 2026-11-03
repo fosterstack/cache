@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "5f9fed33fea1a03afcac0b4f2798ac5506ce87daf3e383427036c958f8beed29",
+      "sha256": "6809de3c4363b4314c2df18f8a27f8b0c3c649ce2dcc8968e0a66dbf36f0fa6a",
       "tools": [
         "make",
         "at",
@@ -69,7 +69,7 @@
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then has the DSSE kind of kms-sign sign the provenance statement once (the aws CLI its caller names, KMS signing with the algorithm named, one dsse Rekor entry)); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs; `aws` is the aws CLI that the kms-sign subcommand runs at the fixed path its caller gives (kms get-public-key and kms sign, REQ-BUILDAPK-001-AC7), and `timeout` is the keyword argument of its subprocess and urllib calls, not a command; tool choice for aws (rules 12-15): it is the one tool present on the runner image that takes the signing algorithm on the call (kms sign --signing-algorithm; cosign 3.1.3 signs with the first algorithm the key lists), it is not installed here, boto3 is absent from the runner's python, and hand-made SigV4 requests would be a longer path with more of our own code; its path and version on the runner image are UNVERIFIED until a job log shows them"
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then has the DSSE kind of kms-sign sign the provenance statement once (the aws CLI its caller names, KMS signing with the algorithm named, one dsse Rekor entry)); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs; `aws` is the aws CLI that the kms-sign subcommand runs at the fixed path its caller gives (kms get-public-key and kms sign, REQ-BUILDAPK-001-AC7), and `timeout` is the keyword argument of its subprocess and urllib calls, not a command; tool choice for aws (rules 12-15): it is the one tool present on the runner image that takes the signing algorithm on the call (kms sign --signing-algorithm; cosign 3.1.3 signs with the first algorithm the key lists), boto3 is absent from the runner's python, and hand-made SigV4 requests would be a longer path with more of our own code; the tool is the pinned aws CLI (bin/install-scanner.sh aws-cli, under RUNNER_TEMP) and each signing caller passes its path with --aws"
     },
     {
       "path": "bin/install-scanner.sh",
@@ -320,7 +320,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key; Witness's own environment holds no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE for any step, and the wrapped command is the plain bash SCRIPT, so no AWS role or token-path name stands in the command-run record (attestors environment, git, material, product; never slsa; the steps whose scripts sign with the key themselves, release-sign and release-apks, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive keys of the record, and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the AWS variables themselves, REQ-CHAIN-007-AC15; the token made for it is removed when Witness returns), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
-      "sha256": "1e0ebdbd7ecb030f28c7e2fea209386e7fad93c7310366f24d96dc8085d182a3",
+      "sha256": "d72e0e84301adffc7e750e342b0e8eb3863a0989e14606d8dba2fdd2137ead54",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -414,7 +414,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "5dfad7699ead5c05f22ca89a326605ace63b13b9529911963a418274eb487cff",
+      "sha256": "948a1f5bbb84aa3a553aeec657fc672e0ed4d98b90af348d2e5f097f75c5fdd6",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -2666,7 +2666,7 @@
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record or sign (the one signing function, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
+      "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record, sign or kms-sign (the signing functions, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
       "sha256": "82c661621cdfbee2b75595de440f6d883d69dc3f0da63b65c59dfb88f46c4792",
       "reads_env": [
         "AWS_ROLE_ARN",

@@ -99,16 +99,16 @@ those two lists are in [`RELEASING.md`](../RELEASING.md#archives-and-metadata-fi
 ### The signed evidence files
 
 Beside the images, the Release stage's `release-sign` step signs each of these
-files keyless, under `stage-promote.yml` at the release tag, with a Rekor
-entry, and the release carries the file with its bundle:
+files with the release key (the same key as the images, made through the cloud
+key service), with a Rekor entry, and the release carries the file with its bundle:
 `<variant>.sbom.json` and `<variant>.full.lock.json` for `production` and
 `fips`, `vendor-evidence.json`, `dependency-list.json`, `policy.json` (its
 bundle is `release-policy.bundle`), `checksums.txt` and
 `release-files.sha256`. Each bundle is named after its file with `.bundle`
 added (`vendor-evidence.json.bundle`, `production.sbom.json.bundle`), except
-the policy's, `release-policy.bundle`. Verify one the same way as
-`checksums.txt` in section 4: `cosign verify-blob --bundle NAME.bundle FILE`
-with the pinned identity. The Witness records themselves (the `*-collection.json`
+the policy's, `release-policy.bundle`. Verify one with the release public key
+`release.rsa.pub` fetched in section 1: `cosign verify-blob --key release.rsa.pub
+--bundle NAME.bundle FILE`. The Witness records themselves (the `*-collection.json`
 files) are extra evidence that anyone with Witness can check; the release guide,
 [`docs/verify-release.md`](verify-release.md), does not cover them, and
 [`RELEASING.md`](../RELEASING.md) describes the stages that make them.

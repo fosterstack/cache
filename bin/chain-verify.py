@@ -1288,7 +1288,7 @@ def bundle_certificate_why(vm):
 
 
 def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
-    """Turn the bundle cosign wrote into the two files Release verifies: its DSSE envelope, one signature {keyid, sig}
+    """Turn the bundle kms-sign wrote into the two files Release verifies: its DSSE envelope, one signature {keyid, sig}
     (<name>.json), and the bundle's own Rekor entries, untouched (<name>.rekor.json). The bundle must hold a DSSE
     envelope and no certificate (a key signed it; nothing here is keyless). With `expect_payload`, the payload it signed
     must be byte-equal to those bytes."""
@@ -1302,20 +1302,20 @@ def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
         dsse = bun["dsseEnvelope"]
         sigs = dsse["signatures"]
         if not isinstance(sigs, list) or len(sigs) != 1:
-            refuse("sign", "the bundle cosign wrote holds %s signatures, not exactly one: a second signature would be "
+            refuse("sign", "the bundle kms-sign wrote holds %s signatures, not exactly one: a second signature would be "
                            "dropped unseen" % (len(sigs) if isinstance(sigs, list) else "no list of"))
         sig = sigs[0]
         envelope = {"payloadType": dsse["payloadType"], "payload": dsse["payload"],
                     "signatures": [{"keyid": sig.get("keyid", ""), "sig": sig["sig"]}]}
         if expect_payload is not None and b64d(dsse["payload"]) != expect_payload:
-            refuse("sign", "the bundle cosign wrote signed another payload than the statement handed to it")
+            refuse("sign", "the bundle kms-sign wrote signed another payload than the statement handed to it")
         tlog = vm.get("tlogEntries")
         if not isinstance(tlog, list) or not tlog:
-            refuse("sign", "the bundle cosign wrote has no Rekor entry (verificationMaterial.tlogEntries is missing or "
+            refuse("sign", "the bundle kms-sign wrote has no Rekor entry (verificationMaterial.tlogEntries is missing or "
                            "empty): Release refuses a signature without one")
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
         # a malformed bundle is a refusal, never a traceback (property e); the field named is the one that was missing or wrong
-        refuse("sign", "the bundle cosign wrote is malformed: envelope field %s (%s)" % (ex, type(ex).__name__))
+        refuse("sign", "the bundle kms-sign wrote is malformed: envelope field %s (%s)" % (ex, type(ex).__name__))
     with open(os.path.join(out_dir, name + ".json"), "w") as f:
         json.dump(envelope, f)
     with open(os.path.join(out_dir, name + ".rekor.json"), "w") as f:
@@ -2224,7 +2224,7 @@ def same_json(a, b):
 
 
 def verify_own_output(out_dir, pol, statement, tmpd):
-    """Verify what the one signing function wrote as stage sign exactly as Release will, and require that the payload cosign signed
+    """Verify what the one signing function wrote as stage sign exactly as Release will, and require that the payload kms-sign signed
     IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3): Sign never reports success for
     provenance Release would refuse, nor for a statement it did not make."""
     vdir = os.path.join(tmpd, "verify-own-output")
