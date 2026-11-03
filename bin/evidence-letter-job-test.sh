@@ -589,7 +589,8 @@ LETTER_SHA = hashlib.sha256(b"a letter\n").hexdigest()
 SIGN_HEAD = ("python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref awskms:///stand-in-key --digest " + LETTER_SHA
              + " --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub --out ")
 SIGN_TAIL = " --bundle " + letter + ".bundle"
-signs_ = [l for l in log if "kms-sign" in l]
+signs_ = [l for l in log if l.startswith("python3 -I -B bin/chain-verify.py kms-sign ")]      # the call itself; the stand-in's own marker lines (kms-sign-called-KMS-Sign, kms-sign-posted-to-Rekor) are asserted in order below
+marks_ = [l for l in log if l in ("kms-sign-called-KMS-Sign", "kms-sign-posted-to-Rekor") or l.startswith("signed-sha256: ")]
 VERIFY = ("cosign verify-blob --key ",
           " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
 verifies = [l for l in log if l.startswith("cosign verify-blob")]
@@ -598,7 +599,9 @@ check("F2: a good run takes the key from the root-checked manifest (policy make 
       and len(signs_) == 1 and signs_[0].startswith(SIGN_HEAD) and signs_[0].endswith(SIGN_TAIL) and not any(l.startswith("cosign sign") for l in log)
       and any("chain-verify.py policy make --template .github/policy/release-policy.template.json"
               " --ref refs/heads/main" in l for l in log)
-      and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1]), (p.stderr, log))
+      and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1])
+      and marks_ == ["kms-sign-called-KMS-Sign", "kms-sign-posted-to-Rekor", "signed-sha256: " + LETTER_SHA]
+      and log.index(signs_[0]) + 1 == log.index("kms-sign-called-KMS-Sign") and log.index("signed-sha256: " + LETTER_SHA) < log.index(verifies[0]), (p.stderr, log))
 check("F2: the verify reads the manifest's key file", log.count(key_of(log)) == 1, log)
 check("F2: the verify names no identity, issuer or ignored log",
       len(verifies) == 1 and not any(x in verifies[0] for x in ("--certificate-identity", "--certificate-oidc-issuer",
@@ -666,8 +669,9 @@ def keys_differ(fix, env):      # KA-2 p4: the letter is signed with the committ
     openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", k)
     open(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"), "wb").write(openssl("pkey", "-in", k, "-pubout"))
 pkd, lkd, upkd, _l = publish(edit=keys_differ)
-check("KA-2 p4 key compare: a committed release public key that is not the manifest (KMS) key is refused by kms-sign in one line naming the file and 'does not match the KMS key', exit 1, BEFORE any KMS Sign and any Rekor POST; verify-blob is not run and nothing is uploaded",
-      pkd.returncode == 1 and len(pkd.stderr.strip().splitlines()) == 1 and "does not match the KMS key" in pkd.stderr and "build/keys/release.rsa.pub" in pkd.stderr and upkd == []
+check("KA-2 p4 key compare: a committed release public key that is not the manifest (KMS) key is refused by kms-sign in its one line naming the file and 'does not match the KMS key' (the publish script adds its own one-line 'not published' end), exit 1, BEFORE any KMS Sign and any Rekor POST; verify-blob is not run and nothing is uploaded",
+      pkd.returncode == 1 and len(pkd.stderr.strip().splitlines()) == 2 and pkd.stderr.count("does not match the KMS key") == 1
+      and pkd.stderr.splitlines()[0].startswith("kms-sign: refused:") and "build/keys/release.rsa.pub" in pkd.stderr.splitlines()[0] and pkd.stderr.splitlines()[1].endswith("not published") and upkd == []
       and any("kms-sign" in x for x in lkd) and not any(x == "kms-sign-called-KMS-Sign" for x in lkd) and not any(x == "kms-sign-posted-to-Rekor" for x in lkd)
       and not any(x.startswith("cosign verify-blob") for x in lkd) and not any("release upload" in x for x in lkd), (pkd.returncode, pkd.stderr, lkd))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
