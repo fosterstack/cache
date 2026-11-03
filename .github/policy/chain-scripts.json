@@ -320,7 +320,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key; Witness's own environment holds no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE for any step, and the wrapped command is the plain bash SCRIPT, so no AWS role or token-path name stands in the command-run record (attestors environment, git, material, product; never slsa; the steps whose scripts sign with the key themselves, release-sign and release-apks, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive keys of the record, and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the AWS variables themselves, REQ-CHAIN-007-AC15; the token made for it is removed when Witness returns), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
-      "sha256": "b80d8c4f9b670f299a124f56069e410237afc0e6714d9f589b2e857301456683",
+      "sha256": "1e0ebdbd7ecb030f28c7e2fea209386e7fad93c7310366f24d96dc8085d182a3",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -2667,7 +2667,7 @@
       ],
       "signs": "other",
       "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record or sign (the one signing function, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
-      "sha256": "2361353eb78a357db18aea22d0fd4c293efd0ac0e659c4640ea48b0a5fd83f05",
+      "sha256": "602c9338a80add951e4d8cdbba0cc69c5bff206f6944c769e968bb258d2936de",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",

@@ -7,7 +7,7 @@ name: 'Stage: sign'
 # key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it with the release key held in AWS KMS, keeping its Rekor entry beside it; every later stage trusts
 # only a record signed here.
 #   sign:         receives Build's records (witness-build, witness-apk-<runner>) and the artifacts those records name (images, dist, the apks), checks them (bin/chain-verify.py
-#                 sign-records), signs the records, then checks Build's digest list against the signed record and asks cosign for the provenance signature.
+#                 sign-records), signs the records, then checks Build's digest list against the signed record and has kms-sign sign the provenance.
 #   sign-rebuild: receives Rebuild's records (witness-rapk-<runner>, witness-rebuild with its verdict) and NO Rebuild apk or image (the owner's separation rule: Rebuild's
 #                 outputs never reach a job that signs); the Release stage's compare job, which holds both builds' apks, checks the signed rapk records' product digests.
 #   sign-check:   receives the records of the Check jobs (witness-check, witness-check-arm64) and the results they name (check-results, check-results-arm64), nothing else and

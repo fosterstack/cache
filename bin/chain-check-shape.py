@@ -106,7 +106,8 @@ def witnessed_lines():
             "  oidc_token",
             '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
             'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
-            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json || rc=$?',
+            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json '
+            '--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub || rc=$?',
             "fi",
             'rm -rf "$td"',
             '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
