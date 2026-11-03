@@ -111,6 +111,15 @@ for path in os.environ["VERIFY_DOCS"].split():
        "%s: no fenced step matches the signing identity with a regexp" % path)
     ok("--certificate-identity=" in fenced or "--certificate-identity " in fenced,
        "%s: a fenced step names the exact signing identity" % path)
+    ok("--insecure-ignore-tlog" not in fenced,
+       "%s: no fenced step turns the transparency-log check off" % path)
+# The image steps of the release-key form (KA-2): the signature and the release-manifest attestation of v0.3.0 and later are
+# verified against the release public key, in a fenced step each.
+fenced_one = "\n".join(re.findall(r"^```.*?^```", open(os.environ["VERIFY_ONE"]).read(), re.S | re.M))
+ok("cosign verify --key release.rsa.pub " in fenced_one,
+   "%s: a fenced step verifies the image signature with the release key" % os.environ["VERIFY_ONE"])
+ok(re.search(r"cosign verify-attestation --key release\.rsa\.pub \\\n\s+--type https://fosterstack\.com/attestations/release-manifest/v1", fenced_one) is not None,
+   "%s: a fenced step verifies the release-manifest attestation with the release key" % os.environ["VERIFY_ONE"])
 sys.exit(fails)
 PY
 }
@@ -140,5 +149,8 @@ mutant "maven server id mismatch"           MAVEN_DOC  's=s.replace("<id>fosters
 REVERT='s=s.replace("--certificate-identity=","--certificate-identity-regexp=",1)'
 REVERT="$REVERT"'.replace("--certificate-identity ","--certificate-identity-regexp ",1)'
 VERIFY_DOCS="$VERIFY_ONE" mutant "verify step back to an identity regexp" VERIFY_DOCS "$REVERT"
+VERIFY_DOCS="$VERIFY_ONE" mutant "image signature step without the release key" VERIFY_ONE 's=s.replace("cosign verify --key release.rsa.pub ","cosign verify ",1)'
+VERIFY_DOCS="$VERIFY_ONE" mutant "manifest attestation step without the release key" VERIFY_ONE 's=s.replace("verify-attestation --key release.rsa.pub","verify-attestation",1)'
+VERIFY_DOCS="$VERIFY_ONE" mutant "verify step with the transparency-log check off" VERIFY_DOCS 's=s.replace("cosign verify --key release.rsa.pub ","cosign verify --key release.rsa.pub --insecure-ignore-tlog=true ",1)'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]

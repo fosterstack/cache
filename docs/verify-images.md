@@ -30,23 +30,34 @@ workflow sign these exact bytes? It vouches for identity and integrity of
 the artifact, nothing more.
 
 ```sh
-# The public image signature is made by the promotion workflow; pin it
-# and the release tag rather than "any workflow in this repo".
+# The public image signature is made with the FosterStack release key by
+# the Release stage. Fetch the release public key from the release tag and
+# check the image against it.
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
+cosign verify --key release.rsa.pub ghcr.io/fosterstack/cache:${VER}
+```
+
+The release key lives in a cloud key service and never leaves it: the
+Release stage can ask the service to sign, but nothing in the workflow can
+read the key. The signature's existence is recorded in the public Rekor
+transparency log.
+
+A release before v0.3.0 carries a short-lived certificate instead of a key. <!-- pinned: historical -->
+Verify it by the signing workflow's exact identity, pinned with the release
+tag rather than "any workflow in this repo":
+
+```sh
 cosign verify ghcr.io/fosterstack/cache:${VER} \
   --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
-The signing workflow is **version-scoped**: v0.3.0 and later sign the <!-- pinned: historical -->
-public image in the Release stage, `stage-promote.yml` (pinned above), and
-so did the releases of the earlier chain; the earliest release
+That signing workflow is **version-scoped**: the releases of the earlier chain <!-- pinned: historical -->
+were signed by `stage-promote.yml` (pinned above); the earliest release
 was signed by the old `release.yml`, so for it use
 `--certificate-identity-regexp='^https://github.com/fosterstack/cache/.github/workflows/release.yml@'` instead. <!-- pinned: historical -->
-
-There is no signing key to leak, steal, or rotate — the certificate is
-short-lived, minted by Sigstore's Fulcio from a GitHub Actions OIDC token
-at the moment the release workflow ran, and the signature's existence is
-recorded in the public Rekor transparency log.
+That certificate is minted by Sigstore's Fulcio from a GitHub Actions OIDC
+token at the moment the release workflow ran.
 
 ## 2. Verify the provenance
 
@@ -106,7 +117,9 @@ files) are extra evidence that anyone with Witness can check; the release guide,
 
 **Verifying the release manifest.** The promotion workflow attaches the
 release manifest as a cosign attestation (predicate type
-`https://fosterstack.com/attestations/release-manifest/v1`) to each public
+`https://fosterstack.com/attestations/release-manifest/v1`), signed with the
+release key and stored as a referrer of the image (it is found through the
+image digest, not through a separate tag), to each public
 image digest (production and `-fips`; releases before v0.3.0 also `-debug`) on GHCR, which is authoritative, and <!-- pinned: historical -->
 on the Docker Hub mirror (best effort), BEFORE the GitHub release is
 published.
@@ -117,12 +130,16 @@ content. It has no separate signature file, and `gh attestation verify
 it on the image (anonymous, no token):
 
 ```sh
-cosign verify-attestation \
+cosign verify-attestation --key release.rsa.pub \
   --type https://fosterstack.com/attestations/release-manifest/v1 \
-  --certificate-identity "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/fosterstack/cache:${VER} > manifest-att.json
 ```
+
+`release.rsa.pub` is the release public key fetched in section 1. For a
+release before v0.3.0, whose attestation carries a certificate, replace <!-- pinned: historical -->
+`--key release.rsa.pub` with `--certificate-identity
+"https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}"
+--certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 
 The OpenVEX, CSAF and inspector-filters files on the release page have no
 signature of their own. They are covered by the sha256 values recorded in the
