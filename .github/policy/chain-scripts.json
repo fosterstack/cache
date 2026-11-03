@@ -414,7 +414,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "948a1f5bbb84aa3a553aeec657fc672e0ed4d98b90af348d2e5f097f75c5fdd6",
+      "sha256": "42eeef9bbeb1a49b89227578ff7be9e679e8a35e7ee97ec9826087d6c56cc318",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
