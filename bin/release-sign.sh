@@ -13,8 +13,8 @@ case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) echo "release-sign: RELEASE_ROLE_ARN i
 case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) echo "release-sign: RELEASE_TOKEN_FILE is unset" >&2; exit 2;; esac
 export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
-# the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte, and the key lists RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists);
-# exit 2 before anything is made or signed (the tag check above runs no tool). The interim guard goes with KA-2.
+# the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte, and the key lists RSASSA_PKCS1_V1_5_SHA_256 (the KA-0 guard; kms-sign asserts it again on every signing call);
+# exit 2 before anything is made or signed (the tag check above runs no tool).
 python3 -I -B bin/chain-verify.py key-ref-check --algorithm-guard || exit $?
 # REQ-CHAIN-007-AC21 (Astra R3): checksums.txt has no other producer. Before any evidence is made or anything is signed, the four archives in dist are bound to Build's digests.json
 # and the file release-assets attaches and this step signs is written from them; an archive that is missing, extra or not Build's stops the step here
@@ -44,24 +44,10 @@ DOCKER_CONFIG=$(mktemp -d)
 [ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || { echo "release-sign: no private credential directory: refusing to log in" >&2; exit 1; }
 export DOCKER_CONFIG
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
-cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"
-for host in ghcr.io docker.io; do
-  for digest in "$prod" "$fips"; do
-    cosign sign --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json "$host/$repo@$digest"
-  done
-done
-# the release manifest stays attached to each public digest as an OCI referrer, as on v0.2.x (REQ-CHAIN-007-AC8): GHCR is authoritative and required; the Docker Hub mirror
-# is best-effort with a loud warning, never a silent skip (referrer support there varies). The predicate is the file release-files.sha256 lists and signs.
-for digest in "$prod" "$fips"; do
-  cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "ghcr.io/$repo@$digest"
-  cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"
-done
-mkdir -p release-evidence
-# the dependency list is signed and attached as dependency-list.json: a signing call that names provenance is read as a provenance signer, which only Sign may be
-cp dependency-provenance.json release-evidence/dependency-list.json
-# KA-2 (blob kinds): a file is signed by bin/chain-verify.py kms-sign, never by cosign: RSASSA_PKCS1_V1_5_SHA_256 is named on the KMS call, the key must list it, and the same call posts the one Rekor entry and writes the v0.3 bundle
-# (<bundle>) where cosign sign-blob wrote its bundle. The digest is the sha256 of the file's own bytes; each call has its own signature file (kms-sign never overwrites). A refusal ends the step.
+# KA-2: nothing here is signed by cosign: a file or an image is signed by bin/chain-verify.py kms-sign, never by cosign: RSASSA_PKCS1_V1_5_SHA_256 is named on the KMS call, the key must list it, and the same call posts the one Rekor entry
+# and writes the v0.3 bundle (<bundle>). Blob kinds: the digest is the sha256 of the file's own bytes and each call has its own signature file (kms-sign never overwrites). Image kinds (the image signature and the manifest
+# referrer): a local in-toto statement (subject = the image digest, fields in protojson order) is signed as a DSSE envelope (kms-sign --dsse-statement) and the bundle is attached to the image with `cosign attach attestation`
+# (a referrer; cosign makes no signature). A refusal of kms-sign ends the step.
 ksd=$(mktemp -d)
 [ -n "$ksd" ] && [ -d "$ksd" ] || { echo "release-sign: no private directory for the signature files: refusing to sign" >&2; exit 1; }
 trap 'rm -rf "$DOCKER_CONFIG" "$ksd"' EXIT
@@ -76,6 +62,35 @@ kms_blob() {
 has_rekor() {
   if ! jq -e '(.verificationMaterial.tlogEntries // []) | length > 0' "$1" > /dev/null; then echo "release-sign: $1 has no Rekor entry: its signature cannot be checked in the public log" >&2; exit 1; fi
 }
+kms_image() { # <sign|attest> <image name> <sha256:digest>: the statement, its DSSE bundle (kms-sign) and the referrer (cosign attach attestation); the attach is the only step that may fail without ending the step (the caller decides)
+  local kind=$1 name=$2 dg=$3 stmt bundle
+  ks_n=$((ks_n + 1)); stmt="$ksd/statement.$ks_n"; bundle="$ksd/image.$ks_n.bundle"
+  case "$kind" in
+    sign) jq -cn --arg n "$name" --arg d "${dg#sha256:}" '{_type: "https://in-toto.io/Statement/v1", subject: [{name: $n, digest: {sha256: $d}}], predicateType: "https://sigstore.dev/cosign/sign/v1", predicate: {}}' > "$stmt" || { echo "release-sign: cannot build the signature statement of $name@$dg" >&2; exit 1; } ;;
+    attest) jq -cn --arg n "$name" --arg d "${dg#sha256:}" --slurpfile p release-metadata/release-manifest.json '{_type: "https://in-toto.io/Statement/v1", subject: [{name: $n, digest: {sha256: $d}}], predicateType: "https://fosterstack.com/attestations/release-manifest/v1", predicate: $p[0]}' > "$stmt" || { echo "release-sign: cannot build the manifest statement of $name@$dg" >&2; exit 1; } ;;
+    *) echo "release-sign: kms_image: unknown kind $kind" >&2; exit 1 ;;
+  esac
+  python3 -I -B bin/chain-verify.py kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json \
+    --public-key build/keys/release.rsa.pub --dsse-statement "$stmt" --bundle "$bundle" || { echo "release-sign: kms-sign refused to sign the $kind statement of $name@$dg" >&2; exit 1; }
+  has_rekor "$bundle"
+  cosign attach attestation --attestation "$bundle" "$name@$dg"
+}
+cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
+cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"
+for host in ghcr.io docker.io; do
+  for digest in "$prod" "$fips"; do
+    kms_image sign "$host/$repo" "$digest"
+  done
+done
+# the release manifest stays attached to each public digest as an OCI referrer, as on v0.2.x (REQ-CHAIN-007-AC8): GHCR is authoritative and required; the Docker Hub mirror
+# is best-effort with a loud warning, never a silent skip (referrer support there varies). The predicate is the file release-files.sha256 lists and signs.
+for digest in "$prod" "$fips"; do
+  kms_image attest "ghcr.io/$repo" "$digest"
+  kms_image attest "docker.io/$repo" "$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"
+done
+mkdir -p release-evidence
+# the dependency list is signed and attached as dependency-list.json: a signing call that names provenance is read as a provenance signer, which only Sign may be
+cp dependency-provenance.json release-evidence/dependency-list.json
 kms_blob release-evidence/production.sbom.json.bundle images/production-sbom/sbom.json
 has_rekor release-evidence/production.sbom.json.bundle
 kms_blob release-evidence/fips.sbom.json.bundle images/fips-sbom/sbom.json
