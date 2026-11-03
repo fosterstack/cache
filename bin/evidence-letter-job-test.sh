@@ -124,8 +124,9 @@ mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release
 mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
 
 pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
-check("AC9: the key comes from RELEASE_KMS_KEY_REF and the signing config is the committed one",
-      '--key "$RELEASE_KMS_KEY_REF"' in pub and "--signing-config .github/policy/cosign-signing-config.json" in pub)
+check("AC9/KA-2: the key comes from RELEASE_KMS_KEY_REF (kms-sign --key-ref), the signing config is the committed one and the public key is the committed release public key",
+      '--key-ref "$RELEASE_KMS_KEY_REF"' in pub and "--signing-config .github/policy/cosign-signing-config.json" in pub
+      and "--public-key build/keys/release.rsa.pub" in pub and "--key " not in pub.replace("--key-ref", ""))
 for banned in ("alias", "--certificate-identity", "--certificate-oidc-issuer", "--insecure-ignore-tlog",
                "@refs/heads/main", "keyless", "--identity-token", "--fulcio-url", "--oidc-"):
     check("F2: neither the publish nor the verify script holds " + banned,
@@ -197,11 +198,7 @@ case "$1" in
   verify-blob)
     n=$(grep -c "^cosign verify-blob" "$LOG")
     [ ! -e "$FIX/bad-signature" ] && [ -z "$FAIL_VERIFY" ] && { [ -z "$FAIL_VERIFY_AFTER" ] || [ "$n" -lt 2 ]; } ;;
-  sign-blob)
-    for last; do :; done
-    echo "signed-sha256: $(sha256sum "$last" | cut -d' ' -f1)" >> "$LOG"
-    while [ $# -gt 0 ]; do [ "$1" = --bundle ] && bundle=$2; shift; done
-    echo '{"verificationMaterial":{"tlogEntries":'"$TLOG"'}}' > "$bundle" ;;
+  sign-blob) echo "cosign sign-blob must not be called: the letter is signed by chain-verify.py kms-sign (KA-2)" >&2; exit 1 ;;
 esac
 """,
     "date": """#!/bin/sh
@@ -210,6 +207,15 @@ case "$*" in *%Y-%m-%d*) cat "$FIX/today_full" ;; *%Y-%m*) cat "$FIX/today" ;; *
     "python3": """#!/bin/sh
 case "$*" in
   *chain-verify.py*policy*make*) echo "python3 $*" >> "$LOG" ;;
+  *chain-verify.py*kms-sign*)
+    # KA-2: the stand-in of the one blob signer (KA-1's kms-sign needs AWS): it logs the call, the digest the caller named, and writes the signature and the v0.3 bundle
+    echo "python3 $*" >> "$LOG"
+    d=; b=; o=; pk=
+    while [ $# -gt 0 ]; do case $1 in --digest) d=$2;; --bundle) b=$2;; --out) o=$2;; --public-key) pk=$2;; esac; shift; done
+    [ -f "$pk" ] || { echo "kms-sign: refused: cannot read the Rekor URL of the signing config or the public key $pk" >&2; exit 1; }
+    echo "signed-sha256: $d" >> "$LOG"
+    echo sig > "$o"
+    echo '{"verificationMaterial":{"tlogEntries":'"$TLOG"'}}' > "$b" ;;
   *chain-verify.py*check-list*)
     [ -z "$REAL_CHECKLIST" ] || exec "$REAL_PYTHON" "$@"
     echo "python3 $*" >> "$LOG"
@@ -273,6 +279,8 @@ def throwaway_repo(tmp):
     open(keys + "/m.json", "wb").write(body)
     sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/m.json")
     open(pol + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    os.makedirs(os.path.join(repo, "build/keys"), exist_ok=True)      # KA-2: kms-sign is handed the committed release public key
+    open(os.path.join(repo, "build/keys/release.rsa.pub"), "w").write(pub)
     return repo, pub.splitlines()[1]
 
 
@@ -476,8 +484,9 @@ for f in LETTER_FILES + (".github/workflows/supply-chain.yml",):
     joined = re.sub(r"\\\n\s*", " ", read(f))
     calls = [l for l in joined.split("\n") if re.search(r"\bcosign (sign-blob|sign|attest)\b", l)]
     check("K-5: every signing line of %s has the key form" % f, all(SIGN_FORM.search(l) for l in calls), calls)
-check("K-5: the publish script has exactly one signing line",
-      len([1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if "cosign sign" in l]) == 1)
+check("K-5/KA-2: the publish script has exactly one signing line, a chain-verify.py kms-sign call, and no cosign sign call",
+      len([1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if re.match(r"\s*python3 .*chain-verify\.py kms-sign ", l)]) == 1
+      and not re.search(r"cosign\s+(sign|sign-blob|attest)", pub))
 for word in KEYLESS:
     hit = [f for f in LETTER_FILES if word in read(f).lower()]
     check("F1 6: no letter file holds %s" % word, not hit, hit)
@@ -566,13 +575,17 @@ def publish(on_release=None, edit=None, **extra):
 
 p, log, up, letter = publish()
 names = ["evidence-letter-2026-11.md.bundle", "evidence-letter-2026-11.md"]
-SIGN = ("cosign sign-blob --yes --key awskms:///stand-in-key --signing-config "
-        ".github/policy/cosign-signing-config.json --bundle " + letter + ".bundle " + letter)
+LETTER_SHA = hashlib.sha256(b"a letter\n").hexdigest()
+SIGN_HEAD = ("python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref awskms:///stand-in-key --digest " + LETTER_SHA
+             + " --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub --out ")
+SIGN_TAIL = " --bundle " + letter + ".bundle"
+signs_ = [l for l in log if "kms-sign" in l]
 VERIFY = ("cosign verify-blob --key ",
           " --trusted-root .github/policy/rekor-trusted-root.json --bundle " + letter + ".bundle " + letter)
 verifies = [l for l in log if l.startswith("cosign verify-blob")]
 check("F2: a good run takes the key from the root-checked manifest (policy make for main), signs with "
-      "exactly Sign's argv, verifies, then uploads", p.returncode == 0 and SIGN in log
+      "one kms-sign call (RSASSA_PKCS1_V1_5_SHA_256 is named by kms-sign itself; the digest is the letter's sha256, the committed public key, the signing config), verifies, then uploads", p.returncode == 0
+      and len(signs_) == 1 and signs_[0].startswith(SIGN_HEAD) and signs_[0].endswith(SIGN_TAIL) and not any(l.startswith("cosign sign") for l in log)
       and any("chain-verify.py policy make --template .github/policy/release-policy.template.json"
               " --ref refs/heads/main" in l for l in log)
       and len(verifies) == 1 and verifies[0].startswith(VERIFY[0]) and verifies[0].endswith(VERIFY[1]), (p.stderr, log))
@@ -582,7 +595,7 @@ check("F2: the verify names no identity, issuer or ignored log",
                                                               "--insecure-ignore-tlog")), verifies)
 idx = lambda needle: next((i for i, l in enumerate(log) if needle in l), -1)
 check("F2: the order is manifest key, sign, verify, upload",
-      0 <= idx("policy make") < idx("sign-blob") < idx("verify-blob") < idx("release upload"), log)
+      0 <= idx("policy make") < idx("kms-sign") < idx("verify-blob") < idx("release upload"), log)
 signed = [l.split()[-1] for l in log if l.startswith("signed-sha256:")]
 sent = [l.split()[-1] for l in log if l.startswith("uploaded-sha256 letter:")]
 check("F-bytes: the letter uploaded is the exact bytes that were signed, so nothing edits it after signing",
@@ -598,7 +611,7 @@ for rel in ("v0.4.0", "v0.3.1"):
     po, lo, upo, _l = publish(on_release=rel)
     check("R10/AC10: the month's letter already on %s (not the latest) ends the publish in one line, before any sign line" % rel,
           one_line(po) and "evidence-letter-2026-11.md" in po.stderr and upo == []
-          and not any("sign-blob" in l or "policy make" in l for l in lo), (po.stderr, lo))
+          and not any("kms-sign" in l or "policy make" in l for l in lo), (po.stderr, lo))
 pp, lp, upp, _l = publish(TLOG="[]")
 check("AC9: a bundle with no Rekor entry publishes nothing",
       pp.returncode == 1 and upp == [] and "Rekor" in pp.stderr, pp.stderr)
@@ -620,12 +633,24 @@ def bad_manifest_signature(fix, env):
 pm, lm, upm, _l = publish(edit=bad_manifest_signature)
 check("F2: a manifest the offline root does not vouch for (or a revoked one) refuses before anything is signed "
       "or uploaded, in one line",
-      one_line(pm) and upm == [] and not any("sign-blob" in l or "release upload" in l for l in lm), (pm.stderr, lm))
+      one_line(pm) and upm == [] and not any("kms-sign" in l or "release upload" in l for l in lm), (pm.stderr, lm))
 for label, value, code in (("unset", "", 2), ("not an awskms reference", "arn:aws:kms:us-east-1:1:key/x", 1)):
     pr_, lg_, up_, _l = publish(RELEASE_KMS_KEY_REF=value)
     check("F7-key: a key reference that is %s fails closed before the manifest, the sign call and any upload" % label,
           pr_.returncode == code and len(pr_.stderr.strip().splitlines()) == 1 and up_ == []
-          and not any("policy make" in x or "sign-blob" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
+          and not any("policy make" in x or "kms-sign" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
+def placeholder_key(fix, env):
+    open(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"), "w").write("PLACEHOLDER: the real public half is committed by a human\n")
+
+
+def key_unreadable(fix, env):
+    os.remove(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"))
+
+
+for label, edit in (("a missing release public key", key_unreadable),):
+    pk_, lk_, upk_, _l = publish(edit=edit)
+    check("KA-2: %s fails closed in one line: kms-sign refuses, no bundle is verified, nothing is uploaded" % label,
+          pk_.returncode == 1 and upk_ == [] and not any(x.startswith("cosign verify-blob") for x in lk_) and any("kms-sign" in x for x in lk_), (pk_.returncode, pk_.stderr, lk_))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
 check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",
       one_line(pb) and "HTTP 422" in pb.stderr and "second line" not in pb.stderr and upb == [], (pb.stderr, upb))
