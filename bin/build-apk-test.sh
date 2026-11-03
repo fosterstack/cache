@@ -563,6 +563,11 @@ rk_before=$(grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true)
 mutant "rule 22" "release signing: a KMS key other than build/keys/release.rsa.pub is refused with the key-compare refusal, before any signature (exit 1, Build untouched)" 'does not match the KMS key' m4 STUB_AWS_KEY="$work/other-rel.rsa"
 if [ "$(grep -c '^aws kms sign ' "$CALLS" || true)" = 0 ] && [ "$(grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true)" = "$rk_before" ] && [ "$(grep -c 'does not match the KMS key' "$work/log")" = 1 ]; then ok
 else bad "rule 22" "release signing: a KMS key other than build/keys/release.rsa.pub: 0 KMS Sign, 0 Rekor POST and exactly one refusal line wanted (signs $(grep -c '^aws kms sign ' "$CALLS" || true), POSTs $(( $(grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true) - rk_before )), lines $(grep -c 'does not match the KMS key' "$work/log"))"; fi
+# KA-2 p4 r2 (C9): the case the key compare cannot see: the KMS answers get-public-key with the committed release key (the compare passes) but signs with ANOTHER key; the signature is a valid PKCS#1 v1.5 one, so only the post-sign check against build/keys/release.rsa.pub refuses it
+openssl pkey -in "$work/release.rsa" -pubout -outform DER >"$work/release-pub.der"
+mutant "rule 22" "release signing (KA-2 p4 r2 C9): a KMS that answers the committed key but signs with another key (a valid PKCS#1 v1.5 signature) is refused by the post-sign check against build/keys/release.rsa.pub (exit 1, Build untouched)" 'PKCS#1 v1\.5' m20 STUB_AWS_KEY="$work/other-rel.rsa" STUB_AWS_PUBDER="$work/release-pub.der"
+if [ "$(grep -c '^aws kms sign ' "$CALLS" || true)" = 1 ] && ! grep -q 'does not match the KMS key' "$work/log"; then ok
+else bad "rule 22" "release signing (KA-2 p4 r2 C9): in that refusal the key compare passed (no 'does not match the KMS key') and KMS was asked to sign once (signs $(grep -c '^aws kms sign ' "$CALLS" || true))"; fi
 rmutant "rule 22" "release signing (KA-1 case 5): Rekor answers with no entry -> refused naming Rekor (exit 1, Build untouched)" 'rekor' m5 empty
 rmutant "rule 22" "release signing (KA-1 case 5): Rekor answers with two entries -> refused naming Rekor (exit 1, Build untouched)" 'rekor' m6 two
 rmutant "rule 22" "release signing (KA-1 case 5): Rekor answers with an error status -> refused naming Rekor (exit 1, Build untouched)" 'rekor' m7 err

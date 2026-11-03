@@ -874,6 +874,11 @@ if W:
         return _mpath(m, ls[:k]) + [_mroot(ls[k:])] if m < k else _mpath(m - k, ls[k:]) + [_mroot(ls[:k])]
     MODE = os.environ.get("FAKE_BUNDLE", "")
 
+    def canon_verifier(v64):      # KA-2 p4 r2 (A2): Rekor 1.5.3 (dsse 0.0.1) parses the posted verifier key and writes it back as the canonical PEM of its DER (64-column lines), whatever the line wrapping posted
+        der = subprocess.run((SSL, "pkey", "-pubin", "-outform", "DER"), input=base64.b64decode(v64), capture_output=True, check=True).stdout
+        e = b64(der)
+        return b64(("-----BEGIN PUBLIC KEY-----\n" + "\n".join(e[i:i + 64] for i in range(0, len(e), 64)) + "\n-----END PUBLIC KEY-----\n").encode())
+
     class Resp:
         def __init__(self, raw): self.status, self._raw = 201, raw
         def read(self, n=-1): return self._raw
@@ -896,7 +901,7 @@ if W:
         if MODE in ("notlog", "emptylog"): return {}
         rb = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": hashlib.sha256(env_text.encode()).hexdigest()},
               "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(body).hexdigest()},
-              "signatures": [{"signature": env["signatures"][0]["sig"], "verifier": prop["verifiers"][0]}]}}
+              "signatures": [{"signature": env["signatures"][0]["sig"], "verifier": canon_verifier(prop["verifiers"][0])}]}}
         cb = b64(json.dumps(rb, sort_keys=True, separators=(",", ":")).encode())
         rder = sh("pkey", "-pubin", "-in", W + "/rekor.pub", "-outform", "DER")
         log_id = hashlib.sha256(rder).hexdigest()
@@ -954,7 +959,7 @@ SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SE
 # run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake aws first) and PYTHONPATH (the Rekor shim) and
 # GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/kmssign-argv.log"; local rc=0 pk=()
-  case "${1:-}" in sign|sign-record) pk=(--public-key "$work/rel.pub") ;; esac      # KA-2: sign and sign-record name the release public key (compared with the KMS key before anything is signed)
+  case "${1:-}" in sign|sign-record) pk=(--public-key "${PUBKEY:-$work/rel.pub}") ;; esac      # KA-2: sign and sign-record name the release public key (compared with the KMS key before anything is signed)
   "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
     GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
@@ -1636,9 +1641,10 @@ expect_postsign_refuse "S1 a bundle whose signature is by a key the manifest doe
 [ "$POSTSIGN" = 10 ] && ok "S1 control: KMS WAS asked to sign in each of the ten cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 KMS was asked to sign in only $POSTSIGN of the ten bundle cases"
 expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
 # F1 (Opus r1 verify; 001-AC2): the Rekor entry must be for the statement Sign built; an entry for another statement is refused, naming the mismatch
-expect_postsign_refuse "F1 a Rekor entry for a statement with swapped subjects is refused: the entry is not for the statement Sign built" "statement" swapsubj
-expect_postsign_refuse "F1 a Rekor entry for a statement with a changed predicate is refused" "statement" predicate
-expect_postsign_refuse "F1 a Rekor entry for a statement with an appended subject is refused" "statement" addsubj
+# KA-2 p4 r2 (C6): the stage line always says "statement", so these three name the check that fired: kms-sign's own reason line (where=reason) is the payload-hash refusal
+expect_postsign_refuse "F1 a Rekor entry for a statement with swapped subjects is refused: the entry is not for the statement Sign built" "another payload than the statement signed" swapsubj reason
+expect_postsign_refuse "F1 a Rekor entry for a statement with a changed predicate is refused" "another payload than the statement signed" predicate reason
+expect_postsign_refuse "F1 a Rekor entry for a statement with an appended subject is refused" "another payload than the statement signed" addsubj reason
 # I1: anything but a refusal inside the self-check (here openssl failing) is a refusal too, never a traceback, and leaves no provenance
 cat > "$work/fakebin-openssl" <<FSSL
 #!/usr/bin/env bash
@@ -1672,7 +1678,7 @@ rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record
 for m in dry1 dry1f; do
   rc=0; GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch FAKE_BUNDLE=$m run $(TPR build_coll_dry h2-$m) || rc=$?
   [ -s "$work/kmssign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
-  if [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*statement" "$work/err" && [ ! -e "$work/sd/h2-$m/provenance.json" ]; then ok "H2 a dry run whose signed statement says dryRun $([ $m = dry1 ] && echo 1 || echo 1.0) where Sign built true is refused"
+  if [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*statement" "$work/err" && grep -q "^kms-sign: refused: .*another payload than the statement signed" "$work/err" && [ ! -e "$work/sd/h2-$m/provenance.json" ]; then ok "H2 a dry run whose signed statement says dryRun $([ $m = dry1 ] && echo 1 || echo 1.0) where Sign built true is refused"
   else bad "H2 $m: wanted refused at sign ... statement, no provenance (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi
 done
 python3 - "$root" 2>&1 <<'PY' && ok "H2 the statement comparison is type-exact: 1 vs true, 1.0 vs 1, 0 vs false differ (nested too); equal statements are equal" || bad "H2 the statement comparison treats bool, int and float as one type"
@@ -2152,6 +2158,16 @@ rc=0; SGK ka0s-ok || rc=$?
 [ "$rc" = 0 ] && [ "$(wc -l < "$work/kmssign-argv.log")" = 1 ] && grep -Eq "$ARGV_RE" "$work/kmssign-argv.log" && [ -s "$work/sd/ka0s-ok/provenance.bundle.json" ] \
   && ok "KA-0 sign: a key that lists RSASSA_PKCS1_V1_5_SHA_256 proceeds: KMS is asked to sign once with the pinned algorithm and the provenance is written" \
   || bad "KA-0 sign with PKCS1 first (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); kms sign argv $(head -c 300 "$work/kmssign-argv.log"))"
+# KA-2 p4 r2 (A2): --public-key may be the same key spelled as another PEM (here 32-column lines): the compare is on the key, and Rekor (the shim) writes the verifier back canonically, so the entry's verifier is not the file's text
+python3 - "$work/rel.pub" "$work/rel-wrapped.pub" <<'WRAPPY'
+import sys
+t = open(sys.argv[1]).read(); b = "".join(l for l in t.splitlines() if not l.startswith("-----"))
+open(sys.argv[2], "w").write("-----BEGIN PUBLIC KEY-----\n" + "\n".join(b[i:i + 32] for i in range(0, len(b), 32)) + "\n-----END PUBLIC KEY-----\n")
+WRAPPY
+rc=0; PUBKEY="$work/rel-wrapped.pub" SGK ka0s-wrapped || rc=$?
+[ "$rc" = 0 ] && ! cmp -s "$work/rel.pub" "$work/rel-wrapped.pub" && [ "$(wc -l < "$work/kmssign-argv.log")" = 1 ] && [ -s "$work/sd/ka0s-wrapped/provenance.bundle.json" ] \
+  && ok "KA-2 p4 r2 A2 sign: a --public-key file that is the same key in 32-column PEM is accepted (Rekor writes the verifier back as the canonical PEM): KMS is asked once and the provenance is written" \
+  || bad "KA-2 p4 r2 A2 sign with the same key in a 32-column file (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); kms sign argv $(head -c 100 "$work/kmssign-argv.log"))"
 rc=0; SR ok || rc=$?
 [ "$rc" = 1 ] && grep -q 'exists' "$work/err" && [ ! -s "$work/kmssign-argv.log" ] && ok "P2 sign-record: an existing record is refused before KMS is asked" \
   || bad "P2 sign-record over an existing record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
@@ -2169,7 +2185,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=794
+EXPECT=795
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -567,6 +567,42 @@ check(last_sign >= 0 and first_att > last_sign, "AC8 the manifest attestations c
 att_lines = [l for l in L if l.startswith("cosign attach attestation ")]
 check(len(att_lines) == 8 and all(re.fullmatch(r"cosign attach attestation --attestation \S+\.bundle (ghcr\.io|docker\.io)/fosterstack/cache@sha256:\w+", l) for l in att_lines),
       "KA-2 p4 each of the eight image bundles is attached with `cosign attach attestation --attestation BUNDLE IMAGE@DIGEST` (and cosign signs nothing)", str(att_lines[:2]))
+# KA-2 p4 r2 (A1, round 1 ruling): each attach call carries the bundle of ITS statement: the destination image name and digest are the subject of the statement the bundle was signed for (the 8 bundles are 8 distinct files)
+def attach_bound(tt):
+    Lx = log(tt); bun = {}
+    for lx, stx in ksi_of(Lx, tt): bun[re.search(r" --bundle (\S+)", lx).group(1)] = stx
+    al = [lx for lx in Lx if lx.startswith("cosign attach attestation ")]; seen = set()
+    for lx in al:
+        m = re.fullmatch(r"cosign attach attestation --attestation (\S+) (\S+)@(sha256:[0-9a-f]+)", lx); stx = bun.get(m.group(1)) if m else None
+        if not (stx and stx["subject"][0]["name"] == m.group(2) and "sha256:" + stx["subject"][0]["digest"]["sha256"] == m.group(3)): return False
+        seen.add(m.group(1))
+    return len(al) == 8 and len(seen) == 8
+check(attach_bound(t), "KA-2 p4 r2 A1 each of the eight attach calls names, as image and digest, the subject of the statement its bundle was signed for (the bundles are eight distinct files)", str(att_lines[:2]))
+def pins_ok(tt):      # the pinned statement shapes (the two checks above, as one function so a mutated run is judged by the same words): four signatures, four attestations of the pinned type, the predicate the manifest as `jq -c` writes it
+    kx = ksi_of(log(tt), tt); sgx = sorted((x["subject"][0]["name"], "sha256:" + x["subject"][0]["digest"]["sha256"]) for lx, x in kx if x and x["predicateType"] == SIGT)
+    atx = sorted((x["subject"][0]["name"], "sha256:" + x["subject"][0]["digest"]["sha256"]) for lx, x in kx if x and x["predicateType"] == ATTT)
+    mf = os.path.join(tt, "release-metadata/release-manifest.json"); jx = subprocess.run(["jq", "-c", ".", mf], capture_output=True, text=True).stdout.strip() if os.path.exists(mf) else ""
+    rw = [r for r in stmts_raw(tt).values() if '"predicateType":"' + ATTT + '"' in r]
+    return sgx == want_refs and atx == want_refs and len(kx) == 8 and len(rw) == 4 and jx.startswith("{") and all(r.rstrip("\n").endswith('"predicate":' + jx + "}") for r in rw)
+check(pins_ok(t), "KA-2 p4 r2 the pinned statement shapes judge the real run green (the control of the type and predicate mutants below)")
+def rs_mutant(old, new, label, judge):
+    """a copy of the real tree with ONE edit in bin/release-sign.sh is run; `judge` must call the edit out (the mutated run still ends 0 or the judge is not what is being proven)"""
+    tm = tree(); pm = os.path.join(tm, "bin/release-sign.sh"); src = open(pm).read()
+    if src.count(old) != 1: check(False, label, "the mutation did not apply (%d places)" % src.count(old)); return
+    open(pm, "w").write(src.replace(old, new)); rcm, som, sem = run(tm, "release-sign", creds=REG)
+    check(rcm == 0 and not judge(tm), label, "rc=%s %s" % (rcm, first(sem)))
+rs_mutant('cosign attach attestation --attestation "$bundle" "$name@$dg"', 'cosign attach attestation --attestation "$bundle" "$name@$prod"',
+          "KA-2 p4 r2 A1 mutant: the attach destination is the production digest for every bundle (the FIPS bundles are attached to the wrong image) is caught", attach_bound)
+rs_mutant('cosign attach attestation --attestation "$bundle" "$name@$dg"', 'cosign attach attestation --attestation "$bundle" "${name%%/*}/fosterstack/other@$dg"',
+          "KA-2 p4 r2 A1 mutant: the attach destination names another image than the statement's is caught", attach_bound)
+rs_mutant('predicateType: "https://fosterstack.com/attestations/release-manifest/v1"', 'predicateType: "https://fosterstack.com/attestations/release-manifest/v2"',
+          "KA-2 p4 r2 m_atttype mutant: the manifest attestation has another predicate type than the pinned one is caught by the statement shapes", pins_ok)
+rs_mutant('kms_image attest "ghcr.io/$repo" "$digest"', 'kms_image sign "ghcr.io/$repo" "$digest"',
+          "KA-2 p4 r2 m_atttype mutant: the GHCR manifest line makes a signature statement, not an attestation, is caught by the statement shapes", pins_ok)
+rs_mutant('--slurpfile p release-metadata/release-manifest.json', '--slurpfile p witness-build/digests.json',
+          "KA-2 p4 r2 m_attpred mutant: the attestation predicate is another file than the release manifest is caught by the statement shapes", pins_ok)
+rs_mutant('kms_image attest "ghcr.io/$repo" "$digest"', 'kms_image attest "ghcr.io/$repo" "$prod"',
+          "KA-2 p4 r2 m_attpred mutant: the GHCR manifest line attests the production digest for both loops is caught by the statement shapes", pins_ok)
 mfile = os.path.join(t, "release-metadata/release-manifest.json"); lf2 = os.path.join(t, "release-metadata/release-files.sha256")
 check(os.path.exists(mfile) and ("%s  release-manifest.json" % hashlib.sha256(open(mfile, "rb").read()).hexdigest()) in open(lf2).read(), "AC8 the attested predicate is the manifest release-files.sha256 lists (made from Build's verified material, not another file)")
 jqc = subprocess.run(["jq", "-c", ".", mfile], capture_output=True, text=True).stdout.strip()
@@ -614,7 +650,8 @@ check(rc == 2 and not [l for l in log(tb) if l.startswith("cosign")], "P3 a key 
 # first cosign call, and a refusal there ends the step with exit 2 before anything is made or signed
 tw = tree(); rc, so, se = run(tw, "release-sign", creds=REG); lw = log(tw)
 kc = [i for i, l in enumerate(lw) if l.startswith("chain-verify key-ref-check")]; cs = [i for i, l in enumerate(lw) if l.startswith("cosign")]
-check(rc == 0 and len(kc) == 1 and cs and kc[0] < cs[0] and lw[kc[0]] == "chain-verify key-ref-check --algorithm-guard", "W2/KA-0 release-sign.sh calls `chain-verify.py key-ref-check --algorithm-guard` once, before its first cosign call", "rc=%s %s" % (rc, kc))
+AWSP = os.path.join(tw, "rt") + "/aws-cli/aws"
+check(rc == 0 and len(kc) == 1 and cs and kc[0] < cs[0] and lw[kc[0]] in ("chain-verify key-ref-check --algorithm-guard --aws " + AWSP, "chain-verify key-ref-check --aws " + AWSP + " --algorithm-guard"), "W2/KA-0 release-sign.sh calls `chain-verify.py key-ref-check --algorithm-guard --aws $RUNNER_TEMP/aws-cli/aws` once, before its first cosign call (r2 C1: the pinned aws CLI, never the runner image's by name)", "rc=%s %s" % (rc, kc))
 to = tree(); rc, so, se = run(to, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "awskms:///alias/other"})
 check(rc == 2 and "not a KMS key reference of the release key" in se and not [l for l in log(to) if l.startswith(("cosign", "vendor-provenance"))], "W2 another awskms alias is refused with exit 2 before anything is made or signed", "rc=%s %s" % (rc, first(se)))
 tk = tree(); rc, so, se = run(tk, "release-sign", creds=REG, env={"KEYREF_ALG_FAIL": "1"})
@@ -1165,7 +1202,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "482"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "490"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

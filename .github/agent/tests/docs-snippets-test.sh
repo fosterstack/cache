@@ -18,6 +18,7 @@ export DEPLOY_DOC="${DEPLOY_DOC:-docs/docker-deploy.md}" GRADLE_DOC="${GRADLE_DO
 export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
 export VERIFY_DOCS="${VERIFY_DOCS:-docs/install.md docs/using-our-vex.md docs/verify-images.md RELEASING.md}"
 export VERIFY_ONE="${VERIFY_ONE:-docs/verify-images.md}"
+export VERIFY_RELEASE_DOC="${VERIFY_RELEASE_DOC:-docs/verify-release.md}" VERIFY_CANNOT_RUN="${VERIFY_CANNOT_RUN:-docs/verify-release.cannot-run.json}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
 export ACCEPTANCE="${ACCEPTANCE:-bin/acceptance-maven.sh}"   # the Maven suite, moved unchanged from acceptance.yml (REQ-CHAIN-006-AC5, Q7)
 
@@ -120,6 +121,31 @@ ok("cosign verify --key release.rsa.pub " in fenced_one,
    "%s: a fenced step verifies the image signature with the release key" % os.environ["VERIFY_ONE"])
 ok(re.search(r"cosign verify-attestation --key release\.rsa\.pub \\\n\s+--type https://fosterstack\.com/attestations/release-manifest/v1", fenced_one) is not None,
    "%s: a fenced step verifies the release-manifest attestation with the release key" % os.environ["VERIFY_ONE"])
+# The release guide (v0.3.0 and later: every image and file of it is signed with the release key) and the list of its commands that cannot run before release (KA-2 p4 r2 C4): each cosign step of the guide
+# verifies with the release public key and names no certificate identity, no OIDC issuer and no switch that turns the transparency-log check off; both image steps (production and -fips) are such steps; and every cosign
+# command of the cannot-run list is a command of the guide (the list is what the release post-verify skips, so a command in the list that the guide does not hold is a drift).
+import json
+def commands(text):      # the logical commands of the fenced blocks: continued lines joined, comment lines dropped
+    out, cur = [], ""
+    for ln in text.splitlines():
+        if ln.startswith("```"):
+            continue
+        if not cur and ln.lstrip().startswith("#"):
+            continue
+        cur += (" " if cur else "") + ln.strip().rstrip("\\").strip()
+        if not ln.rstrip().endswith("\\"):
+            out.append(re.sub(r"\s+", " ", cur)); cur = ""
+    return [c for c in out if c]
+rel_doc, cnr_file = os.environ["VERIFY_RELEASE_DOC"], os.environ["VERIFY_CANNOT_RUN"]
+rel_cmds = commands("\n".join(re.findall(r"^```.*?^```", open(rel_doc).read(), re.S | re.M)))
+rel_cos = [c for c in rel_cmds if c.startswith("cosign ")]
+CLEAN = lambda c: "--key release.rsa.pub" in c and not re.search(r"--certificate-identity|--certificate-oidc-issuer|--insecure-ignore-tlog", c)
+ok(len(rel_cos) >= 3 and all(CLEAN(c) for c in rel_cos), "%s: each cosign step (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (rel_doc, len(rel_cos)))
+ok(any(c.startswith("cosign verify ") and "<IMAGE_REF>" in c and CLEAN(c) for c in rel_cos) and any(c.startswith("cosign verify ") and "<IMAGE_REF_FIPS>" in c and CLEAN(c) for c in rel_cos),
+   "%s: the production and the -fips image steps are `cosign verify` with the release key" % rel_doc)
+cnr_cos = [e["command"] for e in json.load(open(cnr_file)) if str(e.get("command", "")).startswith("cosign ")]
+ok(len(cnr_cos) >= 3 and all(CLEAN(c) for c in cnr_cos), "%s: each cosign command of the cannot-run list (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (cnr_file, len(cnr_cos)))
+ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-run list is a command of %s" % (cnr_file, rel_doc))
 sys.exit(fails)
 PY
 }
@@ -130,12 +156,15 @@ echo "doc snippet assertions failed: $rc"
 # ---------------- mutants: each must make check() fail
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mut=0; caught=0
-mutant() {  # name, file var, python expression applied to text s
-  mut=$((mut+1))
-  python3 - "${!2}" "$tmp/m" "$3" <<'PY'
+mutant() {  # name, file var, python expression applied to text s (a mutation that changes nothing is a failure, never a vacuous catch)
+  mut=$((mut+1)); rm -f "$tmp/m"
+  if ! python3 - "${!2}" "$tmp/m" "$3" <<'PY'
 import sys, os
-s = open(sys.argv[1]).read(); exec(sys.argv[3]); open(sys.argv[2], "w").write(s)
+s = open(sys.argv[1]).read(); orig = s; exec(sys.argv[3])
+if s == orig: sys.exit("the mutation changed nothing")
+open(sys.argv[2], "w").write(s)
 PY
+  then echo "FAIL: mutant did not apply: $1"; return 0; fi
   if ( export "$2=$tmp/m"; DOCS_SNIPPETS_NO_MUTANTS=1 bash "$0" >/dev/null 2>&1 ); then echo "FAIL: mutant not caught: $1"; else caught=$((caught+1)); echo "ok:   mutant caught: $1"; fi
 }
 mutant "gradle host back to localhost"      GRADLE_DOC 's=s.replace("http://127.0.0.1:8080/","http://localhost:8080/")'
@@ -152,5 +181,14 @@ VERIFY_DOCS="$VERIFY_ONE" mutant "verify step back to an identity regexp" VERIFY
 VERIFY_DOCS="$VERIFY_ONE" mutant "image signature step without the release key" VERIFY_ONE 's=s.replace("cosign verify --key release.rsa.pub ","cosign verify ",1)'
 VERIFY_DOCS="$VERIFY_ONE" mutant "manifest attestation step without the release key" VERIFY_ONE 's=s.replace("verify-attestation --key release.rsa.pub","verify-attestation",1)'
 VERIFY_DOCS="$VERIFY_ONE" mutant "verify step with the transparency-log check off" VERIFY_DOCS 's=s.replace("cosign verify --key release.rsa.pub ","cosign verify --key release.rsa.pub --insecure-ignore-tlog=true ",1)'
+KEYF='--key release.rsa.pub'
+IDENT='--certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com'
+mutant "release guide: the first image step back to the keyless identity" VERIFY_RELEASE_DOC 's=s.replace("'"$KEYF"'","'"$IDENT"'",1)'
+mutant "release guide: the first cosign step without the release key" VERIFY_RELEASE_DOC 's=s.replace("'"$KEYF"'","",1)'
+mutant "release guide: the first cosign step with the transparency-log check off" VERIFY_RELEASE_DOC 's=s.replace("'"$KEYF"'","'"$KEYF"' --insecure-ignore-tlog=true",1)'
+mutant "release guide: the last cosign step without the release key" VERIFY_RELEASE_DOC 'i=s.rindex("'"$KEYF"'"); s=s[:i]+s[i+len("'"$KEYF"'"):]'
+mutant "cannot-run list: the first cosign command back to the keyless identity" VERIFY_CANNOT_RUN 's=s.replace("'"$KEYF"'","'"$IDENT"'",1)'
+mutant "cannot-run list: the first cosign command without the release key" VERIFY_CANNOT_RUN 's=s.replace("'"$KEYF"'","",1)'
+mutant "cannot-run list: a command the release guide does not hold" VERIFY_CANNOT_RUN 's=s.replace("<IMAGE_REF>","<IMAGE_REF_X>",1)'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]
