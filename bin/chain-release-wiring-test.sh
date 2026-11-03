@@ -160,7 +160,7 @@ BODY = {
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
 ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
-        "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "trap"], "other", ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
+        "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
         "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
 for n, b in BODY.items():
@@ -601,7 +601,7 @@ h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
 # ---- KA-2 p4: no cosign KMS call is left (the signing is KA-1's kms-sign: chain-verify.py kms-sign through the aws CLI) -----------------------------------
-# RED until KA-2 p4's code: bin/release-sign.sh (12 lines), bin/evidence-letter-publish.sh (1) and bin/chain-verify.py (the attest-blob argv of kms_sign) still run cosign with the release key.
+# RED until KA-2 p4's code: bin/release-sign.sh (3 lines after the blob group: the image signature and the two attestations) and bin/chain-verify.py (the attest-blob argv of kms_sign) still run cosign with the release key; the nine sign-blob lines and bin/evidence-letter-publish.sh are kms-sign since the blob group.
 # The judge below is first proven on a known-good fixture and on mutants of it (a judge that cannot fail shows nothing), then applied to the three real files (EXPECT 0 each) and to the
 # repository (.github/workflows/*.yml, bin/*.sh, bin/*.py, test files aside). Verify-only and attach forms are the VERIFY_ONLY list of bin/chain-check-shape.py, imported, never copied.
 cat > "$work/nocosign.py" <<'PY'
@@ -714,8 +714,8 @@ nc caught "KA-2 p4 mutant: a python argv with --key and the release key referenc
 nc caught "KA-2 p4 mutant: a python argv in single quotes is found" "$nd/m_pysq.py"
 t_reuse() { ! grep -q 'verify-blob-attestation' "$work/nocosign.py" && grep -q 'ccs.VERIFY_ONLY' "$work/nocosign.py"; }
 if t_reuse; then ok "KA-2 p4 the judge takes the verify-only forms from bin/chain-check-shape.py (imported, no copy of the list)"; else bad "KA-2 p4 the judge holds its own copy of the verify-only list"; fi
-nc ok "KA-2 p4 the real bin/release-sign.sh holds no cosign signing call (EXPECT 0; today 12 lines)" "$root/bin/release-sign.sh"
-nc ok "KA-2 p4 the real bin/evidence-letter-publish.sh holds no cosign signing call (EXPECT 0; today 1 line)" "$root/bin/evidence-letter-publish.sh"
+nc ok "KA-2 p4 the real bin/release-sign.sh holds no cosign signing call (EXPECT 0; today 3 lines: the image signature and the two attestations)" "$root/bin/release-sign.sh"
+nc ok "KA-2 p4 the real bin/evidence-letter-publish.sh holds no cosign signing call (EXPECT 0)" "$root/bin/evidence-letter-publish.sh"
 nc ok "KA-2 p4 the real bin/chain-verify.py holds no cosign signing argv (EXPECT 0; today the attest-blob argv of kms_sign)" "$root/bin/chain-verify.py"
 nc ok "KA-2 p4 no workflow, shell or python file of the repository holds a cosign signing call or --key with the release key reference" --repo "$root"
 EXPECT=321
