@@ -464,7 +464,7 @@ mutant("AWS_ROLE_ARN not a sensitive key", lambda s: s.replace("  --env-add-sens
 mutant("a Fulcio flag", lambda s: s.replace("witness run --step", "witness run --signer-fulcio-url https://fulcio.sigstore.dev --step"))
 mutant("Witness told to sign with the KMS key itself again", lambda s: s.replace('--signer-file-key-path "$td/key.pem"', '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'))
 mutant("the collection is not signed with the release key", lambda s: s.replace("sign-record", "verify"))
-mutant("a failing signature ignored", lambda s: s.replace("--template .github/policy/release-policy.template.json || rc=$?", "--template .github/policy/release-policy.template.json || true"))
+mutant("a failing signature ignored", lambda s: s.replace("--public-key build/keys/release.rsa.pub || rc=$?", "--public-key build/keys/release.rsa.pub || true"))     # KA-2 p4 g3: the sign-record line now ends with the two options witnessed.sh adds
 mutant("the token request variables exported to the wrapped script", lambda s: s.replace("req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n", "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL\n"))
 mutant("a failing Witness signed anyway", lambda s: s.replace('if [ "$rc" -eq 0 ]; then', "if true; then"))
 mutant("the ten-minute timeout kept", lambda s: s.replace('-- bash "$@" || rc=$?', '-- timeout -k 20 540 bash "$@" || rc=$?'))

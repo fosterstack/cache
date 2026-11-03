@@ -5228,9 +5228,9 @@ wr_battery() { # WRAPPER-FILE : prints one "name rc-ok" line per case: the six b
   wr_run "$w" kms-sign --aws /own/aws --public-key own.pub
   [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "kms-sign --aws /own/aws --public-key own.pub" ] || { echo "kms-sign is refused its own --aws or --public-key: rc=$WR_RC [$WR_ARGV]"; bad=1; }
   wr_run "$w" sign-record --payload p --aws /own/aws --out o
-  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && echo "$WR_OUT" | grep -q -e '--aws' || { echo "a caller-passed --aws to sign-record is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
+  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && grep -q -e '--aws' <<< "$WR_OUT" || { echo "a caller-passed --aws to sign-record is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
   wr_run "$w" sign --check --public-key=own.pub
-  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && echo "$WR_OUT" | grep -q -e '--public-key' || { echo "a caller-passed --public-key=... to sign is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
+  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && grep -q -e '--public-key' <<< "$WR_OUT" || { echo "a caller-passed --public-key=... to sign is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
   return $bad
 }
 wr_msg=$(wr_battery "$root/bin/with-aws-token.sh") && wr_rc=0 || wr_rc=$?

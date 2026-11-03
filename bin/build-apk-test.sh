@@ -906,7 +906,8 @@ t "rule 22" "KA-2 p4 key compare (dsse): the same key in another PEM wrapping as
   bash -c "test '$(rc)' = 0 && test '$(signs_n)' = 1 -a '$(posts_n)' = 1 && test -s '$work/ks/kkdwrap.bundle'"
 t "rule 22" "KA-2 p4 key compare: the compare reads the DER with openssl pkey -pubin -outform DER (not the PEM text) and comes before the KMS Sign call in the code" bash -c "grep -n 'outform' '$KS_CV' | grep -q DER && grep -n 'does not match the KMS key' '$KS_CV' | head -1 | cut -d: -f1 | { read -r a; b=\$(grep -n '\"kms\", \"sign\"' '$KS_CV' | head -1 | cut -d: -f1); test -n \"\$a\" -a -n \"\$b\" -a \"\$a\" -lt \"\$b\"; }"
 stmt g3k; rm -f "$work/ks/g3k.bundle"; kspy g3k --dsse-statement "$work/ks/g3k.stmt" --bundle "$work/ks/g3k.bundle" --signing-config "$work/signing-config-test.json"
-if [ "$(rc)" = 2 ] && grep -q -- "--public-key" "$work/log" && ! grep -Eq -- "--digest|--out" "$work/log" && ! grep -q '^aws ' "$CALLS" && [ "$(posts_n)" = 0 ]; then ok
+g3k_err=$(grep -- 'error:' "$work/log")      # argparse prints the whole usage first (it lists every option of the command, --digest and --out included); the error line is what names what is missing
+if [ "$(rc)" = 2 ] && grep -q -- "--public-key" <<< "$g3k_err" && ! grep -Eq -- "--digest|--out" <<< "$g3k_err" && ! grep -q '^aws ' "$CALLS" && [ "$(posts_n)" = 0 ]; then ok
 else bad "rule 22" "KA-2 p4 key compare (dsse): --dsse-statement without --public-key is a usage error (exit 2) whose usage line names --public-key (and not --digest or --out: the mode takes neither), no aws call, no Rekor POST (exit $(rc); $(head -c 200 "$work/log" | tr '\n' ' '))"; fi
 # round 4 R3 / R4C-6: the text says what the code does (comments and the two policy reasons; no check changes)
 POL="$root/.github/policy/chain-scripts.json"

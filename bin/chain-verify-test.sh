@@ -952,7 +952,7 @@ SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SE
 # run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake aws first) and PYTHONPATH (the Rekor shim) and
 # GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/kmssign-argv.log"; local rc=0 pk=()
-  [ "${1:-}" != sign ] || pk=(--public-key "$work/rel.pub")      # KA-2: sign names the release public key (compared with the KMS key before anything is signed)
+  case "${1:-}" in sign|sign-record) pk=(--public-key "$work/rel.pub") ;; esac      # KA-2: sign and sign-record name the release public key (compared with the KMS key before anything is signed)
   "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
     GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
@@ -1608,8 +1608,8 @@ POSTSIGN=0
 expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" \
     --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
   [ -s "$work/kmssign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
-  l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
-  grep -q '^refused at sign: ' <<< "$l1" || miss=1
+  l1=$(grep -m1 '^refused at sign: ' "$work/err" | tr 'A-Z' 'a-z')     # KA-2 p4 g3: kms-sign writes its aws-cli version line (and its own refusal line) before Sign's stage line, so the stage line is the first one that starts with the stage
+  [ -n "$l1" ] || miss=1
   IFS='|' read -r -a ws <<< "$words"
   for x in "${ws[@]}"; do case $x in '!'*) ! grep -F -q -- "${x#!}" <<< "${l1#*: }" || miss=1 ;; *) grep -F -q -- "$x" <<< "${l1#*: }" || miss=1 ;; esac; done
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && [ ! -e "$work/sd/post-$mode/provenance.json" ]; then ok "$l"
@@ -1631,7 +1631,7 @@ expect_postsign_refuse "F1 a Rekor entry for a statement with an appended subjec
 # I1: anything but a refusal inside the self-check (here openssl failing) is a refusal too, never a traceback, and leaves no provenance
 cat > "$work/fakebin-openssl" <<FSSL
 #!/usr/bin/env bash
-if [ -e "$work/ssl-fail" ] && [ "\${1:-}" = dgst ] && [ "\${2:-}" = -sha256 ] && [ "\${3:-}" = -verify ]; then echo "fake openssl: failure" >&2; exit 1; fi
+if [ -e "$work/ssl-fail" ] && [ "\${1:-}" = dgst ] && [ "\${2:-}" = -sha256 ] && [ "\${3:-}" = -verify ] && [ "\$(basename "\${4:-}")" = release.pub ]; then echo "fake openssl: failure" >&2; exit 1; fi
 exec "$OPENSSL" "\$@"
 FSSL
 chmod +x "$work/fakebin-openssl"
@@ -2158,7 +2158,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=791
+EXPECT=792
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

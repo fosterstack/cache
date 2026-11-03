@@ -408,7 +408,11 @@ def fake_rekor_open(req):
 
 
 cv.rekor_open = fake_rekor_open
-cv.time.sleep = SLEPT.append
+_real_sleep = cv.time.sleep
+def _sleep(s):   # the waits of the retry rule are time.sleep calls made by the code under test: recorded, nothing here waits; the stdlib subprocess module polls with time.sleep (0.0005..0.05 s) under subprocess.run(timeout=...) and that sleep runs for real and is not recorded (same rule as the build-apk launcher)
+    if sys._getframe(1).f_globals.get("__name__") == "subprocess": return _real_sleep(s)
+    SLEPT.append(s)
+cv.time.sleep = _sleep
 cv.pinned_rekor_pem = lambda cfg: rekor_pem
 
 
