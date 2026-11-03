@@ -98,7 +98,7 @@
 #       AFTER its response, so a persona's last request is attributed to its own window and never to the next persona's (the `delayed` case);
 #       401s (withAuth wraps withMetrics) and the three uncounted routes make no counted request. The GitLab runner's mux serves /metrics only (/ is
 #       404) and the readiness probe must use /metrics of the started container; a started container with no listener is a did-not-run persona.
-#       `kind create cluster` is bounded by --ready-timeout (the test passes 2 and requires the run to end within 45 seconds; RUN_TIMEOUT is 60), not by a separate flag.
+#       `kind create cluster` is bounded by --ready-timeout (the test passes 2 and requires the run to end within 45 seconds; the fake kind hangs 90 s, past RUN_TIMEOUT 60, so a driver that waits is ended at 60 s and fails the bound), not by a separate flag.
 #       After every persona the driver runs ONE cleanup container over the persona's sandbox mount (run --rm --network none --user 0:0 --label <the
 #       persona's> -v <sandbox>:/work -w /work <shell image> rm -rf ...), after the label sweep: files a tool image created as another uid (root in
 #       the maven image, curl_user in the curl image) cannot be removed or chmod'ed by the runner, and real ownership cannot be simulated without
@@ -751,7 +751,7 @@ if a[:2] == ["create", "cluster"]:
 elif a[:2] == ["delete", "cluster"]:
     noise("delete")
 if cfg.get("kind_hang") and a[:2] == ["create", "cluster"]:
-    time.sleep(20)
+    time.sleep(90)
 if cfg.get("kind_fail"):
     sys.stderr.write("kind: simulated failure\n"); sys.exit(1)
 port, pn = int(cfg["kind_port"]), cfg.get("procnet")
@@ -3852,11 +3852,12 @@ pl = json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "=="))
 assert pl["exp"] - pl["iat"] == 7200
 PY
 KIND_HANG=1 READY_TIMEOUT=2 RUN_TIMEOUT=60 run kindhang '{}' weekly
-CASE="kind hang: a 'kind create cluster' that does not return is bounded (the run finishes in well under the 20s the fake hangs): the on-call persona did not run, the other four ran, the run fails, no traceback"
+CASE="kind hang: a 'kind create cluster' that does not return is bounded (the driver gives up at the 2s ready timeout; the fake hangs 90s, past the 60s run timeout, so a driver that waited would be ended at 60s): the on-call persona did not run, the other four ran, the run fails, no traceback"
 check python3 - "$work/kindhang" "$(out kindhang)" "$rc" "$RUNSECS" <<'PY'
 import json, sys
 d = sys.argv[1]
-assert int(sys.argv[3]) != 0 and int(sys.argv[4]) < 45, "the driver waited for a hung kind (RUNSECS=%s, bound 45)" % sys.argv[4]
+assert int(sys.argv[3]) != 0, "the run passed although a persona did not run"
+assert int(sys.argv[4]) < 45, "the driver waited for a hung kind (RUNSECS=%s, bound 45)" % sys.argv[4]
 assert "Traceback" not in open(d + "/stderr").read()
 assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/log")] and len(open(d + "/log").read().splitlines()) == 4
 assert "did not run" in open(sys.argv[2] + "/on-call-engineer.report.md").read().lower()
