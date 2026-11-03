@@ -217,6 +217,11 @@ case "$*" in
     d=; b=; o=; pk=
     while [ $# -gt 0 ]; do case $1 in --digest) d=$2;; --bundle) b=$2;; --out) o=$2;; --public-key) pk=$2;; esac; shift; done
     [ -f "$pk" ] || { echo "kms-sign: refused: cannot read the Rekor URL of the signing config or the public key $pk" >&2; exit 1; }
+    # KA-2 p4 key compare (model of the real one, which build-apk-test.sh runs on DER): the KMS key is the key of the offline-root manifest; the key file must be it, checked BEFORE the KMS Sign call and the Rekor POST (the two lines below)
+    kms=$(jq -er .public_key "$REPO_DIR/.github/policy/release-key-manifest.json" | tr -d ' \n')
+    [ -f "$pk" ] && [ "$(tr -d ' \n' < "$pk")" = "$kms" ] || { echo "kms-sign: refused: the key file $pk does not match the KMS key" >&2; exit 1; }
+    echo "kms-sign-called-KMS-Sign" >> "$LOG"
+    echo "kms-sign-posted-to-Rekor" >> "$LOG"
     echo "signed-sha256: $d" >> "$LOG"
     echo sig > "$o"
     h=$(tr -d ' \n' < "$pk" | sha256sum | cut -d' ' -f1)
@@ -661,9 +666,10 @@ def keys_differ(fix, env):      # KA-2 p4: the letter is signed with the committ
     openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", k)
     open(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"), "wb").write(openssl("pkey", "-in", k, "-pubout"))
 pkd, lkd, upkd, _l = publish(edit=keys_differ)
-check("KA-2 p4: a committed release public key that is not the manifest key is refused by the verify step in one line, and nothing is uploaded",
-      pkd.returncode == 1 and len(pkd.stderr.strip().splitlines()) == 1 and "does not verify" in pkd.stderr and upkd == []
-      and any("kms-sign" in x for x in lkd) and any(x.startswith("cosign verify-blob") for x in lkd) and not any("release upload" in x for x in lkd), (pkd.returncode, pkd.stderr, lkd))
+check("KA-2 p4 key compare: a committed release public key that is not the manifest (KMS) key is refused by kms-sign in one line naming the file and 'does not match the KMS key', exit 1, BEFORE any KMS Sign and any Rekor POST; verify-blob is not run and nothing is uploaded",
+      pkd.returncode == 1 and len(pkd.stderr.strip().splitlines()) == 1 and "does not match the KMS key" in pkd.stderr and "build/keys/release.rsa.pub" in pkd.stderr and upkd == []
+      and any("kms-sign" in x for x in lkd) and not any(x == "kms-sign-called-KMS-Sign" for x in lkd) and not any(x == "kms-sign-posted-to-Rekor" for x in lkd)
+      and not any(x.startswith("cosign verify-blob") for x in lkd) and not any("release upload" in x for x in lkd), (pkd.returncode, pkd.stderr, lkd))
 pb, lb, upb, _l = publish(FAIL_UPLOAD="bundle")
 check("AC9: a refused bundle upload fails closed with one line that carries gh's first line, and leaves nothing",
       one_line(pb) and "HTTP 422" in pb.stderr and "second line" not in pb.stderr and upb == [], (pb.stderr, upb))

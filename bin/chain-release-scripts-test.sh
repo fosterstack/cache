@@ -145,6 +145,10 @@ if a[0] == "kms-sign":     # KA-2 (a model of the one blob signer, KA-1): the ca
         if g(k) is None: print("kms-sign: usage: %s is required" % k, file=sys.stderr); sys.exit(2)
     pk = open(g("--public-key")).read() if os.path.isfile(g("--public-key")) else ""
     if "-----BEGIN PUBLIC KEY-----" not in pk: print("kms-sign: refused: cannot read the Rekor URL of the signing config %s or the public key %s" % (g("--signing-config"), g("--public-key")), file=sys.stderr); sys.exit(1)
+    # KA-2 p4 key compare (model): the KMS key (KMSSIGN_KMSKEY, when the case sets one) must be the key file handed as --public-key (the one the Rekor entry carries), compared before anything is signed; the real compare is in build-apk-test.sh
+    kk = os.environ.get("KMSSIGN_KMSKEY")
+    kf = open(g("--public-key")).read() if os.path.isfile(g("--public-key")) else None
+    if kf is None or (kk is not None and "".join(kf.split()) != "".join(kk.split())): print("kms-sign: refused: the key file %s does not match the KMS key" % g("--public-key"), file=sys.stderr); sys.exit(1)
     if os.path.lexists(g("--out")) or os.path.lexists(g("--bundle")): print("kms-sign: refused: %s already exists" % g("--bundle"), file=sys.stderr); sys.exit(1)
     if os.environ.get("KMSSIGN_FAIL_ON") and os.environ["KMSSIGN_FAIL_ON"] in g("--bundle"): print("kms-sign: refused: the release key does not support RSASSA_PKCS1_V1_5_SHA_256", file=sys.stderr); sys.exit(1)
     open(g("--out"), "wb").write(b"sig")
@@ -560,6 +564,8 @@ check(not any(re.search(r"--(identity-token|fulcio|oidc)", l) for l in L if l.st
 tph = tree(); open(os.path.join(tph, "build/keys/release.rsa.pub"), "w").write("PLACEHOLDER: the real public half of the release key is committed by a human\n")
 rc, so, se = run(tph, "release-sign", creds=REG); lp = log(tph)
 check(rc != 0 and len([l for l in lp if l.startswith("chain-verify kms-sign")]) == 1 and "public key" in se and not os.path.exists(os.path.join(tph, "release-evidence/production.sbom.json.bundle")), "KA-2 p4 the placeholder public key stops the step at the first signed file, with kms-sign's refusal, and leaves no bundle", "rc=%s %s" % (rc, first(se)))
+tkd = tree(); rc, so, se = run(tkd, "release-sign", creds=REG, env={"KMSSIGN_KMSKEY": "-----BEGIN PUBLIC KEY-----\nT1RIRVJLRVk=\n-----END PUBLIC KEY-----\n"}); lkd = log(tkd)
+check(rc != 0 and len([l for l in lkd if l.startswith("chain-verify kms-sign")]) == 1 and "does not match the KMS key" in se and "build/keys/release.rsa.pub" in se and not os.path.exists(os.path.join(tkd, "release-evidence/production.sbom.json.bundle")) and not any(l.startswith("cosign") for l in lkd), "KA-2 p4 key compare: a committed key that is not the KMS key stops the step at the first signed file with kms-sign's one-line refusal naming the file, no bundle, no cosign call after it", "rc=%s %s %s" % (rc, first(se), len([l for l in lkd if l.startswith("chain-verify kms-sign")])))
 tkf = tree(); rc, so, se = run(tkf, "release-sign", creds=REG, env={"KMSSIGN_FAIL_ON": "checksums.txt"}); lk = log(tkf)
 check(rc != 0 and "RSASSA_PKCS1_V1_5_SHA_256" in se and len([l for l in lk if l.startswith("chain-verify kms-sign")]) == 7 and not any("release-policy.bundle" in l or "release-files" in l for l in lk), "KA-2 p4 a refused kms-sign call (the key does not list the algorithm) stops the step: the files after it are not signed", "rc=%s %s" % (rc, first(se)))
 tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
@@ -1113,7 +1119,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "475"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "476"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

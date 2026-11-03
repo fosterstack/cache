@@ -314,7 +314,11 @@ if [ "${1:-}" = --version ]; then echo "aws-cli/${STUB_AWS_VERSION:-2.17.0} Pyth
 [ "${1:-}" = kms ] || { echo "stub aws: only kms is faked" >&2; exit 252; }
 sub=${2:-}; shift 2
 case $sub in
-get-public-key) echo "${STUB_AWS_ALGS:-[\"RSASSA_PKCS1_V1_5_SHA_256\",\"RSASSA_PSS_SHA_256\"]}"; exit 0;;
+get-public-key) algs="${STUB_AWS_ALGS:-[\"RSASSA_PKCS1_V1_5_SHA_256\",\"RSASSA_PSS_SHA_256\"]}"
+  case "$*" in *PublicKey*)   # KA-2 p4 key compare: the object {SigningAlgorithms, PublicKey (base64 DER SubjectPublicKeyInfo)}; STUB_AWS_PUBDER names a DER file to answer with instead of the suite key's
+    if [ -n "${STUB_AWS_PUBDER:-}" ]; then pk=$(@OPENSSL@ base64 -A <"$STUB_AWS_PUBDER"); else pk=$(@OPENSSL@ pkey -in "$STUB_AWS_KEY" -pubout -outform DER | @OPENSSL@ base64 -A); fi
+    echo "{\"SigningAlgorithms\":$algs,\"PublicKey\":\"$pk\"}"; exit 0;; esac
+  echo "$algs"; exit 0;;
 sign) ;;
 *) echo "stub aws: kms $sub is not faked" >&2; exit 252;;
 esac
@@ -504,8 +508,8 @@ mkrsa "$work/other-rel.rsa"
 rs1 s1; s1apk="$work/s1/x86_64/fscache-0.3.0-r0.apk"; s1dg=$(python3 "$AT" digest "$s1apk")
 : >"$work/rekor.log"
 sd "rule 22" "release signing (KA-1): one apk -> aws --version, aws kms get-public-key (the SigningAlgorithms list, every call) and aws kms sign naming the algorithm and DIGEST, on the 32-byte digest of the control stream" "^aws kms sign --key-id alias/fosterstack-release-signing --message fileb://[^ ]+ --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json\$" "${RK[@]}" "$RS" --build-dir "$work/s1"
-t "rule 22" "release signing (KA-1): the calls come in the order version, get-public-key, sign, and get-public-key names the key id and asks for SigningAlgorithms" bash -c "
-  grep -n '^aws ' '$CALLS' | cut -d: -f2- | head -n 3 | tr '\n' '|' | grep -Fx 'aws --version|aws kms get-public-key --key-id alias/fosterstack-release-signing --query SigningAlgorithms --output json|aws kms sign --key-id alias/fosterstack-release-signing --message fileb://'\"\$(grep -m1 '^aws kms sign' '$CALLS' | sed 's|.*fileb://||; s| .*||')\"' --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json|'"
+t "rule 22" "release signing (KA-1): the calls come in the order version, get-public-key, sign, and get-public-key names the key id and asks for SigningAlgorithms and PublicKey in one call (KA-2 p4 key compare)" bash -c "
+  grep -n '^aws ' '$CALLS' | cut -d: -f2- | head -n 3 | tr '\n' '|' | grep -Fx 'aws --version|aws kms get-public-key --key-id alias/fosterstack-release-signing --query {SigningAlgorithms:SigningAlgorithms,PublicKey:PublicKey} --output json|aws kms sign --key-id alias/fosterstack-release-signing --message fileb://'\"\$(grep -m1 '^aws kms sign' '$CALLS' | sed 's|.*fileb://||; s| .*||')\"' --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json|'"
 t "rule 22" "release signing (KA-1): one hashedrekord 0.0.1 entry was POSTed to the signing config's Rekor v1 (/api/v1/log/entries) with the release public key, the sha256 of the control stream and the KMS signature" python3 - "$work/rekor.log" "$s1apk" "$AT" "$work/keysfx/release.rsa.pub" <<'P'
 import base64, hashlib, io, json, subprocess, sys, tarfile, zlib
 log, apk, at, pub = sys.argv[1:5]
@@ -703,7 +707,7 @@ ksreq() { # <missing option>
   local m=$1; KD=$(kdig "req$m"); local a=(--out "$work/ks/req$m.sig" --bundle "$work/ks/req$m.bundle" "${ksfull[@]}") i out=()
   for ((i = 0; i < ${#a[@]}; i++)); do if [ "${a[i]}" = "--$m" ]; then i=$((i + 1)); else out+=("${a[i]}"); fi; done
   rm -f "$work/ks/req$m".*; ks "req$m" "${out[@]}"
-  if [ "$(rc)" = 2 ] && ! grep -q '^aws ' "$CALLS" && [ ! -e "$work/ks/req$m.sig" ]; then ok; else bad "rule 22" "release signing (round 3 F4): kms-sign without --$m is a usage error: exit 2, no aws call, no signature (exit $(rc))"; fi; }
+  if [ "$(rc)" = 2 ] && grep -q -- "--$m" "$work/log" && ! grep -q '^aws ' "$CALLS" && [ ! -e "$work/ks/req$m.sig" ]; then ok; else bad "rule 22" "release signing (round 3 F4): kms-sign without --$m is a usage error: exit 2, the usage line names --$m, no aws call, no signature (exit $(rc))"; fi; }
 ksreq bundle; ksreq signing-config; ksreq public-key
 # F6: the aws stderr text is never repeated (an AccessDenied text names the assumed-role ARN, and the command-run record keeps stderr)
 KD=$(kdig f6err); STUB_AWS_ERR='An error occurred (AccessDeniedException) when calling the Sign operation: User: arn:aws:sts::111122223333:assumed-role/release-signing/session is not authorized to perform: kms:Sign' ks f6err --out "$work/ks/f6err.sig" --bundle "$work/ks/f6err.bundle" "${ksfull[@]}"
@@ -855,6 +859,47 @@ for kind in hashedrekord dsse; do
   rfail "KA-2 p4 3e ($kind): a 400 answer fails at once: no wait, one POST, a refusal that names Rekor" $kind always-400 1
   rfail "KA-2 p4 3e ($kind): a 403 answer fails at once: no wait, one POST, a refusal that names Rekor" $kind always-403 1
 done
+# ---- KA-2 p4 key compare (ruled 2026-11-03T04:56:20Z, amended 05:07:48Z): kms-sign compares its required --public-key file (the key the Rekor entry carries; there is no --key) and, right after get-public-key and BEFORE the KMS Sign call and any Rekor POST, compares the DER SubjectPublicKeyInfo of the KMS key (the
+# PublicKey of that answer) with the DER of the file (openssl pkey -pubin -outform DER, never the PEM text). A key that differs, is missing or is unreadable is exit 1 with ONE line naming the file and "does not match the KMS key": no Sign, no POST, no
+# signature file, no bundle. The same key in another PEM wrapping is the happy path. Both kinds (hashedrekord and dsse). ----
+openssl rsa -in "$work/keysfx/assembly.rsa" -pubout -out "$work/keysfx/other.rsa.pub" 2>/dev/null || { echo "FIXTURE SETUP FAILED: the other public key"; exit 1; }
+printf 'PLACEHOLDER: the real public half is committed by a human\n' >"$work/keysfx/placeholder.pub"
+python3 - "$work/keysfx/release.rsa.pub" "$work/keysfx/rewrapped.rsa.pub" <<'P'
+import sys
+body = "".join(l for l in open(sys.argv[1]).read().splitlines() if not l.startswith("-----"))
+open(sys.argv[2], "w").write("a comment line before the key\n\n-----BEGIN PUBLIC KEY-----\n" + "\n".join(body[i:i + 32] for i in range(0, len(body), 32)) + "\n-----END PUBLIC KEY-----\n\n")
+P
+kkdiff() { # <desc> <kind> <name> <key file>: --public-key that is not the KMS key -> exit 1, one line naming the file and "does not match the KMS key", get-public-key asked, no KMS Sign, no Rekor POST, no file
+  local d=$1 kind=$2 n=$3 kf=$4; rm -f "$work/ks/$n".*; echo ok >"$work/rekor.mode"
+  if [ "$kind" = dsse ]; then stmt "$n"; kspy "$n" --dsse-statement "$work/ks/$n.stmt" --bundle "$work/ks/$n.bundle" --signing-config "$work/signing-config-test.json" --public-key "$kf"
+  else KD=$(kdig "$n"); kspy "$n" --digest "$KD" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" --signing-config "$work/signing-config-test.json" --public-key "$kf"; fi
+  if [ "$(rc)" = 1 ] && [ "$(grep -c 'does not match the KMS key' "$work/log")" = 1 ] && grep -F 'does not match the KMS key' "$work/log" | grep -qF -- "$kf" && [ "$(grep -c '^aws kms get-public-key ' "$CALLS")" -ge 1 ] \
+     && [ "$(signs_n)" = 0 ] && [ "$(posts_n)" = 0 ] && [ ! -e "$work/ks/$n.sig" ] && [ ! -e "$work/ks/$n.bundle" ]; then ok
+  else bad "rule 22" "$d (exit $(rc), wanted 1 with one 'does not match the KMS key' line naming $kf, 0 KMS Sign, 0 Rekor POST, no files; signs $(signs_n), POSTs $(posts_n); $(head -c 200 "$work/log" | tr '\n' ' '))"; fi; }
+kkdiff "KA-2 p4 key compare (hashedrekord): another RSA public key as --public-key -> refused before any Sign or POST" hashedrekord kkother "$work/keysfx/other.rsa.pub"
+kkdiff "KA-2 p4 key compare (dsse): another RSA public key as --public-key -> refused before any Sign or POST" dsse kkdother "$work/keysfx/other.rsa.pub"
+kkdiff "KA-2 p4 key compare (hashedrekord): a --public-key file that is not there -> refused before any Sign or POST" hashedrekord kkmissing "$work/keysfx/none.rsa.pub"
+kkdiff "KA-2 p4 key compare (dsse): a --public-key file that is not there -> refused before any Sign or POST" dsse kkdmissing "$work/keysfx/none.rsa.pub"
+kkdiff "KA-2 p4 key compare (hashedrekord): the committed placeholder text as --public-key (unreadable as a key) -> refused before any Sign or POST" hashedrekord kkplace "$work/keysfx/placeholder.pub"
+kkdiff "KA-2 p4 key compare (dsse): the committed placeholder text as --public-key -> refused before any Sign or POST" dsse kkdplace "$work/keysfx/placeholder.pub"
+# the KMS answers with another key than the file (the file is right, the KMS key is the other one): the same refusal
+KD=$(kdig kkkms); rm -f "$work/ks/kkkms".*; openssl pkey -pubin -in "$work/keysfx/other.rsa.pub" -outform DER -out "$work/other.der" 2>/dev/null
+STUB_AWS_PUBDER="$work/other.der" kspy kkkms --digest "$KD" --out "$work/ks/kkkms.sig" --bundle "$work/ks/kkkms.bundle" "${ksfull[@]}"
+t "rule 22" "KA-2 p4 key compare: a KMS key that is not the --public-key file (the aws answer holds another key) -> exit 1 naming the file and 'does not match the KMS key', 0 KMS Sign, 0 Rekor POST, no files" \
+  bash -c "test '$(rc)' = 1 && grep -F 'does not match the KMS key' '$work/log' | grep -qF '$work/keysfx/release.rsa.pub' && test '$(signs_n)' = 0 -a '$(posts_n)' = 0 && test ! -e '$work/ks/kkkms.sig' -a ! -e '$work/ks/kkkms.bundle'"
+# the same key, wrapped differently (a comment line, other line width, blank lines): the DER is equal, so the happy path
+KD=$(kdig kkwrap); rm -f "$work/ks/kkwrap".*; echo ok >"$work/rekor.mode"
+kspy kkwrap --digest "$KD" --out "$work/ks/kkwrap.sig" --bundle "$work/ks/kkwrap.bundle" --signing-config "$work/signing-config-test.json" --public-key "$work/keysfx/rewrapped.rsa.pub"
+t "rule 22" "KA-2 p4 key compare (hashedrekord): the same key in another PEM wrapping as --public-key is accepted: exit 0, one KMS Sign, one Rekor POST, signature and bundle written (the DER is compared, not the PEM text)" \
+  bash -c "test '$(rc)' = 0 && test '$(signs_n)' = 1 -a '$(posts_n)' = 1 && test -s '$work/ks/kkwrap.sig' -a -s '$work/ks/kkwrap.bundle'"
+stmt kkdwrap; rm -f "$work/ks/kkdwrap.bundle"
+kspy kkdwrap --dsse-statement "$work/ks/kkdwrap.stmt" --bundle "$work/ks/kkdwrap.bundle" --signing-config "$work/signing-config-test.json" --public-key "$work/keysfx/rewrapped.rsa.pub"
+t "rule 22" "KA-2 p4 key compare (dsse): the same key in another PEM wrapping as --public-key is accepted: exit 0, one KMS Sign, one Rekor POST, the bundle written" \
+  bash -c "test '$(rc)' = 0 && test '$(signs_n)' = 1 -a '$(posts_n)' = 1 && test -s '$work/ks/kkdwrap.bundle'"
+t "rule 22" "KA-2 p4 key compare: the compare reads the DER with openssl pkey -pubin -outform DER (not the PEM text) and comes before the KMS Sign call in the code" bash -c "grep -n 'outform' '$KS_CV' | grep -q DER && grep -n 'does not match the KMS key' '$KS_CV' | head -1 | cut -d: -f1 | { read -r a; b=\$(grep -n '\"kms\", \"sign\"' '$KS_CV' | head -1 | cut -d: -f1); test -n \"\$a\" -a -n \"\$b\" -a \"\$a\" -lt \"\$b\"; }"
+stmt g3k; rm -f "$work/ks/g3k.bundle"; kspy g3k --dsse-statement "$work/ks/g3k.stmt" --bundle "$work/ks/g3k.bundle" --signing-config "$work/signing-config-test.json"
+if [ "$(rc)" = 2 ] && grep -q -- "--public-key" "$work/log" && ! grep -Eq -- "--digest|--out" "$work/log" && ! grep -q '^aws ' "$CALLS" && [ "$(posts_n)" = 0 ]; then ok
+else bad "rule 22" "KA-2 p4 key compare (dsse): --dsse-statement without --public-key is a usage error (exit 2) whose usage line names --public-key (and not --digest or --out: the mode takes neither), no aws call, no Rekor POST (exit $(rc); $(head -c 200 "$work/log" | tr '\n' ' '))"; fi
 # round 4 R3 / R4C-6: the text says what the code does (comments and the two policy reasons; no check changes)
 POL="$root/.github/policy/chain-scripts.json"
 reasonhas() { # <script> <word>...: the policy row of <script> has a reason holding every word; a word beginning with ! must not be there
