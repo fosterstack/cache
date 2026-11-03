@@ -69,8 +69,11 @@ if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bu
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
-[ "$1" != attest ] || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attest failed" >&2; exit 1;; esac
-if [ "$1" = sign-blob ]; then echo "cosign sign-blob must not be called: the files are signed by chain-verify.py kms-sign (KA-2)" >&2; exit 1; fi''',
+if [ "$1 $2" = "attach attestation" ] && [ -n "${COSIGN_ATTEST_FAIL_ON:-}" ]; then   # KA-2 p4: only the attach of a release-manifest attestation bundle fails (the image signatures are attached the same way)
+  case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) b=""; for x in "$@"; do [ "$p" = "--attestation" ] && b=$x; p=$x; done
+    if [ -f "$b" ] && python3 -c 'import base64,json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if "release-manifest" in base64.b64decode(d["dsseEnvelope"]["payload"]).decode() else 1)' "$b"; then echo "cosign attach failed" >&2; exit 1; fi;; esac
+fi
+case "$1" in sign-blob|sign|attest|attest-blob) echo "cosign $1 must not be called: every signature is made by chain-verify.py kms-sign (KA-2); cosign only logs in and attaches" >&2; exit 1;; esac''',
  "git": r'''#!/usr/bin/env bash
 # release-assets reads the release tag's object (cat-file tag); release-sign asks for the admitted commit's committer date (log -1 --format=%ct)
 if [ "$1 $2" = "cat-file tag" ]; then
@@ -137,24 +140,29 @@ if a[0] == "key-ref-check":     # W2 + KA-0 (a model of the one check in bin/cha
     if "--algorithm-guard" in a and os.environ.get("KEYREF_AWS_FAIL"):     # KA-0: the aws CLI that lists the key's algorithms fails: exit 1, a different status from the refusal
         print("error: the aws CLI failed: could not list the release key's signing algorithms", file=sys.stderr); sys.exit(1)
     if "--algorithm-guard" in a and os.environ.get("KEYREF_ALG_FAIL"):
-        print("refused: cosign signs with the first algorithm the release key lists (RSASSA_PSS_SHA_256), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path", file=sys.stderr); sys.exit(2)
+        print("key-ref-check: refused: the release key does not support RSASSA_PKCS1_V1_5_SHA_256 (it lists: RSASSA_PSS_SHA_256)", file=sys.stderr); sys.exit(2)
     sys.exit(0)
 if a[0] == "kms-sign":     # KA-2 (a model of the one blob signer, KA-1): the caller names the sha256 of the signed bytes, the key, the config and the public key; it writes the raw signature and the v0.3 bundle (exclusively)
     g = lambda k: a[a.index(k) + 1] if k in a else None
-    for k in ("--aws", "--key-ref", "--digest", "--signing-config", "--public-key", "--out", "--bundle"):
+    dsse = "--dsse-statement" in a     # KA-2 p4 (image kinds, a model of the DSSE kind): the statement file is the payload, verbatim; no --digest, no --out; the bundle holds the envelope and one Rekor entry
+    for k in (("--aws", "--key-ref", "--signing-config", "--public-key", "--bundle") if dsse else ("--aws", "--key-ref", "--digest", "--signing-config", "--public-key", "--out", "--bundle")):
         if g(k) is None: print("kms-sign: usage: %s is required" % k, file=sys.stderr); sys.exit(2)
+    if dsse and (g("--digest") is not None or g("--out") is not None): print("kms-sign: usage: --dsse-statement takes no --digest and no --out", file=sys.stderr); sys.exit(2)
     pk = open(g("--public-key")).read() if os.path.isfile(g("--public-key")) else ""
     if "-----BEGIN PUBLIC KEY-----" not in pk: print("kms-sign: refused: cannot read the Rekor URL of the signing config %s or the public key %s" % (g("--signing-config"), g("--public-key")), file=sys.stderr); sys.exit(1)
     # KA-2 p4 key compare (model): the KMS key (KMSSIGN_KMSKEY, when the case sets one) must be the key file handed as --public-key (the one the Rekor entry carries), compared before anything is signed; the real compare is in build-apk-test.sh
     kk = os.environ.get("KMSSIGN_KMSKEY")
     kf = open(g("--public-key")).read() if os.path.isfile(g("--public-key")) else None
     if kf is None or (kk is not None and "".join(kf.split()) != "".join(kk.split())): print("kms-sign: refused: the key file %s does not match the KMS key" % g("--public-key"), file=sys.stderr); sys.exit(1)
-    if os.path.lexists(g("--out")) or os.path.lexists(g("--bundle")): print("kms-sign: refused: %s already exists" % g("--bundle"), file=sys.stderr); sys.exit(1)
+    if os.path.lexists(g("--bundle")) or (not dsse and os.path.lexists(g("--out"))): print("kms-sign: refused: %s already exists" % g("--bundle"), file=sys.stderr); sys.exit(1)
     if os.environ.get("KMSSIGN_FAIL_ON") and os.environ["KMSSIGN_FAIL_ON"] in g("--bundle"): print("kms-sign: refused: the release key does not support RSASSA_PKCS1_V1_5_SHA_256", file=sys.stderr); sys.exit(1)
-    open(g("--out"), "wb").write(b"sig")
+    if not dsse: open(g("--out"), "wb").write(b"sig")
+    if dsse:     # the model keeps what it signed (path, then the statement text, one line each) so a case reads the statements the script built
+        stm = open(g("--dsse-statement"), "rb").read(); open(os.environ["LOG"] + ".stmts", "a").write(g("--dsse-statement") + "\t" + stm.decode() + "\n")
     if os.environ.get("KMSSIGN_NOBUNDLE") in ("ALL", os.path.basename(g("--bundle"))): sys.exit(0)     # a signer that exits 0 and leaves no bundle (KA-2 p4 g3: no case may crash on the missing file, each must fail by its label)
     tl = "[]" if os.environ.get("COSIGN_NOREKOR") == os.path.basename(g("--bundle")) else '[{"logIndex":"1"}]'
-    open(g("--bundle"), "w").write('{"verificationMaterial":{"tlogEntries":%s}}' % tl); sys.exit(0)
+    env = ', "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": "%s", "signatures": [{"sig": "c2ln"}]}' % __import__("base64").b64encode(stm).decode() if dsse else ""
+    open(g("--bundle"), "w").write('{"verificationMaterial":{"tlogEntries":%s}%s}' % (tl, env)); sys.exit(0)
 if a[0] == "policy":
     if os.environ.get("POLICY_FAIL"): print("refused at release: policy", file=sys.stderr); sys.exit(1)
     open(a[a.index("--out") + 1], "w").write("{}"); sys.exit(0)
@@ -526,30 +534,57 @@ for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, "c
 for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
     tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env=env)
     check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
-imgs = [l for l in L if l.startswith("cosign sign ")]
-check({(re.search(r"(ghcr\.io|docker\.io)/fosterstack/cache@(sha256:\w+)", l).groups()) for l in imgs} == {(h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()}, "AC8 each published image digest is signed in BOTH registries", str(imgs))
+# KA-2 p4 (image kinds): every image signature and every manifest attestation is a `chain-verify kms-sign --dsse-statement` call (a v0.3 DSSE bundle with its Rekor entry), attached with `cosign attach attestation`;
+# the model signer keeps each statement it signed (LOG.stmts: path, tab, the statement), so the cases read what the script built
+def stmts_raw(t):
+    p = os.path.join(t, "calls.log.stmts"); out = {}
+    if os.path.exists(p):
+        for ln in open(p).read().splitlines():
+            if "\t" in ln: k, v = ln.split("\t", 1); out[k] = v
+    return out
+def stmts_of(t): return {k: json.loads(v) for k, v in stmts_raw(t).items()}
+def ksi_of(L, t):     # (the kms-sign line, its statement) for every DSSE call, in call order
+    sm = stmts_of(t); r = []
+    for l in L:
+        if l.startswith("chain-verify kms-sign") and " --dsse-statement " in l:
+            r.append((l, sm.get(re.search(r" --dsse-statement (\S+)", l).group(1))))
+    return r
+KSI = ksi_of(L, t)
+SIGT, ATTT = "https://sigstore.dev/cosign/sign/v1", "https://fosterstack.com/attestations/release-manifest/v1"
+imgs = [(l, st) for l, st in KSI if st and st["predicateType"] == SIGT]
+check({(st["subject"][0]["name"], "sha256:" + st["subject"][0]["digest"]["sha256"]) for l, st in imgs} == {("%s/fosterstack/cache" % h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()} and len(imgs) == 4,
+      "AC8 each published image digest is signed in BOTH registries (four kms-sign statements of type cosign/sign/v1, one per registry and digest)", str(imgs))
 # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays attached to each public image digest as an OCI referrer (as on v0.2.x), type
 # https://fosterstack.com/attestations/release-manifest/v1; the GHCR referrer is required, the Docker Hub mirror is best-effort with a loud warning
-ATT = "cosign attest --yes --key " + KMS + " --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "
-atts = [l for l in L if l.startswith("cosign attest ")]
-want_refs = sorted("%s/fosterstack/cache@%s" % (h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values())
-check(sorted(l[len(ATT):] for l in atts if l.startswith(ATT)) == want_refs and len(atts) == 4, "AC8 the release manifest is attested on each public digest in both registries, with exactly the pinned flags and type (four attestations)", str(atts))
-last_sign = max((i for i, l in enumerate(L) if l.startswith("cosign sign ")), default=-1); first_att = next((i for i, l in enumerate(L) if l.startswith("cosign attest ")), -2)
+atts = [(l, st) for l, st in KSI if st and st["predicateType"] == ATTT]
+want_refs = sorted(("%s/fosterstack/cache" % h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values())
+check(sorted((st["subject"][0]["name"], "sha256:" + st["subject"][0]["digest"]["sha256"]) for l, st in atts) == want_refs and len(atts) == 4 and len(KSI) == 8,
+      "AC8 the release manifest is attested on each public digest in both registries, with the pinned type (four attestations), and nothing else is signed as an image statement", str([st["predicateType"] for l, st in KSI]))
+check(all((" --key-ref " + KMS + " ") in l and " --signing-config .github/policy/cosign-signing-config.json " in l and " --public-key build/keys/release.rsa.pub " in l and " --bundle " in l for l, st in KSI),
+      "P3 each of the 8 image statements (4 signatures, 4 attestations) is signed with the release key reference (--key-ref), then the signing config and the committed public key, into a bundle", str([l for l, st in KSI][:1]))
+last_sign = max((i for i, (l, st) in enumerate(KSI) if st and st["predicateType"] == SIGT), default=-1); first_att = next((i for i, (l, st) in enumerate(KSI) if st and st["predicateType"] == ATTT), -2)
 check(last_sign >= 0 and first_att > last_sign, "AC8 the manifest attestations come AFTER the image signatures (nothing is attached to an unsigned image)", "sign %s attest %s" % (last_sign, first_att))
+att_lines = [l for l in L if l.startswith("cosign attach attestation ")]
+check(len(att_lines) == 8 and all(re.fullmatch(r"cosign attach attestation --attestation \S+\.bundle (ghcr\.io|docker\.io)/fosterstack/cache@sha256:\w+", l) for l in att_lines),
+      "KA-2 p4 each of the eight image bundles is attached with `cosign attach attestation --attestation BUNDLE IMAGE@DIGEST` (and cosign signs nothing)", str(att_lines[:2]))
 mfile = os.path.join(t, "release-metadata/release-manifest.json"); lf2 = os.path.join(t, "release-metadata/release-files.sha256")
 check(os.path.exists(mfile) and ("%s  release-manifest.json" % hashlib.sha256(open(mfile, "rb").read()).hexdigest()) in open(lf2).read(), "AC8 the attested predicate is the manifest release-files.sha256 lists (made from Build's verified material, not another file)")
+jqc = subprocess.run(["jq", "-c", ".", mfile], capture_output=True, text=True).stdout.strip()
+raw_atts = [raw for raw in stmts_raw(t).values() if '"predicateType":"' + ATTT + '"' in raw]
+check(len(raw_atts) == 4 and jqc.startswith("{") and all(raw.rstrip("\n").endswith('"predicate":' + jqc + "}") for raw in raw_atts),
+      "KA-2 p4 (ruling iii) the attestation predicate is the manifest as `jq -c . release-manifest.json` writes it, in each of the four statements", jqc[:80])
 t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "docker.io/"})
-check(rc5 == 0 and "docker.io" in so5 + se5 and "::warning::" in so5 and len([l for l in log(t5) if l.startswith("cosign attest ")]) == 4 and any(l.startswith("chain-verify kms-sign") for l in log(t5)),
+check(rc5 == 0 and "docker.io" in so5 + se5 and "::warning::" in so5 and len([l for l in log(t5) if l.startswith("cosign attach attestation ")]) == 8 and any(l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l for l in log(t5)),
       "AC8 a Docker Hub mirror referrer that cannot be attached is a loud warning, never a silent skip, and the run continues (GHCR is authoritative)", "rc=%s %s" % (rc5, first(se5)))
 t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "ghcr.io/"})
-check(rc5 != 0 and not any(l.startswith("chain-verify kms-sign") for l in log(t5)), "AC8 a GHCR referrer that cannot be attached stops the run before any file is signed", "rc=%s %s" % (rc5, first(se5)))
+check(rc5 != 0 and not any(l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l for l in log(t5)), "AC8 a GHCR referrer that cannot be attached stops the run before any file is signed", "rc=%s %s" % (rc5, first(se5)))
 # KA-2 p4 (blob kinds): the nine files are signed by `chain-verify.py kms-sign` (RSASSA_PKCS1_V1_5_SHA_256 named on the call, the one Rekor entry posted by the same call); no cosign sign-blob is run
 BLOBS = (("images/production-sbom/sbom.json", "release-evidence/production.sbom.json.bundle"), ("images/fips-sbom/sbom.json", "release-evidence/fips.sbom.json.bundle"),
          ("images/production.full.lock.json", "release-evidence/production.full.lock.json.bundle"), ("images/fips.full.lock.json", "release-evidence/fips.full.lock.json.bundle"),
          ("release-evidence/vendor-evidence.json", "release-evidence/vendor-evidence.json.bundle"), ("release-evidence/dependency-list.json", "release-evidence/dependency-list.json.bundle"),
          ("dist/checksums.txt", "release-evidence/checksums.txt.bundle"), ("policy.json", "release-evidence/release-policy.bundle"),
          ("release-metadata/release-files.sha256", "release-evidence/release-files.sha256.bundle"))
-ksl = [l for l in L if l.startswith("chain-verify kms-sign")]
+ksl = [l for l in L if l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l]     # the nine file signatures; the eight image statements are KSI above
 blobs = " ".join(ksl)
 check(len(ksl) == 9 and not any(l.startswith("cosign sign-blob") for l in log(t)), "KA-2 p4 the nine files are signed by nine kms-sign calls and no cosign sign-blob call is made", "%d kms-sign, %d sign-blob" % (len(ksl), len([l for l in log(t) if l.startswith("cosign sign-blob")])))
 for f, b in BLOBS:
@@ -558,9 +593,6 @@ for f, b in BLOBS:
     check(len(hit) == 1, "KA-2 p4 %s is signed once with the release key, the digest of its own bytes, the signing config and the committed public key, and its bundle is %s" % (f, b), str(hit) + " want " + want)
 check(all(" --out " in l for l in ksl) and len({re.search(r" --out (\S+)", l).group(1) for l in ksl}) == 9, "KA-2 p4 each kms-sign call has its own signature file (kms-sign never overwrites)")
 # handoff 0713 P3 (ratify B): every signature is made with the release KMS key, named by the job (RELEASE_KMS_KEY_REF), and keeps its Rekor entry through the signing config
-signing = [l for l in L if l.startswith(("cosign sign ", "cosign sign-blob", "cosign attest "))]
-check(len(signing) == 8 and all((" --key " + KMS + " ") in l and " --signing-config .github/policy/cosign-signing-config.json " in l for l in signing),
-      "P3 each of the 8 remaining cosign calls (4 image signatures, 4 attestations) signs with --key and then the signing config", str(len(signing)) + " " + str([l for l in signing if (" --key " + KMS + " ") not in l][:2]))
 check(not any(re.search(r"--(identity-token|fulcio|oidc)", l) for l in L if l.startswith(("cosign", "chain-verify"))), "P3 no keyless flag is passed to cosign or kms-sign")
 # a public key that is the committed placeholder (or unreadable) is refused by kms-sign: the step stops at the first blob, no bundle is left, nothing is uploaded or signed after it
 tph = tree(); open(os.path.join(tph, "build/keys/release.rsa.pub"), "w").write("PLACEHOLDER: the real public half of the release key is committed by a human\n")
@@ -570,9 +602,10 @@ tkd = tree(); rc, so, se = run(tkd, "release-sign", creds=REG, env={"KMSSIGN_KMS
 check(rc != 0 and len([l for l in lkd if l.startswith("chain-verify kms-sign")]) == 1 and "does not match the KMS key" in se and "build/keys/release.rsa.pub" in se and not os.path.exists(os.path.join(tkd, "release-evidence/production.sbom.json.bundle")) and not any(l.startswith("cosign") for l in lkd[next(i for i, x in enumerate(lkd) if x.startswith("chain-verify kms-sign")):]), "KA-2 p4 key compare: a committed key that is not the KMS key stops the step at the first signed file with kms-sign's one-line refusal naming the file, no bundle, no cosign call after it", "rc=%s %s %s" % (rc, first(se), len([l for l in lkd if l.startswith("chain-verify kms-sign")])))
 trt = tree(); rc, so, se = run(trt, "release-sign", creds=REG, env={"NO_RUNNER_TEMP": "1"}); lrt = log(trt)
 check(rc != 0 and "RUNNER_TEMP" in se and len([l for l in se.splitlines() if l.strip()]) == 1 and not [l for l in lrt if l.startswith(("cosign", "chain-verify kms-sign"))], "KA-2 p4 group 4 release-sign without RUNNER_TEMP (the place the pinned aws CLI is installed) stops at once with one line naming it, before any tool or signature", "rc=%s %s" % (rc, first(se)))
-check(all((" --aws " + os.path.join(t, "rt") + "/aws-cli/aws ") in l for l in ksl) and not any("/usr/local/bin/aws" in l for l in L), "KA-2 p4 group 4 every kms-sign call names the job-local aws CLI under RUNNER_TEMP, never a path of the runner image", str(ksl[:1]))
+ksall = [l for l in L if l.startswith("chain-verify kms-sign")]
+check(len(ksall) == 17 and all((" --aws " + os.path.join(t, "rt") + "/aws-cli/aws ") in l for l in ksall) and not any("/usr/local/bin/aws" in l for l in L), "KA-2 p4 group 4 every kms-sign call (nine files, eight image statements) names the job-local aws CLI under RUNNER_TEMP, never a path of the runner image", str(ksall[:1]))
 tkf = tree(); rc, so, se = run(tkf, "release-sign", creds=REG, env={"KMSSIGN_FAIL_ON": "checksums.txt"}); lk = log(tkf)
-check(rc != 0 and "RSASSA_PKCS1_V1_5_SHA_256" in se and len([l for l in lk if l.startswith("chain-verify kms-sign")]) == 7 and not any("release-policy.bundle" in l or "release-files" in l for l in lk), "KA-2 p4 a refused kms-sign call (the key does not list the algorithm) stops the step: the files after it are not signed", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and "RSASSA_PKCS1_V1_5_SHA_256" in se and len([l for l in lk if l.startswith("chain-verify kms-sign")]) == 15 and not any("release-policy.bundle" in l or "release-files" in l for l in lk), "KA-2 p4 a refused kms-sign call (the key does not list the algorithm; the 8 image statements and 6 files came first) stops the step: the files after it are not signed", "rc=%s %s" % (rc, first(se)))
 tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
 check(rc != 0 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(tn) if l.startswith(("cosign", "vendor-provenance"))], "P3 a job with no RELEASE_KMS_KEY_REF stops the step before anything is made or signed, naming the variable", "rc=%s %s" % (rc, first(se)))
 tb = tree(); rc, so, se = run(tb, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "arn:aws:kms:us-east-1:111122223333:key/abc"})
@@ -585,7 +618,7 @@ check(rc == 0 and len(kc) == 1 and cs and kc[0] < cs[0] and lw[kc[0]] == "chain-
 to = tree(); rc, so, se = run(to, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "awskms:///alias/other"})
 check(rc == 2 and "not a KMS key reference of the release key" in se and not [l for l in log(to) if l.startswith(("cosign", "vendor-provenance"))], "W2 another awskms alias is refused with exit 2 before anything is made or signed", "rc=%s %s" % (rc, first(se)))
 tk = tree(); rc, so, se = run(tk, "release-sign", creds=REG, env={"KEYREF_ALG_FAIL": "1"})
-check(rc == 2 and "KA-2 removes this path" in se and not [l for l in log(tk) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 a key whose first algorithm is not RSASSA_PKCS1_V1_5_SHA_256 stops the step with exit 2 before any cosign call", "rc=%s %s" % (rc, first(se)))
+check(rc == 2 and "does not support RSASSA_PKCS1_V1_5_SHA_256" in se and not [l for l in log(tk) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 a key that does not list RSASSA_PKCS1_V1_5_SHA_256 stops the step with exit 2 before any cosign call", "rc=%s %s" % (rc, first(se)))
 ta = tree(); rc, so, se = run(ta, "release-sign", creds=REG, env={"KEYREF_AWS_FAIL": "1"})
 check(rc == 1 and "aws CLI failed" in se and not [l for l in log(ta) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 an aws CLI failure in the algorithm guard stops the step with the guard's exit 1 (not the refusal's 2), before any cosign call", "rc=%s %s" % (rc, first(se)))
 # REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): release-sign.sh makes dist/checksums.txt itself, from the four archives Build recorded, before its first signature
@@ -613,11 +646,19 @@ for f in ("policy.json", "vendor-evidence.json", "production.sbom.json", "fips.s
     check(rc != 0 and "rekor" in se.lower() and name in se, "AC8 a bundle with no Rekor entry (%s) fails the script, naming the file" % name, "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing cosign (it fails at login, the first call) stops at the first call")
-# the signature itself fails (the login passes): the failing `cosign sign` is the only one made, and no attestation and no blob signature follows it
-t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "sign --yes"})
+# an image signature fails (the login passes): the failing kms-sign call is the only one made, and nothing is attached, attested or signed after it
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"KMSSIGN_FAIL_ON": "image.1.bundle"})
 Lf = log(t)
-check(rc != 0 and len([l for l in Lf if l.startswith("cosign sign ")]) == 1 and not any(l.startswith(("cosign attest ", "chain-verify kms-sign")) for l in Lf),
-      "AC8 a failing image signature stops at the first one: no attestation and no file is signed after it", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and len([l for l in Lf if l.startswith("chain-verify kms-sign")]) == 1 and not any(l.startswith("cosign attach") for l in Lf),
+      "AC8 a refused image signature stops at the first one: no attach, no attestation and no file is signed after it", "rc=%s %s" % (rc, first(se)))
+# the attach of an image signature fails (the signing worked): the one failing `cosign attach attestation` is the only one made and no further statement is signed
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "attach attestation"})
+Lf = log(t)
+check(rc != 0 and len([l for l in Lf if l.startswith("cosign attach attestation ")]) == 1 and len([l for l in Lf if l.startswith("chain-verify kms-sign")]) == 1,
+      "AC8 an image bundle that cannot be attached stops at the first one: nothing further is signed", "rc=%s %s" % (rc, first(se)))
+# an image bundle with no Rekor entry fails the script, naming the file, before it is attached
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": "image.1.bundle"})
+check(rc != 0 and "rekor" in se.lower() and "image.1.bundle" in se and not any(l.startswith("cosign attach") for l in log(t)), "AC8 an image bundle with no Rekor entry fails the script, naming the file, before it is attached", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
 # AC13: the four metadata files and the signed list are made in release-sign, before the first signature, from Build's verified digests only
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)

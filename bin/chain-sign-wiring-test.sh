@@ -3455,7 +3455,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='2a46bb73f0ffc90f7843b00c2c37a392cb6cae711f48e2756ded18b77f9b2d54'
+FX_PIN='3e5b815307d9b0f16ad07f1ad09f49992ecf7fbd6e14616aa1effa79a32a33ff'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5203,7 +5203,50 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2132
+# ---- KA-2 p4 group 3 (ruling of 2026-11-03T14:05Z, Q3): bin/with-aws-token.sh adds `--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub` to sign and sign-record only (literal), and
+# REFUSES (exit 2, before the token is fetched and before any call) a caller that already passes --aws or --public-key to either. A stub verifier records its argv; the stage judge is not loosened.
+wr_run() { # WRAPPER-FILE ARGS... : runs the wrapper in a throw-away tree with a stub verifier; sets WR_RC, WR_ARGV (what the verifier was called with), WR_OUT, WR_RT (its RUNNER_TEMP)
+  local d="$wsdir/wr-$RANDOM$RANDOM"; mkdir -p "$d/bin" "$d/rt"; cp "$1" "$d/bin/with-aws-token.sh"; shift
+  echo "echo '{\"value\":\"tok\"}'" > "$d/bin/loopback-get.sh"
+  cat > "$d/bin/chain-verify.py" <<'WRSTUB'
+import os, sys
+open(os.environ["WR_LOG"], "a").write(" ".join(sys.argv[1:]) + "\n")
+WRSTUB
+  WR_RC=0; WR_RT="$d/rt"
+  ( cd "$d" && env -i PATH="$PATH" WR_LOG="$d/argv" RUNNER_TEMP="$d/rt" ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL='http://x/?a=b' AWS_ROLE_ARN=arn:aws:iam::111122223333:role/release-signing \
+      AWS_REGION=us-east-1 RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing bash bin/with-aws-token.sh "$@" > "$d/out" 2>&1 ) || WR_RC=$?
+  WR_ARGV=$(cat "$d/argv" 2> /dev/null || true); WR_OUT=$(cat "$d/out" 2> /dev/null || true)
+}
+wr_battery() { # WRAPPER-FILE : prints one "name rc-ok" line per case: the six behaviours of the wrapper (the caller counts the failures)
+  local w=$1 opts bad=0
+  wr_run "$w" sign-record --payload p --out o --template t; opts="--aws $WR_RT/aws-cli/aws --public-key build/keys/release.rsa.pub"
+  [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "sign-record --payload p --out o --template t $opts" ] || { echo "sign-record is not called with the two options appended exactly once: rc=$WR_RC [$WR_ARGV]"; bad=1; }
+  wr_run "$w" sign --check --signer cosign; opts="--aws $WR_RT/aws-cli/aws --public-key build/keys/release.rsa.pub"
+  [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "sign --check --signer cosign $opts" ] || { echo "sign is not called with the two options appended exactly once: rc=$WR_RC [$WR_ARGV]"; bad=1; }
+  wr_run "$w" kms-sign --digest abc
+  [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "kms-sign --digest abc" ] || { echo "kms-sign gets something appended: rc=$WR_RC [$WR_ARGV]"; bad=1; }
+  wr_run "$w" kms-sign --aws /own/aws --public-key own.pub
+  [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "kms-sign --aws /own/aws --public-key own.pub" ] || { echo "kms-sign is refused its own --aws or --public-key: rc=$WR_RC [$WR_ARGV]"; bad=1; }
+  wr_run "$w" sign-record --payload p --aws /own/aws --out o
+  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && echo "$WR_OUT" | grep -q -e '--aws' || { echo "a caller-passed --aws to sign-record is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
+  wr_run "$w" sign --check --public-key=own.pub
+  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && echo "$WR_OUT" | grep -q -e '--public-key' || { echo "a caller-passed --public-key=... to sign is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
+  return $bad
+}
+wr_msg=$(wr_battery "$root/bin/with-aws-token.sh") && wr_rc=0 || wr_rc=$?
+if [ "$wr_rc" = 0 ]; then pass=$((pass + 1)); echo "ok   KA-2 p4 g3 with-aws-token.sh appends --aws and --public-key to sign and sign-record only, once, and refuses a caller that passes either (exit 2, no call)"
+else failn=$((failn + 1)); echo "FAIL KA-2 p4 g3 the token wrapper: $wr_msg"; fi
+wr_mutant() { # LABEL SED-EXPRESSION : the wrapper with one change must fail the battery
+  local m="$work/wr-mutant-$RANDOM.sh"; sed "$2" "$root/bin/with-aws-token.sh" > "$m"
+  if cmp -s "$m" "$root/bin/with-aws-token.sh"; then failn=$((failn + 1)); echo "FAIL KA-2 p4 g3 wrapper mutant did not apply: $1"; return; fi
+  if wr_battery "$m" > /dev/null; then failn=$((failn + 1)); echo "FAIL KA-2 p4 g3 wrapper mutant not caught: $1"
+  else pass=$((pass + 1)); echo "ok   KA-2 p4 g3 wrapper mutant caught: $1"; fi
+}
+wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
+wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
+wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
+
+EXPECT=2136
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

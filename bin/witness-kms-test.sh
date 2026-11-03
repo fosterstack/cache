@@ -251,7 +251,7 @@ def problems_witnessed(text):
     if "--signer-kms-ref" in argv or not re.search(r"--signer-file-key-path \S+/key\.pem", argv):
         bad.append("Witness is not told to sign with a throwaway key file (or is still told the KMS key)")
     sr = [l for l in read(os.path.join(log, "cv.log")).splitlines() if l.startswith("sign-record ")]
-    want_sr = "sign-record --payload %s --out witness-release-verify/release-verify-collection.json --template .github/policy/release-policy.template.json"
+    want_sr = "sign-record --payload %s --out witness-release-verify/release-verify-collection.json --template .github/policy/release-policy.template.json --aws " + runner + "/aws-cli/aws --public-key build/keys/release.rsa.pub"     # KA-2 p4 g3: the pinned aws CLI and the committed public key
     if len(sr) != 1 or not re.fullmatch(re.escape(want_sr).replace("%s", r"\S+/payload"), sr[0].replace("\\", "")) and not re.fullmatch(want_sr % r"\S+/payload", sr[0]):
         bad.append("the collection is not signed once by sign-record with --payload, --out and --template as pinned: %r" % sr)
     se = read(os.path.join(log, "signrec.env")).splitlines()
@@ -554,8 +554,8 @@ def problems_staged(text, wrapper=None):
         bad.append("exit %d: %s" % (r.returncode, r.stderr.strip()[:160]))
     if os.path.exists(os.path.join(log, "witness.log")):
         bad.append("Witness is run: Sign signs through the one signing function only")
-    want_sr = "sign-record --payload %s --out %s --template .github/policy/release-policy.template.json" % (
-        os.path.join(repo, "staged/witness-build/build-collection.payload"), os.path.join(repo, "signed/witness-build/build-collection.json"))
+    want_sr = "sign-record --payload %s --out %s --template .github/policy/release-policy.template.json --aws %s/aws-cli/aws --public-key build/keys/release.rsa.pub" % (
+        os.path.join(repo, "staged/witness-build/build-collection.payload"), os.path.join(repo, "signed/witness-build/build-collection.json"), runner)     # KA-2 p4 g3: with-aws-token.sh adds the last two options
     if want_sr not in read(os.path.join(log, "cv.log")).splitlines():
         bad.append("the staged payload is not signed by sign-record as pinned: %r" % read(os.path.join(log, "cv.log"))[:300])
     argv = want_sr
@@ -755,7 +755,7 @@ mutant3("the token directory is not removed", lambda s: re.sub(r"^trap .*\n", ""
 mutant3("the command's exit status lost", lambda s: s.replace('exit "$rc"', "exit 0"))
 mutant3("a null token accepted", lambda s: s.replace('[ -n "$tok" ] && [ "$tok" != null ] || ', "true || "))
 mutant3("the request variables stay in the command's environment", lambda s: re.sub(r"^unset ACTIONS_ID_TOKEN_REQUEST_TOKEN.*\n", "", s, flags=re.M))
-mutant3("the token file is set for sign-record only (the provenance call gets none)", lambda s: s.replace('AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" python3 -I -B bin/chain-verify.py "$@" || rc=$?', 'if [ "$1" = sign-record ]; then export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"; fi; python3 -I -B bin/chain-verify.py "$@" || rc=$?'))
+mutant3("the token file is set for sign-record only (the provenance call gets none)", lambda s: s.replace('AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" python3 -I -B bin/chain-verify.py "$@" ${extra[@]+"${extra[@]}"} || rc=$?', 'if [ "$1" = sign-record ]; then export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"; fi; python3 -I -B bin/chain-verify.py "$@" ${extra[@]+"${extra[@]}"} || rc=$?'))
 mutant3("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
 mutant3("the wrapper no longer passes kms-sign through (KA-2 p4 group 4)", lambda s: s.replace("sign-record|sign|kms-sign)", "sign-record|sign)"))
 

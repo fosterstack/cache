@@ -76,10 +76,10 @@ def add_proof(e, sign, log_der, pos=2, n=5):
     return e
 
 
-def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pem=kms_pem, index="7", itime="1761800000", proof=True):
+def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pem=kms_pem, index="7", itime="1761800000", proof=True, env_hash="0" * 64):
     """A Rekor v1 `dsse` entry as it sits in a bundle's tlogEntries, signed (the signed entry timestamp) by the log key `rk`."""
     body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {
-        "envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
+        "envelopeHash": {"algorithm": "sha256", "value": env_hash},
         "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()},
         "signatures": [{"signature": b64(sig), "verifier": b64(verifier_pem.encode())}]}}
     cb = b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
@@ -341,156 +341,187 @@ e2["inclusionProof"]["checkpoint"]["envelope"] = resigned + "\n\u2014 rekor.sigs
 inc("inclusion: a validly signed checkpoint for another root than the proof's is refused", e2, "another root hash")
 good("an entry with a good signed timestamp and no inclusion proof is refused by check_rekor_entry", entry(proof=False), "inclusion proof")
 
-# ---- the one signing function (handoff 0713 P2): kms_sign runs `cosign attest-blob` with the release key, retries when Rekor does not answer, and
-# writes the record (one signature) and its entries file beside it. `run` and `sleep` are arguments of the function, not flags: the tests pass a fake
-# cosign and a clock that waits for nothing, so no test calls cosign, KMS or a public Rekor.
-import types
+# ---- the one signing function (KA-2): kms_sign signs the statement through the DSSE kind of kms-sign (aws kms sign once, one dsse 0.0.1 Rekor entry posted with the one retry rule, a v0.3 bundle) and writes the
+# record (one signature) and its entries file beside it. The tests run the real function against a fake aws CLI (a script that logs every call and answers like KMS) and a fake Rekor (cv.rekor_open and the clock are
+# replaced in this process), so no test calls the aws CLI, KMS or a public Rekor.
+import re, shutil, types, urllib.error, contextlib, io, email.message
 STATEMENT = b'{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"x","subject":[],"predicate":{}}'
 SIGNING_CONFIG = os.path.join(root, ".github", "policy", "cosign-signing-config.json")
+PKCS1 = "RSASSA_PKCS1_V1_5_SHA_256"
+KMSPUB = os.path.join(work, "kms-release.pub"); open(KMSPUB, "w").write(kms_pem)
 
 
-def fake_cosign(mode="ok", failures=0, stderr=b"", payload=STATEMENT, sigs=1):
-    calls = []
-
-    def run(argv, **kw):
-        calls.append(list(argv))
-        if mode == "missing":
-            raise FileNotFoundError("cosign")
-        if len(calls) <= failures:
-            return types.SimpleNamespace(returncode=1, stdout=b"", stderr=stderr)
-        bundle_path = argv[argv.index("--bundle") + 1]
-        e, _ = entry(payload=payload)
-        dsse = {"payloadType": "application/vnd.in-toto+json", "payload": b64(payload),
-                "signatures": [{"keyid": "", "sig": b64(sig)}] * sigs}
-        vm = {"publicKey": {"hint": "k"}, "tlogEntries": [] if mode == "notlog" else [e]}
-        json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm,
-                   "dsseEnvelope": dsse}, open(bundle_path, "w"))
-        return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-    return run, calls
+def fake_aws(fb, d, algs, rc=0, sign_rc=0):
+    """The aws CLI of KMS: logs its argv to <d>/aws-calls; --version answers; get-public-key answers the key's SigningAlgorithms (in the order the key lists them) and its PublicKey (the DER of the KMS key, base64);
+    kms sign answers the fixed signature; rc fails every call but --version, sign_rc fails only kms sign (AccessDeniedException)."""
+    os.makedirs(fb, exist_ok=True)
+    src = ("#!/usr/bin/env python3\nimport json, sys\na = sys.argv[1:]\nopen(%r, 'a').write(' '.join(a) + '\\n')\n"
+           "if a[:1] == ['--version']:\n    print('aws-cli/2.39.3 Python/3.13.0 Linux/6 exe/x86_64'); sys.exit(0)\n"
+           "if %d:\n    sys.stderr.write('An error occurred (AccessDeniedException)'); sys.exit(%d)\n"
+           "if 'get-public-key' in a:\n    q = a[a.index('--query') + 1] if '--query' in a else ''\n"
+           "    print(json.dumps({'SigningAlgorithms': %r, 'PublicKey': %r} if 'PublicKey' in q else %r)); sys.exit(0)\n"
+           "if a[:2] == ['kms', 'sign']:\n    if %d:\n        sys.stderr.write('An error occurred (AccessDeniedException)'); sys.exit(%d)\n"
+           "    print(json.dumps({'SigningAlgorithm': %r, 'Signature': %r})); sys.exit(0)\nsys.exit(3)\n"
+           % (os.path.join(d, "aws-calls"), rc, rc or 255, list(algs), b64(kms_der), list(algs), sign_rc, sign_rc or 255, PKCS1, b64(sig)))
+    open(os.path.join(fb, "aws"), "w").write(src); os.chmod(os.path.join(fb, "aws"), 0o755)
 
 
-def ks(label, want, mode="ok", failures=0, stderr=b"", payload=STATEMENT, sigs=1, outname="rec/a-collection.json"):
-    """Run kms_sign with the fake cosign; want is None (success) or a word the refusal must hold. Returns (calls, slept, out)."""
-    d = os.path.join(work, "ks-" + label.replace(" ", "_")[:40])
+class Resp:
+    def __init__(self, status, raw): self.status, self._raw = status, raw
+    def read(self, n=-1): return self._raw
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def answer_for(posted, payload_override=None, sig_override=None, entries=1):
+    """What Rekor answers to a dsse 0.0.1 POST: one entry built (and signed by the test log key) from the envelope posted, as {uuid: entry}."""
+    prop = json.loads(posted)["spec"]["proposedContent"]
+    env_text = prop["envelope"]
+    env = json.loads(env_text)
+    e, _ = entry(payload=payload_override if payload_override is not None else base64.b64decode(env["payload"]),
+                 sig=sig_override if sig_override is not None else base64.b64decode(env["signatures"][0]["sig"]),
+                 env_hash=hashlib.sha256(env_text.encode()).hexdigest())
+    ip = e["inclusionProof"]
+    one = {"body": e["canonicalizedBody"], "integratedTime": int(e["integratedTime"]), "logID": base64.b64decode(e["logId"]["keyId"]).hex(), "logIndex": int(e["logIndex"]),
+           "verification": {"signedEntryTimestamp": e["inclusionPromise"]["signedEntryTimestamp"],
+                            "inclusionProof": {"logIndex": int(ip["logIndex"]), "rootHash": base64.b64decode(ip["rootHash"]).hex(), "treeSize": int(ip["treeSize"]),
+                                               "hashes": [base64.b64decode(h).hex() for h in ip["hashes"]], "checkpoint": ip["checkpoint"]["envelope"]}}}
+    return {("%064x" % i): one for i in range(entries)}
+
+
+RK = {"script": [], "posts": [], "after": None, "answer": {}}
+SLEPT = []
+
+
+def fake_rekor_open(req):
+    assert req.get_method() == "POST", "the tests expect no GET of an existing entry"
+    RK["posts"].append(req.data)
+    step = RK["script"].pop(0) if RK["script"] else "ok"
+    if step == "neterr":
+        raise urllib.error.URLError("down")
+    if isinstance(step, int):
+        raise urllib.error.HTTPError(req.full_url, step, "stub", email.message.Message(), None)
+    doc = answer_for(req.data, **RK["answer"])
+    if RK["after"]:
+        RK["after"]()
+    return Resp(201, json.dumps(doc).encode())
+
+
+cv.rekor_open = fake_rekor_open
+cv.time.sleep = SLEPT.append
+cv.pinned_rekor_pem = lambda cfg: rekor_pem
+
+
+def ks(label, want, script=(), answer=None, sign_rc=0, algs=(PKCS1,), aws=None, outname="rec/a-collection.json", after=None, public_key=None):
+    """Run the real kms_sign with the fake aws and the fake Rekor; want is None (success) or a word the refusal (its stderr line or its reason) must hold. Returns (calls, posts, slept, out, stderr)."""
+    d = os.path.join(work, "ks-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:40]); fb = os.path.join(d, "fb")
     os.makedirs(os.path.join(d, "rec"), exist_ok=True)
+    fake_aws(fb, d, algs, sign_rc=sign_rc)
     sp, out = os.path.join(d, "statement.json"), os.path.join(d, outname)
     open(sp, "wb").write(STATEMENT)
-    run, calls = fake_cosign(mode, failures, stderr, payload, sigs)
-    slept = []
+    RK.update(script=list(script), posts=[], after=after, answer=answer or {}, out=out); SLEPT.clear()
+    err = io.StringIO()
     try:
-        cv.kms_sign(sp, out, SIGNING_CONFIG, run=run, sleep=slept.append)
+        with contextlib.redirect_stderr(err):
+            cv.kms_sign(sp, out, SIGNING_CONFIG, aws or os.path.join(fb, "aws"), public_key or KMSPUB)
         got = None
     except cv.Refuse as ex:
         got = ex.reason
+    text = (got or "") + "\n" + err.getvalue()
     if want is None:
-        (ok if got is None else bad)(label if got is None else "%s -> refused: %s" % (label, got))
+        (ok if got is None else bad)(label if got is None else "%s -> refused: %s" % (label, text.strip()[:200]))
     else:
-        (ok if got and want.lower() in got.lower() else bad)("%s (refused: %s)" % (label, got) if got and want.lower() in got.lower() else
-                                              "%s -> wanted a refusal naming %r, got %r" % (label, want, got))
-    return calls, slept, out
+        hit = got is not None and want.lower() in text.lower()
+        (ok if hit else bad)("%s (refused: %s)" % (label, text.strip().splitlines()[-1][:120]) if hit else "%s -> wanted a refusal naming %r, got %r" % (label, want, text.strip()[:200]))
+    calls = open(os.path.join(d, "aws-calls")).read().splitlines() if os.path.exists(os.path.join(d, "aws-calls")) else []
+    return calls, list(RK["posts"]), list(SLEPT), out, err.getvalue()
 
 
-calls, slept, out = ks("kms_sign: a good bundle gives the record and its entries file", None)
+calls, posts, slept, out, _ = ks("kms_sign: a good Rekor answer gives the record and its entries file", None)
 env = json.load(open(out)) if os.path.exists(out) else {}
 ent = json.load(open(out[:-len(".json")] + ".rekor.json")) if os.path.exists(out[:-len(".json")] + ".rekor.json") else {}
 (ok if len(env.get("signatures", [])) == 1 and len(ent.get("entries", [])) == 1 and base64.b64decode(env.get("payload", "")) == STATEMENT
  else bad)("kms_sign: the record holds the staged payload and exactly one signature; <record>.rekor.json holds the bundle's entry")
-want_argv = ["cosign", "attest-blob", "--yes", "--key", cv.RELEASE_KEY_REF, "--signing-config", SIGNING_CONFIG, "--statement"]
-(ok if len(calls) == 1 and calls[0][:8] == want_argv and calls[0][9] == "--bundle" and len(calls[0]) == 11 else bad)(
-    "kms_sign: cosign is called once with exactly attest-blob --yes --key <the KMS key> --signing-config <config> --statement S --bundle B: %s" % calls)
+kinds = [("sign" if c.startswith("kms sign") else "gpk" if "get-public-key" in c else "version" if c.startswith("--version") else c) for c in calls]
+(ok if kinds == ["version", "gpk", "sign"] and "--signing-algorithm " + PKCS1 in calls[2] and "--message-type DIGEST" in calls[2] and len(posts) == 1 else bad)(
+    "kms_sign: the aws CLI is asked for its version, the key (once) and one kms sign naming %s on a DIGEST, and Rekor gets one POST: %s %d" % (PKCS1, kinds, len(posts)))
 (ok if slept == [] else bad)("kms_sign: a first try that works waits for nothing")
-ks("kms_sign: a bundle that signed another payload than the staged one is refused", "payload", payload=b"another statement")
-ks("kms_sign: a bundle with no Rekor entry is refused", "rekor", mode="notlog")
-ks("kms_sign: a bundle with two signatures is refused", "signatures", sigs=2)
-calls, slept, out = ks("kms_sign: a Rekor outage for three tries and then an answer succeeds", None, failures=3,
-                       stderr=b"error: creating log entry: rekor: 503 Service Unavailable")
-(ok if slept == [1, 2, 4] and len(calls) == 4 else bad)("kms_sign: it waited 1, 2 and 4 seconds and tried four times: %s %d" % (slept, len(calls)))
-calls, slept, out = ks("kms_sign: Rekor down for all seven tries is one refusal naming Rekor", "rekor", failures=99,
-                       stderr=b"error: tlog: rekor 502 bad gateway")
-(ok if slept == [1, 2, 4, 8, 16, 32] and len(calls) == 7 and not os.path.exists(out) else bad)(
-    "kms_sign: one try and six retries (waits 1, 2, 4, 8, 16, 32) and no record left: %s %d" % (slept, len(calls)))
-calls, slept, out = ks("kms_sign: a cosign failure that is not Rekor (KMS refused) is refused at once, without a wait", "cosign failed",
-                       failures=99, stderr=b"AccessDeniedException: not authorized to perform kms:Sign")
-(ok if slept == [] and len(calls) == 1 else bad)("kms_sign: the KMS refusal was tried once and waited for nothing: %s %d" % (slept, len(calls)))
-ks("kms_sign: cosign missing from the PATH is a refusal", "cosign", mode="missing")
+ks("kms_sign: a Rekor entry for another payload than the staged one is refused", "payload", answer={"payload_override": b"another statement"})
+ks("kms_sign: a Rekor answer with no entry is refused", "exactly one entry", script=[], answer={"entries": 0})
+ks("kms_sign: a Rekor entry naming another signature than the one made is refused", "signature", answer={"sig_override": b"another signature"})
+calls, posts, slept, out, _ = ks("kms_sign: a Rekor outage for three tries and then an answer succeeds", None, script=[503, 503, 503])
+(ok if slept == [1, 2, 4] and len(posts) == 4 and sum(c.startswith("kms sign") for c in calls) == 1 else bad)("kms_sign: it waited 1, 2 and 4 seconds, posted four times and asked KMS to sign once: %s %d" % (slept, len(posts)))
+calls, posts, slept, out, errtxt = ks("kms_sign: Rekor down for all seven tries is one refusal naming Rekor", "rekor", script=[503] * 7)
+(ok if slept == [1, 2, 4, 8, 16, 32] and len(posts) == 7 and not os.path.exists(out) and sum(c.startswith("kms sign") for c in calls) == 1 else bad)(
+    "kms_sign: one try and six retries (waits 1, 2, 4, 8, 16, 32), one KMS sign, and no record left: %s %d" % (slept, len(posts)))
+ks("kms_sign: the refusal after seven Rekor failures names the last failure", "status 503", script=[503] * 7)
+ks("kms_sign: the refusal says one try and six retries", "one try and six retries", script=[503] * 7)
+calls, posts, slept, out, _ = ks("kms_sign: a network error then an answer succeeds", None, script=["neterr"])
+(ok if slept == [1] and len(posts) == 2 else bad)("kms_sign: a network error is retried after 1 second: %s %d" % (slept, len(posts)))
+calls, posts, slept, out, _ = ks("kms_sign: a Rekor 400 is refused at once, without a wait", "rekor", script=[400])
+(ok if slept == [] and len(posts) == 1 else bad)("kms_sign: the 400 was posted once and waited for nothing: %s %d" % (slept, len(posts)))
+calls, posts, slept, out, _ = ks("kms_sign: a KMS refusal is refused at once, without a Rekor post or a wait", "aws kms sign failed", sign_rc=255)
+(ok if slept == [] and posts == [] and sum(c.startswith("kms sign") for c in calls) == 1 else bad)("kms_sign: the KMS refusal was tried once, nothing was posted, nothing waited: %s %d" % (slept, len(posts)))
+ks("kms_sign: an aws CLI missing is a refusal", "aws", aws=os.path.join(work, "no-such-aws"))
+ks("kms_sign: a key that does not list the algorithm is refused", "does not support", algs=("RSASSA_PSS_SHA_256",))
 d = os.path.join(work, "ks-exists"); os.makedirs(d, exist_ok=True)
 open(os.path.join(d, "statement.json"), "wb").write(STATEMENT); open(os.path.join(d, "r.json"), "w").write("old")
-run, calls = fake_cosign()
+fake_aws(os.path.join(d, "fb"), d, [PKCS1]); RK.update(script=[], posts=[], after=None, answer={})
 try:
-    cv.kms_sign(os.path.join(d, "statement.json"), os.path.join(d, "r.json"), SIGNING_CONFIG, run=run, sleep=lambda s: None)
+    cv.kms_sign(os.path.join(d, "statement.json"), os.path.join(d, "r.json"), SIGNING_CONFIG, os.path.join(d, "fb", "aws"), KMSPUB)
     bad("kms_sign: an existing record is not overwritten")
 except cv.Refuse as ex:
-    (ok if "exists" in ex.reason and not calls else bad)("kms_sign: an existing record is refused before cosign is asked (%s)" % ex.reason)
+    (ok if "exists" in ex.reason and not os.path.exists(os.path.join(d, "aws-calls")) and not RK["posts"] else bad)("kms_sign: an existing record is refused before aws is asked (%s)" % ex.reason)
 
-# ---- #822 round 1 (W2, R2, E1): sign-record checks the key reference in one place, refuses before cosign when either path exists, writes the entries file
-# first and the record last (the record is the commit point), and the final refusal carries cosign's last error text. REQ-CHAIN-002-AC3 stays the proof AC
-# for these cases (no sentence of it is made false).
-# E1: the last cosign stderr is in the refusal after seven failures that name Rekor
-tail_txt = b"error: creating log entry: rekor: 503 Service Unavailable ZQ-LAST-LINE"
-calls, slept, out = ks("kms_sign: the refusal after seven Rekor failures carries cosign's last error text", "ZQ-LAST-LINE", failures=99, stderr=tail_txt)
-calls, slept, out = ks("kms_sign: the refusal says cosign failed seven times with an error naming Rekor", "cosign failed 7 times with an error naming Rekor", failures=99, stderr=tail_txt)
-# R2: refuse when either path exists (a symlink or a directory counts), before cosign is asked
+# ---- #822 round 1 (W2, R2, E1): sign-record checks the key reference in one place, refuses before KMS when either path exists, writes the entries file first and the record last (the record is the commit point).
+# REQ-CHAIN-002-AC3 stays the proof AC for these cases (no sentence of it is made false).
+# R2: refuse when either path exists (a symlink or a directory counts), before aws is asked
 def kr(label, setup, want):
     d = os.path.join(work, "kr-" + label.replace(" ", "_")[:40]); os.makedirs(os.path.join(d, "rec"), exist_ok=True)
     sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json")
     open(sp, "wb").write(STATEMENT)
     setup(d, out)
-    run, calls = fake_cosign()
+    fake_aws(os.path.join(d, "fb"), d, [PKCS1]); RK.update(script=[], posts=[], after=None, answer={})
     try:
-        cv.kms_sign(sp, out, SIGNING_CONFIG, run=run, sleep=lambda s: None); got = None
+        cv.kms_sign(sp, out, SIGNING_CONFIG, os.path.join(d, "fb", "aws"), KMSPUB); got = None
     except cv.Refuse as ex:
         got = ex.reason
     except OSError as ex:
         got = "OSError " + type(ex).__name__
-    good_ = got is not None and want.lower() in got.lower() and not calls
-    (ok if good_ else bad)("%s (refused: %s, cosign called %d times)" % (label, got, len(calls)))
-    return d, out, calls
+    asked = os.path.exists(os.path.join(d, "aws-calls"))
+    good_ = got is not None and want.lower() in got.lower() and not asked and not RK["posts"]
+    (ok if good_ else bad)("%s (refused: %s, aws asked %s)" % (label, got, asked))
+    return d, out, asked
 def s_dir(d, out): os.makedirs(out[:-len(".json")] + ".rekor.json")
-d, out, c = kr("kms_sign: a directory at the entries path is refused before cosign", s_dir, "exists")
+d, out, c = kr("kms_sign: a directory at the entries path is refused before aws", s_dir, "exists")
 def s_link(d, out):
     open(os.path.join(d, "target"), "w").write("keep"); os.symlink(os.path.join(d, "target"), out[:-len(".json")] + ".rekor.json")
-d, out, c = kr("kms_sign: a symlink at the entries path is refused before cosign", s_link, "exists")
+d, out, c = kr("kms_sign: a symlink at the entries path is refused before aws", s_link, "exists")
 (ok if open(os.path.join(d, "target")).read() == "keep" and not os.path.exists(out) else bad)("kms_sign: the symlink's target is untouched and no record is left")
 def s_file(d, out): open(out[:-len(".json")] + ".rekor.json", "w").write("old")
-d, out, c = kr("kms_sign: an existing entries file is refused before cosign", s_file, "exists")
+d, out, c = kr("kms_sign: an existing entries file is refused before aws", s_file, "exists")
 (ok if open(out[:-len(".json")] + ".rekor.json").read() == "old" else bad)("kms_sign: the existing entries file is not overwritten")
-# R2 order: a failure after cosign returns leaves nothing behind. cosign's run plants a directory where the entries file goes (the record would have been written first)
-d = os.path.join(work, "kr-race-entries"); os.makedirs(os.path.join(d, "rec"))
-sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json"); open(sp, "wb").write(STATEMENT)
-inner, calls = fake_cosign()
-def run_race(argv, **kw):
-    r = inner(argv, **kw); os.makedirs(out[:-len(".json")] + ".rekor.json"); return r
-try:
-    cv.kms_sign(sp, out, SIGNING_CONFIG, run=run_race, sleep=lambda s: None); raised = False
-except (cv.Refuse, OSError):
-    raised = True
-(ok if raised and not os.path.lexists(out) else bad)("kms_sign: when the entries file cannot be written, no record is left behind (raised=%s, record exists=%s)" % (raised, os.path.lexists(out)))
-# and the other way: the record path taken after cosign returns leaves no entries file
-d = os.path.join(work, "kr-race-record"); os.makedirs(os.path.join(d, "rec"))
-sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json"); open(sp, "wb").write(STATEMENT)
-inner, calls = fake_cosign()
-def run_race2(argv, **kw):
-    r = inner(argv, **kw); os.makedirs(out); return r
-try:
-    cv.kms_sign(sp, out, SIGNING_CONFIG, run=run_race2, sleep=lambda s: None); raised = False
-except (cv.Refuse, OSError):
-    raised = True
-(ok if raised and not os.path.lexists(out[:-len(".json")] + ".rekor.json") else bad)("kms_sign: when the record cannot be written, the entries file this call made is removed (raised=%s)" % raised)
+# R2 order: a failure after Rekor answers leaves nothing behind. The fake Rekor plants a directory where the entries file goes (the record would have been written first)
+def plant_entries(): os.makedirs(RK["out"][:-len(".json")] + ".rekor.json")
+calls, posts, slept, out, _ = ks("kms_sign: the entries path is taken while Rekor answers", "nothing is left behind", after=plant_entries)
+(ok if not os.path.lexists(out) else bad)("kms_sign: when the entries file cannot be written, no record is left behind (record exists=%s)" % os.path.lexists(out))
+# and the other way: the record path taken after Rekor answers leaves no entries file
+def plant_record(): os.makedirs(RK["out"])
+calls, posts, slept, out, _ = ks("kms_sign: the record path is taken while Rekor answers", "nothing is left behind", after=plant_record)
+(ok if not os.path.lexists(out[:-len(".json")] + ".rekor.json") else bad)("kms_sign: when the record cannot be written, the entries file this call made is removed")
 # W2: sign-record refuses an unset or different RELEASE_KMS_KEY_REF with exit 2 before cosign; the equal value reaches cosign
 import re, shutil
 PKCS1 = "RSASSA_PKCS1_V1_5_SHA_256"
-def fake_aws(fb, d, algs, rc=0):
-    # the aws CLI the algorithm guard asks (GetPublicKey only): it logs its argv and answers with the key's SigningAlgorithms, in the order the key lists them
-    open(os.path.join(fb, "aws"), "w").write("#!/bin/sh\necho \"$*\" >> %s/aws-calls\n[ %d = 0 ] || { echo 'An error occurred (AccessDeniedException)' >&2; exit %d; }\necho '%s'\n" % (d, rc, rc, json.dumps(algs))); os.chmod(os.path.join(fb, "aws"), 0o755)
 def sr_run(label, refval, want_rc, want_cosign, algs=(PKCS1,), aws_rc=0, text=None, want_aws=None):
+    # the real sign-record in a subprocess with a fake aws whose KMS Sign is refused: the run ends there, before any Rekor POST (no network); a fake cosign records that nothing calls it
     d = os.path.join(work, "w2-" + label.replace(" ", "_")[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
     open(os.path.join(fb, "cosign"), "w").write("#!/bin/sh\necho called >> %s/calls\nexit 1\n" % d); os.chmod(os.path.join(fb, "cosign"), 0o755)
-    if algs is not None: fake_aws(fb, d, list(algs), aws_rc)
+    if algs is not None: fake_aws(fb, d, list(algs), aws_rc, sign_rc=255)
     open(os.path.join(d, "payload"), "wb").write(STATEMENT)
     env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
     if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
     r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "sign-record", "--payload", os.path.join(d, "payload"),
-                        "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json")],
+                        "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json"), "--public-key", KMSPUB],
                        env=env, capture_output=True, text=True)
     called = os.path.exists(os.path.join(d, "calls"))
     asked = os.path.exists(os.path.join(d, "aws-calls"))
@@ -500,11 +531,11 @@ def sr_run(label, refval, want_rc, want_cosign, algs=(PKCS1,), aws_rc=0, text=No
 sr_run("unset", None, 2, False)
 sr_run("another alias", "awskms:///alias/other", 2, False)
 sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, False)
-sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, True, want_aws=True)       # the fake cosign exits 1, so the call ends in a refusal after cosign was asked once
-# KA-0 (interim guard, goes with KA-2): before cosign is asked, the release key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists)
-KA0 = "refused: cosign signs with the first algorithm the release key lists (%s), not RSASSA_PKCS1_V1_5_SHA_256; KA-2 removes this path"
-sr_run("KA-0 key lists another algorithm first", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PSS_SHA_256", want_aws=True)
-sr_run("KA-0 key lists PKCS1 second of three", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PKCS1_V1_5_SHA_384")
+sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, False, want_aws=True, text="aws kms sign failed")       # KMS Sign is asked once (the fake refuses it) and cosign is never called
+# KA-0 (interim guard, goes with KA-2): before KMS is asked to sign, the release key must list RSASSA_PKCS1_V1_5_SHA_256 (kms-sign names the algorithm on every call, so its place in the list does not matter;
+# the cosign-path half, "listed FIRST", is deleted with the cosign path). A key that lists it, in any place, passes the guard and reaches the KMS Sign call (which the fake refuses: exit 1, "aws kms sign failed")
+sr_run("KA-0 key lists another algorithm first, PKCS1 second: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed", want_aws=True)
+sr_run("KA-0 key lists PKCS1 second of three: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed")
 sr_run("KA-0 key does not list PKCS1 at all", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
 sr_run("KA-0 empty algorithm list", cv.RELEASE_KEY_REF, 2, False, algs=(), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
 sr_run("KA-0 aws CLI fails", cv.RELEASE_KEY_REF, 1, False, aws_rc=255, text="aws kms get-public-key failed")
@@ -512,7 +543,7 @@ sr_run("KA-0 aws CLI missing", cv.RELEASE_KEY_REF, 1, False, algs=None, text="ca
 sr_run("KA-0 a wrong alias is refused before aws is asked", "awskms:///alias/other", 2, False, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=False)
 
 # W2, second half (Q/W2 ruling): the one check is also the subcommand `key-ref-check`, which release-sign.sh and release-sign-apks.sh call before any tool (exit 2 everywhere);
-# with --algorithm-guard it is the KA-0 check release-sign.sh needs before its cosign calls
+# with --algorithm-guard it is the KA-0 check release-sign.sh needs before its kms-sign calls
 def kc_run(label, refval, args, want_rc, text=None, algs=(PKCS1,), want_aws=None):
     d = os.path.join(work, "kc-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
     if algs is not None: fake_aws(fb, d, list(algs))
@@ -528,10 +559,12 @@ kc_run("not a KMS reference", "alias/fosterstack-release-signing", [], 2, text="
 kc_run("empty", "", [], 2, text="RELEASE_KMS_KEY_REF")
 kc_run("equal proceeds, no aws asked without the guard", cv.RELEASE_KEY_REF, [], 0, want_aws=False)
 kc_run("guard: PKCS1 first proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 0, want_aws=True)
-kc_run("guard: another algorithm first", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 2, algs=("RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PSS_SHA_256")
+kc_run("guard: another algorithm first, PKCS1 listed second proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 0, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=True)
+kc_run("guard: algorithm not listed", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256", want_aws=True)
 kc_run("guard: another alias is refused before aws", "awskms:///alias/other", ["--algorithm-guard", "--aws", "aws"], 2, want_aws=False)
 kc_run("guard without --aws asks the aws CLI by name", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, want_aws=True)
-kc_run("guard without --aws, another algorithm first", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 2, algs=("RSASSA_PSS_SHA_256", PKCS1), text=KA0 % "RSASSA_PSS_SHA_256")
+kc_run("guard without --aws, another algorithm first, PKCS1 listed second proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=True)
+kc_run("guard without --aws, algorithm not listed", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256", want_aws=True)
 
 # KMS rule 4 / build-apk rule 22: production code holds no test hook. The flags that swapped the trust root or the clock are gone from every
 # subcommand, and verify_record takes no `now`.
