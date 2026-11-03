@@ -60,24 +60,37 @@ done
 mkdir -p release-evidence
 # the dependency list is signed and attached as dependency-list.json: a signing call that names provenance is read as a provenance signer, which only Sign may be
 cp dependency-provenance.json release-evidence/dependency-list.json
+# KA-2 (blob kinds): a file is signed by bin/chain-verify.py kms-sign, never by cosign: RSASSA_PKCS1_V1_5_SHA_256 is named on the KMS call, the key must list it, and the same call posts the one Rekor entry and writes the v0.3 bundle
+# (<bundle>) where cosign sign-blob wrote its bundle. The digest is the sha256 of the file's own bytes; each call has its own signature file (kms-sign never overwrites). A refusal ends the step.
+ksd=$(mktemp -d)
+[ -n "$ksd" ] && [ -d "$ksd" ] || { echo "release-sign: no private directory for the signature files: refusing to sign" >&2; exit 1; }
+trap 'rm -rf "$DOCKER_CONFIG" "$ksd"' EXIT
+ks_n=0
+kms_blob() {
+  local dg _
+  read -r dg _ < <(sha256sum "$2") && [ -n "$dg" ] || { echo "release-sign: cannot hash $2" >&2; exit 1; }
+  ks_n=$((ks_n + 1))
+  python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
+    --public-key build/keys/release.rsa.pub --out "$ksd/signature.$ks_n" --bundle "$1" || { echo "release-sign: kms-sign refused to sign $2" >&2; exit 1; }
+}
 has_rekor() {
   if ! jq -e '(.verificationMaterial.tlogEntries // []) | length > 0' "$1" > /dev/null; then echo "release-sign: $1 has no Rekor entry: its signature cannot be checked in the public log" >&2; exit 1; fi
 }
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/production.sbom.json.bundle images/production-sbom/sbom.json
+kms_blob release-evidence/production.sbom.json.bundle images/production-sbom/sbom.json
 has_rekor release-evidence/production.sbom.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fips.sbom.json.bundle images/fips-sbom/sbom.json
+kms_blob release-evidence/fips.sbom.json.bundle images/fips-sbom/sbom.json
 has_rekor release-evidence/fips.sbom.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/production.full.lock.json.bundle images/production.full.lock.json
+kms_blob release-evidence/production.full.lock.json.bundle images/production.full.lock.json
 has_rekor release-evidence/production.full.lock.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fips.full.lock.json.bundle images/fips.full.lock.json
+kms_blob release-evidence/fips.full.lock.json.bundle images/fips.full.lock.json
 has_rekor release-evidence/fips.full.lock.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/vendor-evidence.json.bundle release-evidence/vendor-evidence.json
+kms_blob release-evidence/vendor-evidence.json.bundle release-evidence/vendor-evidence.json
 has_rekor release-evidence/vendor-evidence.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/dependency-list.json.bundle release-evidence/dependency-list.json
+kms_blob release-evidence/dependency-list.json.bundle release-evidence/dependency-list.json
 has_rekor release-evidence/dependency-list.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/checksums.txt.bundle dist/checksums.txt
+kms_blob release-evidence/checksums.txt.bundle dist/checksums.txt
 has_rekor release-evidence/checksums.txt.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/release-policy.bundle policy.json
+kms_blob release-evidence/release-policy.bundle policy.json
 has_rekor release-evidence/release-policy.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/release-files.sha256.bundle release-metadata/release-files.sha256
+kms_blob release-evidence/release-files.sha256.bundle release-metadata/release-files.sha256
 has_rekor release-evidence/release-files.sha256.bundle

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The monthly evidence letter (REQ-REL-013): signs the letter with the release KMS key and attaches it, with its
 # bundle, to the latest published release. The key is the one Release trusts, checked against the offline root
-# before anything is signed or written to the public log; the signing call is cosign with the KMS key and the committed
-# signing config, which names the one pinned log. Before anything is uploaded the signature is verified against that key and the pinned
+# before anything is signed or written to the public log; the signing call is chain-verify.py kms-sign with the KMS key, the committed
+# release public key and the committed signing config, which names the one pinned log. Before anything is uploaded the signature is verified against that key and the pinned
 # Rekor log only: no Sigstore root, no identity. The upload never overwrites, so a second run, or a repository whose
 # releases are immutable, ends here with one plain line and publishes nothing. The bundle goes up first and the
 # letter second; if the letter is refused, the bundle this run uploaded is removed again, so no half pair is left to
@@ -30,8 +30,10 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
   --ref refs/heads/main --out "$work/policy.json" 2>&1 > /dev/null) ||
   die "the key manifest is not accepted ($(head -n 1 <<< "$refusal")): nothing is signed"
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" \
-  --signing-config .github/policy/cosign-signing-config.json --bundle "$letter.bundle" "$letter"
+# KA-2: the letter is signed by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call, the one Rekor entry posted by the same call), not by cosign
+read -r dg _ < <(sha256sum "$letter") && [ -n "$dg" ] || die "cannot hash $letter: nothing is signed"
+python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
+  --public-key build/keys/release.rsa.pub --out "$work/letter.signature" --bundle "$letter.bundle" || die "kms-sign refused to sign the letter: not published"
 refusal=$(bash bin/evidence-letter-verify.sh "$work/policy.json" "$letter" 2>&1) ||
   die "${refusal#evidence-letter-verify: }: not published"
 tag=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>&1) ||

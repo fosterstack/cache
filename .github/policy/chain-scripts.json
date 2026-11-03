@@ -1720,6 +1720,7 @@
         "git",
         "jq",
         "python3",
+        "sha256sum",
         "trap"
       ],
       "runs": [
@@ -1729,8 +1730,8 @@
         "bin/vex-forms.py"
       ],
       "signs": "other",
-      "reason": "Release, step release-sign: cosign signatures with the release KMS key (--key RELEASE_KMS_KEY_REF) and a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists), else exit 2; KA-2 removes this path",
-      "sha256": "da0fe7a02f3d69a04d1edba70ee2538a6f9c6966b67a61b2a5633969a8bf4870",
+      "reason": "Release, step release-sign: cosign signatures with the release KMS key (--key RELEASE_KMS_KEY_REF) and a Rekor entry on the images in both registries; the SBOMs, lock files, dependency evidence, checksums, release policy and release-files list are signed by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call, the one Rekor entry posted by the same call; KA-2) (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256 first (cosign signs with the first algorithm a key lists), else exit 2; KA-2 removes this path",
+      "sha256": "f519d462f580c7610da84853559afed8394ce34eba4afb0df1cdbd6ed428aa30",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
