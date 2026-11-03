@@ -40,7 +40,7 @@ COSIGN_VER=3.1.3
 # v0.12.0, equal to the release's witness_0.12.0_checksums.txt; both tarballs were also checked on Oct 9 2026 with `cosign verify-blob --bundle` against
 # their .sigstore.json (identity https://github.com/in-toto/witness/.github/workflows/release.yml@refs/tags/v0.12.0, issuer token.actions.githubusercontent.com).
 WITNESS_VER=0.12.0
-# The AWS CLI v2 that makes the release key's KMS calls (KA-2: bin/chain-verify.py kms-sign runs it). The sum is the sha256 of awscli-exe-linux-x86_64-2.39.3.zip as downloaded Nov 3 2026, whose detached
+# The AWS CLI v2 that makes the release key's KMS calls (KA-2: the release signing calls run it). The sum is the sha256 of awscli-exe-linux-x86_64-2.39.3.zip as downloaded Nov 3 2026, whose detached
 # signature verified (gpg) as a good signature of the AWS CLI Team key, primary fingerprint FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C (the fingerprint AWS's install page prints). x86_64 only.
 AWSCLI_VER=2.39.3
 # The Go toolchain the freeze job's verify-freeze and the apk build need (Codex A r3 F4; advisor):
@@ -273,7 +273,7 @@ case "$TOOL" in
   aws-cli)
     # the AWS CLI v2 zip, pinned by checksum, installed under RUNNER_TEMP/aws-cli (job-local; no destination argument; nothing in /usr/local) and checked to be the pinned version
     # the release URL names the pinned version literally (pin-age dates a download from its URL)
-    [ -n "${RUNNER_TEMP:-}" ] || pipeline_fail "aws-cli needs RUNNER_TEMP (it installs under RUNNER_TEMP/aws-cli and takes no destination)"
+    test -n "${RUNNER_TEMP:-}" || pipeline_fail "aws-cli needs RUNNER_TEMP (it installs under RUNNER_TEMP/aws-cli and takes no destination)"
     AWSDIR="${RUNNER_TEMP}/aws-cli"
     curl -fsSL -o "$tmp/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.39.3.zip" || pipeline_fail "download failed: aws-cli v${AWSCLI_VER}"
     verify "$tmp/awscli.zip"

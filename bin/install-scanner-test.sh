@@ -142,7 +142,7 @@ def judge(t, sha):
     if not v: bad.append("version mismatch: no AWSCLI_VER line")
     elif u != [v.group(1)]: bad.append("version mismatch: the URL names %s but AWSCLI_VER is %s" % (u, v.group(1)))
     if not re.search(r'case "\$got" in "aws-cli/\$\{AWSCLI_VER\} "\*\) ;; \*\) pipeline_fail', t): bad.append("version mismatch: no check that the installed aws --version is the pinned one")
-    if '[ -n "${RUNNER_TEMP:-}" ] || pipeline_fail "aws-cli needs RUNNER_TEMP' not in t: bad.append("no RUNNER_TEMP check: the install is not job-local")
+    if 'test -n "${RUNNER_TEMP:-}" || pipeline_fail "aws-cli needs RUNNER_TEMP' not in t: bad.append("no RUNNER_TEMP check: the install is not job-local")
     return bad
 t = open(sys.argv[1]).read(); sha = sys.argv[2]
 assert judge(t, sha) == [], judge(t, sha)

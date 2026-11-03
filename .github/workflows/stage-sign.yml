@@ -108,6 +108,9 @@ jobs:
       - name: install cosign (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
 
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
+
 
       - name: write Build's digest list to a file
         env:
@@ -172,6 +175,9 @@ jobs:
 
       - name: install cosign (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
+
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
 
       - name: write Build's digest list to a file
         env:
@@ -242,6 +248,9 @@ jobs:
 
       - name: install cosign (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
+
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
 
       - name: write Build's digest list to a file
         env:

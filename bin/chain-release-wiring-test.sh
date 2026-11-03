@@ -726,7 +726,28 @@ bare_aws() { grep -rIn --include='*.sh' --include='*.py' --include='*.yml' -e '/
 if [ -z "$(bare_aws "$root/bin" "$root/.github/workflows")" ]; then ok "KA-2 p4 group 4 no script or workflow of the repository names /usr/local/bin/aws"; else bad "KA-2 p4 group 4 a bare aws path is left: $(bare_aws "$root/bin" "$root/.github/workflows" | head -3 | tr '\n' ' ')"; fi
 mkdir -p "$work/bareaws"; printf '#!/usr/bin/env bash\npython3 bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref x\n' > "$work/bareaws/m.sh"
 if [ -n "$(bare_aws "$work/bareaws")" ]; then ok "KA-2 p4 group 4 mutant: a script that names /usr/local/bin/aws is found by the scan"; else bad "KA-2 p4 group 4 mutant: the bare-path scan missed a script that names /usr/local/bin/aws"; fi
-EXPECT=325
+# KA-2 p4 group 4 (ruling 09:17:40Z 1f): every job of stage-sign.yml that reaches KMS (its steps run bin/witness-sign-staged.sh or bin/with-aws-token.sh) installs the pinned aws CLI
+# (bin/install-scanner.sh aws-cli, which checks aws-cli/<pinned version>) in a step BEFORE the first of those steps; the judge is proven on a mutant that loses the install step.
+ssjudge() { python3 - "$1" <<'SSPY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+for job, j in d["jobs"].items():
+    runs = [str(s.get("run", "")) for s in j.get("steps", [])]
+    first = next((i for i, r in enumerate(runs) if "witness-sign-staged.sh" in r or "with-aws-token.sh" in r), None)
+    if first is None:
+        continue
+    inst = next((i for i, r in enumerate(runs) if r.strip() == "bash bin/install-scanner.sh aws-cli"), None)
+    print("%s %s" % (job, "ok" if inst is not None and inst < first else "MISSING"))
+SSPY
+}
+for jb in sign sign-rebuild sign-check; do
+  ssout=$(ssjudge "$root/.github/workflows/stage-sign.yml")
+  if [[ $'\n'"$ssout"$'\n' == *$'\n'"$jb ok"$'\n'* ]]; then ok "KA-2 p4 group 4 stage-sign.yml job $jb installs the pinned aws CLI before its first KMS-reaching step"; else bad "KA-2 p4 group 4 stage-sign.yml job $jb has no pinned aws CLI install before its first KMS-reaching step"; fi
+done
+grep -v 'install-scanner.sh aws-cli' "$root/.github/workflows/stage-sign.yml" > "$work/ss_noaws.yml"
+ssout=$(ssjudge "$work/ss_noaws.yml")
+if [[ "$ssout" == *MISSING* ]]; then ok "KA-2 p4 group 4 mutant: a stage-sign.yml without the aws CLI install is found by the judge"; else bad "KA-2 p4 group 4 mutant: the stage-sign aws CLI judge missed a file without the install"; fi
+EXPECT=329
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

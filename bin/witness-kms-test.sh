@@ -500,7 +500,7 @@ def problems_creds(text, name, behave):
         try:
             os.makedirs(os.path.join(t, "bin"))
             sh(os.path.join(t, "bin", name), text)
-            base = {"PATH": os.environ["PATH"], "HOME": t, "DOCKERHUB_USERNAME": "u", "DOCKERHUB_TOKEN": "t", "GH_TOKEN": "g", "RELEASE_KMS_KEY_REF": KEY, "GITHUB_REF_NAME": "not-a-tag"}
+            base = {"PATH": os.environ["PATH"], "HOME": t, "DOCKERHUB_USERNAME": "u", "DOCKERHUB_TOKEN": "t", "GH_TOKEN": "g", "RELEASE_KMS_KEY_REF": KEY, "RUNNER_TEMP": "/x/runner", "GITHUB_REF_NAME": "not-a-tag"}   # KA-2 p4 group 4: release-sign.sh refuses an unset RUNNER_TEMP first (the pinned aws CLI lives under it)
             for drop in ("RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"):
                 e = dict(base, RELEASE_ROLE_ARN=ROLE, RELEASE_TOKEN_FILE="/x/token")
                 e[drop] = ""
@@ -757,9 +757,10 @@ mutant3("a null token accepted", lambda s: s.replace('[ -n "$tok" ] && [ "$tok" 
 mutant3("the request variables stay in the command's environment", lambda s: re.sub(r"^unset ACTIONS_ID_TOKEN_REQUEST_TOKEN.*\n", "", s, flags=re.M))
 mutant3("the token file is set for sign-record only (the provenance call gets none)", lambda s: s.replace('AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" python3 -I -B bin/chain-verify.py "$@" || rc=$?', 'if [ "$1" = sign-record ]; then export AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"; fi; python3 -I -B bin/chain-verify.py "$@" || rc=$?'))
 mutant3("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
+mutant3("the wrapper no longer passes kms-sign through (KA-2 p4 group 4)", lambda s: s.replace("sign-record|sign|kms-sign)", "sign-record|sign)"))
 
 
-EXPECT = 57
+EXPECT = 58
 print("pass=%d fail=%d" % (passn, failn))
 if passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT))

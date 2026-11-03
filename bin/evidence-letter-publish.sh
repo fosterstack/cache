@@ -16,7 +16,7 @@ case $RELEASE_KMS_KEY_REF in
   awskms:///?*) ;;
   *) die "RELEASE_KMS_KEY_REF is not an awskms:/// reference: nothing is signed" ;;
 esac
-# KA-2 p4 group 4: the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws (bin/install-scanner.sh aws-cli installs it there, job-locally), and the signing call runs under bin/with-aws-token.sh, which needs the
+# KA-2 p4 group 4: the pinned aws CLI is the one the job's aws CLI install step put under RUNNER_TEMP (job-local), and the signing call runs under bin/with-aws-token.sh, which needs the
 # role and the region of the signing role (this step's env); each missing name is one line and exit 2, before anything is read, signed or written
 for name in RUNNER_TEMP AWS_ROLE_ARN AWS_REGION; do
   if [ -z "${!name:-}" ]; then echo "evidence-letter-publish: $name is unset" >&2; exit 2; fi

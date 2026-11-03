@@ -523,8 +523,9 @@ for f in LETTER_FILES + (".github/workflows/supply-chain.yml",):
     joined = re.sub(r"\\\n\s*", " ", read(f))
     calls = [l for l in joined.split("\n") if re.search(r"\bcosign (sign-blob|sign|attest)\b", l)]
     check("K-5: every signing line of %s has the key form" % f, all(SIGN_FORM.search(l) for l in calls), calls)
-check("K-5/KA-2: the publish script has exactly one signing line, a chain-verify.py kms-sign call, and no cosign sign call",
-      len([1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if re.match(r"\s*python3 .*chain-verify\.py kms-sign ", l)]) == 1
+check("K-5/KA-2: the publish script has exactly one signing line, a bash bin/with-aws-token.sh kms-sign call, no bare chain-verify.py kms-sign line, and no cosign sign call",
+      len([1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if re.match(r"\s*bash bin/with-aws-token\.sh kms-sign ", l)]) == 1
+      and not [1 for l in re.sub(r"\\\n\s*", " ", pub).split("\n") if not l.lstrip().startswith("#") and re.search(r"chain-verify\.py kms-sign", l)]
       and not re.search(r"cosign\s+(sign|sign-blob|attest)", pub))
 for word in KEYLESS:
     hit = [f for f in LETTER_FILES if word in read(f).lower()]

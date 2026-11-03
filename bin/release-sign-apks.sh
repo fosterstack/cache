@@ -113,7 +113,7 @@ for rel in "${apks[@]}"; do
   [ ! -e "$build_dir/$rel.bundle.new" ] ||
     die "$build_dir/$rel.bundle.new already exists (a leftover or a planted file); refusing, $kept"
 done
-[ -x "$AWS" ] || die "aws is not installed at $AWS (bin/install-scanner.sh aws-cli puts the pinned aws CLI at RUNNER_TEMP/aws-cli/aws; this step does not install it)" 1
+[ -x "$AWS" ] || die "aws is not installed at $AWS (the job's aws CLI install step puts the pinned aws CLI there; this step does not install it)" 1
 # Sign the private copies, check each signature and signer, and only when every one succeeded replace the originals:
 # a failure leaves Build's directory untouched.
 n=0
