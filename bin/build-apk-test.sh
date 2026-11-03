@@ -726,7 +726,11 @@ cat >"$work/ksp.py" <<'P'
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("cv", sys.argv[1]); cv = importlib.util.module_from_spec(spec); spec.loader.exec_module(cv)
 rec = []
-time.sleep = lambda s: rec.append(s)   # the waits of the retry rule are time.sleep calls; nothing here waits
+_real_sleep = time.sleep
+def _sleep(s):   # the waits of the retry rule are time.sleep calls made by the code under test: recorded, nothing here waits; the stdlib subprocess module polls with time.sleep (0.0005..0.05 s) under subprocess.run(timeout=...), so its calls sleep for real and are not recorded
+    if sys._getframe(1).f_globals.get("__name__") == "subprocess": return _real_sleep(s)
+    rec.append(s)
+time.sleep = _sleep
 try:
     r = cv.main(sys.argv[3:])
 except SystemExit as e:
