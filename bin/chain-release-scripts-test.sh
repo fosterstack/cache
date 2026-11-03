@@ -285,6 +285,8 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     if script in ("release-sign", "release-apks"):      # bin/witnessed.sh hands these two steps the role and the identity-token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (P11 round 3); release-sign.sh maps them itself
         e.setdefault("RELEASE_ROLE_ARN", "arn:aws:iam::111122223333:role/release-signing"); e.setdefault("RELEASE_TOKEN_FILE", os.path.join(t, "idtoken"))
     e.pop("NO_KMS_REF", None)
+    if script in ("release-sign", "release-apks") and not (env or {}).get("NO_RUNNER_TEMP"): e.setdefault("RUNNER_TEMP", os.path.join(t, "rt"))      # KA-2 p4 group 4: the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws (bin/install-scanner.sh aws-cli puts it there)
+    e.pop("NO_RUNNER_TEMP", None)
     r = subprocess.run(["bash", path], cwd=t, env=e, capture_output=True, text=True)
     LAST[0] = r.returncode if r.returncode == 127 else 0
     return r.returncode, r.stdout, r.stderr
@@ -551,7 +553,7 @@ ksl = [l for l in L if l.startswith("chain-verify kms-sign")]
 blobs = " ".join(ksl)
 check(len(ksl) == 9 and not any(l.startswith("cosign sign-blob") for l in log(t)), "KA-2 p4 the nine files are signed by nine kms-sign calls and no cosign sign-blob call is made", "%d kms-sign, %d sign-blob" % (len(ksl), len([l for l in log(t) if l.startswith("cosign sign-blob")])))
 for f, b in BLOBS:
-    want = "chain-verify kms-sign --aws /usr/local/bin/aws --key-ref " + KMS + " --digest " + hashlib.sha256(open(os.path.join(t, f), "rb").read() if os.path.exists(os.path.join(t, f)) else b"").hexdigest() + " --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub"
+    want = "chain-verify kms-sign --aws " + os.path.join(t, "rt") + "/aws-cli/aws --key-ref " + KMS + " --digest " + hashlib.sha256(open(os.path.join(t, f), "rb").read() if os.path.exists(os.path.join(t, f)) else b"").hexdigest() + " --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub"
     hit = [l for l in ksl if l.startswith(want + " ") and l.endswith(" --bundle " + b)]
     check(len(hit) == 1, "KA-2 p4 %s is signed once with the release key, the digest of its own bytes, the signing config and the committed public key, and its bundle is %s" % (f, b), str(hit) + " want " + want)
 check(all(" --out " in l for l in ksl) and len({re.search(r" --out (\S+)", l).group(1) for l in ksl}) == 9, "KA-2 p4 each kms-sign call has its own signature file (kms-sign never overwrites)")
@@ -566,6 +568,9 @@ rc, so, se = run(tph, "release-sign", creds=REG); lp = log(tph)
 check(rc != 0 and len([l for l in lp if l.startswith("chain-verify kms-sign")]) == 1 and "public key" in se and not os.path.exists(os.path.join(tph, "release-evidence/production.sbom.json.bundle")), "KA-2 p4 the placeholder public key stops the step at the first signed file, with kms-sign's refusal, and leaves no bundle", "rc=%s %s" % (rc, first(se)))
 tkd = tree(); rc, so, se = run(tkd, "release-sign", creds=REG, env={"KMSSIGN_KMSKEY": "-----BEGIN PUBLIC KEY-----\nT1RIRVJLRVk=\n-----END PUBLIC KEY-----\n"}); lkd = log(tkd)
 check(rc != 0 and len([l for l in lkd if l.startswith("chain-verify kms-sign")]) == 1 and "does not match the KMS key" in se and "build/keys/release.rsa.pub" in se and not os.path.exists(os.path.join(tkd, "release-evidence/production.sbom.json.bundle")) and not any(l.startswith("cosign") for l in lkd[next(i for i, x in enumerate(lkd) if x.startswith("chain-verify kms-sign")):]), "KA-2 p4 key compare: a committed key that is not the KMS key stops the step at the first signed file with kms-sign's one-line refusal naming the file, no bundle, no cosign call after it", "rc=%s %s %s" % (rc, first(se), len([l for l in lkd if l.startswith("chain-verify kms-sign")])))
+trt = tree(); rc, so, se = run(trt, "release-sign", creds=REG, env={"NO_RUNNER_TEMP": "1"}); lrt = log(trt)
+check(rc != 0 and "RUNNER_TEMP" in se and len([l for l in se.splitlines() if l.strip()]) == 1 and not [l for l in lrt if l.startswith(("cosign", "chain-verify kms-sign"))], "KA-2 p4 group 4 release-sign without RUNNER_TEMP (the place the pinned aws CLI is installed) stops at once with one line naming it, before any tool or signature", "rc=%s %s" % (rc, first(se)))
+check(all((" --aws " + os.path.join(t, "rt") + "/aws-cli/aws ") in l for l in ksl) and not any("/usr/local/bin/aws" in l for l in L), "KA-2 p4 group 4 every kms-sign call names the job-local aws CLI under RUNNER_TEMP, never a path of the runner image", str(ksl[:1]))
 tkf = tree(); rc, so, se = run(tkf, "release-sign", creds=REG, env={"KMSSIGN_FAIL_ON": "checksums.txt"}); lk = log(tkf)
 check(rc != 0 and "RSASSA_PKCS1_V1_5_SHA_256" in se and len([l for l in lk if l.startswith("chain-verify kms-sign")]) == 7 and not any("release-policy.bundle" in l or "release-files" in l for l in lk), "KA-2 p4 a refused kms-sign call (the key does not list the algorithm) stops the step: the files after it are not signed", "rc=%s %s" % (rc, first(se)))
 tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
@@ -1119,7 +1124,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "476"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "478"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

@@ -130,6 +130,14 @@ if a[:1] == ["sign"]:
         open(log + "/signprov.tok", "a").write("NOTOKEN\n")
     if os.environ.get("FAKE_SIGN_RC"):
         sys.exit(int(os.environ["FAKE_SIGN_RC"]))
+if a[:1] == ["kms-sign"]:      # KA-2 p4 group 4: the evidence letter's one signing call, run under the same token wrapper
+    tf = os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE", "UNSET")
+    try:
+        import stat as _st
+        open(log + "/kmssign.tok", "a").write("MODE=%o DIRMODE=%o CONTENT=%s ROLE=%s\n" % (
+            _st.S_IMODE(os.stat(tf).st_mode), _st.S_IMODE(os.stat(os.path.dirname(tf)).st_mode), open(tf).read().strip(), os.environ.get("AWS_ROLE_ARN", "UNSET")))
+    except OSError:
+        open(log + "/kmssign.tok", "a").write("NOTOKEN\n")
 if a[:1] == ["sign-record"]:
     open(log + "/seq", "a").write("sign-record\n")
     tf = os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE", "UNSET")
@@ -694,6 +702,16 @@ def problems_wrapper(text):
     if os.listdir(runner9):
         bad.append("a token directory is left after the provenance call")
     shutil.rmtree(t9, ignore_errors=True)
+    # KA-2 p4 group 4: the evidence letter's kms-sign call runs under the same wrapper: the same fresh token, in the same private file, for that call only
+    tk, repok, logk, runnerk, rk = run_wrapper(text, args=("kms-sign", "--aws", "/x/aws-cli/aws"))
+    kt = read(os.path.join(logk, "kmssign.tok")).splitlines()
+    if rk.returncode != 0 or not read(os.path.join(logk, "cv.log")).startswith("kms-sign --aws /x/aws-cli/aws"):
+        bad.append("the kms-sign call does not reach the verifier with its arguments (exit %d): %r" % (rk.returncode, read(os.path.join(logk, "cv.log"))[:200]))
+    if len(kt) != 1 or not kt[0].startswith("MODE=600 DIRMODE=700 CONTENT=" + TOKEN + " ROLE=" + ROLE):
+        bad.append("the kms-sign call does not see a mode 0600 token file in a 0700 directory holding exactly the token, with the role: %r" % kt)
+    if os.listdir(runnerk):
+        bad.append("a token directory is left after the kms-sign call")
+    shutil.rmtree(tk, ignore_errors=True)
     t2, repo2, log2, runner2, r2 = run_wrapper(text, {"FAKE_SIGN_RC": "7"})
     if r2.returncode != 7 or os.listdir(runner2):
         bad.append("the call's exit status (7) is not kept or a token directory is left (exit %d, left %r)" % (r2.returncode, os.listdir(runner2)))

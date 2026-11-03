@@ -78,10 +78,20 @@ def judge(doc, text):
             and any("bash bin/evidence-letter-publish.sh" in t for t in stext)):
         bad.append("sign must install cosign and sign only through the publish script")
     sign_env = [st.get("env") or {} for st in sign["steps"] if "evidence-letter-publish.sh" in str(st.get("run", ""))]
-    if len(sign_env) != 1 or set(sign_env[0]) != {"GH_TOKEN", "MONTH", "RELEASE_KMS_KEY_REF"}:
-        bad.append("the sign step's env must be exactly GH_TOKEN, MONTH and RELEASE_KMS_KEY_REF")
+    if len(sign_env) != 1 or set(sign_env[0]) != {"GH_TOKEN", "MONTH", "RELEASE_KMS_KEY_REF", "AWS_ROLE_ARN", "AWS_REGION"}:
+        bad.append("the sign step's env must be exactly GH_TOKEN, MONTH, RELEASE_KMS_KEY_REF, AWS_ROLE_ARN and AWS_REGION (KA-2 p4 group 4: the federation entries of the signing role, on this step only)")
     elif sign_env[0]["RELEASE_KMS_KEY_REF"] != "awskms:///alias/fosterstack-release-signing":
         bad.append("RELEASE_KMS_KEY_REF must be the plain literal key reference (no vars, secret or expression)")
+    elif sign_env[0]["AWS_ROLE_ARN"] != "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing" or sign_env[0]["AWS_REGION"] != "us-east-1":
+        bad.append("AWS_ROLE_ARN and AWS_REGION must be the plain literals the release signing steps use (no vars, secret or expression)")
+    if "env" in doc or "env" in sign or "env" in draft or any("AWS_" in str(st.get("env") or "") for st in draft["steps"]):
+        bad.append("no workflow-level, job-level or draft-job env: the AWS federation entries are on the one sign step (KA-2 p4 group 4)")
+    if (sign.get("permissions") or {}).get("id-token") != "write":
+        bad.append("sign keeps id-token: write (the federation token of the signing role)")
+    aws_i = [i for i, t in enumerate(stext) if "bash bin/install-scanner.sh aws-cli" in t]
+    pub_i = [i for i, t in enumerate(stext) if "bash bin/evidence-letter-publish.sh" in t]
+    if not aws_i or not pub_i or aws_i[0] > pub_i[0]:
+        bad.append("sign must install the pinned aws CLI (bash bin/install-scanner.sh aws-cli) before the publish script")
     if text.count("RELEASE_KMS_KEY_REF") != 1:
         bad.append("RELEASE_KMS_KEY_REF must be set once, on the sign step only")
     if "cosign sign" in text or "--clobber" in text:
@@ -122,6 +132,20 @@ mutated("sign downloads another artifact", lambda d: [s["with"].update(name="oth
 mutated("draft gets an identity token", lambda d: d["jobs"]["draft"]["permissions"].update({"id-token": "write"}))
 mutated("an upload may overwrite", lambda d: None, lambda t: t + "\n# gh release upload --clobber\n")
 mutated("a third job", lambda d: d["jobs"].update({"extra": {}}))
+def _sign_step(d): return [st for st in d["jobs"]["sign"]["steps"] if "evidence-letter-publish.sh" in str(st.get("run", ""))][0]
+mutated("KA-2 p4 group 4: the sign step loses AWS_ROLE_ARN", lambda d: _sign_step(d)["env"].pop("AWS_ROLE_ARN"))
+mutated("KA-2 p4 group 4: the sign step loses AWS_REGION", lambda d: _sign_step(d)["env"].pop("AWS_REGION"))
+mutated("KA-2 p4 group 4: AWS_ROLE_ARN comes from a variable", lambda d: _sign_step(d)["env"].update({"AWS_ROLE_ARN": "${{ vars.ROLE }}"}))
+mutated("KA-2 p4 group 4: AWS_REGION is another region", lambda d: _sign_step(d)["env"].update({"AWS_REGION": "eu-west-1"}))
+mutated("KA-2 p4 group 4: the role is set at job level", lambda d: d["jobs"]["sign"].update({"env": {"AWS_ROLE_ARN": "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"}}))
+mutated("KA-2 p4 group 4: the role is set at workflow level", lambda d: d.update({"env": {"AWS_REGION": "us-east-1"}}))
+mutated("KA-2 p4 group 4: the draft job carries an AWS entry", lambda d: [st.update({"env": {"AWS_REGION": "us-east-1"}}) for st in d["jobs"]["draft"]["steps"][:1]])
+mutated("KA-2 p4 group 4: sign loses id-token: write", lambda d: d["jobs"]["sign"]["permissions"].pop("id-token"))
+mutated("KA-2 p4 group 4: sign no longer installs the aws CLI", lambda d: d["jobs"]["sign"].update(
+    {"steps": [s for s in d["jobs"]["sign"]["steps"] if "install-scanner.sh aws-cli" not in str(s.get("run", ""))]}))
+mutated("KA-2 p4 group 4: sign installs the aws CLI after the publish script", lambda d: d["jobs"]["sign"]["steps"].append(
+    {"name": "install the aws CLI (pinned by checksum)", "run": "bash bin/install-scanner.sh aws-cli"}) or d["jobs"]["sign"]["steps"].remove(
+    [s for s in d["jobs"]["sign"]["steps"] if "install-scanner.sh aws-cli" in str(s.get("run", ""))][0]))
 
 pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
 check("AC9/KA-2: the key comes from RELEASE_KMS_KEY_REF (kms-sign --key-ref), the signing config is the committed one and the public key is the committed release public key",
@@ -289,6 +313,10 @@ def throwaway_repo(tmp):
     open(keys + "/m.json", "wb").write(body)
     sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/m.json")
     open(pol + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    # KA-2 p4 group 4: the publish script runs its kms-sign call through bin/with-aws-token.sh (a fresh identity token for that one call). The real wrapper needs the Actions token endpoint; the stand-in
+    # keeps its contract that matters here (the role, the region and the key reference must be set; it logs the call; it runs bin/chain-verify.py with the same arguments); the real wrapper is judged by bin/witness-kms-test.sh
+    open(os.path.join(repo, "bin/with-aws-token.sh"), "w").write('#!/usr/bin/env bash\nset -euo pipefail\n: "${AWS_ROLE_ARN:?with-aws-token: AWS_ROLE_ARN is missing}" "${AWS_REGION:?with-aws-token: AWS_REGION is missing}" "${RELEASE_KMS_KEY_REF:?with-aws-token: RELEASE_KMS_KEY_REF is missing}"\n'
+                                                                  'echo "with-aws-token $1" >> "$LOG"\nexec python3 -I -B bin/chain-verify.py "$@"\n')
     os.makedirs(os.path.join(repo, "build/keys"), exist_ok=True)      # KA-2: kms-sign is handed the committed release public key
     open(os.path.join(repo, "build/keys/release.rsa.pub"), "w").write(pub)
     return repo, pub.splitlines()[1]
@@ -312,7 +340,8 @@ def sandbox(tmp):
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
                REAL_PYTHON=sys.executable, REAL_CHECKLIST="", REPO_DIR=repo, KEY_LINE=key_line,
                TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="", FAIL_VIEW="",
-               FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key")
+               FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key",
+               RUNNER_TEMP="/home/runner/work/_temp", AWS_ROLE_ARN="arn:aws:iam::821302803867:role/fosterstack-cache-release-signing", AWS_REGION="us-east-1")
     return fix, env
 
 
@@ -586,7 +615,7 @@ def publish(on_release=None, edit=None, **extra):
 p, log, up, letter = publish()
 names = ["evidence-letter-2026-11.md.bundle", "evidence-letter-2026-11.md"]
 LETTER_SHA = hashlib.sha256(b"a letter\n").hexdigest()
-SIGN_HEAD = ("python3 -I -B bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref awskms:///stand-in-key --digest " + LETTER_SHA
+SIGN_HEAD = ("python3 -I -B bin/chain-verify.py kms-sign --aws /home/runner/work/_temp/aws-cli/aws --key-ref awskms:///stand-in-key --digest " + LETTER_SHA
              + " --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub --out ")
 SIGN_TAIL = " --bundle " + letter + ".bundle"
 signs_ = [l for l in log if l.startswith("python3 -I -B bin/chain-verify.py kms-sign ")]      # the call itself; the stand-in's own marker lines (kms-sign-called-KMS-Sign, kms-sign-posted-to-Rekor) are asserted in order below
@@ -652,6 +681,13 @@ for label, value, code in (("unset", "", 2), ("not an awskms reference", "arn:aw
     check("F7-key: a key reference that is %s fails closed before the manifest, the sign call and any upload" % label,
           pr_.returncode == code and len(pr_.stderr.strip().splitlines()) == 1 and up_ == []
           and not any("policy make" in x or "kms-sign" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
+wat_ = [i for i, l in enumerate(log) if l == "with-aws-token kms-sign"]
+check("KA-2 p4 group 4: the letter's one kms-sign call runs through bin/with-aws-token.sh (a fresh identity token for that call), before the verify and the upload",
+      len(wat_) == 1 and len(signs_) == 1 and wat_[0] < log.index(signs_[0]) < log.index(verifies[0]), (wat_, signs_, log))
+for label, key, value, code in (("RUNNER_TEMP unset (the place the pinned aws CLI is installed)", "RUNNER_TEMP", "", 2), ("AWS_ROLE_ARN unset", "AWS_ROLE_ARN", "", 2), ("AWS_REGION unset", "AWS_REGION", "", 2)):
+    pr_, lg_, up_, _l = publish(**{key: value})
+    check("KA-2 p4 group 4: %s fails closed in one line before the sign call and any upload" % label,
+          pr_.returncode != 0 and len(pr_.stderr.strip().splitlines()) == 1 and key in pr_.stderr and up_ == [] and not any("kms-sign" in x for x in lg_), (pr_.returncode, pr_.stderr, lg_))
 def placeholder_key(fix, env):
     open(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"), "w").write("PLACEHOLDER: the real public half is committed by a human\n")
 

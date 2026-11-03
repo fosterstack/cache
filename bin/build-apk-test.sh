@@ -946,6 +946,7 @@ python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy-noaws.
   'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS='"$work"'/no-such-aws' 'SIGNING_CONFIG='"$work"'/signing-config-test.json' 'KMSSIGN=bin/chain-verify.py' 'KEYS_DIR='"$work"'/keysfx' || { echo "FIXTURE SETUP FAILED: release-sign noaws copy"; exit 1; }
 rs1 m14; m14b=$(snap "$work/m14"); run_s "${RK[@]}" bash "$work/rs-copy-noaws.sh" --build-dir "$work/m14"
 t "rule 22" "release signing (K4 re-aimed): the aws CLI missing at its fixed path -> exit 1 naming aws, Build byte-identical" bash -c "[ \"\$(cat '$work/rc')\" = 1 ] && grep -q 'aws is not installed' '$work/log' && [ \"\$(cd '$work/m14' && { find . | sort; find . -type f | sort | xargs shasum -a 256; } | shasum -a 256)\" = '$m14b' ]"
+t "rule 22" "release signing (KA-2 p4 group 4): the signer names the pinned aws CLI under RUNNER_TEMP (bin/install-scanner.sh aws-cli installs it there), never a path of the runner image, and still dies naming aws when it is not installed" bash -c "grep -Eq '^AWS=[^#]*RUNNER_TEMP[^#]*/aws-cli/aws +# TEST-SUBST' '$RS_REAL' && ! grep -q '/usr/local/bin/aws' '$RS_REAL' && grep -q 'aws is not installed at' '$RS_REAL'"
 # a Build apk with TWO signature members is refused before any tool (apk-tool signer reads exactly one)
 mkdir -p "$work/m8/x86_64"; python3 - "$pr/a.apk" "$work/m8/x86_64/fscache-0.3.0-r0.apk" "$work" <<'P'
 import sys
