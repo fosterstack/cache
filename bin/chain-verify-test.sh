@@ -923,7 +923,7 @@ if W:
     urllib.request.build_opener = lambda *h: Opener()
 
     # nodsse / withcert / twosigs: the bundle the verifier writes is changed on its way to the disk, so its read-back finds a bundle cosign-style tools could write but kms-sign never does
-    if MODE in ("nodsse", "withcert", "twosigs"):
+    if MODE in ("nodsse", "withcert", "twosigs", "disknotlog", "diskemptylog"):
         _open = builtins.open
         class Tamper:
             def __init__(self, f): self._f = f
@@ -931,6 +931,8 @@ if W:
                 b = json.loads(data)
                 if MODE == "nodsse": del b["dsseEnvelope"]
                 if MODE == "withcert": b["verificationMaterial"] = {"certificate": {"rawBytes": b64(b"x")}}
+                if MODE == "disknotlog": del b["verificationMaterial"]["tlogEntries"]
+                if MODE == "diskemptylog": b["verificationMaterial"]["tlogEntries"] = []
                 if MODE == "twosigs": b["dsseEnvelope"]["signatures"].append(dict(b["dsseEnvelope"]["signatures"][0]))
                 return self._f.write((json.dumps(b) + "\n").encode())
             def __enter__(self): self._f.__enter__(); return self
@@ -1605,24 +1607,33 @@ expect_refuse "S-2 the URL-safe alphabet (- and _) in the signature is refused" 
 
 # ---- sign checks what Rekor answered and what it wrote before it says ok: a bundle or an entry that is wrong is refused, and no provenance is left behind -------------------
 POSTSIGN=0
-expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" \
+expect_postsign_refuse() { local l=$1 words=$2 mode=$3 where=${4:-stage} rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" \
     --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
   [ -s "$work/kmssign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
   l1=$(grep -m1 '^refused at sign: ' "$work/err" | tr 'A-Z' 'a-z')     # KA-2 p4 g3: kms-sign writes its aws-cli version line (and its own refusal line) before Sign's stage line, so the stage line is the first one that starts with the stage
   [ -n "$l1" ] || miss=1
+  local subj="${l1#*: }"
+  # KA-2 p4 g3 fix 2: a fault kms-sign itself catches (the Rekor answer, its signed entry timestamp, its inclusion proof) ends the call with kms-sign's own one-line reason; Sign's stage line then says only that kms-sign refused
+  # ("its reason is the line above"). With where=reason both are asserted: that stage line, and the words in kms-sign's reason line.
+  if [ "$where" = reason ]; then
+    grep -F -q -- 'kms-sign refused to sign the statement' <<< "$subj" || miss=1
+    subj=$(grep -m1 '^kms-sign: refused: ' "$work/err" | tr 'A-Z' 'a-z'); [ -n "$subj" ] || miss=1; subj="${subj#*: }"
+  fi
   IFS='|' read -r -a ws <<< "$words"
-  for x in "${ws[@]}"; do case $x in '!'*) ! grep -F -q -- "${x#!}" <<< "${l1#*: }" || miss=1 ;; *) grep -F -q -- "$x" <<< "${l1#*: }" || miss=1 ;; esac; done
+  for x in "${ws[@]}"; do case $x in '!'*) ! grep -F -q -- "${x#!}" <<< "$subj" || miss=1 ;; *) grep -F -q -- "$x" <<< "$subj" || miss=1 ;; esac; done
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && [ ! -e "$work/sd/post-$mode/provenance.json" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with 'refused at sign:' and '$words', no provenance.json left; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
 expect_postsign_refuse "S1 a bundle with no DSSE envelope is refused after the signature, not a traceback" "bundle|malformed" nodsse
 expect_postsign_refuse "S1 a bundle that carries a certificate is refused: no certificate belongs to this chain" "certificate" withcert
 expect_postsign_refuse "S1 a bundle with two signatures is refused, not converted with one dropped" "signatures" twosigs
-expect_postsign_refuse "S1 a bundle with no tlogEntries is refused after the signature: the Rekor entry is named" "rekor" notlog
-expect_postsign_refuse "S1 a bundle with an EMPTY tlogEntries list is refused: the Rekor entry is named" "rekor" emptylog
-expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badset
-expect_postsign_refuse "S1 a bundle whose Rekor entry has no inclusion proof is refused" "rekor|inclusion" noproof
+expect_postsign_refuse "S1 a bundle with no tlogEntries is refused after the signature: the Rekor entry is named" "rekor" notlog reason
+expect_postsign_refuse "S1 a bundle with an EMPTY tlogEntries list is refused: the Rekor entry is named" "rekor" emptylog reason
+expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badset reason
+expect_postsign_refuse "S1 a bundle whose Rekor entry has no inclusion proof is refused" "rekor|inclusion" noproof reason
+expect_postsign_refuse "S1 Sign's own check: a bundle that kms-sign wrote whole and that reaches disk with no tlogEntries is refused at sign, the Rekor entry named" "rekor entry" disknotlog
+expect_postsign_refuse "S1 Sign's own check: a bundle that reaches disk with an EMPTY tlogEntries list is refused at sign, the Rekor entry named" "rekor entry" diskemptylog
 expect_postsign_refuse "S1 a bundle whose signature is by a key the manifest does not name is refused: Sign verifies what it wrote before it says ok" "signature" otherkey
-[ "$POSTSIGN" = 8 ] && ok "S1 control: KMS WAS asked to sign in each of the eight cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 KMS was asked to sign in only $POSTSIGN of the eight bundle cases"
+[ "$POSTSIGN" = 10 ] && ok "S1 control: KMS WAS asked to sign in each of the ten cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 KMS was asked to sign in only $POSTSIGN of the ten bundle cases"
 expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
 # F1 (Opus r1 verify; 001-AC2): the Rekor entry must be for the statement Sign built; an entry for another statement is refused, naming the mismatch
 expect_postsign_refuse "F1 a Rekor entry for a statement with swapped subjects is refused: the entry is not for the statement Sign built" "statement" swapsubj
@@ -2158,7 +2169,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=792
+EXPECT=794
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
