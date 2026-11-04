@@ -1961,8 +1961,7 @@ requirements:
   - id: REQ-REL-009
     title: Automatic patch releases
     statement: 'Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at once for a critical or
-      high fix, otherwise at most once a day, signed keylessly by release.yml''s own identity, run through
-      the full release chain, with generated notes, VEX updated, floating tags moved by the project''s rule,
+      high fix, otherwise at most once a day, decided by release.yml on main and signed only by the one KMS release key; CI creates no patch tag until that signer is in the release chain (no unsigned and no keyless tag), run through the full release chain, with generated notes, VEX updated, floating tags moved by the project''s rule,
       and a failed stage abandoned without retry. Minor and major releases stay a maintainer''s decision.
       
       '
@@ -2051,26 +2050,25 @@ requirements:
       - id: REQ-REL-009-AC3
         given: "a push to main that removes a critical or high finding present in the latest release, on a patch-clean main (the latest release being scanned in every image that exists for its version: X.Y.Z and X.Y.Z-fips, and X.Y.Z-debug only for releases before v0.3.0)"
         when: "release.yml runs on that push"
-        then: "it cuts the patch in that run"
+        then: "it decides in that run that a patch is due"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC4
         given: "the daily schedule, main ahead of the latest tag in shipped bytes and patch-clean"
         when: "release.yml runs"
-        then: "it cuts one patch that day; it never cuts a second patch the same day except for a critical or high fix"
+        then: "it decides one patch that day; it never decides a second patch the same day except for a critical or high fix"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC5
         given: "a patch tag"
         when: "CI creates it"
-        then: "it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere"
+        then: "a patch tag is signed only by the one KMS release key, never unsigned and never keyless; until that signer is in the release chain CI creates no patch tag; no signing key is stored in the repository"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC6
         given: "a release tag"
         when: "source admission verifies it"
-        then: it accepts the maintainer's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity
-          for patch tags only; any other signer, or that identity on a minor or major tag, is refused
+        then: it accepts the maintainer's SSH signature (allowed-signers) on any tag, a patch tag included; any other signer, a keyless signature included, is refused
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC7
@@ -2117,12 +2115,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC13
-        given: 'a CI-signed patch tag vX.Y.Z (amended 2026-10-02: which approved ACs a CI patch uses)'
+        given: 'a patch decided by release.yml on main for line X.Y'
         when: "decide considers cutting it, and source admission admits it"
-        then: it uses the latest approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml
-          is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic
-          patch is cut and it waits for a maintainer; admission records which baseline it used; maintainer-signed
-          tags keep needing their own approved baseline
+        then: it decides the patch only when requirements/requirements.yaml is byte-for-byte unchanged since the latest approved ACs baseline of its X.Y line (same requirements hash); if anything changed, no patch is decided and it waits for a maintainer; at admission every tag, a patch tag included, needs its own approved baseline, and admission records which baseline it used
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC14
@@ -3587,7 +3582,7 @@ requirements:
       - id: REQ-CHAIN-001-AC2
         given: "the Sign job"
         when: "its inputs and steps are read"
-        then: "its inputs are Build's digest list, the stage (build or rebuild; the job sign runs only for build and the job sign-rebuild only for rebuild, each by its own condition on that input) and, for the rebuild call only, `records`: the sha256 of every file of the record folders Rebuild's assemble job made (witness-rebuild and witness-rapk-<runner>), printed by that job after its Witness step and passed on as a job output, which sign-records checks the received folders against with --expect-digests (a folder, file or digest that differs, extra or missing is refused); the things it downloads are the local Witness records and the artifacts they name (for build: witness-build, witness-apk-<runner>, Build's digests, items and admission-baseline data files into witness-build/, and Build's images and archives into artifacts/witness-build/out and artifacts/witness-build/dist; for rebuild: witness-rebuild and witness-rapk-<runner>, and nothing of Rebuild's apks), each into its own fresh named folder, as data only and never executed; none of its steps runs anything Build produced; its job is exactly: checkout, those downloads, install cosign, install Witness, write the digest list (and, for the rebuild call, the records list) to a file, one chain-verify.py sign-records command (which signs nothing and writes only a staging folder), the Witness sign step on each staged payload, one chain-verify.py verify of each signed record under stage-sign.yml's identity, one `chain-verify.py sign --check` command on Build's record as Sign just signed it, upload the signed records (signed-witness-build for the build call; signed-witness-rebuild and signed-witness-rapk-<runner> for the rebuild call) and, for the build call, the provenance folder; Witness sign is never started on a refusal of sign-records; and that command refuses to sign (and writes nothing) unless Build's verified record attests the digest file by the sha256 of its bytes (the real Witness product subject file:digests.json) and the file's own content passes the format check on its own (a JSON object, no duplicate key, every name plain: lower-case letters, digits and hyphens, no code, no path; every value sha256: and 64 lower-case hex characters); the policy it checks against is made per tag by the check itself from the committed template, the committed trust file and the tag in GITHUB_REF (a PUSHED refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-rcN exactly, N decimal digits and nothing else, the policy and the records carrying the FULL tag string: v0.3.0-RC1, v0.3.0-rc, v0.3.0-rc1x, v0.3.0-rc.1, other tags, a branch on a push, a workflow_dispatch on a tag and an empty ref are refused, an rc record presented for the final tag and a final record presented for an rc tag are refused; the one other mode is a dry run, chosen by the run itself as a workflow_dispatch on a branch, where the policy is made for that branch, the provenance says dryRun true and a DRY-RUN marker sits beside it, and Release's tag-pinned policy can never accept such a record); the signing tool is never started on a refusal (the check comes before the signature); the provenance it writes is SLSA v1 with a real buildDefinition (the source commit and the calling workflow) and runDetails (the Sign workflow as builder and the run URL), and what it writes verifies as it stands: it reads the REAL Sigstore bundle cosign writes (the certificate, a DER timestamp response, and the Rekor v1 dsse entry with its signed entry timestamp), the signing tool being asked for Rekor v1 by the committed cosign-signing-config.json"
+        then: "its inputs are Build's digest list, the stage (build or rebuild; the job sign runs only for build and the job sign-rebuild only for rebuild, each by its own condition on that input) and, for the rebuild call only, `records`: the sha256 of every file of the record folders Rebuild's assemble job made (witness-rebuild and witness-rapk-<runner>), printed by that job after its Witness step and passed on as a job output, which sign-records checks the received folders against with --expect-digests (a folder, file or digest that differs, extra or missing is refused); the things it downloads are the local Witness records and the artifacts they name (for build: witness-build, witness-apk-<runner>, Build's digests, items and admission-baseline data files into witness-build/, and Build's images and archives into artifacts/witness-build/out and artifacts/witness-build/dist; for rebuild: witness-rebuild and witness-rapk-<runner>, and nothing of Rebuild's apks), each into its own fresh named folder, as data only and never executed; none of its steps runs anything Build produced; its job is exactly: checkout, those downloads, install cosign, write the digest list (and, for the rebuild call, the records list) to a file, one chain-verify.py sign-records command (which signs nothing and writes only a staging folder), the Witness sign step on each staged payload, one chain-verify.py verify of each signed record under stage-sign.yml's identity, one `chain-verify.py sign --check` command on Build's record as Sign just signed it, upload the signed records (signed-witness-build for the build call; signed-witness-rebuild and signed-witness-rapk-<runner> for the rebuild call) and, for the build call, the provenance folder; Witness sign is never started on a refusal of sign-records; and that command refuses to sign (and writes nothing) unless Build's verified record attests the digest file by the sha256 of its bytes (the real Witness product subject file:digests.json) and the file's own content passes the format check on its own (a JSON object, no duplicate key, every name plain: lower-case letters, digits and hyphens, no code, no path; every value sha256: and 64 lower-case hex characters); the policy it checks against is made per tag by the check itself from the committed template, the committed trust file and the tag in GITHUB_REF (a PUSHED refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-rcN exactly, N decimal digits and nothing else, the policy and the records carrying the FULL tag string: v0.3.0-RC1, v0.3.0-rc, v0.3.0-rc1x, v0.3.0-rc.1, other tags, a branch on a push, a workflow_dispatch on a tag and an empty ref are refused, an rc record presented for the final tag and a final record presented for an rc tag are refused; the one other mode is a dry run, chosen by the run itself as a workflow_dispatch on a branch, where the policy is made for that branch, the provenance says dryRun true and a DRY-RUN marker sits beside it, and Release's tag-pinned policy can never accept such a record); the signing tool is never started on a refusal (the check comes before the signature); the provenance it writes is SLSA v1 with a real buildDefinition (the source commit and the calling workflow) and runDetails (the Sign workflow as builder and the run URL), and what it writes verifies as it stands: it reads the REAL Sigstore bundle cosign writes (the certificate, a DER timestamp response, and the Rekor v1 dsse entry with its signed entry timestamp), the signing tool being asked for Rekor v1 by the committed cosign-signing-config.json"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC3
@@ -4199,7 +4194,7 @@ requirements:
       - id: REQ-CHAIN-004-AC10
         given: "the Witness record Build signs"
         when: "bin/chain-verify.py verify checks it as stage build"
-        then: "the Witness records Build makes (one per apk matrix job, bound to the files that job produced, and the assemble job's) are made under the throwaway key inside the Build jobs and are trusted by nobody; the Sign job signs each one keyless under stage-sign.yml at the tag with release.yml as the top-level workflow, with the Sigstore timestamp, after bin/chain-verify.py sign-records has checked it (the step name is the file's step, the attestors are exactly environment, git, material and product, no token variable or value, the run's git commit, and every file Sign receives is a product of the record with the same sha256); the verifiers accept a Build record only so signed, and refuse a record whose only signature is the throwaway key (signed only by the build job's throwaway key), a record under the former stage-build.yml identity, and any *.local.json; the records are Witness collections and nothing else (no FosterStack record type); and the assemble job binds every file it uses to the apk jobs' local records before it assembles anything (bind --local; no identity is checked inside the Build stage, the boundary is Sign's digest check)"
+        then: "the Witness records Build makes (one per apk matrix job, bound to the files that job produced, and the assemble job's) are made under the throwaway key inside the Build jobs and are trusted by nobody; the Sign job signs each one with the release key in AWS KMS (cosign, the key RELEASE_KMS_KEY_REF names, with a Rekor entry kept beside the record as <stem>.rekor.json); a record or bundle that carries a certificate, or is signed by any other key, is refused; the check bin/chain-verify.py sign-records comes first (the step name is the file's step, the attestors are exactly environment, git, material and product, no token variable or value, the run's git commit, and every file Sign receives is a product of the record with the same sha256); the verifiers accept a Build record only so signed (a signature that verifies against the committed release public key), and refuse a record whose only signature is the throwaway key (signed only by the build job's throwaway key), a record under the former stage-build.yml identity, and any *.local.json; the records are Witness collections and nothing else (no FosterStack record type); and the assemble job binds every file it uses to the apk jobs' local records before it assembles anything (bind --local; no identity is checked inside the Build stage, the boundary is Sign's digest check)"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC11
@@ -4373,16 +4368,14 @@ requirements:
         given: "Rebuild's output"
         when: "the stage's uploads and signed records are listed"
         then: 'Rebuild''s Witness records are made under a throwaway key inside the Rebuild jobs and are trusted by
-          nobody; the only trusted record is the one the sign-rebuild job of stage-sign.yml signs keyless from
-          them, under stage-sign.yml at the tag with release.yml as the top-level workflow, whose product is the
-          verdict witness-rebuild/verdict.json; the uploads that leave the stage are the witness-rebuild directory
+          nobody; the only trusted record is the one the sign-rebuild job of stage-sign.yml signs from them with the release key in AWS KMS (with its Rekor entry kept beside it; a record or bundle that carries a certificate, or is signed by any other key, is refused), whose product is the verdict witness-rebuild/verdict.json; the uploads that leave the stage are the witness-rebuild directory
           holding the local record and the verdict and the per-architecture apk artifacts rapk-ubuntu-24.04 and
           rapk-ubuntu-24.04-arm (each apk job''s record is made under the throwaway key as well; right after its
           Witness step each apk job prints the sha256 of every file of its record folder as its job output `records`
           (bin/rebuild-records-digests.sh --rapk), and the assemble job refuses, before its own Witness step and
           before it reads them, any record folder that differs from those outputs (bin/rebuild-records-digests.sh
           --check: any difference, extra or missing file, empty or invalid output); the assemble job reads them
-          after verification and binding, the second call of stage-sign.yml checks and signs them keyless, and
+          after verification and binding, the second call of stage-sign.yml checks and signs them with the release key, and
           the compare job of the Release stage verifies and binds them); Sign and Release publish Build''s bytes
           by digest. The rule (decided 2026-10-21; "it can''t sit on the same machine ... it violates nist 800-53
           ... the signer and the builder need hardware isolation and the builds in general need hardware isolation
@@ -4927,15 +4920,12 @@ requirements:
       - id: REQ-CHAIN-006-AC7
         given: the customer guide and the signed candidate
         when: "bin/check-guide.sh reads every command of the guide"
-        then: 'every command of the guide''s sh blocks is judged in customer order; a command runs only when it is cosign
-          verify-blob/verify forms, gh attestation verify or jq joined by pipes and every operand is a local file
-          or a placeholder Check fills with a local value (<TAG>, <IDENTITY>), and it fails the check when it
-          exits non-zero; a verify command whose subject is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>,
+        then: 'every command of the guide''s sh blocks is judged in customer order; a command runs only when it is cosign verify, verify-attestation, verify-blob or verify-blob-attestation forms or jq joined by pipes and every operand is a local file or a placeholder Check fills with a local value (<TAG>), and it fails the check when it exits non-zero; Check never holds the release key, so a command naming <RELEASE_KEY> is never run and must be listed in the cannot-run list; a verify command whose subject is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>,
           a literal registry reference or oci://) needs a registry and is never run: it must be listed exactly,
           with a reason, in the guide''s cannot-run list and is then reported as not-run, else the check fails
           closed; any other command the check cannot run fails unless listed; a guide with no command or more
           than ten fails; an undefined, twice-defined or unsubstituted placeholder fails; $ outside single quotes
-          fails; a cannot-run entry that is runnable or not in the guide fails; the results file lists each command
+          fails; a cannot-run entry that is runnable or not in the guide fails; a listed verify command fails unless each of its verify forms carries exactly one key flag whose value is <RELEASE_KEY> and no flag but --key, --bundle, --type and --check-claims; the results file lists each command
           with its outcome; and the CI guide check is satisfied only when the guide exists and its cannot-run
           list is empty'
         verification: { method: unit, release_blocking: true }
@@ -5028,7 +5018,7 @@ requirements:
   - id: REQ-CHAIN-007
     title: Release verifies everything first, then alone holds the credentials and publishes the exact bytes
     statement: >
-      The Release stage shall verify every earlier stage's signed record, in a fixed order, first in a job that holds neither a secret nor a write token and again in the credential-holding job before any step of it explicitly binds a credential, and only then use the apk signing key and the registry credentials, which no other job holds, to sign the released apks, publish by digest the exact bytes Build made and Rebuild and Check judged, read the registry back, sign everything a customer verifies keyless with a Rekor entry (images in both registries, SBOMs, lock files, the dependency evidence and the release policy), and attach the evidence to the release, without building anything and without creating a version tag.
+      The Release stage shall verify every earlier stage's signed record, in a fixed order, first in a job that holds neither a secret nor a write token and again in the credential-holding job before any step of it explicitly binds a credential, and only then use the registry credentials, which no other job holds, and the release key in the key service (no stored key), to sign the released apks, publish by digest the exact bytes Build made and Rebuild and Check judged, read the registry back, sign everything a customer verifies keyless with a Rekor entry (images in both registries, SBOMs, lock files, the dependency evidence and the release policy), and attach the evidence to the release, without building anything and without creating a version tag.
     source: [.github/workflows/stage-promote.yml, .github/workflows/release.yml, bin/release-verify.sh, bin/release-apks.sh, bin/release-publish.sh, bin/release-sign.sh, bin/release-assets.sh, .github/policy/chain-scripts.json]
     tier: community
     introduced: v0.3.0
@@ -5051,7 +5041,7 @@ requirements:
       flags. Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets,
       release-postverify) so that a credential reaches only the step that needs it and a step stays far below
       the ten-minute Fulcio certificate. PROPOSED/UNVERIFIED: the script names and command lines of bin/release-*.sh;
-      the tool that re-signs an apk with the stored key (melange sign is assumed; cache-3f''s apk-tool.py
+      the tool that re-signs an apk with the release key through the key service (cosign with AWS KMS is assumed; cache-3f''s apk-tool.py
       signer reports assembly.rsa.pub, release.rsa.pub or unsigned and is fixed by cache''s tests); the copy
       tool (crane, pinned by checksum through bin/install-scanner.sh); the registry-state check before publishing;
       the artifact names images and apks; the floating tags (REQ-REL-009 moves them for finals only); and
@@ -5092,20 +5082,15 @@ requirements:
           condition `if: ${{ !contains(github.ref_name, ''-'') }}` (a release candidate ends after the verify
           job and never enters the release environment, AC14), is in the environment named release, has permissions
           exactly contents write, packages write and id-token write, and, because its own write tokens exist from
-          the start of the job, it starts only after the verify job passed and carries no explicit credential
-          binding (no env, no secret, no reference to the job token) in any step up to and including its re-run
+          the start of the job, it starts only after the verify job passed and carries no explicit credential binding (no secret, no reference to the job token, and no env except the three literal federation entries of AC18) in any step up to and including its re-run
           of release-verify (AC2); its steps are exactly, in this order, a digest-pinned checkout (persist-credentials
           false and nothing else), one step per tool each running `bash bin/install-scanner.sh witness`, `bash
-          bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, then one more step running `bash
-          bin/install-build-tools.sh melange` (the pinned melange binary that cache''s bin/release-sign-apks.sh,
-          run by release-apks, requires at /usr/local/bin/melange; it is installed with no env and no secret and
-          before any step that binds a credential, exactly as Build''s apk job installs it), digest-pinned downloads
+          bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, (the release job installs no build tool: the apks are signed through cosign with the release key, not with melange), digest-pinned downloads
           of named artifacts into explicit paths outside bin/ and .github/ (among them the artifact check-results
           into check-results/, Check''s govulncheck stream), then the six witnessed steps release-verify (the
           re-run on the release job''s own downloads: the first witnessed step, before any credential step), release-apks,
           release-publish, release-sign, release-assets and release-postverify (as amended 2026-10-10), each one
-          line `bash bin/witnessed.sh STEP bin/STEP.sh` and nothing else in the step except an `env` block of
-          exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the
+          line `bash bin/witnessed.sh STEP bin/STEP.sh` and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step together with the three literal federation entries of AC18, and, for every step after release-verify, the
           one condition `if: ${{ !contains(github.ref_name, ''-'') }}` (a release candidate ends after release-verify,
           AC14); bin/witnessed.sh accepts exactly these six step names besides the ones of Build, Rebuild and
           Check and writes each record to witness-STEP/STEP-collection.json, then digest-pinned uploads of named
@@ -5116,13 +5101,13 @@ requirements:
       - id: REQ-CHAIN-007-AC2
         given: "the steps of the release job"
         when: "the credentials they name are read"
-        then: "no step up to and including release-verify has an env key or names a secret, a token or an environment credential; afterwards each credential reaches only the steps that need it, as a whole read of a secret or of the job token and nothing else: the apk signing key (APK_RELEASE_SIGNING_KEY) only in release-apks, the registry credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) only in release-publish and release-sign, the GitHub token (GH_TOKEN) only in release-publish, release-sign, release-assets and release-postverify (which uses it read-only, for gh attestation verify); any other name, a second use, or a name read in part is refused"
+        then: "no step up to and including release-verify has an env key or names a secret, a token or an environment credential; afterwards each credential reaches only the steps that need it, as a whole read of a secret or of the job token, or, on the steps that sign with the release key, the three literal federation entries of REQ-CHAIN-007-AC18, and nothing else: no stored signing key exists (release-apks signs through the key service by the reference RELEASE_KMS_KEY_REF, which is not a secret), the registry credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) only in release-publish and release-sign, the GitHub token (GH_TOKEN) only in release-publish, release-sign, release-assets and release-postverify (which uses it read-only, for gh attestation verify); any other name, a second use, or a name read in part is refused"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC3
         given: "every other workflow file of the release chain and release.yml"
         when: "they are read"
-        then: "none grants packages write, names a secret (stage files), the registry token DOCKERHUB_TOKEN or the apk signing key APK_RELEASE_SIGNING_KEY, or uses the release environment; only the release job of stage-promote.yml holds them, release.yml grants write only to its release job's call of stage-promote.yml and passes no secrets to the stage calls (the daily rescan keeps its own read-only Docker Hub Scout token, DOCKERHUB_SCOUT_TOKEN, in the agent environment: a different credential)"
+        then: "none grants packages write, names a secret (stage files), or the registry token DOCKERHUB_TOKEN, or uses the release environment; only the release job of stage-promote.yml holds it, release.yml grants write only to its release job's call of stage-promote.yml and passes no secrets to the stage calls (the daily rescan keeps its own read-only Docker Hub Scout token, DOCKERHUB_SCOUT_TOKEN, in the agent environment: a different credential)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC4
@@ -5138,9 +5123,9 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC6
-        given: "bin/release-apks.sh with the stored key in APK_RELEASE_SIGNING_KEY"
+        given: "bin/release-apks.sh with the release key's reference in RELEASE_KMS_KEY_REF"
         when: "it signs the released apks"
-        then: "it maps Build's artifacts to the layout cache's bin/release-sign-apks.sh reads through the fixed table of AC17, checks that each of the four apks (standard and fips, amd64 and arm64) has exactly the digest Build attested in digests.json (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) and refuses before signing otherwise, writes the key to a private file named release.rsa that is removed on every exit and never put on a command line, in the output or in a log, runs `bash bin/release-sign-apks.sh --build-dir B --key K` (it signs Build's apks and nothing else; Release receives no Rebuild output, because the comparison of Build's and Rebuild's apks is bin/release-compare.sh's, in a job without the key; Release does not call melange itself), requires each result to carry the release key and the attested digest again, and refuses at once, naming the variable, when the key is missing"
+        then: "it maps Build's artifacts to the layout cache's bin/release-sign-apks.sh reads through the fixed table of AC17, checks that each of the four apks (standard and fips, amd64 and arm64) has exactly the digest Build attested in digests.json (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) and refuses before signing otherwise, holds no key and writes no key file (the signature is made by the release key in AWS KMS, through cosign), runs `bash bin/release-sign-apks.sh --build-dir B` (it signs Build's apks and nothing else; Release receives no Rebuild output, because the comparison of Build's and Rebuild's apks is bin/release-compare.sh's, in a job without the key; Release does not call melange itself), requires each result to carry the release key and the attested digest again, copies each apk's Rekor bundle beside it in release-apks, and refuses at once, naming the variable, when RELEASE_KMS_KEY_REF is missing"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC7
@@ -5192,13 +5177,13 @@ requirements:
       - id: REQ-CHAIN-007-AC14
         given: "a tag that matches exactly ^v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; leading zeros accepted as for vX.Y.Z)"
         when: "release.yml runs on it"
-        then: "Build, Sign, Rebuild, Check, the hostile jobs and Release's release-verify run exactly as for a final tag, and then the release job ends: every step of stage-promote.yml after release-verify carries `if: ${{ !contains(github.ref_name, '-') }}` and is skipped, so no step reads the apk signing key or a registry credential, nothing is pushed to any registry, no GitHub release is created, no floating tag moves and no patch automation runs; every script after release-verify also refuses a tag that is not vX.Y.Z; a tag that contains rc but does not match (-RC1, -rc, -rc1x, -rc.1, rc in the middle, a missing hyphen) is not a release candidate and release-verify's tag rule refuses it before any record is read; a record made for a release candidate is refused for the final tag with the same digests and the reverse (the policy and the identities carry the tag)"
+        then: "Build, Sign, Rebuild, Check, the hostile jobs and Release's release-verify run exactly as for a final tag, and then the release job ends: every step of stage-promote.yml after release-verify carries `if: ${{ !contains(github.ref_name, '-') }}` and is skipped, so no step uses the release key in the key service or reads a registry credential, nothing is pushed to any registry, no GitHub release is created, no floating tag moves and no patch automation runs; every script after release-verify also refuses a tag that is not vX.Y.Z; a tag that contains rc but does not match (-RC1, -rc, -rc1x, -rc.1, rc in the middle, a missing hyphen) is not a release candidate and release-verify's tag rule refuses it before any record is read; a record made for a release candidate is refused for the final tag with the same digests and the reverse (the policy and the identities carry the tag)"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC15
         given: "bin/witnessed.sh"
         when: "its Witness call is read"
-        then: "it keeps out of every record, through --env-add-sensitive-key, the identity-token variables (ACTIONS_ID_TOKEN_REQUEST*, ACTIONS_RUNTIME_TOKEN, SIGSTORE_ID_TOKEN), GH_TOKEN, GITHUB_TOKEN and Release's three credential names APK_RELEASE_SIGNING_KEY, DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and only the step release-sign receives an identity token in its environment (SIGSTORE_ID_TOKEN, minted by the helper with audience sigstore and masked; a failed or empty fetch stops the helper before anything runs), every other step none; the judge of the helper's exact text pins the list and the release-sign-only branch; a record that names one of them is refused (AC12)"
+        then: "it keeps out of every record, through --env-add-sensitive-key, the identity-token variables (ACTIONS_ID_TOKEN_REQUEST*, ACTIONS_RUNTIME_TOKEN, SIGSTORE_ID_TOKEN), GH_TOKEN, GITHUB_TOKEN and Release's two credential names DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and only the steps release-sign and release-apks, the two scripts that sign with the release key through cosign, keep the web identity token file and the role (AWS_WEB_IDENTITY_TOKEN_FILE, AWS_ROLE_ARN) in the environment of their script, every other step none; the judge of the helper's exact text pins the list and the release-sign-only branch; a record that names one of them is refused (AC12)"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC16
@@ -5216,7 +5201,7 @@ requirements:
       - id: REQ-CHAIN-007-AC18
         given: "chain-scripts.json and the five stage files that run the chain"
         when: "they are judged"
-        then: "a stored secret (secrets.*) appears in no step, condition or job of Build, Sign, Rebuild or Check, and in Release only as the exact value of the four named env entries; the run's own token (GH_TOKEN = ${{ github.token }}) appears only in Build job apk for the admission step (bin/witnessed-local.sh, bin/build-stage-apk.sh, bin/build-admit.py) with job permissions exactly contents, checks, statuses, pull-requests read and no id-token, and in Release job release (contents, packages, id-token write) for release-publish, release-sign, release-assets and release-postverify; APK_RELEASE_SIGNING_KEY only for release-apks; DOCKERHUB_USERNAME and DOCKERHUB_TOKEN only for release-publish and release-sign; any other name, place or script, a name twice at one place, a sixth row or a value that is not the exact one is refused"
+        then: "a stored secret (secrets.*) appears in no step, condition or job of Build, Sign, Rebuild or Check, and in Release only as the exact value of the named DOCKERHUB_USERNAME and DOCKERHUB_TOKEN env entries (release-publish and release-sign); the run's own token (GH_TOKEN = ${{ github.token }}) appears only in Build job apk for the admission step (bin/witnessed-local.sh, bin/build-stage-apk.sh, bin/build-admit.py) with job permissions exactly contents, checks, statuses, pull-requests read and no id-token, and in Release job release (contents, packages, id-token write) for release-publish, release-sign, release-assets and release-postverify; no stored secret for release-apks; DOCKERHUB_USERNAME and DOCKERHUB_TOKEN only for release-publish and release-sign; the three federation entries AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF are literals, never a secret or a variable lookup, set as step env (never job or workflow env) on exactly the steps that run bin/witness-sign-staged.sh, bin/witnessed.sh or bin/chain-verify.py sign or sign-record, in the four signing jobs only (stage-sign.yml sign, sign-rebuild and sign-check, and stage-promote.yml release); AWS_ROLE_ARN is the role fosterstack-cache-release-signing, AWS_REGION the region of the key, and RELEASE_KMS_KEY_REF is byte-equal to chain-verify.py RELEASE_KEY_REF; any other name, place or script, a name twice at one place, a row not in this list or a value that is not the exact one is refused"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC19
@@ -5254,7 +5239,7 @@ requirements:
           the published release into release-published/ (as amended 2026-10-10, "run those commands right after
           publishing"; decided 2026-10-15)
         when: "bin/release-postverify.py runs them"
-        then: "release-published/ must be a directory, else the run fails before anything runs; every command runs with that directory as its working directory, so the guide's bare file names resolve as they do for a customer, and a command that names a file absent from it fails the run after all have run; a command made only of jq is accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time only after that verify exited 0 (a jq-only command with no earlier verify of the same file, with no file operand, with an option that reads other files or loads a program, or listed before its verify is refused and nothing runs; one whose earlier verify failed is not run and fails the run); the form rule for every other command (a pipe of verify forms and jq with at least one verify form, no other shell syntax) and every other refusal are unchanged"
+        then: "release-published/ must be a directory, else the run fails before anything runs; every command runs with that directory as its working directory, so the guide's bare file names resolve as they do for a customer, and a command that names a file absent from it fails the run after all have run; a named bundle file that is present and is not JSON, resolves outside release-published/, or whose verificationMaterial carries a certificate or a certificate chain is refused before any command runs; a command made only of jq is accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time only after that verify exited 0 (a jq-only command with no earlier verify of the same file, with no file operand, with an option that reads other files or loads a program, or listed before its verify is refused and nothing runs; one whose earlier verify failed is not run and fails the run); the form rule for every other command (a pipe of verify forms and jq with at least one verify form, no other shell syntax) and every other refusal are unchanged"
         verification: { method: unit, release_blocking: false }
         status: approved
       # Source: decided 2026-10-16 (nothing produced dist/checksums.txt, which AC9 attaches and release-sign.sh signs).
@@ -5466,7 +5451,7 @@ requirements:
   - id: REQ-BUILDAPK-001
     title: The apk is built by melange from vendored source, sealed from the network, assembly-signed
     statement: >
-      The fscache apk, regular and FIPS, shall be built by melange from two recipe files of identical source that differ only in the FIPS setting, from vendored Go code, the Go toolchain from the archive and build tools pinned by version, with the network cut at the kernel; it shall be signed during Build and Rebuild with a committed non-secret assembly key, and signed with the release key only by the Release job after Build and Rebuild produce the same package contents.
+      The fscache apk, regular and FIPS, shall be built by melange from two recipe files of identical source that differ only in the FIPS setting, from vendored Go code, the Go toolchain from the archive and build tools pinned by version, with the network cut at the kernel; it shall be signed during Build and Rebuild with a committed non-secret assembly key, and signed with the release key, held in AWS KMS and used through the key service with no stored key, only by the Release job after Build and Rebuild produce the same package contents.
     source: [build/melange.yaml, build/melange-fips.yaml, bin/build-apk.sh, bin/release-sign-apks.sh, build/keys/assembly.rsa, build/keys/assembly.rsa.pub, build/keys/release.rsa.pub]
     tier: community
     introduced: v0.3.0
@@ -5509,7 +5494,7 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC2
-        given: "bin/build-apk.sh is run with an architecture other than the host's, a version that is not exactly X.Y.Z, X.Y.Z-rcN (numbers without leading zeros, N digits without a leading zero and no dot) or the one snapshot version 0.0.0-rc.1, no, a non-numeric or an impossible SOURCE_DATE_EPOCH, --signing-key, APK_RELEASE_SIGNING_KEY or a proxy in the environment, a GOPROXY other than the exact value off, a non-local or missing --repo, a missing keyring, a source directory without vendor/ or .git, a Go tarball missing from the archive or with the wrong sha256, or a melange lock that lacks a pin of the recipe"
+        given: "bin/build-apk.sh is run with an architecture other than the host's, a version that is not exactly X.Y.Z, X.Y.Z-rcN (numbers without leading zeros, N digits without a leading zero and no dot) or the one snapshot version 0.0.0-rc.1, no, a non-numeric or an impossible SOURCE_DATE_EPOCH, --signing-key, RELEASE_KMS_KEY_REF or a proxy in the environment, a GOPROXY other than the exact value off, a non-local or missing --repo, a missing keyring, a source directory without vendor/ or .git, a Go tarball missing from the archive or with the wrong sha256, or a melange lock that lacks a pin of the recipe"
         when: "it starts"
         then: it exits 2 naming the problem before any tool runs
         verification: { method: unit, release_blocking: false }
@@ -5569,18 +5554,15 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC7
-        given: "bin/release-sign-apks.sh with a Build output directory and a key"
+        given: "bin/release-sign-apks.sh with a Build output directory and RELEASE_KMS_KEY_REF in the environment"
         when: "it runs"
-        then: it signs each apk in the Build directory with melange sign and that key; it takes no Rebuild directory
+        then: >-
+          it signs each apk in the Build directory by having cosign sign the apk's control section with the release key in AWS KMS, named by RELEASE_KMS_KEY_REF, taking the signature from the bundle cosign writes (its messageSignature, whose messageDigest must be the SHA2_256 of exactly that control section), and putting it in front of the apk as its one .SIGN.RSA256.release.rsa.pub member in a signature segment that holds no end-of-archive block; it takes no key file: --key is an unknown argument (exit 2), and an unset RELEASE_KMS_KEY_REF or one that is not awskms:///<name> is refused (exit 2) before any tool runs; it takes no Rebuild directory
           (the comparison of Build's and Rebuild's apks is bin/release-compare.sh's, in a job without the key,
           and a --rebuild-dir is an unknown argument, exit 2); it signs nothing and exits 2 when anything is a
-          symlink or not a regular file or when Build carries a signature other than the assembly key's, and exits
-          1 when a signing step fails with nothing in Build's directory changed; the key file must be named release.rsa
-          and hold exactly one PEM block labelled RSA PRIVATE KEY (no headers, no CR, no second block), its public
-          half is derived from that one block, and the assembly key is refused whatever its bytes or file name;
+          symlink or not a regular file or when Build carries a signature other than the assembly key's, and exits 1 when a signing step fails, when the bundle holds no decodable messageSignature or a messageDigest that is not that of the signed control section, when a signature does not verify as RSA PKCS#1 v1.5 SHA-256 against the committed release.rsa.pub (openssl, checked after each signing, so a PSS signature never ships), or when a bundle does not hold exactly one Rekor entry, with nothing in Build's directory changed;
           it first verifies the signature bytes of every Build apk against the committed assembly.rsa.pub, signs
-          copies, checks that each carries a signature that verifies against the committed release.rsa.pub, and
-          replaces Build's apks only when all succeeded; it has no option and no variable that names another keys
+          copies, checks that each carries exactly one signature that verifies against the committed release.rsa.pub with the digest unchanged, and replaces Build's apks (and writes each <apk>.bundle beside it) only when all succeeded; it has no option and no variable that names another keys
           directory; it runs from the repository root only and names bin/apk-tool.py by its literal repo-root
           path (a run from another directory is refused with a message naming the repository root), and reads
           the apk names it finds with read -r
@@ -5591,7 +5573,7 @@ requirements:
         when: "they are read"
         then: the assembly pair is committed and starts with the line saying it is a non-secret assembly key that signs
           nothing a customer trusts; the third file, release.rsa.pub, holds no key and no PEM block (plain placeholder
-          text) until a human commits the real public half of the release signing key; release signing refuses
+          text) until a human commits the real public half of the release key (the public half of the key in AWS KMS); release signing refuses
           with 'not a readable public key' while it is a placeholder; and no private key text appears under build/keys
           except in the committed non-secret assembly.rsa
         verification: { method: unit, release_blocking: false }

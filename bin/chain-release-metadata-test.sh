@@ -205,8 +205,8 @@ check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
       "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
 t1 = ac("REQ-CHAIN-007", 1)["then"]
-check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
-      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name (accepted Oct 13)")
+check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step together with the three literal federation entries of AC18, and, for every step after release-verify, the one condition" in t1,
+      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name and the three federation entries of AC18")
 check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
       "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message; Codex 4b-2 r1 B2)")
 check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
@@ -257,8 +257,8 @@ check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 
       "text: REQ-CHAIN-007-AC21 names only the checksums command (it makes the archive check itself) and says no test creates the signed file")
 # rc-2 signing review R6 (wording stale since the Oct 21 rule): the texts, comments and the reason say what the scripts do
 t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
-check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B --key K" in t6 and "release-compare.sh" in t6,
-      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and --key only; the comparison is release-compare.sh's")
+check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B`" in t6 and "--key K" not in t6 and "release-compare.sh" in t6,
+      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir only (no key option); the comparison is release-compare.sh's")
 check("release-sign: cosign, git, jq and python3" in t10, "text: REQ-CHAIN-007-AC10 lists git among release-sign's tools")
 b7 = ac("REQ-BUILDAPK-001", 7)["then"]
 check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
