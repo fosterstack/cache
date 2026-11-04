@@ -100,20 +100,35 @@ t "REQ-BUILDAPK-001-AC1" "the generated recipe for v1.1.0-deadbeef sets GOFIPS14
 t "REQ-BUILDAPK-001-AC1" "the generated recipe for v1.1.0-deadbeef proves GOFIPS140=v1.1.0-deadbeef against its own lock" env FIPS_LOCK="$work/lib-lock-new.txt" ROOT="$root" python3 "$work/chk.py" mel-fipsproof "$work/gen-new/melange-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "the generated recipe for v1.1.0-deadbeef is refused against the old lock (a recipe and a lock that disagree fail)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips && ! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fipsproof "$4"' _ "$work/lib-lock-cur.txt" "$root" "$work/chk.py" "$work/gen-new/melange-fips.yaml"
 sed 's/GOFIPS140=v1\\.1\\.0-deadbeef/GOFIPS140=v1\\.1\\.0-deadbeef9/' "$work/gen-new/melange-fips.yaml" >"$work/gen-new/prefix-fips.yaml"
-t "REQ-BUILDAPK-001-AC1" "a proof line for v1.1.0-deadbeef9 is refused against the lock v1.1.0-deadbeef (the id ends at a quote, whitespace or the end: a longer id with the lock's id as prefix is another module)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fipsproof "$4"' _ "$work/lib-lock-new.txt" "$root" "$work/chk.py" "$work/gen-new/prefix-fips.yaml"
-# the proof line runs against stub `go version -m` output: it must hold on the exact build line and on nothing else (queue line 548)
-printf 'path\tgithub.com/fosterstack/cache/cmd/fscache\n\tbuild\t-trimpath=true\n\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n' >"$work/bi-exact.txt"
-printf 'path\tgithub.com/fosterstack/cache/cmd/fscache\n\tbuild\t-trimpath=true\n' >"$work/bi-none.txt"
-printf 'path\tgithub.com/fosterstack/cache/cmd/fscache\n\tbuild\tGOFIPS140=v1.0.0-c2097c7c9\n' >"$work/bi-longer.txt"
-printf 'path\tgithub.com/fosterstack/cache/cmd/fscache\n\tbuild\tGOFIPS140=v1.0.0-c2097c7\n' >"$work/bi-shorter.txt"
+t "REQ-BUILDAPK-001-AC1" "a whole-line proof for v1.1.0-deadbeef9 is refused against the lock v1.1.0-deadbeef (a longer id with the lock's id as prefix is another module)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fipsproof "$4"' _ "$work/lib-lock-new.txt" "$root" "$work/chk.py" "$work/gen-new/prefix-fips.yaml"
+# the proof line runs against stub `go version -m` output: it must hold on the exact build line and on nothing else
+# the ids come from the lock, so a lock refresh does not turn these cases red
+fid=$(cat "$root/build/locks/fips-module.txt")
+stub() { printf 'path\tgithub.com/fosterstack/cache/cmd/fscache\n%b' "$2" >"$work/bi-$1.txt"; }
+stub exact "\tbuild\t-trimpath=true\n\tbuild\tGOFIPS140=$fid\n"
+stub none "\tbuild\t-trimpath=true\n"
+stub longer "\tbuild\tGOFIPS140=${fid}9\n"
+stub shorter "\tbuild\tGOFIPS140=${fid%?}\n"
+stub nonbuild "\tdep\tGOFIPS140=$fid\n"
+stub trailing "\tbuild\tGOFIPS140=$fid extra\n"
+stub cr "\tbuild\tGOFIPS140=$fid\r\n"
 t "REQ-BUILDAPK-001-AC1" "the proof line of melange-fips.yaml passes on build info with the exact GOFIPS140 build line" env ROOT="$root" python3 "$work/chk.py" mel-proofrun "$MF" "$work/bi-exact.txt"
-t "REQ-BUILDAPK-001-AC1" "the proof line fails on build info with no GOFIPS140 line" bash -c '! env ROOT="$1" python3 "$2" mel-proofrun "$3" "$4"' _ "$root" "$work/chk.py" "$MF" "$work/bi-none.txt"
-t "REQ-BUILDAPK-001-AC1" "the proof line fails on build info whose GOFIPS140 value has a longer id (v1.0.0-c2097c7c9)" bash -c '! env ROOT="$1" python3 "$2" mel-proofrun "$3" "$4"' _ "$root" "$work/chk.py" "$MF" "$work/bi-longer.txt"
-t "REQ-BUILDAPK-001-AC1" "the proof line fails on build info whose GOFIPS140 value is a shorter id (v1.0.0-c2097c7)" bash -c '! env ROOT="$1" python3 "$2" mel-proofrun "$3" "$4"' _ "$root" "$work/chk.py" "$MF" "$work/bi-shorter.txt"
+for c in "none|has no GOFIPS140 line" "longer|has a longer id" "shorter|has a shorter id" "nonbuild|has the value on a line that is not a build line" "trailing|has text after the id" "cr|ends the line with a carriage return"; do
+  t "REQ-BUILDAPK-001-AC1" "the proof line fails on build info that ${c#*|}" bash -c '! env ROOT="$1" python3 "$2" mel-proofrun "$3" "$4"' _ "$root" "$work/chk.py" "$MF" "$work/bi-${c%%|*}.txt"
+done
 grep -v "grep .*gobuildinfo" "$MF" >"$work/gen-new/noproof-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe with the proof line removed is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/noproof-fips.yaml"
 sed "s/grep -Eqx /grep -q /" "$MF" >"$work/gen-new/substr-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe whose proof line is the substring form (grep -q) is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/substr-fips.yaml"
+awk '{print} /grep .*gobuildinfo/{print}' "$MF" >"$work/gen-new/dup-fips.yaml"
+t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe with the proof line twice is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/dup-fips.yaml"
+# bin/check-artifacts.sh checks the built -fips binary the same way: its own grep command, from the script's text, run on the stubs
+ca_cmd=$(sed -n 's/^\(grep -E.*GOFIPS140=v1.*\) <<< "\$info_fips".*/\1/p' "$root/bin/check-artifacts.sh")
+t "REQ-FIPS-001-AC1" "bin/check-artifacts.sh has one grep command for the -fips build info" test "$(printf '%s\n' "$ca_cmd" | grep -c .)" = 1
+t "REQ-FIPS-001-AC1" "the check-artifacts.sh command passes on build info with the exact GOFIPS140 build line" bash -c 'bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-exact.txt"
+for c in longer shorter; do
+  t "REQ-FIPS-001-AC1" "the check-artifacts.sh command fails on build info with a $c id" bash -c '! bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-$c.txt"
+done
 printf 'v1.1.0-DEADBEEF\n' >"$work/lib-lock-bad.txt"
 t "REQ-BUILDAPK-001-AC1" "a malformed lock file fails the recipe checks (closed grammar, fail closed)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips' _ "$work/lib-lock-bad.txt" "$root" "$work/chk.py" "$MF"
 t "rule 21" "bin/gen-recipes.py --check passes on the committed pair: both recipes are exactly the generator's output from build/melange.yaml.tmpl, so they differ only in name, description and the two FIPS lines" python3 "$root/bin/gen-recipes.py" --check

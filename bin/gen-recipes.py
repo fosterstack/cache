@@ -132,7 +132,8 @@ def generate(text, variant, packages, module):
     fips = variant == "fips"
     name, desc = ("fscache-fips", "the cache server, built with the Go FIPS 140-3 module") if fips else ("fscache", "the cache server")
     export = "      export GOFIPS140=" + module.split("-")[0]
-    # the proof is captured to a file and searched there: a pipe could end the first process early (SIGPIPE under pipefail) and fail a correct binary
+    # the proof is captured to a file and searched there: a pipe could end the first process early (SIGPIPE under pipefail) and fail a correct binary.
+    # Each bare '.' in the pattern is the tab Go writes around "build" (the template allows no tab or bracket); -x anchors both ends.
     proof = "      go version -m ${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt\n      grep -Eqx '.build.GOFIPS140=%s' /tmp/fscache-gobuildinfo.txt" % module.replace(".", "\\.")
     out = []
     for ln in text.split("\n"):

@@ -140,7 +140,7 @@ def read_recipe(rec, fips):
         fail("%s: the pipeline holds a line, or lacks one, that the closed grammar does not know (the lines outside the build, version, export and fetch forms are not the template's)" % rec)
     if len(pkgs) != 1 or ".." in pkgs[0]:
         fail("%s holds %d build lines of the one allowed form, not exactly one: the shipped main package is not known" % (rec, len(pkgs)))
-    if fips and (fips_exports != 1 or proofs > 1):
+    if fips and (fips_exports != 1 or proofs != 1):
         fail("%s must set GOFIPS140=v1.0.0 exactly once (the FIPS build)" % rec)
     return pkgs[0], cgo.strip('"')
 
