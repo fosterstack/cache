@@ -27,6 +27,7 @@ Look up the image digest you run (`cache:${VER}` is the production image; for th
 
 ```sh
 DIGEST=$(docker buildx imagetools inspect "ghcr.io/fosterstack/cache:${VER}" --format '{{.Manifest.Digest}}')
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
 ```
 
 Download the three files:
@@ -37,17 +38,16 @@ curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fost
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.csaf.json"
 ```
 
-The release already signs a manifest of everything it ships, attached to each image as an attestation made by our
-promotion workflow (the same signing [verify-images.md](verify-images.md) checks). The manifest records the sha256 of
-each VEX file. Verify the attestation, pinned to that workflow and this release's tag, then check every file against
+The release already signs a manifest of everything it ships, attached to each image as an attestation signed with our
+release key (the same signing [verify-images.md](verify-images.md) checks). The manifest records the sha256 of
+each VEX file. Verify the attestation against the release key, then check every file against
 it:
 
 ```sh
 (set -eo pipefail
 cosign verify-attestation "ghcr.io/fosterstack/cache@${DIGEST}" \
   --type https://fosterstack.com/attestations/release-manifest/v1 \
-  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' > release-manifest.attestation.json
+  --key release.rsa.pub > release-manifest.attestation.json
 jq -r '.payload' release-manifest.attestation.json | base64 -d | jq '.predicate' > release-manifest.verified.json
 jq -r '.vex[] | "\(.sha256)  \(.file)"' release-manifest.verified.json | sha256sum -c
 )

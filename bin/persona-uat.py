@@ -1435,7 +1435,7 @@ def verified_digest(answer, image):
     """the compliance reviewer's proof of exercising the RC image, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
     PARSES as `cosign verify` (never verify-attestation alone: the guide verifies provenance with gh, and a bare attestation proves nothing about the signature) of exactly ONE
     image argument that IS the image under test (the same registry and repository, @sha256:<the candidate digest>: not another repository with the same digest), carrying the
-    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub` and no identity or issuer), with no flag that changes what is verified (--key, --certificate, --offline, --insecure-ignore-*...),
+    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub` and no identity or issuer), with no flag that changes what is verified (--certificate, --offline, --insecure-ignore-*...),
     no help/version spelling, exit 0. Words in echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
     if not digest.startswith("sha256:") or "@" not in image:

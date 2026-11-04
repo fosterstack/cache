@@ -1372,7 +1372,7 @@ def rekor_entry_check(item, digest_hex, sig, pub_pem):
             return "the Rekor entry names another digest than the signed control stream"
         if base64.b64decode(spec["signature"]["content"], validate=True) != sig:
             return "the Rekor entry names another signature than the one made"
-        if base64.b64decode(spec["signature"]["publicKey"]["content"], validate=True) != pub_pem:
+        if pem_der(base64.b64decode(spec["signature"]["publicKey"]["content"], validate=True)) != pem_der(pub_pem):
             return "the Rekor entry names another public key than build/keys/release.rsa.pub"
     except (KeyError, TypeError, ValueError, AttributeError):
         return "the Rekor entry carries no readable hashedrekord body"

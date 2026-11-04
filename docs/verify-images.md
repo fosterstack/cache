@@ -92,8 +92,13 @@ verify them too: the Witness records of Build (`build-collection.json`,
 `acceptance-collection.json`, `runtime-collection.json`,
 `arm64-collection.json`). `release-manifest.json`, the OpenVEX, CSAF and
 inspector-filters files are covered by the signed `release-files.sha256`;
-the archives are covered by the signed `checksums.txt`. The commands for
-those two lists are in [`RELEASING.md`](../RELEASING.md#archives-and-metadata-files).
+the archives are covered by the signed `checksums.txt`. Verify each with the
+release key (fetched as above):
+
+```sh
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
+cosign verify-blob --key release.rsa.pub --bundle release-files.sha256.bundle release-files.sha256
+```
 
 ### The signed evidence files
 
@@ -122,7 +127,7 @@ image digest, not through a separate tag), to each public
 image digest (production and `-fips`; releases before v0.3.0 also `-debug`) on GHCR, which is authoritative, and <!-- pinned: historical -->
 on the Docker Hub mirror (best effort), BEFORE the GitHub release is
 published.
-The attestation exists from v0.2.1 on (v0.1.0 has none, so the command below fails there) and v0.3.0 and later attach it too, signed by `stage-promote.yml` in the Release stage's `release-sign` step; `release-manifest.json` is also a release file covered by the signed `release-files.sha256`. <!-- pinned: historical -->
+The attestation exists from v0.2.1 on (v0.1.0 has none, so the command below fails there) and v0.3.0 and later attach it too, signed with our release key; `release-manifest.json` is also a release file covered by the signed `release-files.sha256`. <!-- pinned: historical -->
 The `release-manifest.json` on the release page is the same
 content. It has no separate signature file, and `gh attestation verify
 <file>` does not apply to it: it is an attestation on the image, so verify

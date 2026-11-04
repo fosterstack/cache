@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
 done
 # the key is the KMS reference the job pins (as the release signing step reads it); the one check in bin/chain-verify.py (key-ref-check) refuses any other than the verifier's own, before any tool runs
 [ -n "${RELEASE_KMS_KEY_REF:-}" ] || die "RELEASE_KMS_KEY_REF is unset"
-"$PY3" -I -B "$KMSSIGN" key-ref-check || die "RELEASE_KMS_KEY_REF is not a KMS key reference of the release key (key-ref-check refused it)"
+"$PY3" -I -B "$KMSSIGN" key-ref-check --aws "$AWS" || die "RELEASE_KMS_KEY_REF is not a KMS key reference of the release key (key-ref-check refused it)"
 # RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); the AWS CLI reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
 case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) die "RELEASE_ROLE_ARN is unset (the release job's signing role)";; esac
 case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) die "RELEASE_TOKEN_FILE is unset (the release job's identity-token file)";; esac
