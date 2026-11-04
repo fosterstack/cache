@@ -1344,6 +1344,7 @@ def main(argv=None):
                 json.dump(state, f, sort_keys=True)
             os.replace(tmp, a.observations_out)
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
+            phase("history")
         try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
