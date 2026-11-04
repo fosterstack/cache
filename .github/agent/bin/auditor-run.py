@@ -466,7 +466,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     short = (commit or "unknown")[:12]
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = policy.subject("update suppressions (%d statements)" % nstmt)
-    body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
+    body = "Automated suppression update from the daily CVE auditor. Draft for review."
     # REQ-AUD-16 AC4/AC3: carry model PROPOSALS and the generated knowledge doc in the same draft
     # PR (proposals take effect only after the owner merges + an audit-lane reviewer promotes them).
     extra = [p for p in (".auditor/proposals/adjudicator-proposals.json", ".auditor/knowledge.md")

@@ -1706,7 +1706,7 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "pr", "edit", existing, "--body", body], plan, real, run)
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
-                 "--title", policy.subject("scanner panel audits (rules 7-9, 13, 14)"), "--body", body], plan, real, run)
+                 "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
     if changed or existing:     # the switch is re-checked every day, so it regains control of an armed PR (Sonnet r4)
         pr_paths = set(changed)
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
