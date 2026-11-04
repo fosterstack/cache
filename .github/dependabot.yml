@@ -18,14 +18,36 @@ updates:
     # construction and none can ever merge. Grouping makes them one PR that
     # moves all pins together. (Found Sep 7, 2026: PRs #12/#13/#15.)
     groups:
+      # Major only: a codeql-action major stays its own lane task. It must come first and be major-only:
+      # Dependabot gives a dependency to the first group that matches it, so its minor and patch fall through
+      # to actions-minor-patch below.
       codeql-action:
         patterns:
           - "github/codeql-action*"
+        update-types:
+          - "major"
+      # Minor and patch updates of the other actions arrive as ONE pull request instead of one each;
+      # a major never joins (it stays a lane task).
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    # Minor and patch updates of Go modules arrive as ONE pull request instead of one each;
+    # a major never joins (it stays a lane task).
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
   # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and

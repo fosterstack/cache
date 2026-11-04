@@ -215,21 +215,38 @@ def judge_db(d):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
+    ups_nogroups = {k: {a: b for a, b in v.items() if a != "groups"} for k, v in ups.items()}  # groups are judged below; the rest of gomod and docker stays unchanged
     want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
             "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
     for eco, entry in want.items():
-        if eco in ups and ups[eco] != entry:
+        if eco in ups and ups_nogroups[eco] != entry:
             bad.append(f"the {eco} entry is not unchanged")
     for eco in ("gomod", "docker"):
         if eco not in ups:
             bad.append(f"the {eco} entry is missing")
         elif "cooldown" in ups[eco]:
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
-    # groups (audit ruling Oct 31, cache-dependabot-grouping): github-actions keeps ONLY the codeql-action group (an action's only pin-age proof is the PR
-    # clock, restarted on every recreate, so no actions group yet); pip has exactly `pydantic`, then `pip-minor-patch` (minor and patch updates only, no
-    # patterns: it takes what the earlier group did not), in that order, because Dependabot gives a dependency to the first group that matches
-    if (ups.get("github-actions") or {}).get("groups") != {"codeql-action": {"patterns": ["github/codeql-action*"]}}:
-        bad.append("the github-actions groups are not exactly codeql-action (no actions group)")
+    # groups (audit ruling Oct 31, widened to the rule 12 shape, cache#817): every github-actions, gomod and pip entry has its minor-patch group with update-types
+    # exactly minor and patch (a major never joins a group, except codeql-action, which is major-only and stays FIRST because Dependabot gives a dependency to the first
+    # group that matches). docker is exempt by name (its entry stays byte-for-byte unchanged, no groups: "removed at the landing"). No group sets applies-to anywhere.
+    ag = (ups.get("github-actions") or {}).get("groups") or {}
+    if list(ag) != ["codeql-action", "actions-minor-patch"]:
+        bad.append("the github-actions groups are not exactly codeql-action then actions-minor-patch, in that order")
+    if ag.get("codeql-action") != {"patterns": ["github/codeql-action*"], "update-types": ["major"]}:
+        bad.append("the codeql-action group is not exactly github/codeql-action* with update-types major (major only)")
+    if ag.get("actions-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
+        bad.append("the actions-minor-patch group is not exactly patterns * with update-types minor and patch")
+    gg = (ups.get("gomod") or {}).get("groups") or {}
+    if list(gg) != ["gomod-minor-patch"]:
+        bad.append("the gomod groups are not exactly gomod-minor-patch")
+    if gg.get("gomod-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
+        bad.append("the gomod-minor-patch group is not exactly patterns * with update-types minor and patch")
+    if (ups.get("docker") or {}).get("groups"):
+        bad.append("the docker entry has groups (docker is exempt: its entry stays unchanged)")
+    for u in d.get("updates", []):
+        for gname, g in ((u.get("groups") or {}).items()):
+            if isinstance(g, dict) and "applies-to" in g:
+                bad.append(f"the {u.get('package-ecosystem')} group {gname} sets applies-to (none may: it would change which updates the group takes)")
     pg = (ups.get("pip") or {}).get("groups") or {}
     if list(pg) != ["pydantic", "pip-minor-patch"]:
         bad.append("the pip groups are not exactly pydantic then pip-minor-patch, in that order")
@@ -275,7 +292,7 @@ result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a par
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker; groups: codeql-action only on actions, pydantic then pip-minor-patch on pip" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, docker ungrouped, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -407,11 +424,43 @@ mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: ec
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))
 mut_db("gomod gets a cooldown", "gomod entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
 mut_db("docker gets a cooldown", "docker entry has a cooldown", lambda d: eco(d, "docker").update(cooldown={"default-days": "7"}))
-mut_db("github-actions gets an actions-minor-patch group", "github-actions groups are not exactly codeql-action",
-       lambda d: eco(d, "github-actions")["groups"].update({"actions-minor-patch": {"update-types": ["minor", "patch"]}}))
-mut_db("github-actions loses its codeql-action group", "github-actions groups are not exactly codeql-action", lambda d: eco(d, "github-actions").pop("groups"))
-mut_db("the codeql-action group widens", "github-actions groups are not exactly codeql-action",
+mut_db("github-actions loses its groups", "github-actions groups are not exactly codeql-action then actions-minor-patch", lambda d: eco(d, "github-actions").pop("groups"))
+mut_db("github-actions loses its actions-minor-patch group", "github-actions groups are not exactly codeql-action then actions-minor-patch", lambda d: eco(d, "github-actions")["groups"].pop("actions-minor-patch"))
+mut_db("the codeql-action group widens", "codeql-action group is not exactly",
        lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update(patterns=["github/*"]))
+mut_db("codeql-action loses major", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].pop("update-types"))
+mut_db("codeql-action takes minor too", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update({"update-types": ["major", "minor"]}))
+mut_db("actions-minor-patch drops update-types", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].pop("update-types"))
+mut_db("actions-minor-patch takes a major", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("actions-minor-patch takes patch only", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"update-types": ["patch"]}))
+mut_db("actions-minor-patch gets applies-to", "sets applies-to",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"applies-to": "security-updates"}))
+mut_db("codeql-action gets applies-to", "sets applies-to",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update({"applies-to": "version-updates"}))
+d = copy.deepcopy(real_db)    # dict equality ignores key order, so this one is judged directly too
+try:
+    eco(d, "github-actions")["groups"] = dict(reversed(list(eco(d, "github-actions")["groups"].items())))
+    found = judge_db(d)
+    ok = any("github-actions groups are not exactly codeql-action then actions-minor-patch" in x for x in found)
+except Exception as e:
+    found, ok = [f"{type(e).__name__}: {e}"], False
+result(ok, "caught: actions-minor-patch comes before codeql-action (reason: 'github-actions groups are not exactly codeql-action then actions-minor-patch')" + ("" if ok else f"; saw {found}"))
+mut_db("gomod loses its groups", "gomod groups are not exactly gomod-minor-patch", lambda d: eco(d, "gomod").pop("groups"))
+mut_db("gomod-minor-patch drops update-types", "gomod-minor-patch group is not exactly",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].pop("update-types"))
+mut_db("gomod-minor-patch takes a major", "gomod-minor-patch group is not exactly",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("gomod-minor-patch gets applies-to", "sets applies-to",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
+mut_db("docker gets a group", "docker entry has groups", lambda d: eco(d, "docker").update(groups={"docker-minor-patch": {"patterns": ["*"], "update-types": ["minor", "patch"]}}))
+mut_db("pip-minor-patch drops update-types", "pip-minor-patch group is not exactly update-types minor and patch", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("update-types"))
+mut_db("pip-minor-patch gets applies-to", "sets applies-to", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"applies-to": "version-updates"}))
+mut_db("pydantic gets update-types", "pip pydantic group is not exactly", lambda d: eco(d, "pip")["groups"]["pydantic"].update({"update-types": ["minor", "patch"]}))
 mut_db("pip loses the pip-minor-patch group", "pip groups are not exactly pydantic then pip-minor-patch", lambda d: eco(d, "pip")["groups"].pop("pip-minor-patch"))
 d = copy.deepcopy(real_db)    # dict equality ignores key order, so this one is judged directly instead of through mut_db
 eco(d, "pip")["groups"] = dict(reversed(list(eco(d, "pip")["groups"].items())))
