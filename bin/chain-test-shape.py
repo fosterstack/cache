@@ -1423,8 +1423,8 @@ stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml sup
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml"})
-    bad = ["workflow file %s was added (the only new file of v0.3.0 is stage-sign.yml, rule 52)" % f for f in added]
+    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "customer-words-edited.yml"})
+    bad = ["workflow file %s was added (stage-sign.yml is the only new signing file of v0.3.0, rule 52; customer-words-edited.yml is the one other new file, decision 98, Oct 3)" % f for f in added]
     return bad + ["%s still exists (PR 2 removes it, rules 50 and 61)" % f for f in ("stage-image.yml", "stage-admission.yml") if f in have]
 
 
