@@ -215,6 +215,8 @@ def judge_db(d):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
+        if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:  # exactly weekly and no extra key (no day, time or timezone)
+            bad.append(f"the {eco} entry's schedule is not exactly interval: weekly")
     ups_nogroups = {k: {a: b for a, b in v.items() if a != "groups"} for k, v in ups.items()}  # groups are judged below; the rest of gomod and docker stays unchanged
     want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
             "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
@@ -241,7 +243,7 @@ def judge_db(d):
         bad.append("the gomod groups are not exactly gomod-minor-patch")
     if gg.get("gomod-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
         bad.append("the gomod-minor-patch group is not exactly patterns * with update-types minor and patch")
-    if (ups.get("docker") or {}).get("groups"):
+    if "groups" in (ups.get("docker") or {}):  # presence, not truthiness: even an empty groups: {} is a change to the docker entry
         bad.append("the docker entry has groups (docker is exempt: its entry stays unchanged)")
     for u in d.get("updates", []):
         for gname, g in ((u.get("groups") or {}).items()):
@@ -458,6 +460,10 @@ mut_db("gomod-minor-patch takes a major", "gomod-minor-patch group is not exactl
 mut_db("gomod-minor-patch gets applies-to", "sets applies-to",
        lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
 mut_db("docker gets a group", "docker entry has groups", lambda d: eco(d, "docker").update(groups={"docker-minor-patch": {"patterns": ["*"], "update-types": ["minor", "patch"]}}))
+mut_db("docker gets an empty groups key", "docker entry has groups", lambda d: eco(d, "docker").update(groups={}))
+mut_db("github-actions schedule goes monthly", "github-actions entry's schedule is not exactly interval: weekly", lambda d: eco(d, "github-actions")["schedule"].update(interval="monthly"))
+mut_db("pip schedule goes monthly", "pip entry's schedule is not exactly interval: weekly", lambda d: eco(d, "pip")["schedule"].update(interval="monthly"))
+mut_db("github-actions schedule gains day monday", "github-actions entry's schedule is not exactly interval: weekly", lambda d: eco(d, "github-actions")["schedule"].update(day="monday"))
 mut_db("pip-minor-patch drops update-types", "pip-minor-patch group is not exactly update-types minor and patch", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("update-types"))
 mut_db("pip-minor-patch gets applies-to", "sets applies-to", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"applies-to": "version-updates"}))
 mut_db("pydantic gets update-types", "pip pydantic group is not exactly", lambda d: eco(d, "pip")["groups"]["pydantic"].update({"update-types": ["minor", "patch"]}))

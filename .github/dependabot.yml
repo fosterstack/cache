@@ -26,8 +26,8 @@ updates:
           - "github/codeql-action*"
         update-types:
           - "major"
-      # Minor and patch updates of the other actions arrive as ONE pull request instead of one each;
-      # a major never joins (it stays a lane task).
+      # Minor and patch updates of all actions, codeql-action included, arrive as ONE pull request
+      # instead of one each; a major never joins (it stays a lane task).
       actions-minor-patch:
         patterns:
           - "*"
