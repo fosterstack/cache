@@ -217,7 +217,8 @@ except Exception:
 
 def judge_db(d, gomod_dirs=GOMOD_DIRS):
     bad = []
-    seen, ups, gm = set(), {}, {}   # entries are keyed by (ecosystem, directory): a second gomod entry must not hide the first
+    # entries are keyed by (ecosystem, directory): a second gomod entry must not hide the first
+    seen, ups, gm = set(), {}, {}
     for u in d.get("updates", []):
         k = (u.get("package-ecosystem"), u.get("directory"))
         if k in seen:
@@ -231,9 +232,11 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
-        if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:  # exactly weekly and no extra key (no day, time or timezone)
+        # exactly weekly and no extra key (no day, time or timezone)
+        if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:
             bad.append(f"the {eco} entry's schedule is not exactly interval: weekly")
-    nog = lambda v: {a: b for a, b in v.items() if a != "groups"}  # groups are judged below; the rest of gomod and docker stays unchanged
+    # groups are judged below; the rest of gomod and docker stays unchanged
+    nog = lambda v: {a: b for a, b in v.items() if a != "groups"}
     if "docker" in ups and nog(ups["docker"]) != {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}:
         bad.append("the docker entry is not unchanged")  # the product's CVE-fix targets: byte-for-byte unchanged
     for gdir in ("/", "/tools/requirements"):  # both Go modules: the root and the nested tools/requirements module
@@ -249,7 +252,8 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
     elif "cooldown" in ups["docker"]:
         bad.append("the docker entry has a cooldown: product dependencies keep the 24-48h CVE target")
     # coverage: every tracked go.mod has a gomod entry and every gomod entry has a go.mod
-    # exact strings, no normalising: an entry spelled any other way ("/tools/requirements/", "tools/requirements", "./") has no go.mod and is red
+    # exact strings, no normalising: an entry spelled any other way ("/tools/requirements/", "tools/requirements", "./")
+    # has no go.mod and is red
     if gomod_dirs is None:
         bad.append("cannot list the tracked go.mod files (git ls-files failed)")
     else:
@@ -258,9 +262,11 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
             bad.append(f"go.mod at {want_dirs[w]} has no gomod entry")
         for g in sorted(set(gm) - set(want_dirs), key=repr):
             bad.append(f"gomod entry {g} has no go.mod")
-    # groups (audit ruling Oct 31, widened to the rule 12 shape, cache#817): every github-actions, gomod and pip entry has its minor-patch group with update-types
-    # exactly minor and patch (a major never joins a group, except codeql-action, which is major-only and stays FIRST because Dependabot gives a dependency to the first
-    # group that matches). docker is exempt by name (its entry stays byte-for-byte unchanged, no groups: "removed at the landing"). No group sets applies-to anywhere.
+    # groups (audit ruling Oct 31, widened to the rule 12 shape, cache#817): every github-actions, gomod and pip entry
+    # has its minor-patch group with update-types exactly minor and patch (a major never joins a group, except
+    # codeql-action, which is major-only and stays FIRST because Dependabot gives a dependency to the first group that
+    # matches). docker is exempt by name (its entry stays byte-for-byte unchanged, no groups: "removed at the landing").
+    # No group sets applies-to anywhere.
     ag = (ups.get("github-actions") or {}).get("groups") or {}
     if list(ag) != ["codeql-action", "actions-minor-patch"]:
         bad.append("the github-actions groups are not exactly codeql-action then actions-minor-patch, in that order")
@@ -274,7 +280,8 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
             bad.append(f"the gomod {gdir} groups are not exactly gomod-minor-patch")
         if gg.get("gomod-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
             bad.append(f"the gomod {gdir} gomod-minor-patch group is not exactly patterns * with update-types minor and patch")
-    if "groups" in (ups.get("docker") or {}):  # presence, not truthiness: even an empty groups: {} is a change to the docker entry
+    # presence, not truthiness: even an empty groups: {} is a change to the docker entry
+    if "groups" in (ups.get("docker") or {}):
         bad.append("the docker entry has groups (docker is exempt: its entry stays unchanged)")
     for u in d.get("updates", []):
         for gname, g in ((u.get("groups") or {}).items()):
@@ -285,7 +292,8 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
         bad.append("the pip groups are not exactly pydantic then pip-minor-patch, in that order")
     if pg.get("pydantic") != {"patterns": ["pydantic", "pydantic-core"]}:
         bad.append("the pip pydantic group is not exactly pydantic and pydantic-core")
-    # exclude-patterns ["pip"]: pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any other pin), so a bump of pip must not join a group
+    # exclude-patterns ["pip"]: pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any
+    # other pin), so a bump of pip must not join a group
     if pg.get("pip-minor-patch") != {"exclude-patterns": ["pip"], "update-types": ["minor", "patch"]}:
         bad.append("the pip-minor-patch group is not exactly update-types minor and patch with exclude-patterns pip (a major never joins a group; no patterns)")
     return bad
@@ -505,7 +513,8 @@ mut_db("the root entry is broken while tools/requirements stays", "the gomod / e
 mut_db("the root entry loses its group while tools/requirements stays", "the gomod / groups are not exactly gomod-minor-patch", lambda d: gmod(d, "/").pop("groups"))
 mut_db("the tools/requirements directory becomes /tools", "go.mod at tools/requirements has no gomod entry", lambda d: gmod(d, "/tools/requirements").update(directory="/tools"))
 mut_db("the tools/requirements directory becomes /tools (named)", "gomod entry /tools has no go.mod", lambda d: gmod(d, "/tools/requirements").update(directory="/tools"))
-def third_gomod(dirv, sched, cd):   # a THIRD gomod entry, copied from tools/requirements, under another spelling of a tracked directory
+# a THIRD gomod entry, copied from tools/requirements, under another spelling of a tracked directory
+def third_gomod(dirv, sched, cd):
     def fn(d):
         e = copy.deepcopy(gmod(d, "/tools/requirements")); e["directory"] = dirv; e["schedule"]["interval"] = sched
         if cd: e["cooldown"] = {"default-days": "7"}
@@ -528,7 +537,8 @@ mut_db("pip-minor-patch drops update-types", "pip-minor-patch group is not exact
 mut_db("pip-minor-patch gets applies-to", "sets applies-to", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"applies-to": "version-updates"}))
 mut_db("pydantic gets update-types", "pip pydantic group is not exactly", lambda d: eco(d, "pip")["groups"]["pydantic"].update({"update-types": ["minor", "patch"]}))
 mut_db("pip loses the pip-minor-patch group", "pip groups are not exactly pydantic then pip-minor-patch", lambda d: eco(d, "pip")["groups"].pop("pip-minor-patch"))
-d = copy.deepcopy(real_db)    # dict equality ignores key order, so this one is judged directly instead of through mut_db
+# dict equality ignores key order, so this one is judged directly instead of through mut_db
+d = copy.deepcopy(real_db)
 eco(d, "pip")["groups"] = dict(reversed(list(eco(d, "pip")["groups"].items())))
 found = judge_db(d)
 ok = list(eco(d, "pip")["groups"]) == ["pip-minor-patch", "pydantic"] and any("pip groups are not exactly pydantic then pip-minor-patch" in x for x in found)
