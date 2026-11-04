@@ -504,6 +504,16 @@ open(REWRAP, "w").write("-----BEGIN PUBLIC KEY-----\n" + "\n".join(body64[i:i + 
 calls, posts, slept, out, _ = ks("kms_sign: a --public-key file that is the same key in 32-column PEM is accepted (the Rekor entry carries the canonical PEM)", None, public_key=REWRAP)
 (ok if len(posts) == 1 and n_sign(calls) == 1 and os.path.exists(out) else bad)("kms_sign: the rewrapped key file gives one POST, one KMS sign and the record: %d %d" % (len(posts), n_sign(calls)))
 ks("kms_sign: an entry whose verifier is another KEY than --public-key is refused", "public key", answer={"verifier_override": other_kms_pem})
+# KA-2 p4 r2 (A2/C1, the hashedrekord kind): rekor_entry_check compares the entry's key with the --public-key file as DER, as the dsse twin does. Rekor stores the canonical PEM of the key it parsed, so an entry that carries the
+# canonical PEM is the entry of a --public-key file that holds the same key in 32-column PEM; another key is still another key
+def hr_item(pem_text, sig=b"sig-bytes", digest="ab" * 32):
+    spec = {"data": {"hash": {"algorithm": "sha256", "value": digest}}, "signature": {"content": b64(sig), "publicKey": {"content": b64(pem_text.encode())}}}
+    body = json.dumps({"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": spec}, sort_keys=True, separators=(",", ":")).encode()
+    return {"logIndex": "1", "integratedTime": "1700000000", "canonicalizedBody": b64(body)}
+why = cv.rekor_entry_check(hr_item(kms_pem), "ab" * 32, b"sig-bytes", open(REWRAP, "rb").read())
+(ok if why is None else bad)("A2/C1 kms_rekor_entry path: a hashedrekord entry that carries the canonical PEM is accepted for a --public-key file of the same key in 32-column PEM (refused with: %s)" % why)
+why = cv.rekor_entry_check(hr_item(other_kms_pem), "ab" * 32, b"sig-bytes", open(REWRAP, "rb").read())
+(ok if why and "another public key" in why else bad)("A2/C1 kms_rekor_entry path: a hashedrekord entry that carries another key is still refused (%s)" % why)
 # KA-2 p4 r2 (A4): the --dsse-statement bytes are read by the strict JSON reader before any aws call or key setup: NaN, a UTF-16 file and a duplicate key are refused with no aws call, no POST and no bundle; the bytes signed stay the file's own
 def a4(label, raw):
     d = os.path.join(work, "a4-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:40]); fb = os.path.join(d, "fb"); os.makedirs(d, exist_ok=True)

@@ -752,18 +752,27 @@ if [[ "$ssout" == *MISSING* ]]; then ok "KA-2 p4 group 4 mutant: a stage-sign.ym
 awscalls() { python3 - "$@" <<'AWSPY'
 import os, re, sys
 bad = []
+SUBS = r"(?:key-ref-check|kms-sign|sign-record|sign)(?![-\w])"
 for pth in sys.argv[1:]:
-    for ln in re.sub(r"\\\n\s*", " ", open(pth, errors="replace").read()).split("\n"):
+    text = open(pth, errors="replace").read()
+    # KA-2 p4 r2 C3: a call through a variable that the same file assigns a path ending in chain-verify.py ("$KMSSIGN") is judged like a literal call; "$AWS" counts as the RUNNER_TEMP literal only where the file
+    # assigns AWS exactly the pinned path ($RUNNER_TEMP/aws-cli/aws, as $RUNNER_TEMP, ${RUNNER_TEMP} or ${RUNNER_TEMP:-}, quoted or not), never a bare name
+    names = re.findall(r"(?m)^\s*(?:export\s+)?([A-Za-z_]\w*)=[\"']?\S*chain-verify\.py[\"']?\s*(?:#.*)?$", text)
+    aws_pinned = re.search(r"(?m)^\s*AWS=(\"?)\$\{?RUNNER_TEMP(?::-)?\}?/aws-cli/aws\1\s*(?:#.*)?$", text) is not None
+    callee = r"(?:\S*chain-verify\.py" + "".join(r"|[\"']?\$\{?%s\}?[\"']?" % re.escape(n) for n in names) + r")"
+    for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
         if ln.lstrip().startswith("#"):
             continue
-        direct = re.search(r"python3\s+(?:-\S+\s+)*\S*chain-verify\.py\s+(?:key-ref-check|kms-sign|sign-record|sign)(?![-\w])", ln)
+        direct = re.search(r"\S+\s+(?:-\S+\s+)*" + callee + r"\s+" + SUBS, ln)
         wrapped = re.search(r"with-aws-token\.sh\s+kms-sign(?![-\w])", ln)
-        if (direct or wrapped) and '--aws "$RUNNER_TEMP/aws-cli/aws"' not in ln:
+        named = '--aws "$RUNNER_TEMP/aws-cli/aws"' in ln or (aws_pinned and '--aws "$AWS"' in ln)
+        if (direct or wrapped) and not named:
             bad.append("%s: %s" % (os.path.basename(pth), re.sub(r"\s+", " ", ln.strip())[:110]))
 print("\n".join(bad))
 AWSPY
 }
 real_scripts=(); for f in "$root"/bin/*.sh; do case "$f" in *-test.sh) ;; *) real_scripts+=("$f") ;; esac; done
+for f in "$root"/.github/workflows/*.y*ml; do real_scripts+=("$f"); done      # KA-2 p4 r2 C3: the run: text of the workflows is scanned too (none calls kms-sign today)
 awsout=$(awscalls "${real_scripts[@]}")
 if [ -z "$awsout" ]; then ok "KA-2 p4 r2 C1 every direct chain-verify.py key-ref-check/kms-sign/sign/sign-record call and every wrapped kms-sign call in bin/*.sh names --aws \"\$RUNNER_TEMP/aws-cli/aws\""; else bad "KA-2 p4 r2 C1 a signer call leaves the aws CLI to be found by name: $(head -3 <<< "$awsout" | tr '\n' ' ')"; fi
 mkdir -p "$work/awscalls"
@@ -774,6 +783,17 @@ printf '#!/usr/bin/env bash\npython3 -I -B bin/chain-verify.py sign-record --pay
 for m in m_kms m_keyref m_wrapped m_record; do
   if [ -n "$(awscalls "$work/awscalls/$m.sh")" ]; then ok "KA-2 p4 r2 C1 mutant: $m (a signer call with no --aws) is found by the scan"; else bad "KA-2 p4 r2 C1 mutant: the aws scan missed $m"; fi
 done
+# KA-2 p4 r2 C3: the variable call and the "$AWS" spelling
+python3 - "$root/bin/release-sign-apks.sh" "$work/awscalls/m_apks_noaws.sh" "$work/awscalls/m_apks_bareaws.sh" <<'C3PY'
+import re, sys
+src = open(sys.argv[1]).read()
+open(sys.argv[2], "w").write(re.sub(r"(kms-sign) --aws \"\$AWS\"", r"\1", src))                 # the kms-sign call through "$KMSSIGN" with --aws dropped (a no-op while the line has none)
+open(sys.argv[3], "w").write(re.sub(r"(?m)^AWS=\S+", "AWS=aws", src))                              # AWS= assigned the bare name: "$AWS" no longer names the pinned path
+C3PY
+if cmp -s "$root/bin/release-sign-apks.sh" "$work/awscalls/m_apks_noaws.sh"; then bad "KA-2 p4 r2 C3 mutant: the --aws dropped mutation did not apply"; elif [ -n "$(awscalls "$work/awscalls/m_apks_noaws.sh")" ]; then ok "KA-2 p4 r2 C3 mutant: the real release-sign-apks.sh with --aws dropped from its kms-sign call through \"\$KMSSIGN\" is found by the scan"; else bad "KA-2 p4 r2 C3 mutant: the aws scan missed release-sign-apks.sh without --aws on its kms-sign call through a variable"; fi
+if cmp -s "$root/bin/release-sign-apks.sh" "$work/awscalls/m_apks_bareaws.sh"; then bad "KA-2 p4 r2 C3 mutant: the bare AWS= mutation did not apply"; elif [ -n "$(awscalls "$work/awscalls/m_apks_bareaws.sh")" ]; then ok "KA-2 p4 r2 C3 mutant: the real release-sign-apks.sh with AWS=aws (so \"\$AWS\" is a bare name) is found by the scan"; else bad "KA-2 p4 r2 C3 mutant: the aws scan accepted \"\$AWS\" although AWS= is the bare name aws"; fi
+printf 'jobs:\n  j:\n    steps:\n      - run: |\n          python3 -I -B bin/chain-verify.py kms-sign --key-ref x \\\n            --digest y\n' > "$work/awscalls/m_wf.yml"
+if [ -n "$(awscalls "$work/awscalls/m_wf.yml")" ]; then ok "KA-2 p4 r2 C3 mutant: a workflow run: text calling kms-sign with no --aws is found by the scan"; else bad "KA-2 p4 r2 C3 mutant: the aws scan missed a workflow run: text calling kms-sign with no --aws"; fi
 printf '#!/usr/bin/env bash\nbash bin/with-aws-token.sh sign --check --out o\npython3 -I -B bin/chain-verify.py key-ref-check --algorithm-guard --aws "$RUNNER_TEMP/aws-cli/aws"\n' > "$work/awscalls/c_ok.sh"
 if [ -z "$(awscalls "$work/awscalls/c_ok.sh")" ]; then ok "KA-2 p4 r2 C1 control: the wrapper's sign (it appends --aws itself) and a key-ref-check with the literal --aws are not flagged"; else bad "KA-2 p4 r2 C1 control: the aws scan flags a call that is fine"; fi
 python3 - "$root/bin/release-sign.sh" "$work/awscalls/m_release_sign.sh" <<'DROPPY'
@@ -786,17 +806,22 @@ if [ -n "$(awscalls "$work/awscalls/m_release_sign.sh")" ]; then ok "KA-2 p4 r2 
 sed 's|--aws "\$RUNNER_TEMP/aws-cli/aws" --key-ref "\$RELEASE_KMS_KEY_REF" --digest|--key-ref "$RELEASE_KMS_KEY_REF" --digest|' "$root/bin/release-sign.sh" > "$work/awscalls/m_release_sign_blob.sh"
 if cmp -s "$root/bin/release-sign.sh" "$work/awscalls/m_release_sign_blob.sh"; then bad "KA-2 p4 r2 C1 mutant: the kms_blob mutation did not apply"; elif [ -n "$(awscalls "$work/awscalls/m_release_sign_blob.sh")" ]; then ok "KA-2 p4 r2 C1 mutant: the real release-sign.sh with --aws dropped from its kms_blob call is found by the scan"; else bad "KA-2 p4 r2 C1 mutant: the aws scan missed release-sign.sh without --aws on kms_blob"; fi
 # KA-2 p4 r2 (1b', round 1 ruling): the pinned aws CLI is installed only where KMS is reached: `bash bin/install-scanner.sh aws-cli` runs in no job of .github/workflows/*.yml except stage-sign sign, sign-rebuild and sign-check, evidence-letter sign and stage-promote release
+awsfiles() { local r=$1; shopt -s globstar nullglob; printf '%s\n' "$r"/.github/workflows/*.y*ml "$r"/.github/actions/**/action.y*ml; }      # KA-2 p4 r2 C4: .yml and .yaml, workflows and composite actions
 awsjobs() { python3 - "$@" <<'JOBSPY'
-import os, sys, yaml
+import os, re, sys, yaml
+INST = re.compile(r"install-scanner\.sh\s+[\"']?aws-cli[\"']?(?![-\w])")      # bare or quoted
 for pth in sys.argv[1:]:
-    d = yaml.safe_load(open(pth))
-    for job, j in (d.get("jobs") or {}).items():
-        if any("install-scanner.sh aws-cli" in str(s.get("run", "")) for s in (j.get("steps") or [])):
+    d = yaml.safe_load(open(pth)) or {}
+    jobs = dict(d.get("jobs") or {})
+    if isinstance(d.get("runs"), dict):
+        jobs["(action)"] = {"steps": d["runs"].get("steps")}
+    for job, j in jobs.items():
+        if any(INST.search(str(s.get("run", ""))) for s in (j.get("steps") or [])):
             print("%s:%s" % (os.path.basename(pth), job))
 JOBSPY
 }
 ALLOWED_AWS_JOBS=$'evidence-letter.yml:sign\nstage-promote.yml:release\nstage-sign.yml:sign\nstage-sign.yml:sign-check\nstage-sign.yml:sign-rebuild'
-aj=$(awsjobs "$root"/.github/workflows/*.yml | sort)
+mapfile -t aw_files < <(awsfiles "$root"); aj=$(awsjobs "${aw_files[@]}" | sort)
 if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' the aws CLI is installed in exactly the five signing jobs (stage-sign sign, sign-rebuild, sign-check; evidence-letter sign; stage-promote release) and in no other job of any workflow"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
 mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/stage-build.yml" "$work/awsjobs/stage-build.yml" <<'JOBMUT'
 import sys, yaml
@@ -807,7 +832,16 @@ yaml.safe_dump(d, open(sys.argv[2], "w"))
 JOBMUT
 mj=$(awsjobs "$work/awsjobs/stage-build.yml")
 if [ -n "$mj" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 1b' mutant: an aws CLI install step in a job of stage-build.yml ($mj) is outside the allowed signing jobs, so the tree-level check is red"; else bad "KA-2 p4 r2 1b' mutant: the aws CLI install in a stage-build.yml job was not found outside the allowed jobs ($mj)"; fi
-EXPECT=339
+# KA-2 p4 r2 C4: the file set is .y*ml in workflows and action.y*ml under .github/actions (a .yaml workflow, a composite action), and `aws-cli` is matched quoted as well as bare
+mkdir -p "$work/awstree/.github/workflows" "$work/awstree/.github/actions/x/y"
+printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh aws-cli\n' > "$work/awstree/.github/workflows/w.yaml"
+mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
+if [ "$mj" = "w.yaml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: an aws CLI install in a .yaml workflow ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the aws CLI install in a .yaml workflow was not found by the scan ($mj)"; fi
+rm -f "$work/awstree/.github/workflows/w.yaml"
+printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
+mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
+if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
+EXPECT=344
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

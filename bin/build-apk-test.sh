@@ -345,6 +345,10 @@ mode_f, log_f, port_f, parent, rkey, rlogid = sys.argv[1], sys.argv[2], sys.argv
 import subprocess, tempfile
 flaky = {}   # KA-2 p4 g3: the POSTs seen per flaky-<code>-<n>-<tag> mode (a unique tag per case starts the count again)
 seen = {}   # the conflict modes: the entries this stub made, by uuid, and the posted bodies it has seen
+def canon_pem(b64_pem):   # KA-2 p4 r2 (A2): what Rekor 1.5.3 stores for a posted key: the canonical PEM of the DER it parsed (64-column lines), whatever the wrapping posted
+    der = subprocess.run(["@OPENSSL@", "pkey", "-pubin", "-outform", "DER"], input=base64.b64decode(b64_pem), capture_output=True).stdout
+    enc = base64.b64encode(der).decode()
+    return base64.b64encode(("-----BEGIN PUBLIC KEY-----\n" + "\n".join(enc[i:i + 64] for i in range(0, len(enc), 64)) + "\n-----END PUBLIC KEY-----\n").encode()).decode()
 def sign(data):
     with tempfile.TemporaryDirectory() as d:
         open(d + "/m", "wb").write(data)
@@ -362,10 +366,13 @@ class H(http.server.BaseHTTPRequestHandler):
             ebody = json.dumps({"apiVersion": "0.0.1", "kind": "dsse", "spec": {
                 "envelopeHash": {"algorithm": "sha256", "value": "0" * 64 if mode == "otherbody" else hashlib.sha256(pc["envelope"].encode()).hexdigest()},
                 "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(base64.b64decode(env["payload"])).hexdigest()},
-                "signatures": [{"signature": env["signatures"][0]["sig"], "verifier": "QUFB" if mode == "dsse-otherkey" else pc["verifiers"][0]}]}}, sort_keys=True, separators=(",", ":")).encode()
+                "signatures": [{"signature": env["signatures"][0]["sig"], "verifier": "QUFB" if mode == "dsse-otherkey" else canon_pem(pc["verifiers"][0])}]}}, sort_keys=True, separators=(",", ":")).encode()
         else:
             if mode == "otherbody":
                 doc["spec"]["data"]["hash"]["value"] = "0" * 64
+            pk = doc.get("spec", {}).get("signature", {}).get("publicKey", {})
+            if mode != "otherbody" and pk.get("content") and canon_pem(pk["content"]) != pk["content"]:   # the stored key is the canonical PEM, not the text posted
+                pk["content"] = canon_pem(pk["content"]); body = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
             ebody = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode() if mode == "otherbody" else body
         b64 = base64.b64encode(ebody).decode()
         lid = "ab" * 32 if mode == "otherlog" else rlogid

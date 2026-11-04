@@ -17,6 +17,7 @@ cd "$(dirname "$0")/../../.."
 export DEPLOY_DOC="${DEPLOY_DOC:-docs/docker-deploy.md}" GRADLE_DOC="${GRADLE_DOC:-docs/gradle.md}" MAVEN_DOC="${MAVEN_DOC:-docs/maven.md}"
 export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
 export VERIFY_DOCS="${VERIFY_DOCS:-docs/install.md docs/using-our-vex.md docs/verify-images.md RELEASING.md}"
+export KEYLESS_UNTIL_DOCS_FOLD="${KEYLESS_UNTIL_DOCS_FOLD:-RELEASING.md}"
 export VERIFY_ONE="${VERIFY_ONE:-docs/verify-images.md}"
 export VERIFY_RELEASE_DOC="${VERIFY_RELEASE_DOC:-docs/verify-release.md}" VERIFY_CANNOT_RUN="${VERIFY_CANNOT_RUN:-docs/verify-release.cannot-run.json}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
@@ -103,17 +104,34 @@ if rb:
         return next((i for i, c in enumerate(cmds) if sub in c), -1)
     i0, i1, i2, i3 = idx("--replicas=0"), idx("delete pvc fscache-data"), idx("kubectl apply"), idx("--replicas=1")
     ok(-1 < i0 < i1 < i2 < i3, "reset order is scale 0, delete the claim, re-apply the claim, scale 1 (positions %s)" % [i0, i1, i2, i3])
-# Verify steps (rule 6 of the simplest-correct-form rules): a fenced cosign step names the exact signing identity,
-# never a regexp over it.
+# Verify steps (rule 6 of the simplest-correct-form rules; KA-2 p4 r2 C2): v0.3.0 and later are signed with the release key, so every verify doc holds a fenced `--key release.rsa.pub` step, and a fenced
+# `--certificate-identity` step (exact, never a regexp) is allowed only under a heading or in a paragraph that names the releases before v0.3.0. RELEASING.md is the one file still judged the old way (it keeps its identity
+# steps until the docs fold, FU-2): KEYLESS_UNTIL_DOCS_FOLD lists it, and an assertion pins the list to exactly that one entry (the fold empties it).
+fold = os.environ["KEYLESS_UNTIL_DOCS_FOLD"].split()
+ok(fold == ["RELEASING.md"], "KEYLESS_UNTIL_DOCS_FOLD holds exactly one entry, RELEASING.md (found %r)" % fold)
+def pre_v030_context(text, start):   # the nearest heading and the paragraph before a fence (fenced blocks dropped, so a shell comment is no heading)
+    before = re.sub(r"^```.*?^```", "", text[:start], flags=re.S | re.M)
+    heads = [l for l in before.splitlines() if re.match(r"#{1,6} ", l)]
+    para = before.rstrip().split("\n\n")[-1]
+    return (heads[-1] if heads else "") + "\n" + para
 for path in os.environ["VERIFY_DOCS"].split():
+    text = open(path).read()
     # a fenced block, as in "```sh\ncosign verify ...\n```"; text between two blocks is not matched
-    fenced = "\n".join(re.findall(r"^```.*?^```", open(path).read(), re.S | re.M))
+    fences = list(re.finditer(r"^```.*?^```", text, re.S | re.M))
+    fenced = "\n".join(m.group(0) for m in fences)
     ok("--certificate-identity-regexp" not in fenced,
        "%s: no fenced step matches the signing identity with a regexp" % path)
-    ok("--certificate-identity=" in fenced or "--certificate-identity " in fenced,
-       "%s: a fenced step names the exact signing identity" % path)
     ok("--insecure-ignore-tlog" not in fenced,
        "%s: no fenced step turns the transparency-log check off" % path)
+    if path in fold:
+        ok("--certificate-identity=" in fenced or "--certificate-identity " in fenced,
+           "%s: (until the docs fold) a fenced step names the exact signing identity" % path)
+        continue
+    ok("--key release.rsa.pub" in fenced,
+       "%s: a fenced step verifies with the release key" % path)
+    bad_id = [m.start() for m in fences if re.search(r"--certificate-identity[= ]", m.group(0))
+              and not re.search(r"before v0\.3\.0", pre_v030_context(text, m.start()), re.I)]
+    ok(not bad_id, "%s: a fenced identity step sits only under a heading or paragraph that names the releases before v0.3.0 (%d outside)" % (path, len(bad_id)))
 # The image steps of the release-key form (KA-2): the signature and the release-manifest attestation of v0.3.0 and later are
 # verified against the release public key, in a fenced step each.
 fenced_one = "\n".join(re.findall(r"^```.*?^```", open(os.environ["VERIFY_ONE"]).read(), re.S | re.M))
@@ -175,6 +193,13 @@ mutant "maven remote before configuration" MAVEN_DOC 'i=s.index("    <!-- Foster
 mutant "maven remote sibling of configuration" MAVEN_DOC 'i=s.index("    <!-- FosterStack Cache"); j=s.index("</remote>")+len("</remote>"); blk=s[i:j]; s=s[:i]+s[j:]; s=s.replace("  </configuration>\n","  </configuration>\n"+blk+"\n",1)'
 mutant "k8s reset without the re-apply"    DEPLOY_DOC 'import re; s=re.sub(r"kubectl apply -f fscache-pvc.yaml[^\n]*\n","",s)'
 mutant "maven server id mismatch"           MAVEN_DOC  's=s.replace("<id>fosterstack-cache</id>","<id>other</id>")'
+envmutant() {  # name, variable, value: the check run with that variable set (a list pinned by an assertion)
+  mut=$((mut+1))
+  if ( export "$2=$3"; DOCS_SNIPPETS_NO_MUTANTS=1 bash "$0" >/dev/null 2>&1 ); then echo "FAIL: mutant not caught: $1"; else caught=$((caught+1)); echo "ok:   mutant caught: $1"; fi
+}
+VERIFY_DOCS="docs/install.md" mutant "install.md: the release key step dropped" VERIFY_DOCS 's=s.replace("--key release.rsa.pub","")'
+VERIFY_DOCS="$VERIFY_ONE" mutant "verify-images.md: the identity step moved outside the pre-v0.3.0 paragraph" VERIFY_DOCS 's=s.replace("A release before v0.3.0 carries","A release carries",1)'
+envmutant "a second file added to KEYLESS_UNTIL_DOCS_FOLD" KEYLESS_UNTIL_DOCS_FOLD "RELEASING.md docs/install.md"
 REVERT='s=s.replace("--certificate-identity=","--certificate-identity-regexp=",1)'
 REVERT="$REVERT"'.replace("--certificate-identity ","--certificate-identity-regexp ",1)'
 VERIFY_DOCS="$VERIFY_ONE" mutant "verify step back to an identity regexp" VERIFY_DOCS "$REVERT"
