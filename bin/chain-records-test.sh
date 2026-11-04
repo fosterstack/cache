@@ -114,6 +114,15 @@ def scan(rel, text, raw=False):
             if _cts.is_prov(e, ctx): add(PROV)
         elif e.get("pseudo"): add(e["pseudo"])
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
+    if raw:      # KA-2: a LISTED script that signs through its own kms_image function (bin/release-sign.sh; the signature itself is made by chain-verify.py kms-sign, which is not scanned): sign is the cosign signature, attest is the predicateType its attest) branch names
+        for m in re.finditer(r"\bkms_image[ \t]+(\S+)", text):
+            kind = m.group(1)
+            if kind == "sign": add("urn:cosign:signature")
+            elif kind == "attest":
+                tys = re.findall(r"\battest\)[^\n]*?predicateType:[ \t]*\"(https?://[^\s\"'$`\\]+)\"", text)
+                if len(tys) == 1: add(tys[0])
+                else: bad.append("%s: kms_image attest with an unresolved type (fail closed)" % rel)
+            else: bad.append("%s: kms_image with an unresolved kind (%s) (fail closed)" % (rel, kind))
 BAD = bad
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
@@ -342,6 +351,29 @@ d=$(mk unlisted); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --
 expect ok "an UNLISTED script is not scanned here (a stage file cannot run it: chain-sign-wiring-test.sh refuses the unlisted path)" "$d"
 d=$(mk lbadhash); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho a\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo; printf '#!/usr/bin/env bash\necho changed\n' > "$d/bin/ok.sh"
 expect_named "a listed script whose sha256 no longer matches is an error naming chain-scripts.json" "$d" "chain-scripts.json"
+# KA-2 (p4 moved the image signatures and the release manifest referrer from `cosign sign` / `cosign attest` to release-sign.sh's kms_image function): in a LISTED script
+# `kms_image sign` produces urn:cosign:signature and `kms_image attest` the predicateType its attest) branch names; an unresolved type or kind fails closed
+kmsimg() { # kmsimg DIR [sign] [attest] [TYPE]: DIR/bin/ks.sh with the kms_image function and the named calls, listed; TYPE is the attest) predicateType (default the release manifest's)
+  local d=$1 ty="${4:-https://fosterstack.com/attestations/release-manifest/v1}" k; mkdir -p "$d/bin"
+  { printf '#!/usr/bin/env bash\nkms_image() {\n  case "$1" in\n'
+    printf '    sign) jq -cn %s ;;\n' "'{predicateType: \"https://sigstore.dev/cosign/sign/v1\"}'"
+    printf '    attest) jq -cn %s ;;\n  esac\n}\n' "'{predicateType: \"$ty\"}'"
+    for k in "${2:-}" "${3:-}"; do [ -z "$k" ] || printf 'kms_image %s "$name" "$dg"\n' "$k"; done; } > "$d/bin/ks.sh"; listed "$d" bin/ks.sh jq
+}
+REL_MANIFEST=https://fosterstack.com/attestations/release-manifest/v1
+d=$(mk kmsok); kmsimg "$d" sign attest; addrow "$d" urn:cosign:signature "a signature on the release files" customer; addrow "$d" "$REL_MANIFEST" "the release manifest" customer
+expect ok "KA-2 kms_image sign and kms_image attest in a listed script produce urn:cosign:signature and the release manifest type (both rows consumed)" "$d"
+d=$(mk kmsnoatt); kmsimg "$d" sign; addrow "$d" urn:cosign:signature "a signature on the release files" customer; addrow "$d" "$REL_MANIFEST" "the release manifest" customer
+expect_named "KA-2 mutant: both kms_image attest lines dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: $REL_MANIFEST"
+d=$(mk kmsnosig); kmsimg "$d" "" attest; addrow "$d" urn:cosign:signature "a signature on the release files" customer; addrow "$d" "$REL_MANIFEST" "the release manifest" customer
+expect_named "KA-2 mutant: kms_image sign dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
+d=$(mk kmsnorow); kmsimg "$d" sign attest
+expect_named "KA-2 kms_image sign in a listed script is a produced type that needs a row" "$d" "produced type has no row: urn:cosign:signature"
+expect_named "KA-2 kms_image attest in a listed script is a produced type that needs a row" "$d" "produced type has no row: $REL_MANIFEST"
+d=$(mk kmsvar); kmsimg "$d" sign attest '$T'; addrow "$d" urn:cosign:signature "a signature on the release files" customer
+expect_named "KA-2 mutant: kms_image attest whose predicateType is a variable is unresolved and fails closed" "$d" "kms_image attest with an unresolved type"
+d=$(mk kmskind); kmsimg "$d" sign; printf 'kms_image "$k" a b\n' >> "$d/bin/ks.sh"; rm "$d/.github/policy/chain-scripts.json"; listed "$d" bin/ks.sh jq; addrow "$d" urn:cosign:signature "a signature on the release files" customer
+expect_named "KA-2 mutant: kms_image with a variable kind is unresolved and fails closed" "$d" "kms_image with an unresolved kind"
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 SH40=$(printf 'a%.0s' $(seq 40))
@@ -383,7 +415,23 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-EXPECT=104
+# KA-2 on the REAL release-sign.sh (its pinned sha256 re-written in the copy, so the finding is the record type and not the pin): drop its kms_image calls
+realmut() { # realmut NAME SED-EXPR: a tracked copy whose bin/release-sign.sh is edited by SED-EXPR and re-listed with its new sha256
+  local d; d=$(tracked_copy "$1"); sed -i "$2" "$d/bin/release-sign.sh"
+  python3 - "$d" <<'PY'
+import hashlib, json, sys
+d = sys.argv[1]; f = d + "/.github/policy/chain-scripts.json"; j = json.load(open(f))
+for r in j["scripts"]:
+    if r["path"] == "bin/release-sign.sh": r["sha256"] = hashlib.sha256(open(d + "/bin/release-sign.sh", "rb").read()).hexdigest()
+json.dump(j, open(f, "w"), indent=1)
+PY
+  echo "$d"
+}
+d=$(realmut realnoatt '/^ *kms_image attest /d')
+expect_named "KA-2 mutant on the real release-sign.sh: both kms_image attest lines dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
+d=$(realmut realnosig '/^ *kms_image sign /d')
+expect_named "KA-2 mutant on the real release-sign.sh: the kms_image sign line dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
+EXPECT=113
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

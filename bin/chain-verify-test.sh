@@ -120,6 +120,10 @@ else
   if [ "${CHAIN_TEST_REQUIRE_NETCUT:-0}" = 1 ]; then bad "network cut required (CHAIN_TEST_REQUIRE_NETCUT=1) but unavailable"; else ok "network cut: unavailable here, noted above (the case count stays constant)"; fi
 fi
 
+# KA-2: CHAIN_TEST_EMULATE_ENV_RESET=1 stands in for sudo's env_reset (the CI fallback `sudo -n unshare -n`) on a box that has no cut: the wrapper passes only PATH and HOME (no network is cut by it, so the NETCUT
+# label above is unchanged). It is how a variable that run() does not pass through is seen to be dropped (CI job 126332833176: sign-record got RELEASE_KMS_KEY_REF null).
+if [ "${CHAIN_TEST_EMULATE_ENV_RESET:-0}" = 1 ]; then netcut=(env -i PATH="$PATH" HOME="$HOME"); fi
+
 # ---- fixtures ---------------------------------------------------------------------------------------------------
 cat > "$work/fx.py" <<'PY'
 import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys
@@ -956,15 +960,15 @@ MARK="$work/.start-marker"; : > "$MARK"
 : > "$work/kmssign-all.log"; SIGNS_OK=0; LEAKS=0
 ARGV_RE='^kms sign --key-id alias/fosterstack-release-signing --message fileb://[^ ]+ --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json$'     # KA-2: the one KMS Sign call of a signature
 SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SENTINEL-CIT-$$-2b8e"; SENT_AWS="SENTINEL-AWS-$$-4d6f"
-# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake aws first) and PYTHONPATH (the Rekor shim) and
-# GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
+# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake aws first), PYTHONPATH (the Rekor shim),
+# RELEASE_KMS_KEY_REF (sign-record's key reference, set by SR) and GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/kmssign-argv.log"; local rc=0 pk=()
   case "${1:-}" in sign|sign-record) pk=(--public-key "${PUBKEY:-$work/rel.pub}") ;; esac      # KA-2: sign and sign-record name the release public key (compared with the KMS key before anything is signed)
   "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
     GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
-    ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${FAKE_ALGS:+FAKE_ALGS=$FAKE_ALGS} ${FAKE_AWS_RC:+FAKE_AWS_RC=$FAKE_AWS_RC} FAKE_WORK="$work" PYTHONPATH="$work/shim${PYTHONPATH:+:$PYTHONPATH}" \
+    ${RELEASE_KMS_KEY_REF:+RELEASE_KMS_KEY_REF=$RELEASE_KMS_KEY_REF} ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${FAKE_ALGS:+FAKE_ALGS=$FAKE_ALGS} ${FAKE_AWS_RC:+FAKE_AWS_RC=$FAKE_AWS_RC} FAKE_WORK="$work" PYTHONPATH="$work/shim${PYTHONPATH:+:$PYTHONPATH}" \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
     AWS_SECRET_ACCESS_KEY="$SENT_AWS" \
     "$PY3" "$cvr" "$@" ${pk[@]+"${pk[@]}"} 2> "$work/err" > "$work/out" || rc=$?
@@ -2171,6 +2175,18 @@ rc=0; PUBKEY="$work/rel-wrapped.pub" SGK ka0s-wrapped || rc=$?
 rc=0; SR ok || rc=$?
 [ "$rc" = 1 ] && grep -q 'exists' "$work/err" && [ ! -s "$work/kmssign-argv.log" ] && ok "P2 sign-record: an existing record is refused before KMS is asked" \
   || bad "P2 sign-record over an existing record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+# KA-2 (CI job 126332833176, 7 sign-record cases red with "got null"): run() passes RELEASE_KMS_KEY_REF through `env`, so a cut wrapper that resets the environment (sudo's env_reset) cannot drop it.
+# The pair below runs sign-record behind such a wrapper: with the variable set (as SR does) it signs; with the variable unset (the mutant: run() has nothing to pass) the verifier names the null reference.
+netcut_kept=("${netcut[@]+"${netcut[@]}"}"); netcut=(env -i PATH="$PATH" HOME="$HOME")
+rc=0; SR envreset || rc=$?
+[ "$rc" = 0 ] && [ -s "$work/sr/envreset/build-collection.json" ] && [ "$(wc -l < "$work/kmssign-argv.log")" = 1 ] \
+  && ok "KA-2 sign-record behind a cut wrapper that resets the environment still gets RELEASE_KMS_KEY_REF and signs (the CI sudo fallback)" \
+  || bad "KA-2 sign-record behind an environment reset (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+rc=0; run sign-record --payload "$work/sr-payload.json" --out "$work/sr/unset/build-collection.json" --template "$work/template.json" || rc=$?
+[ "$rc" = 2 ] && grep -q 'needs RELEASE_KMS_KEY_REF set to awskms:///alias/fosterstack-release-signing (got null)' "$work/err" && [ ! -e "$work/sr/unset/build-collection.json" ] && [ ! -s "$work/kmssign-argv.log" ] \
+  && ok "KA-2 mutant: sign-record with RELEASE_KMS_KEY_REF unset behind the same reset is refused (exit 2, names the null reference), nothing is written and KMS is not asked" \
+  || bad "KA-2 sign-record with RELEASE_KMS_KEY_REF unset behind an environment reset (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+netcut=("${netcut_kept[@]+"${netcut_kept[@]}"}")
 # chain_common.py names its openssl by one fixed absolute path on one TEST-SUBST line,
 # and reads no environment variable for it
 python3 - "$root/bin/chain_common.py" << 'PY' \
@@ -2185,7 +2201,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=795
+EXPECT=797
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
