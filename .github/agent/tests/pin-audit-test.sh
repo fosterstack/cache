@@ -1273,9 +1273,10 @@ net._version_of = lambda i: "1.27.3"
 assert [r["affected"] for r in net.lists(it)[1]] == [False]
 PY
 
-# --- the history reader skips exactly three named unreadable revisions (advisor 0637): the Oct 20 RED commits of the release-chain branch's PR 459 held a 12000-character fixture line in
-# bin/chain-sign-wiring-test.sh, which the inventory refuses (a command line over 4000 characters is never read partially); they are in that branch's history, so once it lands every
-# version-moving pull request would stop in the 90-day history read. The skip is by FULL sha, from a reviewed list in the script; anything else unreadable still ends the audit.
+# --- the history reader skips only the unreadable revisions named in its list (advisor 0637): a command line
+# over 4000 characters is never read partially, so every audit would stop in the 90-day history read at a revision
+# that held one. The skip is by FULL sha, from a reviewed list in the script, each named with its own reason;
+# anything else unreadable still ends it.
 r="$work/r-oversize"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at that sha, with one step whose run line is $2 long
   printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
@@ -1332,18 +1333,30 @@ items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B"
 assert err is None, err
 assert sys.argv[6] in " ".join(repr(k) for k in items)
 PY
-CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 and the Oct 23 #597 fix-round-3 commit (full lowercase 40-hex shas), each with a reason that names its file"
+CASE="oversize history: the list holds the named commits (full 40-hex shas), each with a reason that names its file"
 check python3 - "$aud" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b", "6b8c70df66651667e530748db9bc22462e307bee"}
-assert set(pa.SKIP_UNREADABLE) == want, sorted(pa.SKIP_UNREADABLE)
+pr459 = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
+p1p5 = {"27b14e37ed06bca44ae479a8880480fa5855605b", "c4ac17f07ac894c014034ec7e535e4598e06ced8", "c9e30be29823765fce4c8a23bb11a4340a73fd69", "23f771008513913f5a1bf434af83530125621a53",
+        "c5b8f225a378db6fa72200bafcf9af7998ef23e5", "9045a08f287801c75cbf385caae8038774ed9f10",
+        "115c746b17620f08c0fe52c789dea720c887d465", "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987",
+        "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8", "464b72fea4e356a9876bf9bd70f57cc84e07cab4"}
+p2 = {"7d538938ec3733112eb29b5f495502e8a74d7e33", "16e2e1f9a010dfc966930b7963cec13326fa877c",
+      "28acfea97185023710ee2ba4596cbdb2ca68bfb0", "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa",
+      "fbecada5bf5c37ab9263ca82664b3382c3dd9457"}
+r597 = "6b8c70df66651667e530748db9bc22462e307bee"
+assert set(pa.SKIP_UNREADABLE) == pr459 | p1p5 | p2 | {r597}, sorted(pa.SKIP_UNREADABLE)
 for k, why in pa.SKIP_UNREADABLE.items():
     assert re.fullmatch(r"[0-9a-f]{40}", k), k
-    if k == "6b8c70df66651667e530748db9bc22462e307bee":     # #597 fix round 3 (Oct 23 2026): a 4103-character command line in bin/chain-check-scripts-test.sh, since removed
-        assert isinstance(why, str) and "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
-        continue
-    assert isinstance(why, str) and "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
+    if k == r597:
+        assert "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
+    elif k in p1p5 | p2:
+        assert ("cache6-0713-p1p5" if k in p1p5 else "cache6-0713-p2") in why, (k, why)
+        assert "bin/chain-rekor-key-test.sh" in why and "4529" in why, (k, why)
+        assert why.endswith("since wrapped (0289dc91)"), (k, why)
+    else:
+        assert "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
 PY
 CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
 check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
@@ -1390,6 +1403,29 @@ for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
     items, err = hist({**both, listed: "readable but listed"})
     assert err is None, err
     assert sys.argv[8] in " ".join(repr(k) for k in items)
+PY
+
+
+# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2 and the tag observations are already written; one
+# ls-tree -r per revision is all the history reader asks git for ---
+rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
+CASE="oversize history, daily run: an unlisted unreadable revision ends the audit with exit 2 and the cap's own message"
+check test "$rc" -eq 2; check grep -q 'refusing to read it partially' "$work/oversizeobs.err"
+CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
+check test -s "$work/obsout4/state.json"
+CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
+check python3 - "$aud" "$work/r-histmemo" <<'PY'
+import collections, datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+listings = collections.Counter()
+real = pa.inv.git
+def counting(root, *args):
+    if "ls-tree" in args and "-r" in args:
+        listings[args[-1]] += 1
+    return real(root, *args)
+pa.inv.git = counting
+pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+assert listings and max(listings.values()) == 1, dict(listings)
 PY
 
 # --- rc-5b item 7 (R9a, R9b): a proxy failure is CouldNotLook, never "not checked"; an advisory for our package with no readable range is a hit under its GHSA id ---------------------------------
@@ -1959,6 +1995,92 @@ for fn in dict.fromkeys(CASES.values()):
     net = pa.LiveNet(["gh"], ".")      # a fresh object per case: no stub leaks from one to the next
     fn()
 PY
+# --- the gate follow-up (supply-chain gate ruling, Oct 31): the costly part of a history scan is reading each new version of a big script line by line. Three more memos, all exact:
+# a script line (in a neutral context), the id of a script line, and the file memo keeps every read-set it has seen for a blob. None may move a verdict. ---
+CASE="T5 line memos: over a real slice of history the inventories with the line memos equal the unmemoised ones, field for field, and the memos were used"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
+         ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src, sorted(i.sums))
+                             for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear(); inv._LINE_ID_MEMO.clear()
+for r in revs:
+    assert dump(inv.load_at(root, r)) == ref[r], r
+assert inv._STEP_MEMO and inv._LINE_ID_MEMO, "the line memos were not used"
+inv._FILE_MEMO.clear()          # a warm line memo under a cold file memo: every file is read again, every line is a hit
+for r in reversed(revs):
+    assert dump(inv.load_at(root, r)) == ref[r], r
+PY
+CASE="T5 line memo: a script line that makes too many items raises on a hit too, a returned or replayed item cannot reach the memo (sums included), and no line is read from the memo while a job's run texts are set"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear()
+script = {"bin/x.sh": "#!/usr/bin/env bash\npip install a==1.0 b==2.0 c==3.0\n"}
+first = inv.inventory(dict(script))
+assert inv._STEP_MEMO, "the line was not remembered"
+for it in first.values():
+    it.version = "changed"; it.step = "changed"
+    it.sums.append("sha256:" + "1" * 64)
+inv._FILE_MEMO.clear()
+again = inv.inventory(dict(script))
+assert sorted(i.version for i in again.values()) == ["1.0", "2.0", "3.0"], "a returned item reached the memo"
+assert all(i.sums == [] for i in again.values()), "a returned item's sums reached the memo"
+for it in again.values():
+    it.sums.append("sha256:" + "2" * 64)      # again came from the memo: the replayed copy must be its own too
+inv._FILE_MEMO.clear()
+assert all(i.sums == [] for i in inv.inventory(dict(script)).values()), "a replayed item's sums reached the memo"
+limit = inv.MAX_ITEMS_PER_STEP
+inv.MAX_ITEMS_PER_STEP = 2
+try:
+    inv._FILE_MEMO.clear()
+    try:
+        inv.inventory(dict(script)); raise SystemExit("the memoised line did not raise on a hit")
+    except RuntimeError as e:
+        assert "more than 2 items" in str(e), str(e)
+finally:
+    inv.MAX_ITEMS_PER_STEP = limit
+inv._JOB_RUNS[0] = ["echo earlier step"]
+try:
+    inv._step_line({"run": "pip install q==1.0"}, [])
+    raise SystemExit("a line was read from the memo while a job's run texts were set")
+except AssertionError:
+    pass
+finally:
+    inv._JOB_RUNS[0] = []
+PY
+
+CASE="T6 file memo keeps every read-set: two trees that differ only in a callee, read alternately, hit the caller from the second round on"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %s\n"
+trees = [{".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": callee % n} for n in ("one", "two")]
+walks = []
+real_found = inv._file_found
+inv._file_found = lambda path, text: (walks.append(path), real_found(path, text))[1]
+for t in trees:                       # warm-up: each tree once; the caller is walked once per read-set
+    inv.inventory(dict(t))
+assert walks.count(".github/workflows/caller.yml") == 2, walks
+walks.clear()
+for _ in range(2):
+    for t in trees:
+        inv.inventory(dict(t))
+assert walks == [], walks      # then every file of every tree is answered by the memo: no walk at all
+PY
+
 bg_collect
 CASE="background checks: the three long cases were each started once and each reported once"
 check test "$BG_N" -eq 3
