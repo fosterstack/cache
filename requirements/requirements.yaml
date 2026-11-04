@@ -3632,7 +3632,7 @@ requirements:
   - id: REQ-CHAIN-002
     title: Timestamps, the transparency log and the per-tag release policy
     statement: >
-      Every keyless signature in the release chain shall carry Sigstore's public timestamp so it can be checked after its ten-minute certificate expires, everything a customer verifies shall have an entry in Rekor, and each tag shall have a release policy made from a committed template that accepts exactly the stage identities of that tag and no others, where the build and rebuild stages' identity is stage-sign.yml's (a Build or Rebuild record is accepted only under it, never under the former stage-build.yml or stage-reproducibility.yml identity).
+      Every signature in the release chain shall have an entry in Rekor, and each tag shall have a release policy made from a committed template that names exactly the release key of the key manifest and no other, where a Build or Rebuild record is accepted only as signed by the Sign job's signing step.
     source: [.github/policy/release-policy.template.json, bin/chain-verify.py, .github/policy/sigstore-trust.json]
     tier: community
     introduced: v0.3.0
@@ -3755,21 +3755,21 @@ requirements:
       '
     acceptance_criteria:
       - id: REQ-CHAIN-002-AC1
-        given: "a keyless record whose certificate expired 15 or more minutes ago"
+        given: "a record signed with the release key"
         when: "bin/chain-verify.py checks it from files alone with the network cut"
-        then: "it is accepted when it carries a valid timestamp from the authority named in the release policy and refused when the timestamp is missing, from another authority, dated before the certificate's validity or after it expired, taken over a different signature, or when the payload or the signature was altered after signing; the same record is refused when the policy names no authority; the check runs with the network cut"
+        then: "it is accepted when its signature verifies against the policy's public key and its Rekor entry is present beside it, and refused when the entry is missing, the key differs, or the payload or signature was altered after signing"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-002-AC2
         given: "the committed policy template and a tag T"
         when: "the policy for T is made and used to check records"
-        then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag, a tag that only begins like T, a branch, another repository or a certificate from another OIDC issuer, requires the certificate's Build Config URI extension to be release.yml of this repository at T (so a second workflow that calls a stage file is refused even though its SAN is the stage's), and pins Sigstore's root, the timestamp authority's root and the Rekor key by the hashes in the committed trust file, refusing a bundle whose hash differs"
+        then: "it names exactly the release key of the key manifest and no other, and it reads the Rekor key only when that key's hash matches the committed trust file, making no policy when it differs; checking with that policy accepts a record signed with the release key whose payload names T as its ref, and refuses a record signed by any other key or by none, a record or bundle that carries a certificate, and a record whose payload names another tag, a tag that only begins like T, or a branch (even one named like T); Sign's provenance must also name release.yml of this repository at T as its calling workflow, so a provenance from another repository or another workflow is refused"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-002-AC3
         given: "a customer-verifiable record (image signature, SLSA provenance, SBOM, lock or release file signature)"
         when: "bin/chain-verify.py checks it"
-        then: "whether a record needs a Rekor entry is decided by its type, never by a flag the caller sets: every type except Witness's stage records (the SLSA provenance, the signed release policy, and the rest) is refused unless Rekor holds a correctly signed entry (a Rekor v1 dsse entry, as a Sigstore bundle carries it) for that very record, whose body binds the record's payload hash, signature and certificate, which names the policy's log and whose integrated time lies inside the certificate's validity; an entry for another record (or with another record's signature or certificate), with a bad or edited signed timestamp, or from another key is refused; Witness's stage records are exempt and are checked for the timestamp instead"
+        then: "every record, whatever its type, is refused unless Rekor holds a correctly signed entry for that very record (a Rekor v1 dsse entry, as a Sigstore bundle carries it), and no flag the caller sets can skip this: Witness's stage records need one just as the SLSA provenance, the signed release policy and the rest do; the entry's body must bind the record's payload hash, its signature and the release key, and the entry must name the policy's log, carry a signed entry timestamp that verifies against that log's key, and be in the log's tree by its inclusion proof and a checkpoint signed by the same key; an entry for another record (or with another record's signature or another key), with a bad or edited signed timestamp, with no inclusion proof, or from another log is refused"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-002-AC4
