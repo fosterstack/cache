@@ -120,10 +120,6 @@ else
   if [ "${CHAIN_TEST_REQUIRE_NETCUT:-0}" = 1 ]; then bad "network cut required (CHAIN_TEST_REQUIRE_NETCUT=1) but unavailable"; else ok "network cut: unavailable here, noted above (the case count stays constant)"; fi
 fi
 
-# KA-2: CHAIN_TEST_EMULATE_ENV_RESET=1 stands in for sudo's env_reset (the CI fallback `sudo -n unshare -n`) on a box that has no cut: the wrapper passes only PATH and HOME (no network is cut by it, so the NETCUT
-# label above is unchanged). It is how a variable that run() does not pass through is seen to be dropped (CI job 126332833176: sign-record got RELEASE_KMS_KEY_REF null).
-if [ "${CHAIN_TEST_EMULATE_ENV_RESET:-0}" = 1 ]; then netcut=(env -i PATH="$PATH" HOME="$HOME"); fi
-
 # ---- fixtures ---------------------------------------------------------------------------------------------------
 cat > "$work/fx.py" <<'PY'
 import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys
@@ -960,8 +956,10 @@ MARK="$work/.start-marker"; : > "$MARK"
 : > "$work/kmssign-all.log"; SIGNS_OK=0; LEAKS=0
 ARGV_RE='^kms sign --key-id alias/fosterstack-release-signing --message fileb://[^ ]+ --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json$'     # KA-2: the one KMS Sign call of a signature
 SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SENTINEL-CIT-$$-2b8e"; SENT_AWS="SENTINEL-AWS-$$-4d6f"
-# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake aws first), PYTHONPATH (the Rekor shim),
-# RELEASE_KMS_KEY_REF (sign-record's key reference, set by SR) and GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
+# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake aws first),
+# PYTHONPATH (the Rekor shim), RELEASE_KMS_KEY_REF (sign-record's key reference, set by SR) and GITHUB_REF are passed
+# THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per
+# run and appended to a total
 run() { : > "$work/kmssign-argv.log"; local rc=0 pk=()
   case "${1:-}" in sign|sign-record) pk=(--public-key "${PUBKEY:-$work/rel.pub}") ;; esac      # KA-2: sign and sign-record name the release public key (compared with the KMS key before anything is signed)
   "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
@@ -2175,9 +2173,13 @@ rc=0; PUBKEY="$work/rel-wrapped.pub" SGK ka0s-wrapped || rc=$?
 rc=0; SR ok || rc=$?
 [ "$rc" = 1 ] && grep -q 'exists' "$work/err" && [ ! -s "$work/kmssign-argv.log" ] && ok "P2 sign-record: an existing record is refused before KMS is asked" \
   || bad "P2 sign-record over an existing record (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
-# KA-2 (CI job 126332833176, 7 sign-record cases red with "got null"): run() passes RELEASE_KMS_KEY_REF through `env`, so a cut wrapper that resets the environment (sudo's env_reset) cannot drop it.
-# The pair below runs sign-record behind such a wrapper: with the variable set (as SR does) it signs; with the variable unset (the mutant: run() has nothing to pass) the verifier names the null reference.
-netcut_kept=("${netcut[@]+"${netcut[@]}"}"); netcut=(env -i PATH="$PATH" HOME="$HOME")
+# KA-2 (CI job 126332833176, 7 sign-record cases red with "got null"): run() passes RELEASE_KMS_KEY_REF through `env`,
+# so a cut wrapper that resets the environment (sudo's env_reset) cannot drop it.
+# The pair below runs sign-record behind such a wrapper: with the variable set (as SR does) it signs; with the variable
+# unset (the mutant: run() has nothing to pass) the verifier names the null reference.
+# The reset goes IN FRONT of the real cut (it does not replace it), so the pair runs under the same cut and user as every
+# other case: with the cut replaced by the reset alone, CI job 126671866698 refused at `aws kms get-public-key` (exit 1).
+netcut_kept=("${netcut[@]+"${netcut[@]}"}"); netcut=(env -i PATH="$PATH" HOME="$HOME" "${netcut_kept[@]+"${netcut_kept[@]}"}")
 rc=0; SR envreset || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sr/envreset/build-collection.json" ] && [ "$(wc -l < "$work/kmssign-argv.log")" = 1 ] \
   && ok "KA-2 sign-record behind a cut wrapper that resets the environment still gets RELEASE_KMS_KEY_REF and signs (the CI sudo fallback)" \

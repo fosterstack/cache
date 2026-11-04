@@ -4,7 +4,8 @@
 # its commands, its placeholders, what it verifies, which images it covers, the tool names it uses, and its open marks.
 # The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads, so a page that passes here
 # is a page that run can read: every command is a line of a ```sh fenced block (a line ending in a backslash joins the next
-# with one space; a line starting with # is a comment); placeholders are <IMAGE_REF>, <IMAGE_REF_FIPS> and <TAG>, each defined once
+# with one space; a line starting with # is a comment); placeholders are <IMAGE_REF>, <IMAGE_REF_FIPS> and <TAG>, each
+# defined once
 # before the first fence as a list line  - `<NAME>`: what it is.
 # A verify command whose operand is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, oci://..., or a literal reference with a
 # path and a : or @; flag values are skipped, as pipeline's check skips them) needs a registry and cannot run on

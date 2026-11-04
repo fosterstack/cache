@@ -114,7 +114,10 @@ def scan(rel, text, raw=False):
             if _cts.is_prov(e, ctx): add(PROV)
         elif e.get("pseudo"): add(e["pseudo"])
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
-    if raw:      # KA-2: a LISTED script that signs through its own kms_image function (bin/release-sign.sh; the signature itself is made by chain-verify.py kms-sign, which is not scanned): sign is the cosign signature, attest is the predicateType its attest) branch names
+    # KA-2: a LISTED script that signs through its own kms_image function (bin/release-sign.sh; the signature itself is
+    # made by chain-verify.py kms-sign, which is not scanned): sign is the cosign signature, attest is the predicateType
+    # its attest) branch names
+    if raw:
         for m in re.finditer(r"\bkms_image[ \t]+(\S+)", text):
             kind = m.group(1)
             if kind == "sign": add("urn:cosign:signature")
@@ -351,9 +354,13 @@ d=$(mk unlisted); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --
 expect ok "an UNLISTED script is not scanned here (a stage file cannot run it: chain-sign-wiring-test.sh refuses the unlisted path)" "$d"
 d=$(mk lbadhash); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho a\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo; printf '#!/usr/bin/env bash\necho changed\n' > "$d/bin/ok.sh"
 expect_named "a listed script whose sha256 no longer matches is an error naming chain-scripts.json" "$d" "chain-scripts.json"
-# KA-2 (p4 moved the image signatures and the release manifest referrer from `cosign sign` / `cosign attest` to release-sign.sh's kms_image function): in a LISTED script
-# `kms_image sign` produces urn:cosign:signature and `kms_image attest` the predicateType its attest) branch names; an unresolved type or kind fails closed
-kmsimg() { # kmsimg DIR [sign] [attest] [TYPE]: DIR/bin/ks.sh with the kms_image function and the named calls, listed; TYPE is the attest) predicateType (default the release manifest's)
+# KA-2 (p4 moved the image signatures and the release manifest referrer from `cosign sign` / `cosign attest` to
+# release-sign.sh's kms_image function): in a LISTED script
+# `kms_image sign` produces urn:cosign:signature and `kms_image attest` the predicateType its attest) branch names; an
+# unresolved type or kind fails closed
+# kmsimg DIR [sign] [attest] [TYPE]: DIR/bin/ks.sh with the kms_image function and the named calls, listed; TYPE is the
+# attest) predicateType (default the release manifest's)
+kmsimg() {
   local d=$1 ty="${4:-https://fosterstack.com/attestations/release-manifest/v1}" k; mkdir -p "$d/bin"
   { printf '#!/usr/bin/env bash\nkms_image() {\n  case "$1" in\n'
     printf '    sign) jq -cn %s ;;\n' "'{predicateType: \"https://sigstore.dev/cosign/sign/v1\"}'"
@@ -415,8 +422,11 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-# KA-2 on the REAL release-sign.sh (its pinned sha256 re-written in the copy, so the finding is the record type and not the pin): drop its kms_image calls
-realmut() { # realmut NAME SED-EXPR: a tracked copy whose bin/release-sign.sh is edited by SED-EXPR and re-listed with its new sha256
+# KA-2 on the REAL release-sign.sh (its pinned sha256 re-written in the copy, so the finding is the record type and not
+# the pin): drop its kms_image calls
+# realmut NAME SED-EXPR: a tracked copy whose bin/release-sign.sh is edited by SED-EXPR and re-listed with its new
+# sha256
+realmut() {
   local d; d=$(tracked_copy "$1"); sed -i "$2" "$d/bin/release-sign.sh"
   python3 - "$d" <<'PY'
 import hashlib, json, sys
