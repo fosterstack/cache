@@ -122,12 +122,18 @@ sed "s/grep -Eqx /grep -q /" "$MF" >"$work/gen-new/substr-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe whose proof line is the substring form (grep -q) is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/substr-fips.yaml"
 awk '{print} /grep .*gobuildinfo/{print}' "$MF" >"$work/gen-new/dup-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe with the proof line twice is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/dup-fips.yaml"
-# bin/check-artifacts.sh checks the built -fips binary the same way: its own grep command, from the script's text, run on the stubs
+# bin/check-artifacts.sh pins the certified id itself and a person edits it on a new certificate (the refresh PR body names the file),
+# so these cases follow the script's own command, not the lock
 ca_cmd=$(sed -n 's/^\(grep -E.*GOFIPS140=v1.*\) <<< "\$info_fips".*/\1/p' "$root/bin/check-artifacts.sh")
+ca_id=$(printf '%s\n' "$ca_cmd" | sed -n 's/.*GOFIPS140=\(v[0-9.\\]*-[0-9a-f]\{8\}\).*/\1/p' | tr -d '\\')
 t "REQ-FIPS-001-AC1" "bin/check-artifacts.sh has one grep command for the -fips build info" test "$(printf '%s\n' "$ca_cmd" | grep -c .)" = 1
-t "REQ-FIPS-001-AC1" "the check-artifacts.sh command passes on build info with the exact GOFIPS140 build line" bash -c 'bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-exact.txt"
+t "REQ-FIPS-001-AC1" "the id in the check-artifacts.sh command is found" test -n "$ca_id"
+stub ca-exact "\tbuild\tGOFIPS140=$ca_id\n"
+stub ca-longer "\tbuild\tGOFIPS140=${ca_id}9\n"
+stub ca-shorter "\tbuild\tGOFIPS140=${ca_id%?}\n"
+t "REQ-FIPS-001-AC1" "the check-artifacts.sh command passes on build info with the exact GOFIPS140 build line" bash -c 'bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-ca-exact.txt"
 for c in longer shorter; do
-  t "REQ-FIPS-001-AC1" "the check-artifacts.sh command fails on build info with a $c id" bash -c '! bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-$c.txt"
+  t "REQ-FIPS-001-AC1" "the check-artifacts.sh command fails on build info with a $c id" bash -c '! bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-ca-$c.txt"
 done
 printf 'v1.1.0-DEADBEEF\n' >"$work/lib-lock-bad.txt"
 t "REQ-BUILDAPK-001-AC1" "a malformed lock file fails the recipe checks (closed grammar, fail closed)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips' _ "$work/lib-lock-bad.txt" "$root" "$work/chk.py" "$MF"

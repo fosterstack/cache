@@ -898,7 +898,7 @@ echo "go $*" >> "$FAKE_LOG"
 [ "$1 $2" = "version -m" ] || exit 2
 echo "$3: go1.26.0"; echo "	build	CGO_ENABLED=0"
 case "$(basename "$3")" in
-  fscache-fips) [ -n "${FAKE_GOFIPS_FIPS-v1.0.0-c2097c7c}" ] && echo "	build	GOFIPS140=${FAKE_GOFIPS_FIPS-v1.0.0-c2097c7c}";;
+  fscache-fips) v=${FAKE_GOFIPS_FIPS-v1.0.0-c2097c7c}; [ -z "$v" ] || echo "	build	GOFIPS140=$v";;
   fscache) [ -z "${FAKE_GOFIPS_STD:-}" ] || echo "	build	GOFIPS140=${FAKE_GOFIPS_STD}";;
 esac
 exit 0

@@ -141,7 +141,7 @@ def read_recipe(rec, fips):
     if len(pkgs) != 1 or ".." in pkgs[0]:
         fail("%s holds %d build lines of the one allowed form, not exactly one: the shipped main package is not known" % (rec, len(pkgs)))
     if fips and (fips_exports != 1 or proofs != 1):
-        fail("%s must set GOFIPS140=v1.0.0 exactly once (the FIPS build)" % rec)
+        fail("%s must set GOFIPS140=v1.0.0 exactly once and hold exactly one proof line (found %d exports, %d proofs)" % (rec, fips_exports, proofs))
     return pkgs[0], cgo.strip('"')
 
 
