@@ -17,6 +17,7 @@
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
 import argparse, hashlib, importlib.util, json, os, re, subprocess, sys
+from pathlib import Path
 
 REPO_GHCR, REPO_HUB = "ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"
 VARIANTS = ("production", "fips")
@@ -28,7 +29,7 @@ FINAL = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 def _shared(name):
     """The helper <name> from this directory (the scripts run isolated, so the folder is not on sys.path)."""
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+        spec = importlib.util.spec_from_file_location(name, str(Path(__file__).resolve().parent / (name + ".py")))
         sys.modules[name] = module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     return sys.modules[name]

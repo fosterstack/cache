@@ -21,12 +21,13 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 
 def _shared(name):
     """The helper <name> from this directory (the scripts run isolated, so the folder is not on sys.path)."""
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+        spec = importlib.util.spec_from_file_location(name, str(Path(__file__).resolve().parent / (name + ".py")))
         sys.modules[name] = module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     return sys.modules[name]
