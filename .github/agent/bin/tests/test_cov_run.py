@@ -1109,6 +1109,7 @@ class SuppressionPR(Base):
         self.real(fr)
         create = next(a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"])
         title, body = create[create.index("--title") + 1], create[create.index("--body") + 1]
+        self.assertEqual(title, "auditor: update suppressions (1 statements)")
         self.assertEqual(body, "Automated suppression update from the daily CVE auditor. Draft for review.")
         root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
         check = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,

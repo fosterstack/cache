@@ -958,6 +958,8 @@ class Deliver(Tmp):
         self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", os.environ.get("GITHUB_SHA") or "HEAD"], cmds)
         self.assertNotIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
         self.assertIn(["gh", "pr", "edit", "17"], [c[:4] for c in cmds])
+        edit = next(c for c in cmds if c[:4] == ["gh", "pr", "edit", "17"])
+        self.assertEqual(edit[edit.index("--title") + 1], "auditor: scanner panel audits")
         self.assertIn(["gh", "issue", "comment", "42"], [c[:4] for c in cmds])
         stmts = json.load(open(vpath))["statements"]
         self.assertEqual(stmts[0]["status"], "affected")
