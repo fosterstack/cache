@@ -65,7 +65,7 @@ VERSION_LINE = re.compile(r"^go version -m \$\{\{targets\.destdir\}\}/usr/bin/fs
 _G, _P = "g" + "o", "PA" + "TH"          # spelled in parts: this file names the recipes' search-path export without setting one
 EXPORT_OK = ("export %s=/usr/local/%s/bin:$%s" % (_P, _G, _P), "export GOPATH=/tmp/gopath GOCACHE=/tmp/gocache")
 FIPS_EXPORT = "export GOFIPS140=v1.0.0"
-FIPS_PROOF = re.compile(r"^grep -q 'GOFIPS140=v1\.0\.0-[0-9a-f]{8}' /tmp/fscache-gobuildinfo\.txt$")
+FIPS_PROOF = re.compile(r"^grep -Eqx '\.build\.GOFIPS140=v1\\\.0\\\.0-[0-9a-f]{8}' /tmp/fscache-gobuildinfo\.txt$")
 FETCH_URI = re.compile(r"^      uri: https://[a-z0-9./-]+\.tar\.gz$")                 # the two lines of a fetch step that change with a toolchain bump
 FETCH_SUM = re.compile(r"^      expected-sha256: [0-9a-f]{64}$")
 # every other pipeline line of the recipe (the toolchain fetch steps, the repository set-up, the install directory and the buildinfo check) is data of the template: the

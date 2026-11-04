@@ -510,7 +510,14 @@ elif mode == "mel-fips":
         assert kv(b, "GOFIPS140", v), "fips recipe does not set GOFIPS140=%s (the version of the module build/locks/fips-module.txt names)" % v
     else: assert "GOFIPS140" not in b, "standard recipe mentions GOFIPS140"
 elif mode == "mel-fipsproof":
-    m = fipsmod(); p = pipe(load()); assert "go version -m" in p and re.search(r"GOFIPS140=%s(['\"\s]|$)" % re.escape(m), p), "no proof of the recorded %s" % m   # the id ends at a quote, whitespace or the end: a longer id with this one as its prefix is another module
+    # the proof is one whole-line grep (-x) on the build line, the module id dots escaped: a longer or shorter id is another module (queue line 548)
+    m = fipsmod(); p = pipe(load()); want = "grep -Eqx '.build.GOFIPS140=%s' /tmp/fscache-gobuildinfo.txt" % m.replace(".", "\\.")
+    assert "go version -m" in p and want in p.split("\n"), "no whole-line proof of the recorded %s (wanted: %s)" % (m, want)
+elif mode == "mel-proofrun":
+    # runs the recipe's own grep line (its text, the path swapped for arg) and exits with the grep's status
+    ln = [l.strip() for l in pipe(load()).split("\n") if l.strip().startswith("grep ") and "/tmp/fscache-gobuildinfo.txt" in l]
+    assert len(ln) == 1, "need exactly one proof grep line, got %d" % len(ln)
+    import subprocess; sys.exit(subprocess.run(["bash", "-c", ln[0].replace("/tmp/fscache-gobuildinfo.txt", arg)]).returncode)
 elif mode == "mel-go":
     d = load(); ps = pk(d["environment"])
     assert not any(re.match(r"go([-=.]|$)", p) for p in ps), "a Wolfi go package is installed"
