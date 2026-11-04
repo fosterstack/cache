@@ -23,7 +23,7 @@
  "chain-snapshot-test.sh": 160,
  "chain-verify-test.sh": 855,
  "check-action-pins-test.sh": 1318,
- "check-customer-words-test.sh": 92,
+ "check-customer-words-test.sh": 103,
  "check-file-allowlist-test.sh": 670,
  "check-no-outbound-test.sh": 135,
  "dependabot-reviewer-gather-test.sh": 20,
