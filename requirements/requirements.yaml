@@ -3035,7 +3035,9 @@ requirements:
       - id: REQ-SUP-001-AC8
         given: "a hit with no clean version at least 7 days old, or a hit whose bad version we ran in the last 90 days"
         when: "the issue is opened"
-        then: "it is labelled owner-decision (every hit carries supply-chain-hit), and the workflow never produces the runs, their environments or the secret names they could reach: not in the issue, a log or an artifact"
+        then: 'it also gets the label that asks a maintainer to decide (every hit carries supply-chain-hit), and the
+          workflow never produces the runs, their environments or the secret names they could reach: not in the
+          issue, a log or an artifact'
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC9
