@@ -1684,7 +1684,7 @@ def cmd_deliver(a, run=subprocess.run):
     if changed:
         # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a `git commit` here is unsigned
         # and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created or force-reset onto `base`, then ONE commit is made on it.
-        message = "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today
+        message = "Scanner panel audits, %s" % a.today
         if real:
             if not os.environ.get("GITHUB_REPOSITORY"):
                 raise RuntimeError("auditor-panel: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit")
