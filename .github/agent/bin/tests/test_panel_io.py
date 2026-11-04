@@ -884,7 +884,7 @@ class Deliver(Tmp):
         self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": tmp})   # the commit is made on the temporary auditor/ branch, never main
         self.assertEqual(inp["expectedHeadOid"], SHA40)
         self.assertEqual(sorted(x["path"] for x in inp["fileChanges"]["additions"]), sorted([P.STATE, P.VEX, P.PROFILES]))
-        self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03 (rules 7-9, 13, 14)")
+        self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03")
         self.assertTrue(any(c[:4] == ["gh", "pr", "create", "--draft"] for c in cmds))
         # the PR's title and body are public text: plain, and clean under the repository's own customer-words check
         create = next(c for c in cmds if c[:4] == ["gh", "pr", "create", "--draft"])
