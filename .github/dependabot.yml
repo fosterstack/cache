@@ -49,6 +49,20 @@ updates:
           - "minor"
           - "patch"
 
+  # tools/requirements is its own Go module (ci.yml runs it with go -C tools/requirements); same shape as the root module.
+  - package-ecosystem: "gomod"
+    directory: "/tools/requirements"
+    schedule:
+      interval: "weekly"
+    # Minor and patch updates arrive as ONE pull request instead of one each; a major never joins (it stays a lane task).
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
   # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
   # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and
   # .ko.yaml where no ecosystem looks. The FROM lines are written
