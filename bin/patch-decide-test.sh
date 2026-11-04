@@ -615,7 +615,22 @@ try:
     P.notes("v0.2.3", [], [], behavior=["x (decided 2026-10-05)\n"]); msg_ = ""
 except ValueError as x_:
     msg_ = str(x_)
-check("DATE an entry handed to notes() with a trailing newline is refused", msg_ != "", msg_)
+check("DATE an entry handed to notes() with a trailing newline is refused: cites no decision date", "cites no decision date" in msg_, msg_)
+# round 2 findings (cache#833): an internal reference in any spelling is refused, an ordinary use of the word is not
+for ref_ in ("advisor **0115**", "handoff \uff10\uff11\uff13\uff10", "advisor \uff10\uff11\uff11\uff15", "(advisor #0115)", "advisor-0115",
+             "handoff:0130", "advisors 0115", "handoffs 0130", "per_advisor 0115", "advisor 0115a", "advisor `0115`"):
+    cite_ = "- A change " + ref_ + " (decided 2026-10-03).\n"
+    try:
+        P.behavior_entries(cite_); msg_ = ""
+    except ValueError as x_:
+        msg_ = str(x_)
+    check("DATE %r is refused: holds an internal reference" % cite_, "holds an internal reference" in msg_, msg_)
+for ok_text_ in ("- Improved handoff (decided 2026-10-03).\n", "- Faster handoff of keys (decided 2026-10-03).\n"):
+    try:
+        P.behavior_entries(ok_text_); got_ = True
+    except ValueError:
+        got_ = False
+    check("DATE %r is accepted: the word alone is not an internal reference" % ok_text_, got_)
 REAL_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", "docs", "next-release-notes.md")
 real_text = open(REAL_FILE).read()
 real_ents = P.behavior_entries(real_text)
