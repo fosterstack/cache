@@ -94,8 +94,8 @@ Enforcement is delegated to the validated module rather than to a list.
 CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
 build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
 makes non-approved algorithms fail at runtime, as a best-effort test aid.
-A reach for non-approved cryptography — ours or a dependency's — fails
-that commit's `fips140-only` check.
+When the mode catches a reach for non-approved cryptography — ours or a
+dependency's — that commit's `fips140-only` check fails.
 
 Two limits of that claim, stated so it cannot be over-read: the check covers
 the paths the test suite executes, built in FIPS mode. The released
