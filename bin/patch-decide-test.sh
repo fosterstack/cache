@@ -583,6 +583,33 @@ check("0130 notes list behavior changes under their heading", "### Behavior chan
 check("0130 with behavior changes the no-behavior-change line is dropped", "No behavior change" not in nb, nb)
 check("0130 without them the no-behavior-change line stays", "No behavior change" in P.notes("v0.2.2", fixes, vex, behavior=[]))
 check("0130 behavior entries are cleaned of vendor names too", "Gemini" not in P.notes("v0.2.2", [], [], behavior=["Gemini x (advisor 0130)."]))
+# --- an entry cites the date it was decided: it ends exactly "(decided YYYY-MM-DD)", with an optional final "." (nothing before the date inside the parentheses)
+import os
+for cite_, ok_ in (("- A change (decided 2026-10-03).\n", True), ("- A change (decided 2026-10-03)\n", True),
+                   ("- A change (advisor 0115).\n", False), ("- A change (handoff 0130)\n", False),
+                   ("- A change (owner accepted; decided 2026-10-03).\n", False), ("- A change (decided 2026-1-3)\n", False),
+                   ("- A change (decided 2026-02-30)\n", False)):
+    try:
+        P.behavior_entries(cite_); got_ = True
+    except ValueError:
+        got_ = False
+    check("DATE %r is %s" % (cite_, "accepted" if ok_ else "refused"), got_ == ok_)
+try:
+    P.behavior_entries("- A change (advisor 0115).\n"); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE the refusal says the entry cites no decision date", "cites no decision date" in msg_, msg_)
+REAL_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", "docs", "next-release-notes.md")
+real_text = open(REAL_FILE).read()
+real_ents = P.behavior_entries(real_text)
+check("DATE the real docs/next-release-notes.md parses to its two entries, each ending with a decided date",
+      len(real_ents) == 2 and all(re.search(r"\(decided \d{4}-\d{2}-\d{2}\)\.$", e) for e in real_ents), real_ents)
+real_nt = P.notes("v0.2.2", [], [], behavior=real_ents)
+check("DATE both real entries print unchanged through notes()", all("- " + e + "\n" in real_nt for e in real_ents), real_nt)
+real_cl, real_nn = P.changelog(real_nt, None, real_text)
+check("DATE both real entries leave docs/next-release-notes.md through changelog()", not any(e in real_nn for e in real_ents) and all(e in real_cl for e in real_ents), real_nn)
+BANNED_ = re.compile(r"\b(owners?|lanes?|orchestrators?|advisors?|handoffs?)\b|ratif|\brules? \d|docs/ratify|handoffs/|audits/|ops#\d", re.I)
+check("DATE the real file and its notes() output hold no shop word", not BANNED_.search(real_text) and not BANNED_.search(real_nt), [BANNED_.findall(real_text), BANNED_.findall(real_nt)])
 # --- AC8 wired (advisor 0135): the notes are built from the scans, the VEX diff and docs/next-release-notes.md
 rel_v = {"": [{"id": "CVE-2099-1", "package": "golang.org/x/net", "installed": "v0.30.0", "fixed": "v0.33.0", "severity": "High", "type": "go-module"},
               {"id": "CVE-2099-2", "package": "golang.org/x/text", "installed": "v0.20.0", "fixed": "v0.21.0", "severity": "Low", "type": "go-module"},
