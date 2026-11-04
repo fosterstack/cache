@@ -631,6 +631,30 @@ for ok_text_ in ("- Improved handoff (decided 2026-10-03).\n", "- Faster handoff
     except ValueError:
         got_ = False
     check("DATE %r is accepted: the word alone is not an internal reference" % ok_text_, got_)
+# round 3 findings (cache#833): the separator between the word and the number has no length cap; a word + number in prose is refused on purpose
+for ref_ in ("advisor **__0115__**", "advisor     0115", "advisor ~~**`0115`**~~"):
+    cite_ = "- A change (" + ref_ + ") (decided 2026-10-03).\n"
+    try:
+        P.behavior_entries(cite_); msg_ = ""
+    except ValueError as x_:
+        msg_ = str(x_)
+    check("DATE %r is refused: holds an internal reference" % cite_, "holds an internal reference" in msg_, msg_)
+try:
+    P.notes("v0.2.3", [], [], behavior=["- A change (advisor **__0115__**) (decided 2026-10-03)."]); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE notes() refuses an entry with advisor **__0115__**: holds an internal reference", "holds an internal reference" in msg_, msg_)
+try:
+    P.behavior_entries("- The handoff 2 seconds after startup now succeeds (decided 2026-10-03).\n"); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE a word + number in prose is refused on purpose (handoff 2 seconds): holds an internal reference", "holds an internal reference" in msg_, msg_)
+for ok_text_ in ("- Faster key handoff. (decided 2026-10-03).\n", "- handoff... (decided 2026-10-03).\n"):
+    try:
+        P.behavior_entries(ok_text_); got_ = True
+    except ValueError:
+        got_ = False
+    check("DATE %r is accepted: no digit follows the word" % ok_text_, got_)
 REAL_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", "docs", "next-release-notes.md")
 real_text = open(REAL_FILE).read()
 real_ents = P.behavior_entries(real_text)
