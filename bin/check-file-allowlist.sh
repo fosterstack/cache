@@ -72,6 +72,10 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
+  # The customer-word check: it fails a pull request that adds shop words to a file a customer can read.
+  '^bin/check-customer-words\.py$'
+  '^bin/check-customer-words-test\.sh$'
+  '^\.github/policy/customer-words-allow\.txt$'
   # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
   '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
