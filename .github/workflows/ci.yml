@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]   # edited: a changed title or body is checked too
 
 # A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
 # its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
@@ -158,10 +159,11 @@ jobs:
           golangci-lint run ./...
       - name: no shop words added to a file a customer can read
         if: github.event_name == 'pull_request'
+        shell: bash
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: git diff -U0 -M --no-color --diff-filter=AMR HEAD^1 HEAD | python3 -I bin/check-customer-words.py
+        run: git diff -U0 --no-renames --no-color HEAD^1 HEAD | python3 -I bin/check-customer-words.py
 
   gosec:
     name: gosec
