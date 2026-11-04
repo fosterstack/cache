@@ -570,7 +570,7 @@ def _lit(v, before_colon=False):
 
 
 CITED = re.compile(r"\(decided ([0-9]{4}-[0-9]{2}-[0-9]{2})\)\.?\Z")
-INTERNAL_REF = re.compile(r"(?i)(?<![^\W_])(?:advisor|handoff)s?[\W_]{0,4}\d")
+INTERNAL_REF = re.compile(r"(?i)(?<![^\W_])(?:advisor|handoff)s?[\W_]*\d")
 
 
 def _entries(text):
@@ -616,7 +616,8 @@ def behavior_entries(text, name="docs/next-release-notes.md", located=False):
 
 def _check_entry(e):
     """An entry ends with the date it was decided, a real calendar date (ASCII digits, the end of the string right after
-    the parenthesis or its dot), holds no internal reference, and no vendor or model name hides in it split by a space
+    the parenthesis or its dot), holds no internal reference (the word advisor or handoff, then only non-letter non-digit
+    characters, then a digit; a word + number in prose is refused on purpose), and no vendor or model name hides in it split by a space
     or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
     m = CITED.search(e)
     if m:
