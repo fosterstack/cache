@@ -1703,7 +1703,7 @@ def cmd_deliver(a, run=subprocess.run):
         body = public("The daily scanner panel's audits of the rescan's unique findings (%s).\n\n%s" % (
             a.today, "\n".join("- " + c for c in changed)))
         if existing:
-            _sh(["gh", "pr", "edit", existing, "--body", body], plan, real, run)
+            _sh(["gh", "pr", "edit", existing, "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
                  "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
