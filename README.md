@@ -152,7 +152,7 @@ shell to exec into and no package manager. To troubleshoot, attach a second
 container from the outside ([below](#debugging-a-running-container)); see also
 [the variant docs](docs/verify-images.md).
 
-The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you the FIPS-validated cryptographic module that FedRAMP requires for control SC-13, which is in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High). Details: [FIPS 140-3](docs/fips.md).
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. [SC-13 sentence pending] Details: [FIPS 140-3](docs/fips.md).
 
 FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
 Linux, so a macOS FIPS build would double CI time for a configuration nobody
