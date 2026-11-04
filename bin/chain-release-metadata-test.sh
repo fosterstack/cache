@@ -399,8 +399,18 @@ r = subprocess.run(["python3", "-I", os.path.join(lk, "release-metadata.py"), "c
 check(r.returncode == 0 and r.stdout == block(1, 2, V2[2]) and "DECOY" not in r.stdout + r.stderr, "P2 release-metadata.py run through a symlink from another folder finds the real controls_versions.py (not the decoy in the working folder)", "rc=%s %r %r" % (r.returncode, r.stdout[-200:], r.stderr[-200:]))
 for name in ("release-metadata.py", "evidence-letter.py"):
     check("Path(__file__).resolve().parent" in open(os.path.join(BIN, name)).read(), "P2 %s finds controls_versions.py from Path(__file__).resolve().parent" % name, "source lacks Path(__file__).resolve().parent")
+# F1: the release job's checkout may be shallow; a shallow clone has no earlier release tag, so the notice would say "none" on every release. controls-notice refuses with one line.
+repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
+sh_dir = os.path.join(tempfile.mkdtemp(), "shallow"); fu_dir = os.path.join(tempfile.mkdtemp(), "full")
+subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + repo, sh_dir], check=True, capture_output=True, env=GENV)
+subprocess.run(["git", "clone", "-q", "file://" + repo, fu_dir], check=True, capture_output=True, env=GENV)
+check(git(sh_dir, "rev-parse", "--is-shallow-repository") == "true" and git(fu_dir, "rev-parse", "--is-shallow-repository") == "false", "F1 the fixture: the depth-1 clone is shallow and the full clone is not")
+rc, so, se = notice(sh_dir, "v0.3.0", sh[-1])
+check(rc == 1 and so == "" and len(se.strip().splitlines()) == 1 and "shallow" in se, "F1 controls-notice in a shallow clone exits 1 with one line naming the shallow clone and prints no notice", str((rc, so, se[:160])))
+rc, so, se = notice(fu_dir, "v0.3.0", sh[-1])
+check(rc == 0 and so == block(1, 2, V2[2]), "F1 the same history in a full clone still prints the notice (the refusal is for a shallow clone only)", str((rc, so[:80], se[:120])))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "134"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "137"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

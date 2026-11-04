@@ -81,7 +81,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + inst("witness") + vdowns() + wit("release-verify", {}, "witnessed-local.sh") + renv("release-verify", True, True) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
          + "  release:\n    needs: [compare, verify]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
-         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
+         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n"      # G7 F1: the release job compares earlier release tags, so it needs the whole history
          + inst("witness") + inst("cosign") + inst("crane")
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
@@ -242,6 +242,9 @@ m s_wf      'permissions:\n  contents: read\njobs'          'permissions:\n  con
 m s_trig    'workflow_call:'                                'workflow_call:\n  push:'                                'workflow_call'      "AC1 an extra trigger"
 m s_unp     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                          'digest-pinned'      "AC1 an unpinned checkout"
 m s_persist 'persist-credentials: false'                    'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
+m s_nodepth '=          persist-credentials: false\n          fetch-depth: 0\n' '          persist-credentials: false\n' 'fetch-depth'    "G7 F1 the release job checkout without fetch-depth (a shallow clone: the controls notice finds no earlier tag)"
+m s_depth1  'fetch-depth: 0'                               'fetch-depth: 1'                                        'fetch-depth'        "G7 F1 the release job checkout with fetch-depth 1"
+m s_cmpdepth '=      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n' '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n' 'compare job'      "G7 F1 fetch-depth on the compare job checkout (only the release job may fetch the history)"
 m s_dlname  'name: provenance\n          path: provenance' 'name: not-listed\n          path: provenance'             'download-artifact'  "AC1 a download outside the allowlist"
 m s_noarm   '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-check-arm64\n          path: witness-check/witness-arm64\n' '' 'witness-check-arm64' "AC16 the arm64 Check record is not downloaded (check-list would refuse the release, so the stage must fetch it)"
 m s_nocr    '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: check-results\n          path: check-results\n' '' 'check-results' "G Check's scanner product (check-results/govulncheck.json) is not downloaded: release-sign would have no file to pass"
@@ -569,6 +572,11 @@ PY
 expect caught "AC13 the manifest is made before the VEX and CSAF files exist" "must come before" metadata "$work/m_swap.sh"
 # ---- the real repository (RED until PR 4 is implemented) ---------------------------------------------------------------------
 expect ok "the real stage-promote.yml is the Release stage" "" stage "$root/.github/workflows/stage-promote.yml"
+python3 - "$root/.github/workflows/stage-promote.yml" <<'PY' && ok "G7 F1 the real stage-promote.yml release job checks out the whole history (fetch-depth: 0) and keeps persist-credentials: false" || bad "G7 F1 the real stage-promote.yml release job checkout is not exactly persist-credentials: false and fetch-depth: 0"
+import sys, yaml
+w = yaml.safe_load(open(sys.argv[1]))["jobs"]["release"]["steps"][0]
+sys.exit(0 if w["uses"].startswith("actions/checkout@") and w.get("with") == {"persist-credentials": False, "fetch-depth": 0} else 1)
+PY
 expect ok "the real credentials reach only the steps that need them" "" credentials "$root/.github/workflows/stage-promote.yml"
 expect ok "nothing outside the release job holds packages write or a credential" "" others "$root"
 expect ok "the real release.yml: the release job needs exactly check, sign and sign-rebuild, no skip, no tag" "" graph "$root/.github/workflows/release.yml"
@@ -600,7 +608,7 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-EXPECT=294
+EXPECT=298
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
