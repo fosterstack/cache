@@ -1904,7 +1904,15 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "feab9d621c7e443c06b6989b20838e5190c93ef522b9a4d80cc9adcd61b2ebca"
+      "sha256": "b072db4c5ec3d4b6419020f58824c8d2e2a209f2fe80053dc7e5f7173925150c"
+    },
+    {
+      "path": "bin/controls_versions.py",
+      "sha256": "34b2fcac050d448c55d0fbe4c7e89a7ff9fdd20d1e5e96ed1de35197e8b6c6b3",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "imported by release-metadata.py (the release notice) and evidence-letter.py (the monthly letter): the one reader of the controls document's version table, and the characters a change note may hold"
     },
     {
       "path": "bin/vex-forms.py",
