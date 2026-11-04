@@ -137,6 +137,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2   # on a pull request the checkout is the merge commit, so HEAD^1 is the base tip
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
@@ -154,6 +156,12 @@ jobs:
           gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
           golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
           golangci-lint run ./...
+      - name: no shop words added to a file a customer can read
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: git diff -U0 -M --no-color --diff-filter=AMR HEAD^1 HEAD | python3 -I bin/check-customer-words.py
 
   gosec:
     name: gosec
@@ -287,6 +295,9 @@ jobs:
 
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh
+
+      - name: customer-word check regressions
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-customer-words-test.sh bin/check-customer-words-test.sh
 
 
 
