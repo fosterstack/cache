@@ -120,7 +120,7 @@ The `-fips` build announces itself at startup, so the property is
 observable at runtime rather than taken on trust:
 
 ```
-"fips140":"active (Go validated module v1.0.0, CMVP cert #5247)"
+"fips140":"active (Go validated module ..., CMVP cert #5247)"
 ```
 
 Standard builds report `"fips140":"off"`.

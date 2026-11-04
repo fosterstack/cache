@@ -9,10 +9,10 @@ The validation covers the cryptographic module. It does not cover FosterStack Ca
 The `-fips` build reports its status at startup and on `/statusz`:
 
 ```
-"fips140":"active (Go validated module v1.0.0, CMVP cert #5247)"
+"fips140":"active (Go validated module ..., CMVP cert ...)"
 ```
 
-Standard builds report `"fips140":"off"`. The `/statusz` page carries the same text as `fips140_note`.
+The dots stand for the module version and the certificate number. Standard builds report `"fips140":"off"`. The `/statusz` page carries the same text as `fips140_note`.
 
 - [Certificate #5247](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5247) at NIST.
 - [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5247.pdf): Table 4 lists the vendor-affirmed operating environments, including Linux 3.10 and later on x86-64 and ARM.
