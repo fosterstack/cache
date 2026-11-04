@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
+# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21, REQ-REL-013-AC12
 # RED until bin/release-metadata.py exists (REQ-CHAIN-007-AC13, advisor 0386 item 2; owner Oct 10: v0.3.0 matches CISA secure by design): step 4.
 #
 # The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
@@ -354,6 +354,7 @@ cv = os.path.join(BIN, "controls_versions.py")
 check(os.path.exists(cv) and "def controls_versions(" in open(cv).read(), "G7 N8 bin/controls_versions.py holds the one parser (def controls_versions)", "no such module")
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path); m = importlib.util.module_from_spec(spec)
+    sys.modules[name] = m   # registered before the run, so a script that loads the shared helper by name gets this very module
     sys.path.insert(0, BIN)
     try: spec.loader.exec_module(m)
     finally: sys.path.pop(0)
