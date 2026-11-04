@@ -11,11 +11,11 @@
   },
   {
    "section": "download",
-   "sha256": "8b4a9ce16114553c366aa5b579a280e6fdf21a9c242544fe72a3f8c9cb11275a"
+   "sha256": "cb931ca4229449542c1dfde45d0e85c6125ae48d70540a29844f3c979883c9c4"
   },
   {
    "section": "verify",
-   "sha256": "e1372e14d29ceefbcb54a4244f6caea977372f534dcd23540cd772d7cbc2845c"
+   "sha256": "4a09e7ac6a6d9252470e78e072148c08cbaf086f68b0692fed9fc7da411504a9"
   },
   {
    "section": "grype",

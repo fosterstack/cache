@@ -27,7 +27,6 @@ Look up the image digest you run (`cache:${VER}` is the production image; for th
 
 ```sh
 DIGEST=$(docker buildx imagetools inspect "ghcr.io/fosterstack/cache:${VER}" --format '{{.Manifest.Digest}}')
-curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
 ```
 
 Download the three files:
@@ -36,6 +35,7 @@ Download the three files:
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache.openvex.json"
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.inspector-filters.json"
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.csaf.json"
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
 ```
 
 The release already signs a manifest of everything it ships, attached to each image as an attestation signed with our
