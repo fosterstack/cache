@@ -1684,7 +1684,7 @@ def cmd_deliver(a, run=subprocess.run):
     if changed:
         # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a `git commit` here is unsigned
         # and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created or force-reset onto `base`, then ONE commit is made on it.
-        message = "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today
+        message = "Scanner panel audits, %s" % a.today
         if real:
             if not os.environ.get("GITHUB_REPOSITORY"):
                 raise RuntimeError("auditor-panel: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit")
@@ -1703,10 +1703,10 @@ def cmd_deliver(a, run=subprocess.run):
         body = public("The daily scanner panel's audits of the rescan's unique findings (%s).\n\n%s" % (
             a.today, "\n".join("- " + c for c in changed)))
         if existing:
-            _sh(["gh", "pr", "edit", existing, "--body", body], plan, real, run)
+            _sh(["gh", "pr", "edit", existing, "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
-                 "--title", policy.subject("scanner panel audits (rules 7-9, 13, 14)"), "--body", body], plan, real, run)
+                 "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
     if changed or existing:     # the switch is re-checked every day, so it regains control of an armed PR (Sonnet r4)
         pr_paths = set(changed)
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review

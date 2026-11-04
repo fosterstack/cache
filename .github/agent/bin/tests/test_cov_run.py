@@ -1104,6 +1104,18 @@ class SuppressionPR(Base):
         # not a second fetch, not a read, not a checkout
         self.assertEqual(fr.argvs(), [])
 
+    def test_the_suppression_pr_title_and_body_are_plain_and_pass_the_customer_words_check(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.real(fr)
+        create = next(a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"])
+        title, body = create[create.index("--title") + 1], create[create.index("--body") + 1]
+        self.assertEqual(title, "auditor: update suppressions (1 statements)")
+        self.assertEqual(body, "Automated suppression update from the daily CVE auditor. Draft for review.")
+        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
+        check = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
+                               env={**os.environ, "PR_TITLE": title, "PR_BODY": body}, capture_output=True, text=True)
+        self.assertEqual((check.returncode, check.stdout), (0, ""), check.stderr)
+
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr), ("https://x/pull/9", None))

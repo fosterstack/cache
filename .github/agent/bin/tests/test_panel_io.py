@@ -884,8 +884,16 @@ class Deliver(Tmp):
         self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": tmp})   # the commit is made on the temporary auditor/ branch, never main
         self.assertEqual(inp["expectedHeadOid"], SHA40)
         self.assertEqual(sorted(x["path"] for x in inp["fileChanges"]["additions"]), sorted([P.STATE, P.VEX, P.PROFILES]))
-        self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03 (rules 7-9, 13, 14)")
+        self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03")
         self.assertTrue(any(c[:4] == ["gh", "pr", "create", "--draft"] for c in cmds))
+        # the PR's title and body are public text: plain, and clean under the repository's own customer-words check
+        create = next(c for c in cmds if c[:4] == ["gh", "pr", "create", "--draft"])
+        title, body = create[create.index("--title") + 1], create[create.index("--body") + 1]
+        self.assertEqual(title, "auditor: scanner panel audits")
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+        check = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
+                               env={**os.environ, "PR_TITLE": title, "PR_BODY": body}, capture_output=True, text=True)
+        self.assertEqual((check.returncode, check.stdout), (0, ""), check.stderr)
         issue_calls = [(c, t) for c, t in calls if c[:2] == ["gh", "issue"]]
         self.assertTrue(all(t == "issues-token" for _, t in issue_calls))
         self.assertTrue(any(c[:3] == ["gh", "issue", "create"] and "daily-rescan" in c and
@@ -950,6 +958,8 @@ class Deliver(Tmp):
         self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", os.environ.get("GITHUB_SHA") or "HEAD"], cmds)
         self.assertNotIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
         self.assertIn(["gh", "pr", "edit", "17"], [c[:4] for c in cmds])
+        edit = next(c for c in cmds if c[:4] == ["gh", "pr", "edit", "17"])
+        self.assertEqual(edit[edit.index("--title") + 1], "auditor: scanner panel audits")
         self.assertIn(["gh", "issue", "comment", "42"], [c[:4] for c in cmds])
         stmts = json.load(open(vpath))["statements"]
         self.assertEqual(stmts[0]["status"], "affected")
