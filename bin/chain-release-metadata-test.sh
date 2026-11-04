@@ -15,7 +15,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export METADATA_BIN="${METADATA_BIN:-$root/bin}"
 python3 - <<'PY'
-import hashlib, json, os, shutil, subprocess, sys, tempfile
+import hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
 BIN = os.environ["METADATA_BIN"]
 passn = failn = 0
 def ok(l): global passn; passn += 1; print("ok   " + l)
@@ -280,8 +280,118 @@ check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and 
 check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read(), "text: melange-apko-lib.sh no longer shows release-sign-apks.sh with --rebuild-dir")
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
+# ---- G7: controls-notice (the release-note notice that the controls document changes in this release) --------------------------------------------------
+# bin/release-metadata.py controls-notice --tag <vX.Y.Z[-rcN]> --commit <sha>, run in a git work tree. The previous release is the highest FINAL vX.Y.Z below the tag's
+# version (an rc tag never counts, a tag above never counts); the version on each side is the highest row `| N | YYYY-MM-DD | <change> |` of docs/controls.md at that tag
+# and at the commit (no file = none). Same version, or none on both sides: nothing printed, exit 0. Changed: the three-line block and one blank line. Exit 1, one line on stderr
+# and nothing on stdout: the file has no readable version row, the version went down, or the new change cell is empty or holds a character outside the quoted-text allowlist
+# of bin/evidence-letter.py (QUOTED). ONE parser: bin/controls_versions.py (def controls_versions), imported by bin/evidence-letter.py and bin/release-metadata.py.
+GENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com", GIT_AUTHOR_DATE="2026-11-01T00:00:00Z", GIT_COMMITTER_DATE="2026-11-01T00:00:00Z")
+def git(repo, *a): return subprocess.run(["git", "-C", repo] + list(a), capture_output=True, text=True, env=GENV, check=True).stdout.strip()
+def ctl(*rows):
+    return "# Controls\n\n| Version | Signed | Change |\n|---|---|---|\n" + "".join("| %s | %s | %s |\n" % r for r in rows)
+V1 = (1, "2026-10-20", "First version"); V2 = (2, "2026-11-20", "Adds the Rekor step"); V3 = (3, "2026-12-20", "Adds the attestation step")
+def mkrepo(steps):
+    """steps: [(tag or None, controls text or None)]; each step is one commit. Returns (repo, [commit shas])."""
+    r = tempfile.mkdtemp(); git(r, "init", "-q", "-b", "main"); shas = []
+    for i, (tg, text) in enumerate(steps):
+        p = os.path.join(r, "docs/controls.md")
+        if text is None:
+            if os.path.exists(p): git(r, "rm", "-q", "docs/controls.md")
+        else:
+            os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write(text); git(r, "add", "docs/controls.md")
+        open(os.path.join(r, "step"), "w").write(str(i)); git(r, "add", "step"); git(r, "commit", "-q", "-m", "step %d" % i); shas.append(git(r, "rev-parse", "HEAD"))
+        if tg: git(r, "tag", tg)
+    return r, shas
+def notice(repo, tag, commit, bindir=BIN):
+    p = os.path.join(bindir, "release-metadata.py")
+    r = subprocess.run(["python3", p, "controls-notice", "--tag", tag, "--commit", commit], capture_output=True, text=True, cwd=repo, env=GENV); return r.returncode, r.stdout, r.stderr
+def block(old, new, change): return "## CONTROLS DOCUMENT CHANGES IN THIS RELEASE: version %s -> version %s\nChange: %s\nSigning this tag approves controls document version %s.\n\n" % (old, new, change, new)
+def n2_ok(bindir):
+    repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
+    rc, so, se = notice(repo, "v0.3.0", sh[-1], bindir)
+    return rc == 0 and so == block(1, 2, V2[2]) and se == "", (rc, so, se)
+def n7_ok(bindir):
+    # v0.0.9 (no file), v0.1.0 (version 1), v0.2.0-rc1 (version 2), the tag's commit (version 2), a later v0.4.0 (version 3): the previous release of v0.3.0 is v0.1.0
+    repo, sh = mkrepo([("v0.0.9", None), ("v0.1.0", ctl(V1)), ("v0.2.0-rc1", ctl(V1, V2)), (None, ctl(V1, V2)), ("v0.4.0", ctl(V1, V2, V3))])
+    rc, so, se = notice(repo, "v0.3.0", sh[3], bindir)
+    return rc == 0 and so == block(1, 2, V2[2]), (rc, so, se)
+rc, so, se = (lambda r: notice(r[0], "v0.3.0", r[1][-1]))(mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1))]))
+check(rc == 0 and so == "" and se == "", "G7 N1 the same controls version on both sides: nothing printed, exit 0", "rc=%s %r %r" % (rc, so, se))
+rc, so, se = (lambda r: notice(r[0], "v0.3.0", r[1][-1]))(mkrepo([("v0.2.0", None), (None, None)]))
+check(rc == 0 and so == "" and se == "", "G7 N1 no controls document on either side: nothing printed, exit 0", "rc=%s %r %r" % (rc, so, se))
+rc, so, se = (lambda r: notice(r[0], "v0.3.0", r[1][-1]))(mkrepo([("v0.2.0", ctl(V1, V2)), (None, ctl(V1, V2, (3, "2026-12-20", "&#105; <b>")))]))
+check(rc == 1 and so == "" and len(se.strip().split("\n")) == 1, "G7 N6 a changed version (2 -> 3) whose new change cell holds markup is refused: exit 1, one line, nothing on stdout", "rc=%s %r %r" % (rc, so, se))
+rc, so, se = (lambda r: notice(r[0], "v0.3.0", r[1][-1]))(mkrepo([("v0.2.0", ctl(V1, (2, "2026-11-20", "&#105;"))), (None, ctl(V1, (2, "2026-11-20", "&#105;")))]))
+check(rc == 0 and so == "" and se == "", "G7 N1 the same version with an old odd change cell: nothing printed, exit 0 (only a changed version's cell is judged)", "rc=%s %r %r" % (rc, so, se))
+ok2, why2 = n2_ok(BIN)
+check(ok2, "G7 N2 version 1 -> 2: exactly the three-line block and one blank line, nothing on stderr", "rc,out,err=%r" % (why2,))
+repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2, V3))])
+rc, so, se = notice(repo, "v0.3.0", sh[-1])
+check(rc == 0 and so == block(1, 3, V3[2]), "G7 N2 the highest row is the version and its change cell is quoted (1 -> 3 over rows 1, 2, 3)", "rc=%s %r %r" % (rc, so, se))
+repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))]); git(repo, "tag", "v0.3.0", sh[-1])
+rc, so, se = notice(repo, "v0.3.0", sh[-1])
+check(rc == 0 and so == block(1, 2, V2[2]), "G7 N2 the same notice when the tag already exists on the commit (the release job asks after the owner tagged)", "rc=%s %r %r" % (rc, so, se))
+repo, sh = mkrepo([("v0.2.0", None), (None, ctl(V1))])
+rc, so, se = notice(repo, "v0.3.0", sh[-1])
+check(rc == 0 and so == block("none", 1, V1[2]), "G7 N3 none -> 1 (the previous tag's tree has no docs/controls.md): version none -> version 1", "rc=%s %r %r" % (rc, so, se))
+repo, sh = mkrepo([(None, ctl(V1))])
+rc, so, se = notice(repo, "v0.1.0", sh[-1])
+check(rc == 0 and so == block("none", 1, V1[2]), "G7 N3 the first release (no earlier tag at all): version none -> version 1", "rc=%s %r %r" % (rc, so, se))
+for label, steps in (("a controls document with no version row", [("v0.2.0", ctl(V1)), (None, "# Controls\n\nno table here\n")]),
+                     ("the version going down (2 -> 1)", [("v0.2.0", ctl(V1, V2)), (None, ctl(V1))]),
+                     ("an empty change cell on the new version", [("v0.2.0", ctl(V1)), (None, ctl(V1, (2, "2026-11-20", "")))]),
+                     ("a character outside the allowlist in the new change cell", [("v0.2.0", ctl(V1)), (None, ctl(V1, (2, "2026-11-20", "Adds <b>x</b> &#105; [y](z)")))])):
+    repo, sh = mkrepo(steps); rc, so, se = notice(repo, "v0.3.0", sh[-1])
+    check(rc == 1 and so == "" and len([l for l in se.strip().split("\n") if l]) == 1, "G7 N6 %s: exit 1, one line, nothing on stdout" % label, "rc=%s %r %r" % (rc, so, se))
+ok7, why7 = n7_ok(BIN)
+check(ok7, "G7 N7 previous tag: an rc tag between never counts, a tag above never counts, the highest final below is used (v0.1.0, not v0.2.0-rc1)", "rc,out,err=%r" % (why7,))
+repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
+rc, so, se = notice(repo, "v0.3.0-rc1", sh[-1])
+check(rc == 0 and so == block(1, 2, V2[2]), "G7 N7 an rc tag asks the same question: the highest final below its version", "rc=%s %r %r" % (rc, so, se))
+# N8: ONE parser. bin/controls_versions.py holds controls_versions; evidence-letter.py and release-metadata.py use that function and keep no copy
+cv = os.path.join(BIN, "controls_versions.py")
+check(os.path.exists(cv) and "def controls_versions(" in open(cv).read(), "G7 N8 bin/controls_versions.py holds the one parser (def controls_versions)", "no such module")
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path); m = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, BIN)
+    try: spec.loader.exec_module(m)
+    finally: sys.path.pop(0)
+    return m
+try:
+    shared = load("controls_versions", cv); el = load("evidence_letter", os.path.join(BIN, "evidence-letter.py")); rm = load("release_metadata", os.path.join(BIN, "release-metadata.py"))
+    fixture = ctl(V1, V2, V3)
+    same = el.controls_versions is shared.controls_versions and rm.controls_versions is shared.controls_versions
+    rows = [tuple(r[:2]) for r in shared.controls_versions(fixture)]
+    check(same and rows == [(1, "2026-10-20"), (2, "2026-11-20"), (3, "2026-12-20")], "G7 N8 evidence-letter.py and release-metadata.py read the same rows from one fixture through the same function object", "same=%s rows=%s" % (same, rows))
+except Exception as e:
+    bad("G7 N8 evidence-letter.py and release-metadata.py read the same rows from one fixture through the same function object -> %s: %s" % (type(e).__name__, e))
+el_src = open(os.path.join(BIN, "evidence-letter.py")).read()
+check("def controls_versions(" not in el_src and "controls_versions" in el_src.replace("def controls_versions(", ""), "G7 N8 evidence-letter.py keeps no copy of the parser and imports it", "")
+def variant(edit):
+    d = tempfile.mkdtemp()
+    for f in os.listdir(BIN):
+        if f.endswith(".py"): shutil.copy(os.path.join(BIN, f), d)
+    edit(d); return d
+# mutations: each is applied to a copy of bin/*.py and must turn the case red while the case is green on the real files
+def mutant_check(label, edit, judge):
+    base_ok, _ = judge(BIN)
+    d = variant(edit)
+    mut_ok, _ = judge(d) if edit is not None else (True, None)
+    check(base_ok and not mut_ok, "G7 mutation: %s turns the case red" % label, "real files green=%s, mutant green=%s" % (base_ok, mut_ok))
+def swap_old_new(d):
+    real = os.path.join(d, "release-metadata.py"); os.rename(real, os.path.join(d, "rm_real.py"))
+    open(real, "w").write("import os, re, subprocess, sys\nd = os.path.dirname(os.path.abspath(__file__))\nr = subprocess.run([sys.executable, os.path.join(d, 'rm_real.py')] + sys.argv[1:], capture_output=True, text=True)\n"
+                          "sys.stdout.write(re.sub(r'version (\\S+) -> version (\\S+)', lambda m: 'version %s -> version %s' % (m.group(2), m.group(1)), r.stdout)); sys.stderr.write(r.stderr); sys.exit(r.returncode)\n")
+mutant_check("old and new swapped in the first line (N2)", swap_old_new, n2_ok)
+def count_rc(d):
+    p = os.path.join(d, "release-metadata.py"); s = open(p).read(); old = 'FINAL = re.compile(r"v[0-9]+\\.[0-9]+\\.[0-9]+")'
+    if old not in s: raise SystemExit("FAIL G7 mutation: the FINAL tag pattern line of release-metadata.py is not the one this mutation edits")
+    open(p, "w").write(s.replace(old, 'FINAL = re.compile(r"v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?")'))
+try: mutant_check("rc tags counted as releases (FINAL accepts -rcN) (N7)", count_rc, n7_ok)
+except SystemExit as e: bad(str(e)[5:])
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "111"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "131"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

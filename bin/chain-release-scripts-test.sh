@@ -78,6 +78,8 @@ if [ "$1 $2" = "cat-file tag" ]; then
   if [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; else echo "fatal: not a valid tag" >&2; exit 128; fi
   exit 0
 fi
+# G7: release-assets asks bin/release-metadata.py controls-notice, which reads tags and docs/controls.md from the fixture repository FIXTURE_REPO (a real git, nothing else is faked)
+if [ -n "${FIXTURE_REPO:-}" ]; then exec "${GIT_REAL:-/usr/bin/git}" -C "$FIXTURE_REPO" "$@"; fi
 echo "git $*" >> "$LOG.git"
 [ "$1 $2 $3" = "log -1 --format=%ct" ] || { echo "git: unexpected $*" >&2; exit 2; }
 [ -z "${GIT_FAIL:-}" ] || { echo "fatal: bad object $4" >&2; exit 128; }
@@ -205,7 +207,7 @@ def tree(extra_env=None):
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py"):
+    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py", "controls_versions.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
     os.makedirs(os.path.join(t, "requirements/releases")); os.makedirs(os.path.join(t, "test-evidence"))
@@ -248,6 +250,21 @@ def tree(extra_env=None):
     os.makedirs(os.path.join(t, "release-published"), exist_ok=True)   # what release-assets.sh downloads the published release into (gh release download -D release-published)
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
     return t
+GENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com", GIT_AUTHOR_DATE="2026-11-01T00:00:00Z", GIT_COMMITTER_DATE="2026-11-01T00:00:00Z")
+def fixture(t, steps):
+    """A real git repository under t/fixture-N: steps = [(tag or None, docs/controls.md text or None)], one commit each. Returns (repo, head sha)."""
+    r = os.path.join(t, "fixture-%d" % len([d for d in os.listdir(t) if d.startswith("fixture-")])); os.makedirs(r)
+    g = lambda *a: subprocess.run(["git", "-C", r] + list(a), capture_output=True, text=True, env=GENV, check=True).stdout.strip()
+    g("init", "-q", "-b", "main")
+    for i, (tg, text) in enumerate(steps):
+        pth = os.path.join(r, "docs/controls.md")
+        if text is None:
+            if os.path.exists(pth): g("rm", "-q", "docs/controls.md")
+        else:
+            os.makedirs(os.path.dirname(pth), exist_ok=True); open(pth, "w").write(text); g("add", "docs/controls.md")
+        open(os.path.join(r, "step"), "w").write(str(i)); g("add", "step"); g("commit", "-q", "-m", "step %d" % i)
+        if tg: g("tag", tg)
+    return r, g("rev-parse", "HEAD")
 KMS = "awskms:///alias/fosterstack-release-signing"      # the value the release job pins in RELEASE_KMS_KEY_REF (handoff 0713 P3)
 def run(t, script, env=None, creds=None, tag="v0.3.0"):
     path = os.path.join(t, "bin", script + ".sh")
@@ -260,6 +277,9 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     LAST[0] = 0
     e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
+    if script == "release-assets" and "FIXTURE_REPO" not in e:      # G7: no tags and no docs/controls.md: the notice is empty, the release body is what it was
+        e["FIXTURE_REPO"], e["GITHUB_SHA"] = fixture(t, [(None, None)])
+    if script == "release-assets": e.setdefault("GIT_REAL", shutil.which("git", path=os.environ["PATH"]) or "/usr/bin/git")
     if script in ("release-sign", "release-apks") and "RELEASE_KMS_KEY_REF" not in e and not (env or {}).get("NO_KMS_REF"): e["RELEASE_KMS_KEY_REF"] = KMS
     if script in ("release-sign", "release-apks"):      # bin/witnessed.sh hands these two steps the role and the identity-token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (P11 round 3); release-sign.sh maps them itself
         e.setdefault("RELEASE_ROLE_ARN", "arn:aws:iam::111122223333:role/release-signing"); e.setdefault("RELEASE_TOKEN_FILE", os.path.join(t, "idtoken"))
@@ -663,6 +683,41 @@ check(rc3 == 0 and n3 is not None and n3.startswith("## v0.3.0") and "### VEX" i
 t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Someone Else <x@example.com>"))
 rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
 check(rc3 == 0 and notes_of(t3) == FIXED, "AC8 a tag message from another tagger is not taken as notes: the fixed text", repr(notes_of(t3)))
+# G7: the controls-document notice (bin/release-metadata.py controls-notice --tag $GITHUB_REF_NAME --commit $GITHUB_SHA) goes first in the release body, above the evidence line and above a patch tag's notes
+def ctl(*rows): return "# Controls\n\n| Version | Signed | Change |\n|---|---|---|\n" + "".join("| %s | %s | %s |\n" % r for r in rows)
+C1 = (1, "2026-10-20", "First version"); C2 = (2, "2026-11-20", "Adds the Rekor step")
+def NOTICE(old, new, change): return "## CONTROLS DOCUMENT CHANGES IN THIS RELEASE: version %s -> version %s\nChange: %s\nSigning this tag approves controls document version %s.\n\n" % (old, new, change, new)
+def g7_body(steps, patch=False, exists=False, script=None):
+    t = full_assets()
+    if script is not None: shutil.copy(script, os.path.join(t, "bin/release-assets.sh"))
+    repo, head = fixture(t, steps); env = {"FIXTURE_REPO": repo, "GITHUB_SHA": head}
+    if not exists: env["GH_VIEW_ERR"] = "release not found"
+    if patch: open(os.path.join(t, "tagobj"), "w").write(GEN); env["TAG_OBJECT"] = os.path.join(t, "tagobj")
+    rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env=env)
+    return t, rc, se, notes_of(t)
+STEPS_12 = [("v0.2.0", ctl(C1)), (None, ctl(C1, C2))]
+_, rc, se, n = g7_body([("v0.2.0", ctl(C1)), (None, ctl(C1))])
+check(rc == 0 and n == FIXED, "G7 N1 release body: the same controls version on both sides: the body is the fixed evidence text, unchanged", "rc=%s %r %s" % (rc, n, first(se)))
+def n2_body_ok(script=None):
+    _, rc, se, n = g7_body(STEPS_12, script=script)
+    return rc == 0 and n == NOTICE(1, 2, C2[2]) + FIXED, (rc, n, first(se))
+ok_, why_ = n2_body_ok()
+check(ok_, "G7 N2 release body: version 1 -> 2: the body begins with the three-line block and one blank line, then the evidence line", "rc,notes,err=%r" % (why_,))
+_, rc, se, n = g7_body([("v0.2.0", None), (None, ctl(C1))])
+check(rc == 0 and n == NOTICE("none", 1, C1[2]) + FIXED, "G7 N3 release body: none -> 1: the block says version none -> version 1, then the evidence line", "rc=%s %r %s" % (rc, n, first(se)))
+_, rc, se, n = g7_body(STEPS_12, patch=True)
+check(rc == 0 and (n or "").startswith(NOTICE(1, 2, C2[2]) + "## v0.3.0") and "### VEX" in n and FIXED not in n, "G7 N2 release body: above a patch tag's generated notes", "rc=%s %r %s" % (rc, n, first(se)))
+t_, rc, se, n = g7_body(STEPS_12, patch=True, exists=True)
+ed = [l for l in log(t_) if l.startswith("gh release edit")]
+check(rc == 0 and len(ed) == 1 and (n or "").startswith(NOTICE(1, 2, C2[2]) + "## v0.3.0"), "G7 N2 release body: an existing release gets the same body with the block first (one edit)", "rc=%s %s %r" % (rc, ed, n))
+t_, rc, se, n = g7_body([("v0.2.0", ctl(C1)), (None, ctl(C1, (2, "2026-11-20", "Adds <b>x</b>")))])
+check(rc != 0 and not [l for l in log(t_) if l.startswith("gh release create") or l.startswith("gh release upload")], "G7 N6 release body: a refused notice (markup in the new change cell) stops the step before a release is created or anything is uploaded", "rc=%s %s" % (rc, first(se)))
+# mutation: release-assets.sh without the notice call -> the N2 case is red (the case is green on the real script)
+mut = os.path.join(tempfile.mkdtemp(), "release-assets.sh")
+src_ra = open(os.path.join(BIN, "release-assets.sh")).read()
+open(mut, "w").write("".join(l for l in src_ra.splitlines(True) if "controls-notice" not in l))
+mut_ok, _ = n2_body_ok(script=mut)
+check(ok_ and "controls-notice" in src_ra and not mut_ok, "G7 mutation: release-assets.sh without the notice (no controls-notice line) turns the N2 body case red", "real green=%s, mutant green=%s, script names controls-notice=%s" % (ok_, mut_ok, "controls-notice" in src_ra))
 # R3 (Codex B): only a definite 'release not found' creates; any other failure of the view stops before creation and upload
 for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: connection refused"):
     t4 = full_assets(); rc4, so4, se4 = run(t4, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": err})
@@ -1076,7 +1131,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "469"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "476"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
