@@ -1052,7 +1052,8 @@ STATE = ".auditor/panel-state.json"
 PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
 ISSUE_TITLE = "Daily scanner panel: findings on main"           # shared with the rescan's two-or-more issue
-OWNER_TITLE = policy.subject("owner-decision: scanner panel")   # one standing owner issue, updated, never duplicated
+OWNER_TITLE = policy.subject("needs a decision: scanner panel")   # one standing issue, updated, never duplicated
+OLD_OWNER_TITLE = policy.subject("owner-decision: scanner panel")   # OLD_OWNER_TITLE only finds an issue opened before this change; nothing is created with it
 
 
 def automerge_allowed(changed, env=os.environ):
@@ -1740,8 +1741,13 @@ def cmd_deliver(a, run=subprocess.run):
                  "--label", "security", "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
         body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
-        n = _sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", OWNER_TITLE,
-                 "--json", "number", "--jq", ".[0].number"], plan, real, run, env=ienv).strip()
+        n = ""
+        for t in (OWNER_TITLE, OLD_OWNER_TITLE):    # one search per title, new then old; the label is also on the per-finding issues, so the title must match exactly
+            rows = json.loads(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", t,
+                                   "--json", "number,title"], plan, real, run, env=ienv) or "[]")
+            hit = [r["number"] for r in rows if r.get("title") == t]
+            if hit:
+                n = str(hit[0]); break
         if n:
             _sh(["gh", "issue", "comment", n, "--body", body], plan, real, run, env=ienv)
         else:
