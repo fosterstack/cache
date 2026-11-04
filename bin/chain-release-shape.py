@@ -287,8 +287,8 @@ def stage(path):
         u, r = s.get("uses", ""), run_of(s)
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
-            if not PIN.match(u.split(" ")[0]) or s.get("with") != {"persist-credentials": "false"}:
-                bad.append("checkout must be digest-pinned with persist-credentials: false only")
+            if not PIN.match(u.split(" ")[0]) or s.get("with") != {"persist-credentials": "false", "fetch-depth": "0"}:      # G7 F1: the whole history, so controls-notice sees the earlier release tags
+                bad.append("checkout must be digest-pinned with persist-credentials: false and fetch-depth: 0 only")
         elif u.startswith("actions/download-artifact@"):
             kinds.append("down"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or w.get("path", ".") != w.get("path", ".").strip() or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip()):

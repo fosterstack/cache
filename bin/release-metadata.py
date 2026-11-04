@@ -463,6 +463,8 @@ def cmd_controls_notice(a):
     def git(*args):
         return subprocess.run(["git"] + list(args), capture_output=True, text=True)
 
+    if git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        refuse("controls-notice: the repository is a shallow clone, so the earlier release tags are not there (check out with fetch-depth: 0)")
     listed = git("tag", "--list", "v*")
     if listed.returncode:
         refuse("controls-notice: the tags cannot be listed")
