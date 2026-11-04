@@ -122,9 +122,9 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 212 allow patterns: chain-v030's 207, minus the bin/dispatch-fixer.sh and bin/scout-vex-scan patterns,
-# plus this branch's pieces (the bin/build-freeze.sh script, the release-key files, the fulcio-chain.pem split, the
-# test-evidence/witness-real collections, the wider chain-*-test group) and the customer-word check's three patterns
+# 212 allow patterns: chain-v030's 210 (207 plus the customer-word check's three), minus the bin/dispatch-fixer.sh
+# pattern, plus three this branch adds (bin/build-freeze.sh, the release-key files, the witness-real collections);
+# the chain-*-test pattern is wider and the Fulcio and TSA PEM pattern keeps only the Fulcio file (no count change)
 EXPECT_ALLOW, EXPECT_SUPPRESSION = 212, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
