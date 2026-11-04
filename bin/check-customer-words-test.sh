@@ -7,7 +7,13 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1   # a user's git config
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 SCRIPT="${CUSTOMER_WORDS_SCRIPT:-$ROOT/bin/check-customer-words.py}"   # a mutant copy, when the mutants are run
-DIFF_OPTS="${DIFF_OPTS:--U0 --no-renames --no-color}"
+CI_YML="${CUSTOMER_WORDS_CI:-$ROOT/.github/workflows/ci.yml}"   # a mutant copy, when the mutants are run
+# the lint step of ci.yml: its run line and its shell, read from the file (the test fails if the step is not there)
+lint_step="$(awk '/^      - name: no shop words added to a file a customer can read/{s=1;next} s&&/^      - name:/{s=0} s' "$CI_YML")"
+lint_run="$(printf '%s\n' "$lint_step" | sed -n 's/^ *run: \(git diff .*check-customer-words\.py.*\)$/\1/p')"
+lint_shell="$(printf '%s\n' "$lint_step" | sed -n 's/^ *shell: \(.*\)$/\1/p')"
+if [ -z "$lint_run" ]; then echo "FAIL: the lint step's run line is not in $CI_YML"; exit 1; fi
+DIFF_OPTS="${DIFF_OPTS:-$(printf '%s\n' "$lint_run" | sed 's/^git diff \(.*\) HEAD^1 HEAD .*/\1/')}"   # the options the step passes to git diff
 
 pass=0; fail=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t   # identity by environment: the test writes no git configuration
@@ -59,7 +65,7 @@ done
 add docs/verify-release.md "see [REQ-REL-001](release-notes.md#req-rel-001)" 0 "T3 a public requirement id (a link to the release notes) passes"
 add docs/a.md "ruler 9" 0 "T4 'ruler 9' passes"
 # T4b a word cannot hide behind an underscore, a digit or markup, and "rule N" survives extra white space
-for w in _owner_ '**owner**' the_owner owner2 'rule  9' $'rule\t9'; do
+for w in _owner_ '**owner**' the_owner owner2 'rule  9' $'rule\t9' _audits/ _ops#794 _SB-3; do
   add docs/a.md "text $w text" 1 "T4b added '$w' fails"
 done
 # T5 lines and files that must not count
@@ -131,7 +137,9 @@ if [ "$rc" -eq 2 ]; then echo "ok:   T9 an invalid byte on stdin exits 2"; pass=
 printf '# header\n\377|owner\n' > "$work/bad-allow.txt"; : | CUSTOMER_WORDS_ALLOW="$work/bad-allow.txt" python3 -I "$SCRIPT" >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 2 ]; then echo "ok:   T9 an invalid byte in the allowlist exits 2"; pass=$((pass+1)); else echo "FAIL: T9 an invalid byte in the allowlist exits 2 (rc=$rc)"; fail=$((fail+1)); fi
 # the step's own command, under the shell the step uses: a base commit that does not exist must fail the step
-(cd "$work/r" && git reset -q --hard HEAD~1 && bash --noprofile --norc -eo pipefail -c "git diff $DIFF_OPTS HEAD^1 HEAD | python3 -I '$SCRIPT'" >/dev/null 2>&1); rc=$?
+# GitHub runs `shell: bash` as bash --noprofile --norc -eo pipefail and a step with no shell line as plain bash -e
+if [ "$lint_shell" = "bash" ]; then step_shell=(bash --noprofile --norc -eo pipefail -c); else step_shell=(bash -e -c); fi
+(cd "$work/r" && git reset -q --hard HEAD~1 && "${step_shell[@]}" "${lint_run//bin\/check-customer-words.py/$SCRIPT}" >/dev/null 2>&1); rc=$?
 if [ "$rc" -ne 0 ]; then echo "ok:   T9 a failing git diff fails the step"; pass=$((pass+1)); else echo "FAIL: T9 a failing git diff fails the step"; fail=$((fail+1)); fi
 
 echo "----"
