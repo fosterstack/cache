@@ -52,6 +52,7 @@ done
 for w in docs/ratify/x handoffs/ audits/ /srv/ ops#794 "rule 9" "rules 3" SB-3 HS-5 MC-37 CR-23 lane-outbox; do
   add docs/a.md "$w" "see $w now" 1 "T4 added '$w' fails"
 done
+add docs/verify-release.md "REQ-REL-001" "see [REQ-REL-001](release-notes.md#req-rel-001)" 0 "T3 a public requirement id (a link to the release notes) passes"
 add docs/a.md "ruler" "ruler 9" 0 "T4 'ruler 9' passes"
 # T5 lines and files that must not count
 mk docs/a.md $'the owner\n' docs/a.md $'fine\n';                       check 0 "T5 a removed line with owner passes"
