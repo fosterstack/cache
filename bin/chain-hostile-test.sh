@@ -1404,9 +1404,9 @@ for words in ("both refuse (naming the marker) unless the marker names an rc tag
     assert words in a6["then"], "AC6 lacks: " + words
 assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
-assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
+assert "CUTOVER CHECKLIST" in r["notes"] and "RUNTIME PROOF OF AC5 (accepted 2026-10-10;" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 # the accepted order of Oct 12 (CK): the cutover merge first with only KR-CUTOVER left, then the owner's rc tag on main, then the marker pull request, which removes KR-CUTOVER
-for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the owner signs a release-candidate tag vX.Y.Z-rcN on main's merge commit",
+for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "a maintainer signs a release-candidate tag vX.Y.Z-rcN on main's merge commit",
               "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decide job refuse every final and patch tag"):
     assert words in r["notes"], "REQ-CHAIN-001 notes lack the accepted checklist order: " + words
 assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run (advisor 0383, superseded Oct 12)"
