@@ -165,7 +165,7 @@ It announces itself at startup, which matters in an air gap where you cannot
 check anything against a registry after the fact:
 
 ```json
-{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+{"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
 
 The Compliance tier sells the authored analysis that pairs with this build for

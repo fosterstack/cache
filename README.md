@@ -294,7 +294,7 @@ before implementation. CI fails if the matrix drifts from its sources.
 - Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
   time zone data), patched by a new image, not on a running one.
 - CI runs the full test suite under `GODEBUG=fips140=only`, where Go's FIPS 140-3
-  module refuses any non-approved algorithm. That mode is a best-effort test
+  module makes non-approved algorithms fail. That mode is a best-effort test
   aid, and the released `-fips` build runs with FIPS mode on. A `depguard`
   allowlist covers the static side, permitting only in-boundary crypto imports
   and denying third-party crypto outright. Both are described in

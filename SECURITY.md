@@ -93,11 +93,11 @@ Enforcement is delegated to the validated module rather than to a list.
 
 CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
 build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
-refuses any non-approved algorithm at runtime. Any reach for non-approved
-cryptography — ours or a dependency's — fails that commit's `fips140-only`
-check.
+makes non-approved algorithms fail at runtime, as a best-effort test aid.
+A reach for non-approved cryptography — ours or a dependency's — fails
+that commit's `fips140-only` check.
 
-Two limits of that claim, stated so it cannot be over-read: the check proves
+Two limits of that claim, stated so it cannot be over-read: the check covers
 the paths the test suite executes, built in FIPS mode. The released
 `fscache-fips` binary is separately run by the release's artifact acceptance,
 which reads its `/statusz` and requires the validated-module line; the release
@@ -111,7 +111,7 @@ in-boundary crypto imports are permitted, and third-party cryptographic
 implementations are denied outright, because `GOFIPS140` does not govern
 code outside the module.
 
-**What each half proves, stated plainly.** `fips140=only` proves the paths
+**What each half proves, stated plainly.** `fips140=only` checks the paths
 the tests execute; it says nothing about a path no test reaches. The
 allowlist is a static check: it sees imports, not behaviour. Together they
 cover more than either does alone, and neither is a proof of total coverage.
