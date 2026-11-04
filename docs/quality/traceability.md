@@ -741,15 +741,15 @@ A held Dependabot major, or a required-check drift issue, shall send one generic
 
 ## Release evidence
 
-### REQ-REL-008 — The workflow set is consolidated to the ratified list (ratified 32 → 23; 19 files today)
+### REQ-REL-008 — The workflow set is limited to a fixed list (20 files today)
 
-The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), and to the 19 files that remain today after the v0.3.0 chain's ratified removals (AC1 fixes the list), each merge keeping every required check's name, top-level placement and events, and no new workflow file added without the owner's ratification.
+The repository's workflows shall be limited to a fixed list of files, 20 today (AC1 fixes the list), each merge keeping every required check's name, top-level placement and events, and a new workflow file added only when the work cannot reasonably live in an existing one.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/go-freshness.yml; .github/workflows/ci.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 19 ratified files, the list fixed by bin/workflow-consolidation-test.sh (the effect of the ratified consolidation and of the v0.3.0 chain's ratified removals of the legacy workflows; dependabot-auto-merge.yml stays its own file, owner RATIFIED Oct 2; supply-chain.yml, REQ-SUP-001, owner ratified Oct 5; stage-sign.yml, v0.3.0 rule 52, owner ratified Oct 9) | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 20 listed files, the list fixed by bin/workflow-consolidation-test.sh (the consolidated set after the v0.3.0 removals of the legacy workflows; dependabot-auto-merge.yml, supply-chain.yml, stage-sign.yml and customer-words-edited.yml are files of their own) | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC3 | Given the mutation job, merged into go-freshness.yml; when the schedules fire or the workflow is dispatched; then the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml | ci-workflow |  | approved | 1 item(s) |
 

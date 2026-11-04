@@ -81,7 +81,11 @@ mk - "" docs/x.json $'{"t": "lane"}\n';                                 check 1 
 mk - "" ".vex/a b.md" $'owner\n';                                      check 1 "T6 a .vex path with a space is read"
 # T6b a binary change to a customer file fails closed; elsewhere it is ignored
 mk - "" README.md $'fine\n'; printf 'owner\0' > README.md; git commit -qam bin
-check 2 "T6b README.md changed to binary exits 2" 'binary change'
+check 2 "T6b README.md changed to binary exits 2" 'binary change this check cannot read'
+mk - "" "docs/é.png" $'fine\n'; printf 'a\0' > "docs/é.png"; git commit -qam bin
+check 2 "T6b a binary docs/ file with a non-ASCII name exits 2" 'binary change this check cannot read'
+mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin; git rm -q cmd/x.bin; git commit -qm rm
+check 0 "T6b a deleted binary file passes"
 mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin
 check 0 "T6b a binary file outside the customer paths passes"
 # T7 allowlist: exact path|line
@@ -105,6 +109,16 @@ done
 mk - "" README.md $'fine\n'; PR_TITLE="the lane fix" check 1 "T8 a title with lane fails" 'title'
 mk - "" README.md $'fine\n'; PR_BODY=$'one\nthe advisor said' check 1 "T8 a body with advisor fails" 'body'
 mk - "" README.md $'fine\n'; PR_BODY="" PR_TITLE="plain title" check 0 "T8 an empty body and a clean title pass"
+# T8b the edited-title workflow runs the script on empty input, with the title and body in the environment
+cd "$ROOT" || exit 2
+PR_BODY="a lane here" python3 -I "$SCRIPT" < /dev/null 2>&1 | grep -q '^customer-words: body:'; rc=${PIPESTATUS[0]}
+if [ "$rc" -eq 1 ]; then echo "ok:   T8b empty input and a body with lane exits 1 and names the body"; pass=$((pass+1)); else echo "FAIL: T8b empty input and a body with lane (rc=$rc)"; fail=$((fail+1)); fi
+PR_TITLE="plain title" PR_BODY="plain body" python3 -I "$SCRIPT" < /dev/null >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ]; then echo "ok:   T8b empty input and a clean title and body exit 0"; pass=$((pass+1)); else echo "FAIL: T8b empty input and a clean title and body (rc=$rc)"; fail=$((fail+1)); fi
+step="$(sed -n 's/^ *run: \(python3 .*check-customer-words.py.*\)$/\1/p' .github/workflows/customer-words-edited.yml)"
+PR_TITLE="the owner" bash --noprofile --norc -eo pipefail -c "$step" >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 1 ]; then echo "ok:   T8b the workflow's own run line fails a title with owner"; pass=$((pass+1)); else echo "FAIL: T8b the workflow's own run line (rc=$rc, line: $step)"; fail=$((fail+1)); fi
+
 # T9 every hit is printed; a broken input fails closed
 mk - "" docs/a.md $'owner\n'; printf 'a lane here\n' > docs/b.md; git add -A; git commit -qm more
 git reset -q --soft HEAD~2; git commit -qm pr2
