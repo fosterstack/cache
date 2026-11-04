@@ -10,8 +10,8 @@ SCRIPT="${CUSTOMER_WORDS_SCRIPT:-$ROOT/bin/check-customer-words.py}"   # a mutan
 CI_YML="${CUSTOMER_WORDS_CI:-$ROOT/.github/workflows/ci.yml}"   # a mutant copy, when the mutants are run
 # the lint step of ci.yml: its run line and its shell, read from the file (the test fails if the step is not there)
 lint_step="$(awk '/^      - name: no shop words added to a file a customer can read/{s=1;next} s&&!/^        /{s=0} s' "$CI_YML")"
-lint_run="$(printf '%s\n' "$lint_step" | sed -n 's/^ *run: \(git diff .*check-customer-words\.py.*\)$/\1/p')"
-lint_shell="$(printf '%s\n' "$lint_step" | sed -n 's/^ *shell: \(.*\)$/\1/p')"
+lint_run="$(printf '%s\n' "$lint_step" | sed -n 's/^        run: \(git diff .*check-customer-words\.py.*\)$/\1/p')"
+lint_shell="$(printf '%s\n' "$lint_step" | sed -n 's/^        shell: \(.*\)$/\1/p')"
 # one run line; no shell line (GitHub's default, bash -e) or exactly "bash": any other shell would make the step's behaviour a guess
 if [ "$(printf '%s\n' "$lint_run" | grep -c .)" -ne 1 ] || [ "$(printf '%s\n' "$lint_shell" | grep -c .)" -gt 1 ] ||
    { [ -n "$lint_shell" ] && [ "$lint_shell" != "bash" ]; }; then
@@ -125,7 +125,7 @@ out="$(PR_BODY="a lane here" python3 -I "$SCRIPT" < /dev/null 2>&1)"; rc=$?
 if [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -q '^customer-words: body:'; then echo "ok:   T8b empty input and a body with lane exits 1 and names the body"; pass=$((pass+1)); else echo "FAIL: T8b empty input and a body with lane (rc=$rc)"; fail=$((fail+1)); fi
 PR_TITLE="plain title" PR_BODY="plain body" python3 -I "$SCRIPT" < /dev/null >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ]; then echo "ok:   T8b empty input and a clean title and body exit 0"; pass=$((pass+1)); else echo "FAIL: T8b empty input and a clean title and body (rc=$rc)"; fail=$((fail+1)); fi
-step="$(sed -n 's/^ *run: \(python3 .*check-customer-words.py.*\)$/\1/p' .github/workflows/customer-words-edited.yml)"
+step="$(sed -n 's/^        run: \(python3 .*check-customer-words.py.*\)$/\1/p' .github/workflows/customer-words-edited.yml)"
 PR_TITLE="the owner" bash --noprofile --norc -eo pipefail -c "$step" >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 1 ]; then echo "ok:   T8b the workflow's own run line fails a title with owner"; pass=$((pass+1)); else echo "FAIL: T8b the workflow's own run line (rc=$rc, line: $step)"; fail=$((fail+1)); fi
 
