@@ -247,7 +247,8 @@ check("same inputs, same bytes", text_again == text)
 src = open(SCRIPT).read()
 check("offline: no network or process module is imported",
       not any(m in src for m in ("urllib", "socket", "http.client", "subprocess", "requests")))
-# P2: the shared parser is found from Path(__file__).resolve().parent: through a symlink in another folder, from a folder with a decoy controls_versions.py
+# P2: the shared parser is found from Path(__file__).resolve().parent: through a symlink in another folder, from a
+# folder with a decoy controls_versions.py
 lk = tempfile.mkdtemp(); os.symlink(SCRIPT, os.path.join(lk, "evidence-letter.py"))
 dc = tempfile.mkdtemp(); open(os.path.join(dc, "controls_versions.py"), "w").write("import sys\nsys.stdout.write('DECOY-IMPORTED')\nQUOTED = None\nclass NoVersionRow(ValueError): pass\ndef controls_versions(t): return [(9, '2099-01-01', 'decoy')]\n")
 wr = world(NOV); out = os.path.join(wr, "out")

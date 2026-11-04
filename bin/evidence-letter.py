@@ -37,7 +37,8 @@ controls_versions = _shared("controls_versions").controls_versions  # the one pa
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")  # v0.3.1 matches; v0.3.1-rc1 and 0.3.1 do not
 MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")  # 2026-11 matches; 2026-13 and 2026-1 do not
 SAFE_NAME = re.compile(r"[A-Za-z0-9._:-]+")  # CVE-2026-1111 matches; "CVE 1" and "a;b" do not
-QUOTED = _shared("controls_versions").QUOTED  # the only characters a quoted note, summary or change cell may hold (defined beside the parser)
+# the only characters a quoted note, summary or change cell may hold (defined beside the parser)
+QUOTED = _shared("controls_versions").QUOTED
 RECORDS = ("scanners-collection.json", "acceptance-collection.json", "runtime-collection.json", "arm64-collection.json")
 FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc2")  # tested on the letter with only letters and digits kept
 PAGE = "https://github.com/fosterstack/cache/releases/tag/"

@@ -81,7 +81,8 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + inst("witness") + vdowns() + wit("release-verify", {}, "witnessed-local.sh") + renv("release-verify", True, True) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
          + "  release:\n    needs: [compare, verify]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
-         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n"      # G7 F1: the release job compares earlier release tags, so it needs the whole history
+         # G7 F1: the release job compares earlier release tags, so it needs the whole history
+         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n"
          + inst("witness") + inst("cosign") + inst("crane")
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))

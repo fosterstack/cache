@@ -1765,7 +1765,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "787e34cf8661bc50340903c8a0f5716d6577f27d921d5763ee55f0a14920c187",
+      "sha256": "19afade2275a86a95509fe24a1e6414104fcbe16a03f8c14c3070b4f7b63a343",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1904,11 +1904,11 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "70c18626a9dba636ad9dc7044030a5b9d6069d1c6323d8f30fc38621dbf0c996"
+      "sha256": "ac05fa64fca01ef46cfe00892e5c40f964dbad14abf936897e68837d9cc91957"
     },
     {
       "path": "bin/controls_versions.py",
-      "sha256": "34b2fcac050d448c55d0fbe4c7e89a7ff9fdd20d1e5e96ed1de35197e8b6c6b3",
+      "sha256": "6f7b3560ecf9fc4b142a2a38d988b74a5568736d95a1bc72e6767cf6388501cc",
       "tools": [],
       "runs": [],
       "signs": false,

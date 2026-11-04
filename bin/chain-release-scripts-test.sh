@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4, REQ-REL-013-AC12
+# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7
+# proves: REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17
+# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4, REQ-REL-013-AC12
 # RED until PR 4 is implemented (bin/release-verify.sh, release-apks.sh, release-publish.sh, release-sign.sh, release-assets.sh, release-postverify.sh/.py do not exist): step 4.
 #
 # Release, behaviour half (v0.3.0 rules 5, 17, 29, 53b, 56, 57, 64, 69, 71; advisor rulings of Oct 9: rc tags like finals, the release policy
@@ -78,7 +80,8 @@ if [ "$1 $2" = "cat-file tag" ]; then
   if [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; else echo "fatal: not a valid tag" >&2; exit 128; fi
   exit 0
 fi
-# G7: release-assets asks bin/release-metadata.py controls-notice, which reads tags and docs/controls.md from the fixture repository FIXTURE_REPO (a real git, nothing else is faked)
+# G7: release-assets asks bin/release-metadata.py controls-notice, which reads tags and docs/controls.md from the
+# fixture repository FIXTURE_REPO (a real git, nothing else is faked)
 if [ -n "${FIXTURE_REPO:-}" ]; then exec "${GIT_REAL:-/usr/bin/git}" -C "$FIXTURE_REPO" "$@"; fi
 echo "git $*" >> "$LOG.git"
 [ "$1 $2 $3" = "log -1 --format=%ct" ] || { echo "git: unexpected $*" >&2; exit 2; }
@@ -277,7 +280,8 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     LAST[0] = 0
     e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
-    if script == "release-assets" and "FIXTURE_REPO" not in e:      # G7: no tags and no docs/controls.md: the notice is empty, the release body is what it was
+    # G7: no tags and no docs/controls.md: the notice is empty, the release body is what it was
+    if script == "release-assets" and "FIXTURE_REPO" not in e:
         e["FIXTURE_REPO"], e["GITHUB_SHA"] = fixture(t, [(None, None)])
     if script == "release-assets": e.setdefault("GIT_REAL", shutil.which("git", path=os.environ["PATH"]) or "/usr/bin/git")
     if script in ("release-sign", "release-apks") and "RELEASE_KMS_KEY_REF" not in e and not (env or {}).get("NO_KMS_REF"): e["RELEASE_KMS_KEY_REF"] = KMS
@@ -683,7 +687,8 @@ check(rc3 == 0 and n3 is not None and n3.startswith("## v0.3.0") and "### VEX" i
 t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Someone Else <x@example.com>"))
 rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
 check(rc3 == 0 and notes_of(t3) == FIXED, "AC8 a tag message from another tagger is not taken as notes: the fixed text", repr(notes_of(t3)))
-# G7: the controls-document notice (bin/release-metadata.py controls-notice --tag $GITHUB_REF_NAME --commit $GITHUB_SHA) goes first in the release body, above the evidence line and above a patch tag's notes
+# G7: the controls-document notice (bin/release-metadata.py controls-notice --tag $GITHUB_REF_NAME --commit $GITHUB_SHA)
+# goes first in the release body, above the evidence line and above a patch tag's notes
 def ctl(*rows): return "# Controls\n\n| Version | Signed | Change |\n|---|---|---|\n" + "".join("| %s | %s | %s |\n" % r for r in rows)
 C1 = (1, "2026-10-20", "First version"); C2 = (2, "2026-11-20", "Adds the Rekor step")
 def NOTICE(old, new, change): return "## CONTROLS DOCUMENT CHANGES IN THIS RELEASE: version %s -> version %s\nChange: %s\nSigning this tag approves controls document version %s.\n\n" % (old, new, change, new)

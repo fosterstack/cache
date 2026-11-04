@@ -280,12 +280,17 @@ check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and 
 check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read(), "text: melange-apko-lib.sh no longer shows release-sign-apks.sh with --rebuild-dir")
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
-# ---- G7: controls-notice (the release-note notice that the controls document changes in this release) --------------------------------------------------
-# bin/release-metadata.py controls-notice --tag <vX.Y.Z[-rcN]> --commit <sha>, run in a git work tree. The previous release is the highest FINAL vX.Y.Z below the tag's
-# version (an rc tag never counts, a tag above never counts); the version on each side is the highest row `| N | YYYY-MM-DD | <change> |` of docs/controls.md at that tag
-# and at the commit (no file = none). Same version, or none on both sides: nothing printed, exit 0. Changed: the three-line block and one blank line. Exit 1, one line on stderr
-# and nothing on stdout: the file has no readable version row, the version went down, or the new change cell is empty or holds a character outside the quoted-text allowlist
-# of bin/evidence-letter.py (QUOTED). ONE parser: bin/controls_versions.py (def controls_versions), imported by bin/evidence-letter.py and bin/release-metadata.py.
+# ---- G7: controls-notice (the release-note notice that the controls document changes in this release) ----
+# bin/release-metadata.py controls-notice --tag <vX.Y.Z[-rcN]> --commit <sha>, run in a git work tree. The previous
+# release is the highest FINAL vX.Y.Z below the tag's
+# version (an rc tag never counts, a tag above never counts); the version on each side is the highest row `| N |
+# YYYY-MM-DD | <change> |` of docs/controls.md at that tag
+# and at the commit (no file = none). Same version, or none on both sides: nothing printed, exit 0. Changed: the
+# three-line block and one blank line. Exit 1, one line on stderr
+# and nothing on stdout: the file has no readable version row, the version went down, or the new change cell is empty or
+# holds a character outside the quoted-text allowlist
+# of bin/evidence-letter.py (QUOTED). ONE parser: bin/controls_versions.py (def controls_versions), imported by
+# bin/evidence-letter.py and bin/release-metadata.py.
 GENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com", GIT_AUTHOR_DATE="2026-11-01T00:00:00Z", GIT_COMMITTER_DATE="2026-11-01T00:00:00Z")
 def git(repo, *a): return subprocess.run(["git", "-C", repo] + list(a), capture_output=True, text=True, env=GENV, check=True).stdout.strip()
 def ctl(*rows):
@@ -312,7 +317,8 @@ def n2_ok(bindir):
     rc, so, se = notice(repo, "v0.3.0", sh[-1], bindir)
     return rc == 0 and so == block(1, 2, V2[2]) and se == "", (rc, so, se)
 def n7_ok(bindir):
-    # v0.0.9 (no file), v0.1.0 (version 1), v0.2.0-rc1 (version 2), the tag's commit (version 2), a later v0.4.0 (version 3): the previous release of v0.3.0 is v0.1.0
+    # v0.0.9 (no file), v0.1.0 (version 1), v0.2.0-rc1 (version 2), the tag's commit (version 2), a later v0.4.0
+    # (version 3): the previous release of v0.3.0 is v0.1.0
     repo, sh = mkrepo([("v0.0.9", None), ("v0.1.0", ctl(V1)), ("v0.2.0-rc1", ctl(V1, V2)), (None, ctl(V1, V2)), ("v0.4.0", ctl(V1, V2, V3))])
     rc, so, se = notice(repo, "v0.3.0", sh[3], bindir)
     return rc == 0 and so == block(1, 2, V2[2]), (rc, so, se)
@@ -349,12 +355,14 @@ check(ok7, "G7 N7 previous tag: an rc tag between never counts, a tag above neve
 repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
 rc, so, se = notice(repo, "v0.3.0-rc1", sh[-1])
 check(rc == 0 and so == block(1, 2, V2[2]), "G7 N7 an rc tag asks the same question: the highest final below its version", "rc=%s %r %r" % (rc, so, se))
-# N8: ONE parser. bin/controls_versions.py holds controls_versions; evidence-letter.py and release-metadata.py use that function and keep no copy
+# N8: ONE parser. bin/controls_versions.py holds controls_versions; evidence-letter.py and release-metadata.py use that
+# function and keep no copy
 cv = os.path.join(BIN, "controls_versions.py")
 check(os.path.exists(cv) and "def controls_versions(" in open(cv).read(), "G7 N8 bin/controls_versions.py holds the one parser (def controls_versions)", "no such module")
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path); m = importlib.util.module_from_spec(spec)
-    sys.modules[name] = m   # registered before the run, so a script that loads the shared helper by name gets this very module
+    # registered before the run, so a script that loads the shared helper by name gets this very module
+    sys.modules[name] = m
     sys.path.insert(0, BIN)
     try: spec.loader.exec_module(m)
     finally: sys.path.pop(0)
@@ -391,7 +399,8 @@ def count_rc(d):
     open(p, "w").write(s.replace(old, 'FINAL = re.compile(r"v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?")'))
 try: mutant_check("rc tags counted as releases (FINAL accepts -rcN) (N7)", count_rc, n7_ok)
 except SystemExit as e: bad(str(e)[5:])
-# P2: under python3 -I the shared module is found from Path(__file__).resolve().parent, so a script run through a symlink in another folder, from a folder that holds a decoy controls_versions.py, still uses the real parser
+# P2: under python3 -I the shared module is found from Path(__file__).resolve().parent, so a script run through a
+# symlink in another folder, from a folder that holds a decoy controls_versions.py, still uses the real parser
 repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
 lk = tempfile.mkdtemp(); os.symlink(os.path.join(BIN, "release-metadata.py"), os.path.join(lk, "release-metadata.py"))
 open(os.path.join(repo, "controls_versions.py"), "w").write("import sys\nsys.stdout.write('DECOY-IMPORTED')\nQUOTED = None\nclass NoVersionRow(ValueError): pass\ndef controls_versions(t): return [(9, '2099-01-01', 'decoy')]\n")
@@ -399,7 +408,8 @@ r = subprocess.run(["python3", "-I", os.path.join(lk, "release-metadata.py"), "c
 check(r.returncode == 0 and r.stdout == block(1, 2, V2[2]) and "DECOY" not in r.stdout + r.stderr, "P2 release-metadata.py run through a symlink from another folder finds the real controls_versions.py (not the decoy in the working folder)", "rc=%s %r %r" % (r.returncode, r.stdout[-200:], r.stderr[-200:]))
 for name in ("release-metadata.py", "evidence-letter.py"):
     check("Path(__file__).resolve().parent" in open(os.path.join(BIN, name)).read(), "P2 %s finds controls_versions.py from Path(__file__).resolve().parent" % name, "source lacks Path(__file__).resolve().parent")
-# F1: the release job's checkout may be shallow; a shallow clone has no earlier release tag, so the notice would say "none" on every release. controls-notice refuses with one line.
+# F1: the release job's checkout may be shallow; a shallow clone has no earlier release tag, so the notice would say
+# "none" on every release. controls-notice refuses with one line.
 repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
 sh_dir = os.path.join(tempfile.mkdtemp(), "shallow"); fu_dir = os.path.join(tempfile.mkdtemp(), "full")
 subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + repo, sh_dir], check=True, capture_output=True, env=GENV)

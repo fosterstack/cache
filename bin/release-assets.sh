@@ -74,7 +74,8 @@ done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
 # The release's notes: a generated patch tag's notes (REQ-REL-009-AC8; bin/release-metadata.py tag-notes accepts only the release workflow's own patch tag), else
 # the fixed evidence text. Only a definite "release not found" creates a release; any other failure of the view stops here (round 1 R3).
-# When this release changes the version of the controls document, the notice is the first thing in the body (bin/release-metadata.py controls-notice; a refusal stops the
+# When this release changes the version of the controls document, the notice is the first thing in the body
+# (bin/release-metadata.py controls-notice; a refusal stops the
 # step here, before a release is created or anything is uploaded).
 python3 bin/release-metadata.py controls-notice --tag "$rel" --commit "$GITHUB_SHA" > controls-notice.md
 notes=(--notes "Evidence: see docs/verify-release.md for the verification commands of this release.")
@@ -82,7 +83,9 @@ if git cat-file tag "$rel" > release-tag.txt 2> /dev/null && python3 bin/release
   notes=(--notes-file release-notes.md)
 fi
 if [ -s controls-notice.md ]; then
-  { cat controls-notice.md; if [ "${notes[0]}" = --notes-file ]; then cat release-notes.md; else printf '%s' "${notes[1]}"; fi; } > release-body.md
+  { cat controls-notice.md;
+    if [ "${notes[0]}" = --notes-file ]; then cat release-notes.md;
+    else printf '%s' "${notes[1]}"; fi; } > release-body.md
   mv release-body.md release-notes.md
   notes=(--notes-file release-notes.md)
 fi
