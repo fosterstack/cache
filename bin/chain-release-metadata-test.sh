@@ -391,8 +391,16 @@ def count_rc(d):
     open(p, "w").write(s.replace(old, 'FINAL = re.compile(r"v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?")'))
 try: mutant_check("rc tags counted as releases (FINAL accepts -rcN) (N7)", count_rc, n7_ok)
 except SystemExit as e: bad(str(e)[5:])
+# P2: under python3 -I the shared module is found from Path(__file__).resolve().parent, so a script run through a symlink in another folder, from a folder that holds a decoy controls_versions.py, still uses the real parser
+repo, sh = mkrepo([("v0.2.0", ctl(V1)), (None, ctl(V1, V2))])
+lk = tempfile.mkdtemp(); os.symlink(os.path.join(BIN, "release-metadata.py"), os.path.join(lk, "release-metadata.py"))
+open(os.path.join(repo, "controls_versions.py"), "w").write("import sys\nsys.stdout.write('DECOY-IMPORTED')\nQUOTED = None\nclass NoVersionRow(ValueError): pass\ndef controls_versions(t): return [(9, '2099-01-01', 'decoy')]\n")
+r = subprocess.run(["python3", "-I", os.path.join(lk, "release-metadata.py"), "controls-notice", "--tag", "v0.3.0", "--commit", sh[-1]], capture_output=True, text=True, cwd=repo, env=GENV)
+check(r.returncode == 0 and r.stdout == block(1, 2, V2[2]) and "DECOY" not in r.stdout + r.stderr, "P2 release-metadata.py run through a symlink from another folder finds the real controls_versions.py (not the decoy in the working folder)", "rc=%s %r %r" % (r.returncode, r.stdout[-200:], r.stderr[-200:]))
+for name in ("release-metadata.py", "evidence-letter.py"):
+    check("Path(__file__).resolve().parent" in open(os.path.join(BIN, name)).read(), "P2 %s finds controls_versions.py from Path(__file__).resolve().parent" % name, "source lacks Path(__file__).resolve().parent")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "131"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "134"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

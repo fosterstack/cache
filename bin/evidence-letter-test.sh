@@ -247,6 +247,13 @@ check("same inputs, same bytes", text_again == text)
 src = open(SCRIPT).read()
 check("offline: no network or process module is imported",
       not any(m in src for m in ("urllib", "socket", "http.client", "subprocess", "requests")))
+# P2: the shared parser is found from Path(__file__).resolve().parent: through a symlink in another folder, from a folder with a decoy controls_versions.py
+lk = tempfile.mkdtemp(); os.symlink(SCRIPT, os.path.join(lk, "evidence-letter.py"))
+dc = tempfile.mkdtemp(); open(os.path.join(dc, "controls_versions.py"), "w").write("import sys\nsys.stdout.write('DECOY-IMPORTED')\nQUOTED = None\nclass NoVersionRow(ValueError): pass\ndef controls_versions(t): return [(9, '2099-01-01', 'decoy')]\n")
+wr = world(NOV); out = os.path.join(wr, "out")
+pl = subprocess.run([sys.executable, "-I", os.path.join(lk, "evidence-letter.py"), "--month", "2026-11", "--releases", wr + "/rel", "--advisories", wr + "/advisories.json", "--controls", wr + "/controls.md", "--signatory", wr + "/signatory.txt", "--out", out], capture_output=True, text=True, cwd=dc)
+check("P2 evidence-letter.py run through a symlink from another folder finds the real controls_versions.py (not the decoy in the working folder)", pl.returncode == 0 and "DECOY" not in pl.stdout + pl.stderr and os.path.isfile(os.path.join(out, "evidence-letter-2026-11.md")), "rc=%s %r %r" % (pl.returncode, pl.stdout[-200:], pl.stderr[-200:]))
+check("P2 evidence-letter.py finds controls_versions.py from Path(__file__).resolve().parent", "Path(__file__).resolve().parent" in src, "source lacks Path(__file__).resolve().parent")
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
