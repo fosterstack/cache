@@ -23,6 +23,17 @@ pass=0; fail=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t   # identity by environment: the test writes no git configuration
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 
+# the rest of the lint step and of the edited workflow's trigger, read from the files: a missing line would turn the check off while every case below still passes
+EDITED_YML="${CUSTOMER_WORDS_EDITED:-$ROOT/.github/workflows/customer-words-edited.yml}"   # a mutant copy, when the mutants are run
+step_has() {   # <description> <exact line of the step>
+  if printf '%s\n' "$lint_step" | grep -qxF -- "$2"; then echo "ok:   workflow $1"; pass=$((pass+1)); else echo "FAIL: workflow $1 (the line '${2# *}' is not in the step)"; fail=$((fail+1)); fi
+}
+step_has "step runs only on a pull_request" "        if: github.event_name == 'pull_request'"
+step_has "step gets the title through env" "          PR_TITLE: \${{ github.event.pull_request.title }}"
+step_has "step gets the body through env" "          PR_BODY: \${{ github.event.pull_request.body }}"
+if printf '%s\n' "$lint_run" | grep -qF '${{'; then echo "FAIL: workflow run line interpolates an expression"; fail=$((fail+1)); else echo "ok:   workflow run line interpolates no expression"; pass=$((pass+1)); fi
+if grep -qxF '    types: [edited]' "$EDITED_YML"; then echo "ok:   workflow edited trigger is exactly types: [edited]"; pass=$((pass+1)); else echo "FAIL: workflow edited trigger is not exactly 'types: [edited]' in $EDITED_YML"; fail=$((fail+1)); fi
+
 # mk <old-path-or-"-"> <old-content> <new-path> <new-content>: base commit with the old file, then the PR commit.
 mk() {
   rm -rf "$work/r"; mkdir "$work/r"; cd "$work/r" || exit 2
@@ -77,6 +88,33 @@ mk docs/a.md $'the owner\n' docs/a.md $'fine\n';                       check 0 "
 mk docs/a.md $'the owner\nx\n' docs/a.md $'the owner\ny\n';            check 0 "T5 an unchanged context line with owner passes"
 mk - "" cmd/x.go $'// owner\n';                                         check 0 "T5 owner added in Go source passes"
 mk - "" .github/policy/x.md $'owner\n';                              check 0 "T5 owner added under .github/policy passes"
+# T5b a symlink at a customer file: git hands the check the link's target NAME, never the target's lines, so it exits 2
+# lnk <base> <new-link-path> <target-path> [old-target-path]: the target holds "fine" in the base commit and "owner" in the PR commit.
+# base: "none" = nothing at the link path, "file" = a regular file there, "link" = a link there (to old-target-path, default the target).
+lnk() {
+  rm -rf "$work/r"; mkdir -p "$work/r/.github/policy"; cd "$work/r" || exit 2; git init -q
+  printf '# header\n' > .github/policy/customer-words-allow.txt
+  mkdir -p "$(dirname "$2")" "$(dirname "$3")"; printf 'fine\n' > "$3"
+  case "$1" in
+    file) printf 'fine\n' > "$2" ;;
+    link) mkdir -p "$(dirname "${4:-$3}")"; printf 'fine\n' > "${4:-$3}"; ln -s "$(realpath -m --relative-to="$(dirname "$2")" "${4:-$3}")" "$2" ;;
+  esac
+  git add -A && git commit -qm base
+  if [ "$1" = link ]; then git rm -q "$2"; fi
+  mkdir -p "$(dirname "$2")"; rm -f "$2"; ln -s "$(realpath -m --relative-to="$(dirname "$2")" "$3")" "$2"
+  printf 'owner\n' >> "$3"; git add -A && git commit -qm pr
+}
+lnk file docs/a.md cmd/notes.txt;       check 2 "T5b a page replaced by a link to a file outside the customer paths exits 2" 'symbolic link at a customer file: docs/a\.md'
+lnk none README.md cmd/notes.txt;       check 2 "T5b a new link where no file was exits 2" 'symbolic link at a customer file: README\.md'
+lnk link docs/a.md cmd/new.txt cmd/old.txt; check 2 "T5b a covered link retargeted exits 2" 'symbolic link at a customer file: docs/a\.md'
+lnk none cmd/x.txt cmd/notes.txt;       check 0 "T5b a link outside the customer paths passes"
+rm -rf "$work/r"; mkdir -p "$work/r/.github/policy"; cd "$work/r" || exit 2; git init -q
+printf '# header\n' > .github/policy/customer-words-allow.txt; mkdir docs; printf 'fine\n' > cmd.txt; ln -s ../cmd.txt docs/a.md
+git add -A && git commit -qm base; git rm -q docs/a.md; git commit -qm pr
+check 0 "T5b deleting a covered link passes"
+# the link flag ends with its diff entry: a link outside the customer paths sorts before a clean page that is added
+mk - "" cmd/x.txt $'fine\n'; rm cmd/x.txt; ln -s notes.txt cmd/x.txt; mkdir -p docs; printf 'fine\n' > docs/zz.md; git add -A; git commit -qm both
+check 0 "T5b a link outside the customer paths does not mark the clean page after it"
 mk docs/a.md $'x\n' docs/a.md $'the owner\n'; git rm -q docs/a.md; git commit -qm rm; check 0 "T5 deleting a customer file passes"
 mk docs/a.md $'the owner\n' docs/b.md $'fine\n';                        check 0 "T5 a file with owner deleted and a clean one added passes"
 mk docs/a.md $'x\n' docs/b.md $'the owner\n';                           check 1 "T5 deleting one customer file and adding another with owner fails"
