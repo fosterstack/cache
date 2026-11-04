@@ -1,4 +1,4 @@
-<!-- DRAFT for the owner's discussion: customer-visible copy, not published. -->
+<!-- DRAFT for discussion: customer-visible copy, not published. -->
 # Dependencies
 
 The release source includes a `vendor/` directory with every Go dependency the binary is built from, and the build uses only that code.

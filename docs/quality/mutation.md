@@ -22,7 +22,7 @@ configuration is in [`.gremlins.yaml`](../../.gremlins.yaml).
 
 Per `test-strategy.md` §6 the mutation score is **advisory**: it is
 published beside statement coverage, not enforced as a release gate,
-until the owner agrees a baseline. The thresholds in `.gremlins.yaml` are
+until a maintainer agrees a baseline. The thresholds in `.gremlins.yaml` are
 therefore `0` (report, never fail). The
 [`mutation` job in the Go freshness workflow](../../.github/workflows/go-freshness.yml) runs it weekly
 and on demand — a full mutation run re-runs the suite once per mutant and

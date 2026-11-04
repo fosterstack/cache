@@ -32,7 +32,7 @@ for the life of the shipped bytes:
 It ships as a release asset, so anyone auditing an artifact gets our claims alongside
 the SBOM and the provenance rather than having to take the scan result on faith.
 
-## The same statements, three ways (scanner-panel rule 10)
+## The same statements, three ways
 
 From the first release cut after this change, every release also carries two files
 generated at release time from this one OpenVEX file (`bin/vex-forms.py`) and the
@@ -50,7 +50,7 @@ affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
 
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
-proven by the release candidate's live test (scanner-panel rule 12), not assumed.
+proven by the release candidate's live test, not assumed.
 Google's loader matches the file to the image path you load it for, and applies one image per load, so
 name the digest you run (one of this release's digests, listed in `release-manifest.json`) and your own image path:
 `jq --arg u "$IMAGE" --arg d "$DIGEST" '.product_tree.branches |= map(if (.product.product_identification_helper.purl | startswith("pkg:oci/cache@" + $d + "?")) then .name = $u else . end)' <file> > vex-for-my-image.json`,
