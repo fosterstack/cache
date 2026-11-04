@@ -569,7 +569,8 @@ def _lit(v, before_colon=False):
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
-CITED = re.compile(r"\(decided (\d{4}-\d{2}-\d{2})\)\.?$")
+CITED = re.compile(r"\(decided ([0-9]{4}-[0-9]{2}-[0-9]{2})\)\.?\Z")
+INTERNAL_REF = re.compile(r"(?i)\b(?:advisor|handoff)\s*[0-9]+\b")
 
 
 def _entries(text):
@@ -601,7 +602,8 @@ def _source_entries(text, name):
 def behavior_entries(text, name="docs/next-release-notes.md", located=False):
     """The entries of docs/next-release-notes.md. An entry is only a change judged unable to affect supported clients, so
     each must end with the date it was decided, "(decided YYYY-MM-DD)" (nothing else inside the parentheses, an optional
-    final "."); an entry without one is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
+    final "."); an entry without one, or one that holds an internal reference ("advisor NNNN", "handoff NNNN") anywhere,
+    is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
     entries publishing the same line are refused, naming name:line. located: each entry with its location 'name:line:'."""
     ents = _source_entries(text, name)
     for e, n in ents:
@@ -613,8 +615,9 @@ def behavior_entries(text, name="docs/next-release-notes.md", located=False):
 
 
 def _check_entry(e):
-    """An entry ends with the date it was decided, a real calendar date, and no vendor or model name hides in it split
-    by a space or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
+    """An entry ends with the date it was decided, a real calendar date (ASCII digits, the end of the string right after
+    the parenthesis or its dot), holds no internal reference, and no vendor or model name hides in it split by a space
+    or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
     m = CITED.search(e)
     if m:
         try:
@@ -623,6 +626,8 @@ def _check_entry(e):
             m = None
     if not m:
         raise ValueError("next-release-notes entry cites no decision date: %r" % e)
+    if INTERNAL_REF.search(e):
+        raise ValueError("next-release-notes entry holds an internal reference: %r" % e)
     # any run of up to ten adjacent words that spells a name (the longest has nine letters): "Goo gle", "G o o g l e"
     # (Sonnet #158 r2b); a run starting with a word that is already a name is _clean's, which redacts it
     words = re.findall(r"[A-Za-z0-9]+", e)
