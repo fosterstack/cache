@@ -58,7 +58,7 @@ add docs/a.md "ruler" "ruler 9" 0 "T4 'ruler 9' passes"
 mk docs/a.md $'the owner\n' docs/a.md $'fine\n';                       check 0 "T5 a removed line with owner passes"
 mk docs/a.md $'the owner\nx\n' docs/a.md $'the owner\ny\n';            check 0 "T5 an unchanged context line with owner passes"
 mk - "" cmd/x.go $'// owner\n';                                         check 0 "T5 owner added in Go source passes"
-mk - "" .github/agent/prompts/x.md $'owner\n';                          check 0 "T5 owner added under .github/agent passes"
+mk - "" .github/policy/x.md $'owner\n';                              check 0 "T5 owner added under .github/policy passes"
 mk docs/a.md $'the owner\n' docs/b.md $'the owner\n';                  check 0 "T5 a rename with unchanged old lines passes"
 mk docs/a.md $'the owner\n' docs/b.md $'the owner\nmore\n';            check 0 "T5 a renamed file keeps its old lines clean (only 'more' is added)"
 # T6 depth and header tracking
