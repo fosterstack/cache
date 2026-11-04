@@ -115,6 +115,23 @@ check 0 "T5b deleting a covered link passes"
 # the link flag ends with its diff entry: a link outside the customer paths sorts before a clean page that is added
 mk - "" cmd/x.txt $'fine\n'; rm cmd/x.txt; ln -s notes.txt cmd/x.txt; mkdir -p docs; printf 'fine\n' > docs/zz.md; git add -A; git commit -qm both
 check 0 "T5b a link outside the customer paths does not mark the clean page after it"
+# a link to a DIRECTORY: its own name has no extension, but the host serves every page inside it
+# lndir <link-path> <target-dir> [base-file]: the PR commit adds a link at <link-path> to <target-dir>, which holds a page with "owner";
+# base-file (optional) is a regular file that exists in the base commit and is removed by the PR (a folder replaced by the link)
+lndir() {
+  rm -rf "$work/r"; mkdir -p "$work/r/.github/policy"; cd "$work/r" || exit 2; git init -q
+  printf '# header\n' > .github/policy/customer-words-allow.txt
+  if [ -n "${3:-}" ]; then mkdir -p "$(dirname "$3")"; printf 'fine\n' > "$3"; fi
+  mkdir -p "$2"; printf 'fine\n' > "$2/x.md"
+  git add -A && git commit -qm base
+  if [ -n "${3:-}" ]; then git rm -q "$3"; fi
+  mkdir -p "$(dirname "$1")"; ln -s "$(realpath -m --relative-to="$(dirname "$1")" "$2")" "$1"
+  printf 'owner\n' >> "$2/x.md"; git add -A && git commit -qm pr
+}
+lndir .vex/guides cmd/guides-src;       check 2 "T5b a new link .vex/guides to a folder of pages exits 2" 'symbolic link at a customer file: \.vex/guides'
+lndir docs cmd/docs-src docs/a.md;      check 2 "T5b docs/ replaced by a link to a folder exits 2" 'symbolic link at a customer file: docs'
+lndir .vex/pages.json cmd/pages-src; check 2 "T5b a new link .vex/pages.json to a folder of pages exits 2" 'symbolic link at a customer file: \.vex/pages\.json'
+lndir cmd/sub cmd/sub-src;              check 0 "T5b a link to a folder outside the customer paths passes"
 mk docs/a.md $'x\n' docs/a.md $'the owner\n'; git rm -q docs/a.md; git commit -qm rm; check 0 "T5 deleting a customer file passes"
 mk docs/a.md $'the owner\n' docs/b.md $'fine\n';                        check 0 "T5 a file with owner deleted and a clean one added passes"
 mk docs/a.md $'x\n' docs/b.md $'the owner\n';                           check 1 "T5 deleting one customer file and adding another with owner fails"
