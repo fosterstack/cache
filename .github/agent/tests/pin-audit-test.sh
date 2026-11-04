@@ -1609,11 +1609,20 @@ CASE="markers: with --observations-out the history phase is printed again after 
 check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,history,judging,open pull requests,open pull request pins,nested references,exceptions"
 # a history read that stalls on a day that records observations: the deadline must name the history, not the phase before it
 mkdir -p "$work/shim-log"
-printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && exec sleep 60; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
+rm -f "$work/phstall.log-entered"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && { : >"%s"; exec sleep 60; }; done\nexec %s "$@"\n' "$work/phstall.log-entered" "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
 ( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
-CASE="markers: a daily run with --observations-out whose history read passes --deadline exits 2 and its stderr says still in history"
-check test "$rc" -eq 2 -a "$(grep -cx 'audit: could not finish: still in history after 2 s' "$work/phstall.err")" -eq 1
+CASE="markers: a stalled history read on a daily run with --observations-out exits 2"
+check test "$rc" -eq 2
+CASE="markers: that stall happened inside git log, so the history read was reached"
+check test -e "$work/phstall.log-entered"
+CASE="markers: that run had already written its tag observations"
+check test -s "$work/obs/stall.json"
+CASE="markers: that run printed history, tag observations, then history again"
+check test "$(phases "$work/phstall.out")" = "history,tag observations,history"
+CASE="markers: its stderr is exactly one line: still in history after 2 s"
+check test "$(cat "$work/phstall.err")" = 'audit: could not finish: still in history after 2 s'
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
