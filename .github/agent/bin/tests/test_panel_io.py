@@ -886,6 +886,14 @@ class Deliver(Tmp):
         self.assertEqual(sorted(x["path"] for x in inp["fileChanges"]["additions"]), sorted([P.STATE, P.VEX, P.PROFILES]))
         self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03 (rules 7-9, 13, 14)")
         self.assertTrue(any(c[:4] == ["gh", "pr", "create", "--draft"] for c in cmds))
+        # the PR's title and body are public text: plain, and clean under the repository's own customer-words check
+        create = next(c for c in cmds if c[:4] == ["gh", "pr", "create", "--draft"])
+        title, body = create[create.index("--title") + 1], create[create.index("--body") + 1]
+        self.assertEqual(title, "auditor: scanner panel audits")
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+        check = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
+                               env={**os.environ, "PR_TITLE": title, "PR_BODY": body}, capture_output=True, text=True)
+        self.assertEqual((check.returncode, check.stdout), (0, ""), check.stderr)
         issue_calls = [(c, t) for c, t in calls if c[:2] == ["gh", "issue"]]
         self.assertTrue(all(t == "issues-token" for _, t in issue_calls))
         self.assertTrue(any(c[:3] == ["gh", "issue", "create"] and "daily-rescan" in c and
