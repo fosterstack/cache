@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "e0186e5cb307e939c5197077613ffccaeb5d204c5936d826362616cb4d17ac1a",
+      "sha256": "071cd426f704f8dafcec1be6da0357343e2f9860ebe04daa39c21326e75b3501",
       "tools": [
         "make",
         "at",
@@ -2234,7 +2234,7 @@
       ],
       "signs": "other",
       "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) by chain-verify.py kms-sign (KMS Sign through the aws CLI, RSASSA_PKCS1_V1_5_SHA_256 named on every call) on each apk's control section, posts one Rekor entry, and checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (chain-verify.py bundle-check) (REQ-CHAIN-007-AC6); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); refuses, with exit 2 and before any tool, a RELEASE_KMS_KEY_REF that is not the verifier's own key reference, byte for byte (chain-verify.py key-ref-check); run by bin/release-apks.sh",
-      "sha256": "6729b5c9b2332a169ddbb42b58108f428e4308bb0f9473d3361bfd3aa1e1c616",
+      "sha256": "62d7ede89743eca860013455a51fefa39707f9877ac5a8dc48c900adbfd321bb",
       "exceptions": [
         {
           "rule": "script-name",
