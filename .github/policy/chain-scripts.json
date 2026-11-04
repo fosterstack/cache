@@ -783,7 +783,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "5fa2ab1c2d4cf32e29832d0a24f2fb910b752e812d108ba85449b4e219e5cb8f",
+      "sha256": "79c4dd3a911d3063721bf27d41bd7fc67253a22976df9d290144c4bc8ebf7898",
       "tools": [
         "env",
         "go",
@@ -1952,7 +1952,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
+      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
       "tools": [
         "at",
         "curl",

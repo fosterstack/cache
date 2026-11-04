@@ -706,13 +706,17 @@ rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      co
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
-# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml, minus the two files PR 2 removes
-mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old"
+# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml and customer-words-edited.yml, minus the two files PR 2 removes
+mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
+cp "$work/wf-ok"/* "$work/wf-cw/"; : > "$work/wf-cw/customer-words-edited.yml"
+cp "$work/wf-cw"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/stage-extra.yml"
 expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a second new workflow file" "was added" workflows "$work/wf-new"
+expect ok     "AC1 customer-words-edited.yml is the one other file allowed (decision 98, Oct 3)" "" workflows "$work/wf-cw"
+expect caught "AC1 customer-words-edited.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
 # ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
@@ -3620,7 +3624,7 @@ expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode 
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
-expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
+expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml and customer-words-edited.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
 python3 - "$root" <<'PY' && ok "the four chain stage files (build, reproducibility, verify, promote) pin download-artifact and upload-artifact each to one and the same digest, which .github/policy/allowed-actions.json lists" || bad "the chain stage files pin download-artifact to different digests, or to one the allowlist does not list"
@@ -3723,7 +3727,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1303
+EXPECT=1305
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

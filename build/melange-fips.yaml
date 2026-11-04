@@ -117,7 +117,7 @@ pipeline:
       export GOFIPS140=v1.0.0
       go build -trimpath -o ${{targets.destdir}}/usr/bin/fscache ./cmd/fscache
       go version -m ${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt
-      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt
+      grep -Eqx '.build.GOFIPS140=v1\.0\.0-c2097c7c' /tmp/fscache-gobuildinfo.txt
   - runs: |
       export PATH=/usr/local/go/bin:$PATH
       mkdir -p ${{targets.destdir}}/usr/share/fscache
