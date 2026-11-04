@@ -1765,7 +1765,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "1c30cdf7477937993532a9774fd86df95e1c94183a1e6222bb745b1c65666a4b",
+      "sha256": "787e34cf8661bc50340903c8a0f5716d6577f27d921d5763ee55f0a14920c187",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1904,7 +1904,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "0da39b1df891aec539bbe73aa36023d6ae516a5773f1bbcbbb60e3cc064367cd"
+      "sha256": "feab9d621c7e443c06b6989b20838e5190c93ef522b9a4d80cc9adcd61b2ebca"
     },
     {
       "path": "bin/vex-forms.py",
