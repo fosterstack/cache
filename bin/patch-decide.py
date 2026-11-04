@@ -570,7 +570,7 @@ def _lit(v, before_colon=False):
 
 
 CITED = re.compile(r"\(decided ([0-9]{4}-[0-9]{2}-[0-9]{2})\)\.?\Z")
-INTERNAL_REF = re.compile(r"(?i)\b(?:advisor|handoff)\s*[0-9]+\b")
+INTERNAL_REF = re.compile(r"(?i)(?<![^\W_])(?:advisor|handoff)s?[\W_]{0,4}\d")
 
 
 def _entries(text):
