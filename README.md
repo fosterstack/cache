@@ -144,7 +144,7 @@ run — there is no primary platform.
 | Tag | Shell | Use |
 |---|---|---|
 | `X.Y.Z` | none | Production |
-| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
+| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module ([details](docs/fips.md)) |
 
 Both images hold only the `fscache` binary and the few packages it needs
 (base layout, CA certificates, time zone data): there is no base image, no
@@ -284,20 +284,19 @@ before implementation. CI fails if the matrix drifts from its sources.
 - [Install (binaries, systemd, platforms)](docs/install.md)
 - [One-command Docker deploy](docs/docker-deploy.md) · [Deploying on Kubernetes](docs/kubernetes.md)
 - [Installing on disconnected networks](docs/offline-install.md)
-- [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
+- [FIPS 140-3](docs/fips.md) · [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
 - [Releasing](RELEASING.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 ## Security
 
 - Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
   time zone data), patched by a new image, not on a running one.
-- Approved-only cryptography is enforced by the validated module itself, not
-  by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
-  Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A
-  `depguard` allowlist covers the static side, permitting only in-boundary
-  crypto imports and denying third-party crypto outright. Both are described
-  in [`SECURITY.md`](SECURITY.md), including what each does and does not
-  prove.
+- CI runs the full test suite under `GODEBUG=fips140=only`, where Go's FIPS 140-3
+  module refuses any non-approved algorithm. That mode is a best-effort test
+  aid, and the released `-fips` build runs with FIPS mode on. A `depguard`
+  allowlist covers the static side, permitting only in-boundary crypto imports
+  and denying third-party crypto outright. Both are described in
+  [`SECURITY.md`](SECURITY.md), including what each does and does not prove.
 - **No telemetry and no required FosterStack connection.** The server
   reports nothing to us — no usage reporting, no licence check, no update
   ping — and today's free core initiates no outbound connections at all, so

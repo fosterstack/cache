@@ -83,6 +83,10 @@ scanners report (critical through low, and unknown), so a CVE disclosed against
 bytes we already shipped raises a tracked issue (or a new comment on the open
 one for that image and scanner) rather than waiting for someone to look.
 
+## FIPS 140-3
+
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you the FIPS-validated cryptographic module that NIST SP 800-53 SC-13 calls for at FedRAMP Moderate and above. How to check it, and the certificate links, are in [`docs/fips.md`](docs/fips.md).
+
 ## Approved-only cryptography
 
 Enforcement is delegated to the validated module rather than to a list.
@@ -116,7 +120,7 @@ The `-fips` build announces itself at startup, so the property is
 observable at runtime rather than taken on trust:
 
 ```
-"fips140":"active (Go validated module, CMVP cert #5247)"
+"fips140":"active (Go validated module v1.0.0, CMVP cert #5247)"
 ```
 
 Standard builds report `"fips140":"off"`.
