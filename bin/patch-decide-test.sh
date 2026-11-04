@@ -599,6 +599,24 @@ try:
 except ValueError as x_:
     msg_ = str(x_)
 check("DATE the refusal says the entry cites no decision date", "cites no decision date" in msg_, msg_)
+# round 1 findings (cache#833): an internal reference earlier in an entry, a non-ASCII date and a trailing newline are refused too
+for cite_, why_ in (("- A change (advisor 0115) (decided 2026-10-03).\n", "holds an internal reference"),
+                    ("- Fixed per handoff 0130 (decided 2026-10-03).\n", "holds an internal reference"),
+                    ("- A change (HANDOFF 0130) (decided 2026-10-03).\n", "holds an internal reference"),
+                    ("- A change (decided \uff12\uff10\uff12\uff16-\uff11\uff10-\uff10\uff13)\n", "cites no decision date"),
+                    ("- A change (decided\t2026-10-03)\n", "cites no decision date"),
+                    ("- A change (decided\u00a02026-10-03)\n", "cites no decision date"),
+                    ("- A change (Decided 2026-10-03)\n", "cites no decision date")):
+    try:
+        P.behavior_entries(cite_); msg_ = ""
+    except ValueError as x_:
+        msg_ = str(x_)
+    check("DATE %r is refused: %s" % (cite_, why_), why_ in msg_, msg_)
+try:
+    P.notes("v0.2.3", [], [], behavior=["x (decided 2026-10-05)\n"]); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE an entry handed to notes() with a trailing newline is refused", msg_ != "", msg_)
 REAL_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", "docs", "next-release-notes.md")
 real_text = open(REAL_FILE).read()
 real_ents = P.behavior_entries(real_text)
