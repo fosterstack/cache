@@ -6,13 +6,13 @@ The validation covers the cryptographic module. It does not cover FosterStack Ca
 
 ## Check it yourself
 
-The `-fips` build reports its status at startup and on `/statusz`:
+The `-fips` build reports its status in the startup log:
 
 ```
 "fips140":"active (Go validated module ..., CMVP cert ...)"
 ```
 
-The dots stand for the module version and the certificate number. Standard builds report `"fips140":"off"`. The `/statusz` page carries the same text as `fips140_note`.
+The dots stand for the module version and the certificate number. On `/statusz` the same text is in `fips140_note`, next to `"fips140":true`. A standard build reports `"fips140":"off"` at startup and `"fips140":false` on `/statusz`. If FIPS mode is forced on in a standard build (`GODEBUG=fips140=on`), the note says it is not the validated-module build.
 
 - [Certificate #5247](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5247) at NIST.
 - [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5247.pdf): Table 4 lists the vendor-affirmed operating environments, including Linux 3.10 and later on x86-64 and ARM.
@@ -21,4 +21,4 @@ The dots stand for the module version and the certificate number. Standard build
 ## Questions
 
 **Our operating system is not in the certificate's tested list. Is the module still validated there?**
-Yes. A software module's certificate lists the systems the lab tested on. Under the CMVP's porting rules, an unmodified software module stays compliant with its validation on any general-purpose platform that runs a listed or compatible operating system (CMVP Management Manual, section 7.9, "Vendor or User Affirmation of Modules"). The Security Policy also lists Linux on x86-64 and ARM as vendor-affirmed, which covers our images.
+Yes. The certificate's tested list names the systems the lab tested on. Under the CMVP's porting rules, the vendor or the user may affirm that an unmodified software module remains compliant with its validation on any general-purpose platform that runs a listed or compatible operating system (CMVP Management Manual, section 7.9, "Vendor or User Affirmation of Modules"). For Linux on x86-64 and ARM64, where our images run, the vendor's affirmation is already in the Security Policy (Table 4).
