@@ -5019,7 +5019,7 @@ requirements:
       about published evidence and makes no promise beyond them. It lists the releases published that month, the patch
       releases and why, the VEX statements added, the Check records of each release, any advisory, and one line binding it
       to the version of the controls document in force. It is made by a template, never by a model.
-    source: [bin/evidence-letter.py, bin/evidence-letter-test.sh]
+    source: [bin/evidence-letter.py, bin/evidence-letter-test.sh, bin/controls_versions.py, bin/release-metadata.py, bin/release-assets.sh]
     tier: compliance
     introduced: v0.3.0
     origin: monthly evidence letter (owner Oct 27 2026, with the Oct 27 23:20 amendment); advisor read-back acknowledged Oct 29 (handoffs/acks/2026-10-29-ack-cache3-readback-monthly-letter.md)
@@ -5098,5 +5098,11 @@ requirements:
         given: "the daily workflow .github/workflows/supply-chain.yml and its job evidence-letter-present (a schedule and a manual start only; contents: read and nothing else)"
         when: "it runs on or after the 3rd of a month, and a published release already carries an evidence-letter-YYYY-MM.md"
         then: "last month's evidence-letter-YYYY-MM.md and its .bundle are on the same published (not draft) release, found across every page of releases, and every copy passes bin/evidence-letter-verify.sh: the release key from the key manifest checked against the root, the bundle's Rekor entry, the pinned log, and no identity; otherwise the job fails with one plain line naming the month, and a failed scheduled run is reported"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC12
+        given: "a release tag whose commit changes the version of docs/controls.md since the highest final release tag below it"
+        when: "python3 bin/release-metadata.py controls-notice runs for that tag and commit, and bin/release-assets.sh makes the release body"
+        then: "it prints a three-line notice of the old and new controls document version and the new row's change, which is the first thing in the release body and the top of the tag message the owner signs from; it prints nothing when the version is unchanged, and refuses in one line when the table has no readable row, the version goes down, or the change cell is empty or holds a character outside the quoted-text allowlist"
         verification: { method: unit, release_blocking: false }
         status: approved

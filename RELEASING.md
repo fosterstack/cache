@@ -85,6 +85,11 @@ The tag must be signed (`tag.gpgSign = true` is already set inside
 `~/fosterstack/`). Pushing it is the only trigger — there is no manual
 release path.
 
+When a release changes the version of the controls document, start the tag message from the notice, so it is the first thing you read as you sign:
+`python3 bin/release-metadata.py controls-notice --tag vX.Y.Z --commit <sha> > tag-message.md`, then
+`git tag -s -e -F tag-message.md vX.Y.Z <sha>` (the editor opens with the notice at the top). With no change the file is empty and you write
+your message as usual. The release page starts with the same notice.
+
 ## What a release contains
 
 From v0.3.0, with every file below made by the Release stage from what Build <!-- pinned: historical -->

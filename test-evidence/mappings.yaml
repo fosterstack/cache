@@ -1901,3 +1901,8 @@ mappings:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-job-test.sh over the presence script with stand-ins for cosign and gh" }
+  - ac: REQ-REL-013-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/chain-release-metadata-test.sh and bin/chain-release-scripts-test.sh" }

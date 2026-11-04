@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 103 |
-| Acceptance criteria | 527 |
+| Acceptance criteria | 528 |
 | Release-blocking ACs | 132 |
-| ACs with mapped evidence | 517 |
+| ACs with mapped evidence | 518 |
 | Release-blocking ACs with mapped evidence | 132 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 50 |
@@ -1609,7 +1609,7 @@ If the persona suite is split across cores, the run first lists every case and t
 
 Once a month the release chain drafts one letter that rolls up that month's public evidence, takes every line of it from release assets it has checked first, signs it with the KMS release key as a release artifact (its Rekor entry is recorded), and attaches it to a release; if any check fails, no letter is made and the job fails (owner DECIDED Oct 27 2026, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md, rules 1 to 8 and the 23:20 amendment: fully automated, no per-month approval, the owner's typed name and title). Every piece of evidence stays public at every tier, so the letter is a public release asset too; it states public facts about published evidence and makes no promise beyond them. It lists the releases published that month, the patch releases and why, the VEX statements added, the Check records of each release, any advisory, and one line binding it to the version of the controls document in force. It is made by a template, never by a model.
 
-*Introduced v0.3.0 · tier compliance · confidence documented · source: bin/evidence-letter.py; bin/evidence-letter-test.sh*
+*Introduced v0.3.0 · tier compliance · confidence documented · source: bin/evidence-letter.py; bin/evidence-letter-test.sh; bin/controls_versions.py; bin/release-metadata.py; bin/release-assets.sh*
 
 > The site publication and the email to Compliance customers are other lanes' work (www; payments compliance-send). The signatory (the owner's typed name and title) and the closing words are committed in docs/evidence-letter-signatory.txt. The job refuses to make a letter until docs/controls.md (the controls document, ratified rules 6 to 8) exists: the letter quotes it. Round 2 (Nov 1) reworded the statement and AC5 to what the code does (the read-back was removed in round 1, F14); wording pending the owner's approval.
 
@@ -1626,3 +1626,4 @@ Once a month the release chain drafts one letter that rolls up that month's publ
 | REQ-REL-013-AC9 | Given the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else); when its sign job runs on a letter that passed AC5; then the sign job is the only one with an identity token (for the KMS federation); it signs the letter with the KMS key; its Rekor entry is recorded; customers verify with the release public key (connected customers also check the Rekor entry); it signs nothing that did not pass AC5 | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-013-AC10 | Given a signed letter and its bundle; when bin/evidence-letter-publish.sh attaches them; then they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed | unit |  | approved | 2 item(s) |
 | REQ-REL-013-AC11 | Given the daily workflow .github/workflows/supply-chain.yml and its job evidence-letter-present (a schedule and a manual start only; contents: read and nothing else); when it runs on or after the 3rd of a month, and a published release already carries an evidence-letter-YYYY-MM.md; then last month's evidence-letter-YYYY-MM.md and its .bundle are on the same published (not draft) release, found across every page of releases, and every copy passes bin/evidence-letter-verify.sh: the release key from the key manifest checked against the root, the bundle's Rekor entry, the pinned log, and no identity; otherwise the job fails with one plain line naming the month, and a failed scheduled run is reported | unit |  | approved | 3 item(s) |
+| REQ-REL-013-AC12 | Given a release tag whose commit changes the version of docs/controls.md since the highest final release tag below it; when python3 bin/release-metadata.py controls-notice runs for that tag and commit, and bin/release-assets.sh makes the release body; then it prints a three-line notice of the old and new controls document version and the new row's change, which is the first thing in the release body and the top of the tag message the owner signs from; it prints nothing when the version is unchanged, and refuses in one line when the table has no readable row, the version goes down, or the change cell is empty or holds a character outside the quoted-text allowlist | unit |  | approved | 3 item(s) |

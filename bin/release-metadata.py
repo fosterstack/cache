@@ -12,15 +12,29 @@
         file of this version, in this order
   release-metadata.py gate     --dir DIR [--same-as STAGED_DIR]
         every file of the release assets directory is covered; see GATE below
+  release-metadata.py controls-notice --tag T --commit SHA
+        the notice for the top of a release note when docs/controls.md changes its version since the highest final tag below T (nothing printed otherwise)
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
-import argparse, hashlib, json, os, re, sys
+import argparse, hashlib, importlib.util, json, os, re, subprocess, sys
 
 REPO_GHCR, REPO_HUB = "ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"
 VARIANTS = ("production", "fips")
 ARCHES = ("amd64", "arm64")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 FINAL = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def _shared(name):
+    """The helper <name> from this directory (the scripts run isolated, so the folder is not on sys.path)."""
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+        sys.modules[name] = module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+controls_versions = _shared("controls_versions").controls_versions
 
 
 def refuse(msg):
@@ -438,6 +452,43 @@ def cmd_tag_notes(a):
     sys.stdout.write(body.strip() + "\n")
 
 
+def cmd_controls_notice(a):
+    """The notice for the top of a release note: printed only when this release changes the controls document's version."""
+    m = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(-rc[0-9]+)?", a.tag)
+    if not m or not re.fullmatch(r"[0-9a-f]{7,40}", a.commit):
+        refuse("controls-notice: --tag is vX.Y.Z or vX.Y.Z-rcN and --commit a commit id")
+    this = tuple(int(x) for x in m.groups()[:3])
+
+    def git(*args):
+        return subprocess.run(["git"] + list(args), capture_output=True, text=True)
+
+    listed = git("tag", "--list", "v*")
+    if listed.returncode:
+        refuse("controls-notice: the tags cannot be listed")
+    below = sorted((tuple(int(x) for x in t[1:].split(".")), t) for t in listed.stdout.split() if FINAL.fullmatch(t) and tuple(int(x) for x in t[1:].split(".")) < this)
+
+    def version_at(rev):
+        """(highest version, its change cell) of docs/controls.md at rev; None when the file is not there."""
+        if git("cat-file", "-e", rev + ":docs/controls.md").returncode:
+            return None
+        shown = git("show", rev + ":docs/controls.md")
+        if shown.returncode:
+            refuse("controls-notice: docs/controls.md cannot be read at " + rev)
+        try:
+            return controls_versions(shown.stdout)[-1][0::2]
+        except _shared("controls_versions").NoVersionRow:
+            refuse("controls-notice: docs/controls.md at %s has no readable version row" % rev)
+
+    old, new = version_at(below[-1][1]) if below else None, version_at(a.commit)
+    if (old and old[0]) == (new and new[0]):
+        return
+    if old and (not new or new[0] < old[0]):
+        refuse("controls-notice: the controls document version goes down (%d -> %s)" % (old[0], new[0] if new else "none"))
+    if not (new[1] and _shared("controls_versions").QUOTED.fullmatch(new[1])):
+        refuse("controls-notice: the change cell of controls document version %d is empty or holds a character outside the quoted-text allowlist" % new[0])
+    sys.stdout.write("## CONTROLS DOCUMENT CHANGES IN THIS RELEASE: version %s -> version %d\nChange: %s\nSigning this tag approves controls document version %d.\n\n" % (old[0] if old else "none", new[0], new[1], new[0]))
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -450,9 +501,10 @@ def main(argv):
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
     n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True); n.add_argument("--object", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
+    k = sub.add_parser("controls-notice"); k.add_argument("--tag", required=True); k.add_argument("--commit", required=True)
     c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes, "controls-notice": cmd_controls_notice}[a.cmd](a)
 
 
 if __name__ == "__main__":

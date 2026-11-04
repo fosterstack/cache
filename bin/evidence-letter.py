@@ -16,16 +16,27 @@ still the placeholder (without --draft).
 import argparse
 import calendar
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import sys
 
+
+def _shared(name):
+    """The helper <name> from this directory (the scripts run isolated, so the folder is not on sys.path)."""
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+        sys.modules[name] = module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+controls_versions = _shared("controls_versions").controls_versions  # the one parser of the controls document
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")  # v0.3.1 matches; v0.3.1-rc1 and 0.3.1 do not
 MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")  # 2026-11 matches; 2026-13 and 2026-1 do not
 SAFE_NAME = re.compile(r"[A-Za-z0-9._:-]+")  # CVE-2026-1111 matches; "CVE 1" and "a;b" do not
-# the only characters a quoted note or summary may hold: no markup, entity or link can be written with them
-QUOTED = re.compile(r"[A-Za-z0-9 .,:;()'/-]+")  # "Fix: a crash (rare)." matches; "a&#105;b" and "[x](y)" do not
+QUOTED = _shared("controls_versions").QUOTED  # the only characters a quoted note, summary or change cell may hold (defined beside the parser)
 RECORDS = ("scanners-collection.json", "acceptance-collection.json", "runtime-collection.json", "arm64-collection.json")
 FORBIDDEN = ("warranty", "certified", "compliant", "guarantee", "soc2")  # tested on the letter with only letters and digits kept
 PAGE = "https://github.com/fosterstack/cache/releases/tag/"
@@ -89,14 +100,6 @@ def day(stamp, what):
 
 def month_title(month):
     return "%s %s" % (calendar.month_name[int(month[5:])], month[:4])
-
-
-def controls_versions(controls_text):
-    """[(version, signed date)] from the rows `| 1 | 2026-10-20 | ... |` of the controls document, oldest first."""
-    rows = re.findall(r"^\| *([0-9]+) *\| *([0-9]{4}-[0-9]{2}-[0-9]{2}) *\|", controls_text, re.M)
-    if not rows:
-        raise Refuse("the controls document has no version row")
-    return sorted((int(v), d) for v, d in rows)
 
 
 def release_dates(rel_dir):
@@ -176,7 +179,10 @@ def advisories_of(advisories, month):
 def controls_lines(rels, month, controls_text):
     """Each release is bound to the controls version in force on its date. If the version changed in the month, or
     after the release, every such version is named too."""
-    versions = controls_versions(controls_text)
+    try:
+        versions = [(v, d) for v, d, _c in controls_versions(controls_text)]
+    except _shared("controls_versions").NoVersionRow as e:
+        raise Refuse(str(e))
     end = "%s-%02d" % (month, calendar.monthrange(int(month[:4]), int(month[5:]))[1])
     bound = {}
     for rel in rels:
