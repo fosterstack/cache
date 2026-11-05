@@ -56,10 +56,15 @@ done
 tree_after=$(find "$workdir" -path "$WORKSPACE_DIR" -prune -o ! -path "$OUTSIDE_CANARY" ! -path "$INSIDE_CANARY" -print 2>/dev/null | sort)
 echo "vm-sandbox-probe: outside canary sha256:$outside_before -> sha256:${outside_after:-unreadable}"
 echo "vm-sandbox-probe: inside canary sha256:$inside_before -> sha256:${inside_after:-unreadable}"
-echo "vm-sandbox-probe: workspace listing: $(ls -A "$WORKSPACE_DIR" 2>&1 | tr '\n' ' ')"
-# the positive control: the hostile step must have left its file in the workspace, or the wall was never tested
-if [ -z "$(find "$WORKSPACE_DIR" -name vm-probe-written 2>/dev/null | head -n 1)" ]; then
-  echo "vm-sandbox-probe: no evidence the hostile step ran (vm-probe-written is not in the workspace)" >&2; no_evidence=1
+# melange empties the workspace after the build, so the host cannot see the guest's files; what is left under it is listed for the reader
+echo "vm-sandbox-probe: workspace tree after the run (melange keeps the post-build copy under <workspace>/<arch> and empties it):"
+find "$WORKSPACE_DIR" 2>&1 | head -n 40 | sed 's/^/  /'
+# the positive control is in the guest: melange's log must show the file the recipe wrote through the share, read back
+# in the guest with its sha256, and the share root listing. The guest only reports that the attempt ran; the host judges the effect.
+if ! grep -Eq 'PROBE-GUEST: share-file vm-probe-written sha256:[0-9a-f]{64}' "$render/melange.log" || ! grep -q 'PROBE-GUEST: share-root:' "$render/melange.log"; then
+  echo "vm-sandbox-probe: no evidence the hostile step ran (the guest lines are not in melange's log)" >&2; no_evidence=1
+else
+  grep 'PROBE-GUEST:' "$render/melange.log" | sed 's/^/  guest: /'
 fi
 if [ "$tree_before" != "$tree_after" ]; then
   echo "vm-sandbox-probe: something appeared or went beside the workspace folder" >&2; not_held=1

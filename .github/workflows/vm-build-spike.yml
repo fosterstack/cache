@@ -305,6 +305,17 @@ jobs:
           #!/bin/sh
           R=$W/host-tools
           export QEMU_MODULE_DIR=\$R/usr/lib/qemu
+          # no /dev/kvm (the arm hosted runner): melange asks for -accel kvm and -cpu host; the wrapper turns them into tcg and max
+          if [ ! -w /dev/kvm ]; then
+            prev=""; n=\$#
+            while [ \$n -gt 0 ]; do
+              a=\$1; shift; n=\$((n - 1)); o=\$a
+              if [ "\$prev" = -accel ] && [ "\$a" = kvm ]; then a=tcg,thread=multi; fi
+              if [ "\$prev" = -cpu ] && [ "\$a" = host ]; then a=max; fi
+              set -- "\$@" "\$a"; prev=\$o
+            done
+          fi
+          echo "qemu-wrapper args: \$*" >> $W/qemu-args.log
           exec $ld --library-path \$R/usr/lib:\$R/usr/lib64:\$R/lib \$R/usr/bin/$HOSTPKG -L \$R/usr/share/qemu "\$@"
           WEOF
           sudo install -m 0755 "$W/qemu-wrapper" "/usr/local/bin/$HOSTPKG"
@@ -359,7 +370,7 @@ jobs:
           echo "---- the wrapper ----"; cat "$W/melange-wrap.sh"
           rc=0; bash bin/vm-sandbox-probe.sh --melange "$W/melange-wrap.sh" --workdir "$W/probe" > "$W/probe.out" 2>&1 || rc=$?
           echo "---- probe output ----"; cat "$W/probe.out"
-          echo "---- workspace folder (ls -la) ----"; ls -la "$W/probe/workspace" 2>&1 | head -n 30
+          echo "---- qemu arguments seen by the wrapper ----"; cut -c1-500 "$W/qemu-args.log" 2>&1 | head -n 3
           echo "---- the melange log (last 80 lines) ----"; tail -n 80 "$W/probe-melange.log" 2>/dev/null | cut -c1-300 || true
           R "PROBE ($KIND $TA) exit code: $rc (0 held, 4 not held, 1 probe error or no evidence, 2 refused)"
           [ "$rc" = 0 ] || R "PROBE FAIL: exit $rc"

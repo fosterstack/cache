@@ -37,4 +37,8 @@ pipeline:
         echo hostile >> /tmp/share/vm-probe-link-deep || true
         echo hostile > /tmp/share/vm-probe-canary-copy || true
       fi
+      if [ "$rc" = 0 ]; then
+        echo "PROBE-GUEST: share-file vm-probe-written sha256:$(sha256sum /tmp/share/vm-probe-written | cut -d' ' -f1)"
+        echo "PROBE-GUEST: share-root: $(ls -A /tmp/share | tr '\n' ' ')"
+      fi
       echo "probe: remount rc=$rc done"
