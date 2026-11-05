@@ -220,6 +220,14 @@ PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
 KERNEL_LOCK = "build/locks/vm-kernel.lock"
 KERNEL_ROWS_MAX = 500
+
+
+_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*[a-wyz]?(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
+
+
+def is_pin(version):
+    """An exact version: a commit, a digest, or dotted numbers (an optional suffix such as -rc.1). Never a name (main, nightly, lts/*), a wildcard (1.*, 3.x), a range or an expression."""
+    return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
 _KERNEL_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._+\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+\-]*)?)=([A-Za-z0-9][A-Za-z0-9._+\-]*)[ \t]+sha256:([0-9a-f]{64})$")
 
 
@@ -236,6 +244,8 @@ def _kernel_lock_items(path, text):
         m = _KERNEL_ROW.match(row)
         if not m:
             raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+        if not is_pin(m.group(2)):
+            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its age cannot be judged")
         if (m.group(1), m.group(2)) in seen:
             raise RuntimeError(f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
         seen.add((m.group(1), m.group(2)))
