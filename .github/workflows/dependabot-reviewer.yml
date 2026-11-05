@@ -342,7 +342,7 @@ jobs:
             fi
           }
           # main's list and main's ruleset must agree before a major is armed: the same guard as the
-          # patch/minor path (bin/required-check-guard.sh). If main enforced no checks,
+          # patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
           # --auto would merge at once; the guard fails closed.
           if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
                | base64 -d > "$W/main-required-checks.json" \
@@ -377,7 +377,7 @@ jobs:
               merge)
                 # ledger: armed but not yet published — the cancellation cleanup step disarms these
                 echo "$n $sha" >> "$W/armed-unpublished.txt"
-                # bound to the head that was reviewed: a later push voids the verdict (Oct 1)
+                # bound to the head that was reviewed: a later push voids the verdict (owner, Oct 1)
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n"; then
                   if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
                     merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed, check published)"
@@ -388,7 +388,7 @@ jobs:
                 title="major bump held: $names"
                 {
                   echo "Dependabot PR #$n (\`${sha:0:7}\`) is a major bump that a reader says breaks a line of ours."
-                  echo "This is not for the maintainers: fix our side, then re-run the reviewer with force=true."
+                  echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
                   echo; echo "Run: $RUN_URL"; echo
                   echo "## breaks-us findings"; echo
                   jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"

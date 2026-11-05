@@ -24,3 +24,9 @@
 .github/workflows/release.yml|b=$(python3 bin/admission-tag-signer.py baseline --tag "${VERSION}" --owner-baselines "$RUNNER_TEMP/owner-baselines" \
 .github/workflows/release.yml|for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
 .github/workflows/reserved-branch-guard.yml|name: only-the-app-pushes-auditor-lane
+.github/workflows/agent-review-gate.yml|# REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+.github/workflows/agent-review-gate.yml|# REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
+.github/workflows/agent-review-gate.yml|# through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
+.github/workflows/dependabot-reviewer.yml|# patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
+.github/workflows/dependabot-reviewer.yml|# bound to the head that was reviewed: a later push voids the verdict (owner, Oct 1)
+.github/workflows/dependabot-reviewer.yml|echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
