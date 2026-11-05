@@ -1800,7 +1800,7 @@ PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): 
 HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "   # the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
 HL_FILE, HL_LOCK, HL_HOST, HL_PATH, HL_INDENT = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f", " " * 8
 _HL_FLAGS = re.compile(re.escape('/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" '))
-_HL_DIE = ' die "could not download the kernel package from the Alpine mirror" 1'
+_HL_DIE = 'die "could not download the kernel package from the Alpine mirror" 1'
 PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
     'bin/release-assets.sh': [
         'gh release download "$rel" -D release-published',
@@ -1892,14 +1892,14 @@ def _hash_locked_line_ok(root, head, f, flat, ver):
     file that checks a download's sha256 against the lock: it is held once as a whole line with no whitespace twin, and its sha256 is the row's verifier-line-sha256."""
     if f != HL_FILE:  # HL:file
         return False
-    left, _, right = flat.partition("||")
-    if right != _HL_DIE:
+    left, _, right = flat.partition(" || ")
+    if right != _HL_DIE:  # HL:die
         return False
     start = _HL_FLAGS.match(left)
     if not start or re.search(r"[;&|<>`]|\$\(", left):  # HL:flags
         return False
     ops = re.findall(r'"[^"]*"|\S+', left[start.end():])
-    if len(ops) != 1 or not ops[0].startswith('"'):  # HL:operands
+    if len(ops) != 1 or not re.fullmatch(r'"[^"]*"', ops[0]):  # HL:operands
         return False
     url = ops[0][1:-1]
     host, _, rest = url[8:].partition("/")
@@ -1909,7 +1909,7 @@ def _hash_locked_line_ok(root, head, f, flat, ver):
         return False
     raw = _head_file(root, head, f)
     rows = raw.split(b"\n") if raw is not None else []
-    if raw is None or b"\r" in raw or sum(b" ".join(ln.split()) == flat.encode() for ln in rows) != 1 or (HL_INDENT + flat).encode() not in rows:
+    if raw is None or b"\r" in raw or sum(b" ".join(ln.split()) == flat.encode() for ln in rows) != 1 or (HL_INDENT + flat).encode() not in rows:  # HL:raw
         return False
     vb = ver[1].encode("utf-8", "surrogatepass") if ver else b""
     if not ver or ver[0] != HL_FILE or rows.count(vb) != 1 or sum(b" ".join(ln.split()) == b" ".join(vb.split()) for ln in rows) != 1:  # HL:verifier
@@ -1917,7 +1917,8 @@ def _hash_locked_line_ok(root, head, f, flat, ver):
     if hashlib.sha256(vb).hexdigest() != ver[2]:  # HL:verifier-sha
         return False
     rev = head  # HL:head
-    if _head_file(root, rev, HL_LOCK) is None:  # HL:lock
+    lock = _head_file(root, rev, HL_LOCK)
+    if lock is None or b"\r" in lock:  # HL:lock
         return False
     return True
 
