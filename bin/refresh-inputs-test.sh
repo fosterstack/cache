@@ -103,7 +103,7 @@ printf 'packages:\n  - busybox\n  - ca-certificates-bundle\n' >"$fx/repo/build/h
 python3 - "$fx" <<'P'
 import gzip, hashlib, io, json, os, subprocess, sys, tarfile
 fx = sys.argv[1]
-NAME = "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
+NAME = "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"   # the signature header names the key by this
 def gz(b):
     o = io.BytesIO()
     with gzip.GzipFile(fileobj=o, mode="wb", mtime=0) as g: g.write(b)
@@ -143,13 +143,14 @@ P
 printf 'packages:\n  - busybox\n' >"$fx/repo/build/vm-host.yaml"
 printf 'packages:\n  - ca-certificates-bundle\n' >"$fx/repo/build/vm-guest.yaml"
 cp "$fx/vm.lock" "$fx/repo/build/locks/vm-host.lock"; cp "$fx/vm.lock" "$fx/repo/build/locks/vm-guest.lock"
-KNAME=alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+KNAME=alpine-6165ee59.rsa.pub   # the committed key file and its pin line
 KSHA=$(shasum -a 256 "$fx/kernel/good.apk" | cut -d' ' -f1)
-mkdir -p "$fx/repo/build/keys"; cp "$fx/alpinekey.pub" "$fx/repo/build/keys/$KNAME"
+mkdir -p "$fx/repo/build/vm-keys"; cp "$fx/alpinekey.pub" "$fx/repo/build/vm-keys/$KNAME"
 printf 'linux-virt=6.18.60-r0 sha256:%s\n' "$KSHA" >"$fx/repo/build/locks/vm-kernel.lock"
 KKEY=$(shasum -a 256 "$fx/alpinekey.pub" | cut -d' ' -f1)
 printf '%s sha256:%s\n' "$KNAME" "$KKEY" >>"$fx/repo/build/locks/archive-keys.sha256"
 cp "$fx/kernel/good.apk" "$fx/archive/x86_64/linux-virt-6.18.60-r0.apk"
+mkdir -p "$fx/live/x86_64"; cp "$fx/kernel/good.apk" "$fx/live/x86_64/linux-virt-6.18.60-r0.apk"   # the Alpine mirror
 mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/"; rm -rf "$work/ar"; cp -R "$fx/archive" "$work/ar"; for a in x86_64 aarch64; do cp -n "$fx/envrepo/$a/"*.apk "$work/ar/$a/"; done   # melange's build tools are archived too
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
@@ -874,15 +875,48 @@ P
 done
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
-t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL, \"https://packages.wolfi.dev/os/\$p\" or \"https://go.dev/dl/\$f\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
+t "rule 32" "every live fetch is a shell line in the ruled grammar (fixed flags, literal operand forms)" \
+  python3 -I - "$RF_PROD" <<'PYT'
 import re, sys
 s = open(sys.argv[1]).read()
 lines = [l for l in s.split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]   # the fetch lines are the ones carrying the fixed flag cluster
 shell = [l for l in lines if l.lstrip().startswith("/usr/bin/")]
-assert len(shell) == len(lines) and len(lines) == 7, "every fetch line is a shell line (4 key fetches, packages, the Go toolchain, index): %d of %d" % (len(shell), len(lines))
-g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|"https://go\.dev/dl/\$f"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
+assert len(shell) == len(lines) and len(lines) == 8, "fetch lines are shell lines: %d of %d" % (len(shell), len(lines))
+FLAGS = (r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+'
+         r' --proto =https --tlsv1\.2 -o "[^"]*" ')
+OPERANDS = (r'("https://packages\.wolfi\.dev/os/\$p"|"https://go\.dev/dl/\$f"'
+            r'|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub'
+            r'|"https://dl-cdn\.alpinelinux\.org/alpine/v3\.24/main/x86_64/\$f")')
+g = re.compile(FLAGS + OPERANDS + r'( \|\| die "[^"$]*" [0-9]+)?$')
 bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
+# the Alpine operand is exactly one form: another host, branch, architecture or a bare URL stays refused
+tail = '--proto =https --tlsv1.2 -o "$tmp/x" '
+head = "  /usr/bin/curl -q -fsSL -g --max-filesize 9 --max-time 9 "
+for u in ('"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f"',):
+    assert g.match(head + tail + u), "the one Alpine form is admitted"
+ALP = "https://dl-cdn.alpinelinux.org/alpine/"
+for u in (ALP + "v3.25/main/x86_64/$f", ALP + "edge/main/x86_64/$f", ALP + "v3.24/community/x86_64/$f",
+          ALP + "v3.24/main/aarch64/$f", "https://example.invalid/alpine/v3.24/main/x86_64/$f",
+          ALP + "v3.24/main/x86_64/linux-virt.apk", ALP + "v3.24/main/x86_64/$f/../x",
+          "http://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f"):
+    u = '"' + u + '"'
+    assert not g.match(head + tail + u), "refused: " + u
+# and the line stays exactly: the fixed flags, one operand, nothing added, nothing missing
+AU = '"' + ALP + 'v3.24/main/x86_64/$f"'
+variants = {
+    "a second operand": head + tail + AU + ' "https://packages.wolfi.dev/os/$p"',
+    "a second Alpine operand": head + tail + AU + " " + AU,
+    "no --proto =https": head + '--tlsv1.2 -o "$tmp/x" ' + AU,
+    "no --tlsv1.2": head + '--proto =https -o "$tmp/x" ' + AU,
+    "an added flag": head + "--insecure " + tail + AU,
+    "an added flag after the proto": head + "--proto =https --tlsv1.2 --max-redirs 9 -o \"$tmp/x\" " + AU,
+    "the flags in another order (-o first)":
+        head.replace("--max-time 9 ", "") + '-o "$tmp/x" --max-time 9 --proto =https --tlsv1.2 ' + AU,
+    "no output file": head + "--proto =https --tlsv1.2 " + AU,
+}
+for what, line in variants.items():
+    assert not g.match(line), "refused: " + what
 assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
 PYT
 t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RF' && grep -q 'secrets\\|token_hex\\|urandom' '$RF'"
@@ -1064,6 +1098,15 @@ for f in ("apko.base.lock.json", "apko-fips.base.lock.json"):
     d = json.load(open("%s/build/locks/%s" % (rp, f)))
     d["contents"]["packages"] = [dict(e, url="/work/archive/%s/%s-%s.apk" % (e["architecture"], e["name"], e["version"])) for e in live["contents"]["packages"]]
     json.dump(d, open("%s/build/locks/%s" % (rp, f), "w"), indent=2)
+P
+python3 - "$work/rp" "$work/ln.json" <<'P'
+import json, sys
+# the VM locks follow the same live resolution, so that only the pointer is "behind"
+rp, ln = sys.argv[1:3]
+rows = sorted("%s=%s\n" % (e["name"], e["version"])
+              for e in json.load(open(ln))["contents"]["packages"] if e["architecture"] == "x86_64")
+for f in ("vm-host", "vm-guest"):
+    open("%s/build/locks/%s.lock" % (rp, f), "w").write("".join(rows))
 P
 run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 31" "AC22: when re-copying the pointer leaves nothing to commit the run exits 0 without a PR and without a git add of an empty path" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq 'git .* add -- \$' '$CALLS' && test ! -L '$work/ar/x86_64/APKINDEX.tar.gz' && cmp '$work/ar/x86_64/APKINDEX.tar.gz' '$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz'"
@@ -1334,6 +1377,7 @@ for a in ("x86_64", "aarch64"):
     noprod = "\n\n".join(st for st in text.split("\n\n") if not {"P:tzdata", "V:2026a-r0"} <= set(st.split("\n")))
     signed_index("%s/%s/APKINDEX-noprod.tar.gz" % (ffl, a), noprod.encode())
 P
+cp "$fx/kernel/good.apk" "$ffl/x86_64/linux-virt-6.18.60-r0.apk"   # the Alpine mirror serves the kernel package
 ffrun() {   # $1 = live fetch dir; the live melange resolution has moved busybox on, the production lock is unchanged
   run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$work/ff-mel-moved.json" STUB_CURL_DIR="$1" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
 ffprod() {   # the live production and FIPS locks have moved tzdata on (2026a to 2026b)
@@ -1703,6 +1747,7 @@ mkrepo; rm -f "$work/rp/build/locks/archive-keys.sha256"; before=$(treehash "$wo
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC30" "refresh: no pinned key line is exit 3 (never trust the archived key alone) before anything is used" bash -c "test \"\$(cat '$work/rc')\" = 3 && test \"\$(grep -c '^apko lock ' '$CALLS')\" -eq 0"
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-keys.sha256"
+printf '%s sha256:%s\n' "$KNAME" "$KKEY" >>"$work/rp/build/locks/archive-keys.sha256"   # the kernel key keeps its pin
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC30" "refresh: the pinned key, the archived key and the live key all equal -> the run proceeds (exit 0)" bash -c "test \"\$(cat '$work/rc')\" = 0"
 # ===== REQ-REFRESH-001-AC35..AC38: the host tools (bubblewrap and its libraries, run on the runner by the Build jobs) are resolved, archived and locked like melange's build tools ==========
@@ -1898,7 +1943,7 @@ kfail "a signature made by another key" signature othersig.apk
 kfail "a signature header that names another key" key othername.apk
 kfail "a datahash that is not the data segment's sha256" datahash baddatahash.apk
 kfail "bytes that are not a package" 'linux-virt' notapk.apk
-mkrepo; printf 'bad\n' >"$work/rp/build/keys/$KNAME"; RR
+mkrepo; printf 'bad\n' >"$work/rp/build/vm-keys/$KNAME"; RR
 t "AC41" "refresh: a committed kernel key that is not the pinned one is refused (names archive-keys.sha256)" \
   bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'archive-keys.sha256' '$work/log' &&
   ! grep -q '^gh pr create' '$CALLS'"
