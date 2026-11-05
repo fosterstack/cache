@@ -1825,6 +1825,22 @@ class FixPR(Base):
                                                                                   shlex.quote(self.HELD_OLD_TITLE)])
         self.assertEqual(len([l for l in lines if l.startswith("gh issue comment --title")]), 1)
 
+    def test_a_held_issue_lookup_that_cannot_run_gh_stops_delivery_and_says_so(self):
+        # gh missing from PATH, or any OSError out of subprocess.run: the outer handler of _emit_held_issue reports it, creates and
+        # comments nothing, and the run is INCOMPLETE (the bad-JSON path no longer reaches this handler)
+        for exc in (FileNotFoundError(2, "No such file or directory: 'gh'"), PermissionError(13, "Permission denied: 'gh'")):
+            os.environ.pop("AUDITOR_GIT_SHIM_LOG", None); os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+            row = self.held_row(); fr = FakeGhTitles({("gh", "issue", "list"): exc})
+            with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
+                    mock.patch.object(R.subprocess, "run", fr):
+                errs, out = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])
+            self.assertIn("held-major issue", errs, exc)
+            self.assertTrue(row.get("pending_delivery"), exc)
+            self.assertIn("held-major issue open/update failed: %s" % exc, out)
+            self.assertIn("the held-major issue FAILED to open (run INCOMPLETE)", row["action"])
+            self.assertEqual(self.held_lists(fr), [self.HELD_NEW_TITLE])                  # stopped at the first search
+            self.assertFalse([a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], exc)
+
     def test_the_shim_ledger_creates_the_held_issue_with_the_new_title(self):
         log = os.path.join(self.tmp, "held-new.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
         row = self.held_row()
