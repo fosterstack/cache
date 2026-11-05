@@ -1798,8 +1798,8 @@ _LOOPBACK_OK = {}
 
 PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # nineteen script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
 HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "   # the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
-HL_FILE, HL_LOCK, HL_HOST, HL_PATH = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f"
-_HL_FLAGS = re.compile(r'/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[A-Za-z0-9_./${}-]+"')
+HL_FILE, HL_LOCK, HL_HOST, HL_PATH, HL_INDENT = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f", " " * 8
+_HL_FLAGS = re.compile(r'/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[A-Za-z0-9_./${}-]+" ')
 PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
     'bin/release-assets.sh': [
         'gh release download "$rel" -D release-published',
@@ -1885,7 +1885,8 @@ def _head_file(root, rev, f):
 
 def _hash_locked_line_ok(root, head, f, flat):
     """REQ-SUP-001-AC35: True only for the one kernel fetch line of bin/refresh-inputs.sh: the fixed curl flags in the fixed order, one double-quoted operand
-    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f, then `|| die "plain text" 1`; the file holds that line once (no whitespace twin, no carriage return);
+    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f compared as written, then `|| die "plain text" 1`; the file holds that line once, as the whole raw line
+    (eight spaces of indent, single spaces, nothing after it; no whitespace twin, no carriage return);
     and the head tree holds the kernel lock file as a regular file of pinned rows (1 to 500), whose sha256 the refresh job checks before it keeps a package."""
     if f != HL_FILE:  # HL:file
         return False
@@ -1898,13 +1899,14 @@ def _hash_locked_line_ok(root, head, f, flat):
     ops = re.findall(r'"[^"]*"|\S+', left[start.end():])
     if len(ops) != 1 or not ops[0].startswith('"'):  # HL:operands
         return False
-    url = urllib.parse.urlsplit(ops[0][1:-1])
-    if url.scheme != "https" or url.netloc != HL_HOST:  # HL:host
+    url = ops[0][1:-1]
+    host, _, rest = url[8:].partition("/")
+    if not url.startswith("https://") or host != HL_HOST:  # HL:host
         return False
-    if url.path != HL_PATH or url.query or url.fragment:  # HL:path
+    if "/" + rest != HL_PATH:  # HL:path
         return False
     raw = _head_file(root, head, f)
-    if raw is None or b"\r" in raw or sum(" ".join(ln.split()) == flat for ln in raw.decode("utf-8", "replace").split("\n")) != 1:
+    if raw is None or b"\r" in raw or sum(" ".join(ln.split()) == flat for ln in raw.decode("utf-8", "replace").split("\n")) != 1 or (HL_INDENT + flat).encode() not in raw.split(b"\n"):
         return False
     rev = head  # HL:head
     lock = _head_file(root, rev, HL_LOCK)
