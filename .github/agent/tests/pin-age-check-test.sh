@@ -5564,6 +5564,7 @@ CASE="kernel row G6b the SAME row with the version x in base AND head (unchanged
 #   KERNEL_LOCK = "build/locks/vm-kernel.lock"                                  (pin-inventory.py: the one constant _wanted and the row reader both use)
 #   return _sumid(self.sums)                                                    (pin-inventory.py, Item.sum)
 #   if age + 1e-9 < min_days:                                                   (pin-age-check.py, judge_item)
+#           if not is_pin(m.group(2)):                                   (pin-inventory.py, _kernel_lock_items: the version of a row must be a pin)
 #   raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")    (pin-inventory.py, _kernel_lock_items)
 #   return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]    (pin-inventory.py, moved)
 mutate() {   # NAME FILE OLD NEW -> $work/mut/NAME/.github/agent/supply-chain, rc 3 when OLD is not found exactly once
@@ -5598,9 +5599,8 @@ else
   mutant reorder-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum or (k.startswith("apk:") and list(base_items).index(k) != list(head_items).index(k))]'
   mutant removal-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [base_items[k] for k in sorted(base_items) if k.startswith("apk:") and k not in head_items] + [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]'
   mutant row-error-skipped pin-inventory.py 'raise RuntimeError(f"{path}:{n}: a lock row is not '"'"'<name>=<version> sha256:<64 hex>'"'"': its age cannot be judged")' 'continue' "$G5IDS"
-  # mutant row-version-passthrough: the version check of the row parser replaced by pass-through. Its anchor is the line the coder writes in _kernel_lock_items that calls the
-  # predicate shared with is_pin; that line does not exist yet. Until the anchor is supplied this is a loud FAIL, not a skipped mutant.
-  CASE="kernel row mutant row-version-passthrough has an anchor (the line of _kernel_lock_items that calls the predicate shared with is_pin)"; echo "PENDING-CODE: mutant row-version-passthrough needs the exact text of that line"; bad "$CASE"
+  # mutant row-version-passthrough: the version check of the row parser (the call of the predicate shared with is_pin) replaced by pass-through; the row cases must see it.
+  mutant row-version-passthrough pin-inventory.py '        if not is_pin(m.group(2)):' '        if False:' "rv$RPIDS"
 fi
 
 echo "pin-age-check: $pass passed, $failn failed"
