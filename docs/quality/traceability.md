@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 91 |
-| Acceptance criteria | 387 |
+| Acceptance criteria | 389 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 367 |
+| ACs with mapped evidence | 369 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -814,6 +814,8 @@ A pull request into the release carries a passed-audit record for its exact head
 | REQ-REL-012-AC4 | Given the verdict job and the sweep of agent-review-gate.yml; when the auditor matrix runs them as written with stand-ins for the checks; then each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it) | ci-workflow |  | approved | 3 item(s) |
 | REQ-REL-012-AC5 | Given a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the lane runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it); when the record job runs; then it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit lane guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name | ci-workflow |  | approved | 3 item(s) |
 | REQ-REL-012-AC6 | Given a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch; when the scheduled sweep runs; then it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-012-AC7 | Given a release tag that reaches source admission and is not a patch tag (a vX.Y.0 tag or a release candidate), whose signature the earlier admission step verified; when the whole-release audit step of stage-admission.yml runs main's copy of the judge and of the writers policy over it; then admission continues only if the tagged commit has the same passed-audit record as a pull request into main (the branch audit/<tagged sha>) AND the owner's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-012-AC8 | Given a dispatch of the record job with the word release as the pull request and a commit sha; when the writer's prepare script runs; then a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check | ci-workflow |  | approved | 2 item(s) |
 
 ## SCAN
 
