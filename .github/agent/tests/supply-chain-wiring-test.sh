@@ -313,8 +313,6 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
         # exactly weekly and no extra key (no day, time or timezone)
         if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:
             bad.append(f"the {eco} entry's schedule is not exactly interval: weekly")
-    # groups are judged below; the rest of gomod and docker stays unchanged
-    nog = lambda v: {a: b for a, b in v.items() if a != "groups"}
     # groups are judged below; the product's gomod entries stay unchanged apart from them
     nog = lambda v: {a: b for a, b in v.items() if a != "groups"}
     for gdir in ("/", "/tools/requirements"):  # both Go modules: the root and the nested tools/requirements module
