@@ -1231,11 +1231,55 @@ paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":
 revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
 assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
-def lock_keys(r):      # the items the kernel lock of that revision adds: the memo-time oracle predates the lock and cannot know them
-    p = subprocess.run(["git", "-C", root, "show", r + ":" + inv.KERNEL_LOCK], capture_output=True, text=True)
-    if p.returncode != 0:
-        return set()
-    return {"apk:%s@%s" % tuple(ln.split()[0].split("=", 1)) for ln in p.stdout.splitlines() if ln.strip() and not ln.startswith("#")}
+def lock_keys(r, repo=None):      # the items the kernel lock of that revision adds: the memo-time oracle predates the lock and cannot know them
+    # the revision's own kernel lock, read as strictly as the inventory reads it; anything it would refuse fails here, naming the revision
+    repo = repo or root
+    ls = subprocess.run(["git", "-C", repo, "ls-tree", "-z", r, "--", inv.KERNEL_LOCK], capture_output=True)
+    assert ls.returncode == 0, "cannot list %s at %s" % (inv.KERNEL_LOCK, r)
+    if not ls.stdout:
+        return set()                          # no lock at this revision: nothing the oracle cannot see
+    assert ls.stdout.split()[0] != b"120000", "%s at %s is a symbolic link" % (inv.KERNEL_LOCK, r)
+    p = subprocess.run(["git", "-C", repo, "show", r + ":" + inv.KERNEL_LOCK], capture_output=True)
+    assert p.returncode == 0, "cannot read %s at %s" % (inv.KERNEL_LOCK, r)
+    keys = set()
+    try:
+        for ln in p.stdout.decode("utf-8").split("\n"):
+            row = ln.strip()
+            if not row or row.startswith("#"):
+                continue
+            name, version = row.split()[0].split("=", 1)
+            keys.add("apk:%s@%s" % (name, version))
+    except (UnicodeDecodeError, ValueError, IndexError) as e:
+        raise AssertionError("%s at %s cannot be read as the inventory reads it (%s)" % (inv.KERNEL_LOCK, r, e))
+    return keys
+def _tree(repo, mode, data):
+    blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], input=data, capture_output=True, check=True).stdout.decode().strip()
+    idx = tempfile.mktemp(prefix="cache1-idx.", dir=repo)
+    env = dict(os.environ, GIT_INDEX_FILE=idx)
+    subprocess.run(["git", "-C", repo, "update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob, inv.KERNEL_LOCK)], env=env, check=True)
+    t = subprocess.run(["git", "-C", repo, "write-tree"], env=env, capture_output=True, check=True).stdout.decode().strip()
+    os.unlink(idx)
+    return t
+with tempfile.TemporaryDirectory(prefix="cache1-lockkeys.") as lk:
+    subprocess.run(["git", "init", "-q", lk], check=True)
+    row = b"linux-virt=6.18.60-r0 sha256:" + b"a" * 64 + b"\n"
+    ok = lambda data, mode="100644": lock_keys(_tree(lk, mode, data), repo=lk)
+    assert ok(row) == {"apk:linux-virt@6.18.60-r0"}, "a plain row"
+    assert ok(b"# a comment\n\n" + row) == {"apk:linux-virt@6.18.60-r0"}, "a comment and a blank line"
+    assert ok(b"   # an indented comment\n" + row) == {"apk:linux-virt@6.18.60-r0"}, "an INDENTED comment is a comment (the inventory strips first)"
+    assert ok(b"  " + row.strip() + b"  \n") == {"apk:linux-virt@6.18.60-r0"}, "a padded row"
+    assert ok(b"x86_64/linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n") == {"apk:x86_64/linux-virt@6.18.60-r0"}, "a row with an arch prefix"
+    for what, data, mode in (("a row without '='", b"linux-virt sha256:" + b"a" * 64 + b"\n", "100644"),
+                             ("a lock that is not UTF-8", row + b"\xff\xfe\n", "100644"),
+                             ("a symbolic link", b"build/locks/other", "120000")):
+        tr = _tree(lk, mode, data)
+        try:
+            lock_keys(tr, repo=lk)
+        except AssertionError as e:
+            assert tr in str(e), ("the error must name the revision", what, str(e))
+        else:
+            raise SystemExit("lock_keys accepted " + what)
+    assert lock_keys("4b825dc642cb6eb9a060e54bf8d69288fbee4904", repo=lk) == set(), "a revision with no lock names no keys"
 def run(mod, r, skip=()):
     try:
         d = mod.load_at(root, r)
