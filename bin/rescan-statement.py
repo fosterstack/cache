@@ -64,6 +64,7 @@ CONTRACTS = {
 # itself (Grype --vex) has already applied it; every other scanner of .github/policy/scanners.json has its findings
 # filtered HERE, against the same document. A scanner in neither list cannot be classified, so it cannot bypass the
 # VEX by omission: `classify` (and the test over scanners.json) fail for it.
+FAMILY_PREFIX = "auditor: "   # the subject prefix of the issue the daily panel opens
 NATIVE_VEX = ("grype",)
 PIPELINE_FILTERED = ("osv-scanner",)
 
@@ -87,7 +88,7 @@ def cmd_classify(args):
 
 
 def cmd_find_issue(args):
-    """The number of the open issue (a pull request is not one) of this repository that carries the label and has exactly this title, or nothing. EVERY page is read
+    """The number of the open issue (a pull request is not one) of this repository that carries the label and has exactly this title or the same title with the prefix in front, or nothing. EVERY page is read
     (`gh api --paginate`, 100 per page): a single default page of 30 would miss a tracking issue on a later page and open a duplicate every day. Any failure to
     read the list is an error (exit 1), never "no issue"."""
     import subprocess
@@ -116,7 +117,7 @@ def cmd_find_issue(args):
             return 1
         pages += 1
         for it in page:
-            if isinstance(it, dict) and "pull_request" not in it and it.get("title") == args.title and found is None:
+            if isinstance(it, dict) and "pull_request" not in it and it.get("title") in (args.title, FAMILY_PREFIX + args.title) and found is None:
                 if not isinstance(it.get("number"), int) or isinstance(it.get("number"), bool):
                     err("find-issue: the matching issue has no integer number; refusing to guess")
                     return 1

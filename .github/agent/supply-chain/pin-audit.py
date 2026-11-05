@@ -1117,7 +1117,10 @@ def rollback(item, net, now):
 
 def clean(text):
     """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
-    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
+    # control characters out, and an expression (a secret's name) never printed
+    text = re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))
+    # the runner reads ##[command] anywhere in a line; last, so a removed character cannot join the two
+    return text.replace("##[", "## [")
 
 
 def _safe(text, limit=64):
@@ -1165,22 +1168,40 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
-# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is never read partially, pin-inventory MAX_LINE). Exactly these revisions
-# are skipped instead, by FULL lowercase 40-hex sha, each for one stated reason (advisor 0637): they are the Oct 20 2026 RED commits of the release-chain branch's PR 459, whose test
-# file bin/chain-sign-wiring-test.sh held a 12000-character fixture line (removed in the later rounds of that PR). They sit in that branch's history, so once it lands every pull request
-# that moves a version would stop at them for the 90-day lookback. Their trees differ from their neighbours' by that one test file, so no pin is lost by skipping them.
-# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a revision is added to this list only by a reviewed change that names it.
+# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is
+# never read partially, pin-inventory MAX_LINE). A revision is skipped instead only when it is named below by its
+# FULL lowercase 40-hex sha with its reason. A revision is listed only after a check that its pins are all in the
+# readable revisions' items (the listing change quotes it); each sits in a branch's history, so without the skip
+# every audit would stop at it for the 90-day lookback.
+# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
+# revision is added to this list only by a reviewed change that names it.
+P1P5_REASON = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
 SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
+    "27b14e37ed06bca44ae479a8880480fa5855605b": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "c4ac17f07ac894c014034ec7e535e4598e06ced8": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "c9e30be29823765fce4c8a23bb11a4340a73fd69": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "23f771008513913f5a1bf434af83530125621a53": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "c5b8f225a378db6fa72200bafcf9af7998ef23e5": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "9045a08f287801c75cbf385caae8038774ed9f10": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "115c746b17620f08c0fe52c789dea720c887d465": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
+    "464b72fea4e356a9876bf9bd70f57cc84e07cab4": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
+    "7d538938ec3733112eb29b5f495502e8a74d7e33": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "16e2e1f9a010dfc966930b7963cec13326fa877c": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "28acfea97185023710ee2ba4596cbdb2ca68bfb0": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
+    "fbecada5bf5c37ab9263ca82664b3382c3dd9457": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
 }
 
 
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
     refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
     revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
@@ -1331,6 +1352,15 @@ def main(argv=None):
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         try:
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
+        except RuntimeError as e:
+            raise Fail(str(e))
+        if a.observations_out and not a.base:   # before the history is read: a history that cannot be read must not lose the observations
+            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
+            with open(a.observations_out, "w") as f:
+                json.dump(state, f, sort_keys=True)
+            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
+        try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
                 hist = history_items(a.root, a.base, now) if audited else {}
@@ -1349,12 +1379,6 @@ def main(argv=None):
             except RuntimeError as e:
                 raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
-        if a.observations_out and not a.base:
-            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
-            with open(a.observations_out, "w") as f:
-                json.dump(state, f, sort_keys=True)
-            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
             seen_um = {}
             for (path, what, _line), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
@@ -1536,7 +1560,7 @@ def main(argv=None):
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
-        print(f"audit: cannot do its job: {e}", file=sys.stderr)
+        print(f"audit: cannot do its job: {clean(e)}", file=sys.stderr)
         return 2
     except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the audit cannot do its job, it never says 'as of' and never ends in a traceback
         print(f"audit: cannot do its job: an answer could not be read ({type(e).__name__})", file=sys.stderr)

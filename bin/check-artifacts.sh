@@ -127,7 +127,7 @@ passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report
 info_fips=$(go version -m "$tmp/bin/fscache-fips")
-grep -Eq 'build[[:space:]]+GOFIPS140=v1\.0\.0' <<< "$info_fips" || fail "fscache-fips does not embed GOFIPS140=v1.0.0: the validated module was not selected into this artifact"
+grep -Eqx '[[:space:]]build[[:space:]]GOFIPS140=v1\.0\.0-c2097c7c' <<< "$info_fips" || fail "fscache-fips does not embed GOFIPS140=v1.0.0-c2097c7c: the validated module was not selected into this artifact"
 info_std=$(go version -m "$tmp/bin/fscache")
 if grep -Eq 'build[[:space:]]+GOFIPS140=' <<< "$info_std"; then fail "the standard binary embeds a GOFIPS140 selection: variants are crossed"; fi
 passed REQ-FIPS-001-AC1 "fscache-fips"

@@ -3,10 +3,8 @@ the clock. No policy lives here."""
 import base64
 import datetime as dt
 import json
-import os
-import subprocess
 
-OPENSSL = os.environ.get("OPENSSL", "openssl")
+OPENSSL = "/usr/bin/openssl"  # TEST-SUBST
 
 
 class Refuse(Exception):
@@ -34,10 +32,10 @@ def b64e(b):
     return base64.b64encode(b).decode()
 
 
-def ssl(*args, inp=None, check=True):
-    r = subprocess.run((OPENSSL,) + args, input=inp, capture_output=True)
-    if check and r.returncode:
-        raise RuntimeError("openssl %s failed: %s" % (" ".join(args[:2]), r.stderr.decode(errors="replace")[:200]))
+def ssl_done(r):
+    """The finished openssl run r (started by the caller, program OPENSSL); a non-zero exit raises."""
+    if r.returncode:
+        raise RuntimeError("openssl %s failed: %s" % (" ".join(r.args[1:3]), r.stderr.decode(errors="replace")[:200]))
     return r
 
 

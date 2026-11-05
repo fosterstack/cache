@@ -242,6 +242,24 @@ t "rule 37" "committed base lock (fips): the same" python3 "$work/lib.py" locksh
 ai_args=(--variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$BL" --index-record "$idxrec" --key-record "$keyrec")
 aif_args=(--variant fips --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo-fips" --keyring-dir "$fx/keyring" --apko-config "$fx/apko-fips.yaml" --base-lock "$fx/base-fips.lock.json" --index-record "$idxrec" --key-record "$keyrec")
 aie=(env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json")
+# fixed12 [slot=value ...]: w12 = the 12 words of assemble-image.sh in their fixed order
+# (--variant V --version X --archive A --melange-repo M --keyring-dir K --out O); a slot named replaces its default.
+# Slots: variant version archive melange keyring out (out: a fresh directory unless given).
+# After them come the fixture's config, base lock and two records: the wrapper $AI strips these four options and puts
+# the files at their committed paths in the fixture root, so the script itself still gets exactly 12 words. A call
+# site may append one of them again (e.g. --index-record X): the last one wins.
+fixed12() { local variant=production version=0.3.0 archive=$fx/archive melange=$fx/melrepo keyring=$fx/keyring out= kv
+  for kv in "$@"; do
+    case $kv in
+      variant=*|version=*|archive=*|melange=*|keyring=*|out=*) local "$kv";;
+      *) echo "fixed12: no slot in '$kv'" >&2; return 1;;
+    esac
+  done
+  [ -n "$out" ] || out=$(mo)
+  local cfg=$fx/apko.yaml lock=$BL; [ "$variant" != fips ] || { cfg=$fx/apko-fips.yaml; lock=$fx/base-fips.lock.json; }
+  w12=(--variant "$variant" --version "$version" --archive "$archive" --melange-repo "$melange" --keyring-dir \
+    "$keyring" --out "$out"
+    --apko-config "$cfg" --base-lock "$lock" --index-record "$idxrec" --key-record "$keyrec"); }
 # ===== REQ-IMAGE-001-AC12 (rule 1), run-time proof (REQ-BUILDAPK-001-AC9's method): the image assembly runs with a search path that holds only the
 # coreutils it uses and a uname that says Linux; the privileged tools are the fixed-path stubs. A tool called by its bare name is not found. ============
 IMG_RP_CORE="awk basename cat cp cut dirname find grep head ln ls mkdir mktemp mv rm rmdir sed sort tail tr wc cmp readlink"
@@ -356,21 +374,29 @@ for v in production fips; do
   t "rule 31" "[$v] the digest follows the built image (a different image gives a different digest)" bash -c "test -s '$o/$v.digest' && test -s '$o3/$v.digest' && ! cmp -s '$o/$v.digest' '$o3/$v.digest'"
 done
 sd "rule 33" "the -fips image is assembled from the -fips config" 'apko-fips\.yaml|fscache-fips' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
-t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" bash -c "grep -q 'apko-fips.yaml' '$AI_PROD' && grep -q 'apko.yaml' '$AI_PROD'"
+# the names are in the script, or (straight-line form) in oci-digest.py variant-field
+t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" \
+  bash -c "cat '$AI_PROD' '$OD' | grep -q 'apko-fips.yaml' && cat '$AI_PROD' '$OD' | grep -q 'apko.yaml'"
 rd2="$work/render2"; mkdir -p "$rd2"
 t "rule 25" "--render-dir writes the config with the version, no @FSCACHE_VERSION@ left" bash -c "env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$AI' ${ai_args[*]} --render-dir '$rd2' --out $(mo) >/dev/null 2>&1; f=\$(ls '$rd2'/*.yaml | head -1); test -n \"\$f\" && ! grep -q @FSCACHE_VERSION@ \$f && grep -Eq 'fscache=0\\.3\\.0-r0' \$f"
 # refusals: nothing may run
 sr "rule 31" "assemble refuses without SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
 sr "rule 31" "assemble refuses a non-numeric SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env SOURCE_DATE_EPOCH=never STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
-sr "rule 26" "assemble refuses an https archive" 'local' "${aie[@]}" "$AI" "${ai_args[@]}" --archive https://packages.wolfi.dev/os --out "$(mo)"
+fixed12 archive=https://packages.wolfi.dev/os; sr "rule 26" "assemble refuses an https archive" 'local' "${aie[@]}" \
+  "$AI" "${w12[@]}"
 sed 's#/work/archive#https://packages.wolfi.dev/os#' "$fx/apko.yaml" >"$work/live.yaml"
 sr "rule 26" "assemble refuses a config naming a live repository" 'repositor' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/live.yaml" --out "$(mo)"
-sr "rule 27" "archive missing a package of the base lock -> refuses, names it, no tool run, no fallback" 'tzdata' "${aie[@]}" "$AI" "${ai_args[@]}" --archive "$work/arch-m" --out "$(mo)"
-sr "rule 27" "archive missing its APKINDEX -> refuses, names it" 'APKINDEX' "${aie[@]}" "$AI" "${ai_args[@]}" --archive "$work/arch-i" --out "$(mo)"
+fixed12 archive="$work/arch-m"; sr "rule 27" "archive missing a package of the base lock -> refuses, names it, no \
+tool run, no fallback" 'tzdata' "${aie[@]}" "$AI" "${w12[@]}"
+fixed12 archive="$work/arch-i"; sr "rule 27" "archive missing its APKINDEX -> refuses, names it" 'APKINDEX' \
+  "${aie[@]}" "$AI" "${w12[@]}"
 rm -rf "$work/mel-m"; cp -R "$fx/melrepo" "$work/mel-m"; rm -f "$work/mel-m"/*/fscache-*.apk
-sr "rule 27" "melange repo missing the fscache apk -> refuses, names it" 'fscache' "${aie[@]}" "$AI" "${ai_args[@]}" --melange-repo "$work/mel-m" --out "$(mo)"
-sr "rule 28" "a tampered archived package is refused at the lock checksum (before the build), named" 'tzdata-2026a-r0' "${aie[@]}" "$AI" "${ai_args[@]}" --archive "$work/arch-t" --out "$(mo)"
-sr "rule 28" "an unknown key (keyring dir without the Wolfi key) is refused" 'key' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/nokeys" --out "$(mo)"
+fixed12 melange="$work/mel-m"; sr "rule 27" "melange repo missing the fscache apk -> refuses, names it" 'fscache' \
+  "${aie[@]}" "$AI" "${w12[@]}"
+fixed12 archive="$work/arch-t"; sr "rule 28" "a tampered archived package is refused at the lock checksum (before the \
+build), named" 'tzdata-2026a-r0' "${aie[@]}" "$AI" "${w12[@]}"
+fixed12 keyring="$work/nokeys"; sr "rule 28" "an unknown key (keyring dir without the Wolfi key) is refused" 'key' \
+  "${aie[@]}" "$AI" "${w12[@]}"
 srb "rule 37" "a full lock whose package entries differ from the base lock stops the build, naming 'differ'" 'differ' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-sum.json" "$AI" "${ai_args[@]}" --out "$(mo)"
 srb "rule 37" "a full lock with an extra package stops the build" 'bash|differ' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-extra.json" "$AI" "${ai_args[@]}" --out "$(mo)"
 python3 "$work/lib.py" mutate "$FL" "$work/f-arch.json" archver
@@ -500,35 +526,48 @@ t "rule 38a" "the source tree is left untouched by the negative cases (vendor/ s
 se "rule 40" "assemble-image.sh: 'Temporary failure in name resolution' from apko in the sealed namespace -> exit 4 (the probe confirms)" 4 'network attempt' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_NETTEXT="Get https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz: dial: Temporary failure in name resolution" "$AI" "${ai_args[@]}" --out "$(mo)"
 
 # ---- P5 round 1 (cache-3f): assemble-image.sh refuses an archive whose index is not the recorded one (tests first) ---------------------------------
-ia=("${aie[@]}" "$AI" --variant production --version 0.3.0 --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$BL" --melange-repo "$fx/melrepo" --key-record "$keyrec")
 mkarch() { rm -rf "$1"; cp -R "$fx/archive" "$1"; }   # a copy of the fixture archive (plain index files)
 mkversioned() { # <archive dir>: make the index of both archs a digest-named file under index/ with APKINDEX.tar.gz a symlink to it
   local a d sha; for a in x86_64 aarch64; do d="$1/$a"; sha=$(shaof "$d/APKINDEX.tar.gz"); mkdir -p "$d/index"; mv "$d/APKINDEX.tar.gz" "$d/index/APKINDEX-$sha.tar.gz"; ln -s "index/APKINDEX-$sha.tar.gz" "$d/APKINDEX.tar.gz"; done; }
-sd "rule 31" "the recorded index is accepted when the archive holds it as a plain file" '^apko build ' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$fx/archive"; sd "rule 31" "the recorded index is accepted when the archive holds it as a plain file" \
+  '^apko build ' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 mkarch "$work/ia1"; mkversioned "$work/ia1"
-sd "rule 31" "...and when APKINDEX.tar.gz is a symlink to index/APKINDEX-<sha256>.tar.gz holding exactly those bytes" '^apko build ' "${ia[@]}" --archive "$work/ia1" --index-record "$idxrec" --out "$(mo)"
-sr "rule 31" "a missing record file is refused (exit 2, names the index record), no tool run" 'index record .* is missing' "${ia[@]}" --archive "$fx/archive" --index-record "$work/no-such-record" --out "$(mo)"
+fixed12 archive="$work/ia1"; sd "rule 31" "...and when APKINDEX.tar.gz is a symlink to index/APKINDEX-<sha256>.tar.gz \
+holding exactly those bytes" '^apko build ' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
+fixed12 archive="$fx/archive"; sr "rule 31" "a missing record file is refused (exit 2, names the index record), no \
+tool run" 'index record .* is missing' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$work/no-such-record"
 grep -v '^aarch64' "$idxrec" >"$work/idx.noaarch"
-sr "rule 31" "a record with no line for aarch64 is refused (named, not a traceback)" 'has no line for aarch64' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.noaarch" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 31" "a record with no line for aarch64 is refused (named, not a traceback)" \
+  'has no line for aarch64' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$work/idx.noaarch"
 { cat "$idxrec"; head -1 "$idxrec"; } >"$work/idx.twice"
-sr "rule 31" "a record with two lines for one architecture is refused (even identical)" 'two lines for x86_64' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.twice" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 31" "a record with two lines for one architecture is refused (even identical)" \
+  'two lines for x86_64' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$work/idx.twice"
 sed 's/sha256:[0-9a-f]*/sha256:zz/' "$idxrec" >"$work/idx.bad"
-sr "rule 31" "a malformed digest in the record is refused" 'malformed line' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.bad" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 31" "a malformed digest in the record is refused" 'malformed line' "${aie[@]}" \
+  "$AI" "${w12[@]}" --index-record "$work/idx.bad"
 printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(printf other | shasum -a 256 | cut -d' ' -f1)" "$(shaof "$fx/archive/aarch64/APKINDEX.tar.gz")" >"$work/idx.other"
-sr "rule 31" "an archive whose index differs from the recorded digest is refused, naming the architecture and both digests" 'package index for x86_64 .* hashes to' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.other" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 31" "an archive whose index differs from the recorded digest is refused, \
+naming the architecture and both digests" 'package index for x86_64 .* hashes to' "${aie[@]}" "$AI" "${w12[@]}" \
+--index-record "$work/idx.other"
 mkarch "$work/ia2"; mkversioned "$work/ia2"; mkdir -p "$work/outside"; sha=$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz"); cp "$work/ia2/x86_64/index/APKINDEX-$sha.tar.gz" "$work/outside/APKINDEX-$sha.tar.gz"; rm "$work/ia2/x86_64/index/APKINDEX-$sha.tar.gz"; ln -s "$work/outside/APKINDEX-$sha.tar.gz" "$work/ia2/x86_64/index/APKINDEX-$sha.tar.gz"
-sr "rule 31" "the recorded index file being a symlink to a file OUTSIDE the archive (same bytes) is refused" 'symlink' "${ia[@]}" --archive "$work/ia2" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/ia2"; sr "rule 31" "the recorded index file being a symlink to a file OUTSIDE the archive \
+(same bytes) is refused" 'symlink' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 mkarch "$work/ia3"; mkversioned "$work/ia3"; sha=$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz"); mv "$work/ia3/x86_64/index/APKINDEX-$sha.tar.gz" "$work/ia3/x86_64/index/other.tar.gz"; rm "$work/ia3/x86_64/APKINDEX.tar.gz"; ln -s index/other.tar.gz "$work/ia3/x86_64/APKINDEX.tar.gz"
-sr "rule 31" "a pointer symlink alone (no index/APKINDEX-<recorded sha256>.tar.gz and no plain file) is refused" 'no .*APKINDEX-|pointer' "${ia[@]}" --archive "$work/ia3" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/ia3"; sr "rule 31" "a pointer symlink alone (no index/APKINDEX-<recorded sha256>.tar.gz and no \
+plain file) is refused" 'no .*APKINDEX-|pointer' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 # R3: a rebuild of an OLD tag. The pointer already moved on to a newer index; the record names the old one, which is still in index/. apko must be given the old one.
 mkarch "$work/ia7"; mkversioned "$work/ia7"; printf 'a newer signed index' >"$work/ia7/x86_64/index/APKINDEX-newer.tar.gz"; rm "$work/ia7/x86_64/APKINDEX.tar.gz"; ln -s index/APKINDEX-newer.tar.gz "$work/ia7/x86_64/APKINDEX.tar.gz"
 rd7="$work/render7"; mkdir -p "$rd7"
-sd "rule 31" "R3: the pointer moved on to a newer index, the record names the older one that is still in index/: the build is accepted" '^apko build ' "${ia[@]}" --archive "$work/ia7" --index-record "$idxrec" --render-dir "$rd7" --out "$(mo)"
+fixed12 archive="$work/ia7"; sd "rule 31" "R3: the pointer moved on to a newer index, the record names the older one \
+that is still in index/: the build is accepted" '^apko build ' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec" \
+--render-dir "$rd7"
 t "rule 31" "R3: ...and apko is given the RECORDED index as APKINDEX.tar.gz (the archive view), never the pointer's target" bash -c "cmp '$rd7/archive-view/x86_64/APKINDEX.tar.gz' '$fx/archive/x86_64/APKINDEX.tar.gz' && ! cmp -s '$rd7/archive-view/x86_64/APKINDEX.tar.gz' '$work/ia7/x86_64/index/APKINDEX-newer.tar.gz' && test -L '$rd7/archive-view/x86_64/tzdata-2026a-r0.apk'"
 mkarch "$work/ia4"; mkversioned "$work/ia4"; sha=$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz"); printf 'tampered' >"$work/ia4/x86_64/index/APKINDEX-$sha.tar.gz"
-sr "rule 31" "a digest-named index file whose content does not hash to its name is refused" 'hashes to' "${ia[@]}" --archive "$work/ia4" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/ia4"; sr "rule 31" "a digest-named index file whose content does not hash to its name is \
+refused" 'hashes to' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 mkarch "$work/ia5"; printf 'a different plain index' >"$work/ia5/aarch64/APKINDEX.tar.gz"
-sr "rule 31" "a plain APKINDEX.tar.gz whose bytes are not the recorded digest is refused" 'package index for aarch64 .* hashes to' "${ia[@]}" --archive "$work/ia5" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/ia5"; sr "rule 31" "a plain APKINDEX.tar.gz whose bytes are not the recorded digest is refused" \
+  'package index for aarch64 .* hashes to' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 
 # ---- P5 round 1 (Opus): B1-B3 and residuals (tests first) ---------------------------------------------------------------------------------------
 # AC3 / R8: the /work links are made with ln -sfn, and apko build is told not to detect VCS
@@ -538,9 +577,11 @@ sd "rule 31" "apko build is given --vcs=false (no VCS URL is detected or embedde
 # M20: --version is X.Y.Z or X.Y.Z-rc.N, nothing else (it is substituted into the config and the image tag)
 # advisor 0393 (Oct 12): exactly the chain's grammar: X.Y.Z, X.Y.Z-rcN (N digits, no leading zero, no dot) and the one snapshot version 0.0.0-rc.1
 for v in v0.3.0 0.3 '(devel)' 0.3.0-rc 0.3.0-rc.1 0.3.0-rc01 0.3.0-rc1.2 0.3.0-rc.2 0.0.0-rc.2 0.0.0-rc.01 0.0.0-rc1.1 01.2.3 '0.3.0/x' 'a&b' '0.3.0 ' ' 0.3.0' '0.3.0+x' ''; do
-  sr "rule 24" "assemble refuses --version '$v'" 'version' "${aie[@]}" "$AI" "${ai_args[@]}" --version "$v" --out "$(mo)"; done
-sr "rule 24" "assemble --version 0.3.0-rc1 looks for the apk fscache-0.3.0_rc1-r0.apk (the apk-valid version) in the melange repo" 'fscache-0.3.0_rc1-r0\.apk' "${aie[@]}" "$AI" "${ai_args[@]}" --version 0.3.0-rc1 --out "$(mo)"
-sr "rule 24" "assemble --version 0.0.0-rc.1 (the snapshot) looks for the apk fscache-0.0.0_rc1-r0.apk in the melange repo" 'fscache-0.0.0_rc1-r0\.apk' "${aie[@]}" "$AI" "${ai_args[@]}" --version 0.0.0-rc.1 --out "$(mo)"
+  fixed12 version="$v"; sr "rule 24" "assemble refuses --version '$v'" 'version' "${aie[@]}" "$AI" "${w12[@]}"; done
+fixed12 version=0.3.0-rc1; sr "rule 24" "assemble --version 0.3.0-rc1 looks for the apk fscache-0.3.0_rc1-r0.apk (the \
+apk-valid version) in the melange repo" 'fscache-0.3.0_rc1-r0\.apk' "${aie[@]}" "$AI" "${w12[@]}"
+fixed12 version=0.0.0-rc.1; sr "rule 24" "assemble --version 0.0.0-rc.1 (the snapshot) looks for the apk \
+fscache-0.0.0_rc1-r0.apk in the melange repo" 'fscache-0.0.0_rc1-r0\.apk' "${aie[@]}" "$AI" "${w12[@]}"
 # R10: a SOURCE_DATE_EPOCH too large to be a date is exit 2, not a traceback
 sr "rule 31" "assemble refuses a SOURCE_DATE_EPOCH too large to be a date" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" SOURCE_DATE_EPOCH=99999999999999999999 "$AI" "${ai_args[@]}" --out "$(mo)"
 # M3 (rule 33): the full lock equals the base lock but one package differs between architectures -> arch-check stops the build
@@ -549,7 +590,9 @@ python3 "$work/lib.py" mutate "$BL" "$work/b-arch5.json" archver; python3 "$work
 srb "rule 33" "base and full lock agree entry by entry but tzdata differs between the architectures: arch-check stops the build before apko build, naming the package" 'tzdata' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-arch5.json" "$AI" --variant production --version 0.3.0 --archive "$work/ia6" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$work/b-arch5.json" --index-record "$idxrec" --key-record "$keyrec" --out "$(mo)"
 # M4 (rule 28): the full lock is verified against the archive AND the melange repository: a tampered fscache apk is refused after apko lock, before apko build
 rm -rf "$work/mel-t"; cp -R "$fx/melrepo" "$work/mel-t"; python3 "$work/lib.py" tamper "$work/mel-t/x86_64/fscache-0.3.0-r0.apk"
-srb "rule 28" "a tampered fscache apk in the melange repo is caught by verifying the full lock (refused after apko lock, before apko build, naming the apk)" 'fscache-0.3.0-r0\.apk' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --melange-repo "$work/mel-t" --out "$(mo)"
+fixed12 melange="$work/mel-t"; srb "rule 28" "a tampered fscache apk in the melange repo is caught by verifying the \
+full lock (refused after apko lock, before apko build, naming the apk)" 'fscache-0.3.0-r0\.apk' env \
+SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${w12[@]}"
 # M5 / R5 (test hook ASSEMBLE_WORK_DIR replaces /work for the pre-checks): an existing real directory, or any existing link or lock, is refused
 mkdir -p "$work/wd1/archive"
 sr "rule 26" "/work/archive exists and is a real directory -> refused, nothing replaced" 'not a symlink|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd1" "$AI" "${ai_args[@]}" --out "$(mo)"
@@ -593,7 +636,8 @@ t "rule 37" "...and the file given to apko build is the lock apko lock made (it 
 sd "rule 28" "apko lock and apko build are given a private --cache-dir (a temp directory, not the runner's home)" '^apko lock .*--cache-dir [^ ]*/apko-cache ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
 sd "rule 28" "...apko build too" '^apko build .*--cache-dir [^ ]*/apko-cache ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
 rm -rf "$work/mel-ni"; cp -R "$fx/melrepo" "$work/mel-ni"; rm -f "$work/mel-ni/x86_64/APKINDEX.tar.gz"
-sr "rule 27" "a melange repository without its APKINDEX.tar.gz is refused, naming APKINDEX" 'APKINDEX' "${aie[@]}" "$AI" "${ai_args[@]}" --melange-repo "$work/mel-ni" --out "$(mo)"
+fixed12 melange="$work/mel-ni"; sr "rule 27" "a melange repository without its APKINDEX.tar.gz is refused, naming \
+APKINDEX" 'APKINDEX' "${aie[@]}" "$AI" "${w12[@]}"
 # compare alone must stop an extra package in the full lock: the extra package is IN the archive, so verify-archive would pass it
 mkarch "$work/ia8"; cp "$work/ia8/x86_64/tzdata-2026a-r0.apk" "$work/ia8/x86_64/extra-1.0-r0.apk"; cp "$work/ia8/aarch64/tzdata-2026a-r0.apk" "$work/ia8/aarch64/extra-1.0-r0.apk"
 python3 - "$work" "$FL" <<'P'
@@ -606,7 +650,9 @@ for a in ("x86_64", "aarch64"):
     d["contents"]["packages"].append(lib.entry("extra", "1.0-r0", a, "/work/archive/%s/extra-1.0-r0.apk" % a, tuple(p[0] for p in ([(b"", b"")] + parts if len(parts) == 2 else parts))))
 json.dump(d, open(w + "/f-extra8.json", "w"))
 P
-srb "rule 37" "a full lock with one extra package that IS in the archive is stopped by the base-vs-full comparison alone, naming it" 'extra' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-extra8.json" "$AI" "${ai_args[@]}" --archive "$work/ia8" --out "$(mo)"
+fixed12 archive="$work/ia8"; srb "rule 37" "a full lock with one extra package that IS in the archive is stopped by \
+the base-vs-full comparison alone, naming it" 'extra' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-extra8.json" \
+"$AI" "${w12[@]}"
 # the exit-4 classifier knows apko's own wording
 for txt in "network request blocked in offline mode" "connect: connection refused" "Get \"https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz\": no route to host"; do
   se "rule 40" "assemble: apko says '$txt' in the sealed namespace -> exit 4 (the probe confirms)" 4 'network attempt' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_NETTEXT="$txt" "$AI" "${ai_args[@]}" --out "$(mo)"; done
@@ -617,11 +663,14 @@ mkdir -p "$work/out-other"; : >"$work/out-other/fips.digest"; mkdir -p "$work/ou
 sd "rule 31" "...but a --out that holds only the OTHER variant's files is fine (the chain builds production and fips into one OUT)" '^apko build ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$work/out-other"
 # the keyring directory is pinned by digest: exactly the two keys, with the recorded bytes
 cp -R "$fx/keyring" "$work/kr-bad"; printf 'x' >>"$work/kr-bad/wolfi-signing.rsa.pub"
-sr "rule 19" "a Wolfi key file whose bytes differ from the recorded digest is refused, naming the key" 'wolfi-signing\.rsa\.pub' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-bad" --out "$(mo)"
+fixed12 keyring="$work/kr-bad"; sr "rule 19" "a Wolfi key file whose bytes differ from the recorded digest is \
+refused, naming the key" 'wolfi-signing\.rsa\.pub' "${aie[@]}" "$AI" "${w12[@]}"
 cp -R "$fx/keyring" "$work/kr-bad2"; printf 'x' >>"$work/kr-bad2/assembly.rsa.pub"
-sr "rule 19" "an assembly key file whose bytes differ from the recorded digest is refused" 'assembly\.rsa\.pub' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-bad2" --out "$(mo)"
+fixed12 keyring="$work/kr-bad2"; sr "rule 19" "an assembly key file whose bytes differ from the recorded digest is \
+refused" 'assembly\.rsa\.pub' "${aie[@]}" "$AI" "${w12[@]}"
 cp -R "$fx/keyring" "$work/kr-extra"; cp "$fx/keyring/assembly.rsa.pub" "$work/kr-extra/other.rsa.pub"
-sr "rule 19" "an extra key file in the keyring directory is refused (exactly the two recorded keys)" 'other\.rsa\.pub|extra|unexpected' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-extra" --out "$(mo)"
+fixed12 keyring="$work/kr-extra"; sr "rule 19" "an extra key file in the keyring directory is refused (exactly the \
+two recorded keys)" 'other\.rsa\.pub|extra|unexpected' "${aie[@]}" "$AI" "${w12[@]}"
 sr "rule 19" "a missing key record is refused" 'key record' "${aie[@]}" "$AI" "${ai_args[@]}" --key-record "$work/no-such-key-record" --out "$(mo)"
 # the overrides of the config, the locks and the records do not exist at all: see the REQ-IMAGE-001-AC10 section at the end
 
@@ -719,8 +768,31 @@ run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCKED_CACHE=1 "$AI" "${ai
 t "rule 40" "assemble: a root-written (unremovable) apko cache in the temp dir does not change a successful exit 0" test "$(rc)" = 0
 run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCKED_CACHE=1 STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
 t "rule 40" "assemble: ...nor the network-attempt exit 4" test "$(rc)" = 4
-trapok=0; for f in assemble-image lock-proof sealed-proof build-apk release-sign-apks install-build-tools; do grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh" || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
-t "rule 40" "every script's EXIT trap preserves the exit status (it captures it, cannot fail, and exits with it)" test "$trapok" = 0
+trapok=0
+for f in lock-proof sealed-proof release-sign-apks install-build-tools; do
+  grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh" \
+    || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
+# one trap string: a list that ends in || true (errexit does not act on it), no exit in it (Oct 30 CI ruling)
+for f in assemble-image build-apk; do
+  { tl=$(grep -E "^trap " "$root/bin/$f.sh") && [ -n "$tl" ] \
+    && ! printf '%s\n' "$tl" | grep -Evq "^trap '(\{ [^']*; \}|[^';{}]*) \|\| true' EXIT$" \
+    && ! printf '%s\n' "$tl" | grep -Eq '(^|[^A-Za-z_])exit([^A-Za-z_]|$)'; } \
+    || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
+t "rule 40" "every script's EXIT trap preserves the exit status (it cannot fail and does not exit)" test "$trapok" = 0
+# the same, by behaviour: a refusal whose cleanup commands all fail still ends with the script's own status (Oct 30 CI
+# ruling)
+mkdir -p "$work/failrm"; printf '#!/bin/sh\nexit 1\n' >"$work/failrm/rm"; chmod +x "$work/failrm/rm"
+printf '#!/bin/sh\nexit 1\n' >"$work/failsudo"; chmod +x "$work/failsudo"
+run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/failsudo" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" \
+  "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: a refusal (exit 2) whose cleanup fails (rm and sudo both fail) still exits 2, the script's own \
+status" test "$(rc)" = 2
+printf '#!/bin/bash\ncase "${1:-}" in rm|rmdir) exit 1;; esac\nexec %s/sudo "$@"\n' "$stubs" >"$work/rmfailsudo"; \
+  chmod +x "$work/rmfailsudo"
+run_s env PATH="$work/failrm:$stubs:$PATH" TEST_SUDO="$work/rmfailsudo" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" \
+  STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: the network-attempt exit 4 after the lock is taken, with every cleanup command (rm, sudo rm, \
+sudo rmdir) failing, still exits 4" test "$(rc)" = 4
 # sealed-proof deletes a package of the BASE LOCK (not the first apk in sorted order) and each negative needs its own reason
 mkarch "$work/sp-unrel"; cp "$work/sp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/sp-unrel/x86_64/aaa-unrelated-1-r0.apk"
 sp_unrel=("${sp_common[@]}"); for i in "${!sp_unrel[@]}"; do [ "${sp_unrel[$i]}" = "$fx/archive" ] && sp_unrel[$i]="$work/sp-unrel"; done
@@ -800,16 +872,22 @@ t "rule 31" "...and it is a named refusal, not a traceback" bash -c "! python3 '
 # ---- P5 round 3 (Opus + Sonnet): test hooks gated, render dir, containment, cleanup, claim race, oci duplicates, lock-proof inputs ----------------------------
 # the render directory must be empty and not a symlink, so nothing planted in it is used or written through
 mkdir -p "$work/rd-planted"; : >"$work/rd-planted/apko.yaml"
-sr "rule 25" "a --render-dir that is not empty is refused (a planted file would be written through or kept)" 'render' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/rd-planted" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 25" "a --render-dir that is not empty is refused (a planted file would be \
+written through or kept)" 'render' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec" --render-dir \
+"$work/rd-planted"
 mkdir -p "$work/rd-real"; ln -s "$work/rd-real" "$work/rd-link"
-sr "rule 25" "a --render-dir that is a symlink is refused" 'render|symlink' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/rd-link" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 25" "a --render-dir that is a symlink is refused" 'render|symlink' "${aie[@]}" \
+  "$AI" "${w12[@]}" --index-record "$idxrec" --render-dir "$work/rd-link"
 # every path component of the archive is contained: arch directory, index directory, the keyring files
 mkarch "$work/ic1"; mkversioned "$work/ic1"; mkdir -p "$work/ic-out"; cp -R "$work/ic1/x86_64/index" "$work/ic-out/index"; rm -rf "$work/ic1/x86_64/index"; ln -s "$work/ic-out/index" "$work/ic1/x86_64/index"
-sr "rule 31" "an index/ directory that is a symlink out of the archive is refused (every component is contained, not just the last)" 'symlink|outside' "${ia[@]}" --archive "$work/ic1" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/ic1"; sr "rule 31" "an index/ directory that is a symlink out of the archive is refused (every \
+component is contained, not just the last)" 'symlink|outside' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 mkarch "$work/ic2"; mv "$work/ic2/aarch64" "$work/ic-out/aarch64"; ln -s "$work/ic-out/aarch64" "$work/ic2/aarch64"
-sr "rule 31" "an architecture directory that is a symlink out of the archive is refused" 'symlink|outside' "${ia[@]}" --archive "$work/ic2" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/ic2"; sr "rule 31" "an architecture directory that is a symlink out of the archive is refused" \
+  'symlink|outside' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 cp -R "$fx/keyring" "$work/kr-link"; cp "$fx/keyring/wolfi-signing.rsa.pub" "$work/kr-real.pub"; rm "$work/kr-link/wolfi-signing.rsa.pub"; ln -s "$work/kr-real.pub" "$work/kr-link/wolfi-signing.rsa.pub"
-sr "rule 19" "a key file that is a symlink is refused (the keyring files must be regular files in the directory)" 'symlink|regular' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-link" --out "$(mo)"
+fixed12 keyring="$work/kr-link"; sr "rule 19" "a key file that is a symlink is refused (the keyring files must be \
+regular files in the directory)" 'symlink|regular' "${aie[@]}" "$AI" "${w12[@]}"
 printf 'this is not a key record line\n' >>"$work/key.bad"; cat "$keyrec" "$work/key.bad" >"$work/key.garbage"
 sr "rule 19" "an unparseable line in the key record is refused, not skipped" 'malformed|repeated' "${aie[@]}" "$AI" "${ai_args[@]}" --key-record "$work/key.garbage" --out "$(mo)"
 # the claim on /work is atomic: if the lock directory cannot be created (another run won the race) the run stops, makes no links and removes nothing
@@ -817,7 +895,7 @@ sr "rule 26" "a lost race for the /work lock (sudo mkdir fails) is refused, nami
 t "rule 26" "...and a run that never made a link removes none (no sudo rm in the calls)" bash -c "! grep -q '^sudo rm' '$CALLS' && ! grep -q '^sudo ln' '$CALLS'"
 run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
 t "rule 26" "a successful run removes exactly the three links and the lock directory it made" bash -c "grep -q '^sudo rm -f /work/archive /work/melange-repo /work/keyring\$' '$CALLS' && grep -q '^sudo rmdir /work/.assemble.lock\$' '$CALLS'"
-run_s "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-bad" --out "$(mo)"
+fixed12 keyring="$work/kr-bad"; run_s "${aie[@]}" "$AI" "${w12[@]}"
 t "rule 26" "a run refused before the claim (bad keys) calls no sudo rm at all (cleanup is conditional on what this run made)" bash -c "! grep -q '^sudo rm' '$CALLS'"
 # oci-digest: duplicate members, a manifest with another media type, no silent last-one-wins
 python3 - "$work" "$fx/oci" <<'P'
@@ -869,8 +947,10 @@ sf "rule 41" "sealed-proof: an image failure whose lines do not name the deleted
 # an unlistable directory is not an empty directory
 if [ "$(id -u)" != 0 ]; then
   mkdir -p "$work/nolist"; : >"$work/nolist/planted"; chmod 0300 "$work/nolist"
-  sr "rule 25" "a --render-dir that cannot be listed is refused (not taken as empty)" 'render|list' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/nolist" --out "$(mo)"
-  sr "rule 31" "an --out that cannot be listed is refused (not taken as empty)" 'out|list' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$work/nolist"
+  fixed12 archive="$fx/archive"; sr "rule 25" "a --render-dir that cannot be listed is refused (not taken as empty)" \
+    'render|list' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec" --render-dir "$work/nolist"
+  fixed12 archive="$fx/archive" out="$work/nolist"; sr "rule 31" "an --out that cannot be listed is refused (not \
+taken as empty)" 'out|list' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
   chmod 0700 "$work/nolist"
 fi
 # oci-digest: the apko layout is checked as strictly as the standard one
@@ -904,9 +984,11 @@ rm -f "$work/link-src"; ln -s "$src" "$work/link-src"; vend_before=$(cd "$src/ve
 sr2 "rule 41" "sealed-proof refuses a symlinked --source-dir root" 'symlink' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$work/link-src" --archive "$fx/archive" --build-args "--variant standard" --assemble-args "--variant production --version 0.3.0"
 t "rule 41" "...and the real source vendor/ is still there, byte for byte" test "$(cd "$src/vendor" && find . | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$vend_before"
 t "rule 36" "...and the real archive is byte-identical after the refused lock-proof and sealed-proof" test "$(cd "$work/real-arch" && find . | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$before"
-sr "rule 26" "assemble refuses a symlinked --archive root" 'symlink' "${ia[@]}" --archive "$work/link-arch" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/link-arch"; sr "rule 26" "assemble refuses a symlinked --archive root" 'symlink' "${aie[@]}" \
+  "$AI" "${w12[@]}" --index-record "$idxrec"
 mkdir -p "$work/real-out"; ln -sfn "$work/real-out" "$work/link-out"
-sr "rule 31" "assemble refuses a symlinked --out (a link to an empty directory too)" 'symlink' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$work/link-out"
+fixed12 archive="$fx/archive" out="$work/link-out"; sr "rule 31" "assemble refuses a symlinked --out (a link to an \
+empty directory too)" 'symlink' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 t "rule 31" "...and nothing was written through it" test -z "$(ls -A "$work/real-out")"
 # every filter of the round-4 reason rule is pinned
 for bad in --archive --out --render-dir; do
@@ -986,7 +1068,9 @@ t "rule 41" "...and the real files behind the link are byte-identical" test "$(c
 # a path with a "." or ".." component after another component hides a symlinked root from the -L test: refused by all three scripts
 mkdir -p "$work/real-out2/sub"; ln -sfn "$work/real-out2" "$work/link-out2"
 for spell in "$work/link-out2/." "$work/link-out2/./" "$work/real-out2/sub/../../link-out2" "$work/link-out2//" "$work/link-out2/"; do
-  sr "rule 31" "assemble refuses --out '${spell#$work/}' (a symlinked root spelled so that -L is false)" 'symlink|component|real directory' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$spell"
+  fixed12 archive="$fx/archive" out="$spell"; sr "rule 31" "assemble refuses --out '${spell#$work/}' (a symlinked \
+root spelled so that -L is false)" 'symlink|component|real directory' "${aie[@]}" "$AI" "${w12[@]}" --index-record \
+"$idxrec"
   sr2 "rule 36" "lock-proof refuses --out '${spell#$work/}'" 'symlink|component|real directory' run_s "${aie[@]}" "$LP" --out "$spell" --archive "$fx/archive" "${lp_args[@]}"
   sr2 "rule 41" "sealed-proof refuses --out '${spell#$work/}'" 'symlink|component|real directory' run_s "${spe[@]}" "$SP" --out "$spell" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 done
@@ -1058,7 +1142,8 @@ done
 
 # an apk name with a newline in the archive is refused, never linked under a split name
 cp -R "$fx/archive" "$work/archnl"; : >"$work/archnl/x86_64/$(printf 'evil\nname.apk')"
-sr "rule 31" "assemble refuses an archive holding an apk whose NAME has a newline (control character)" 'control' "${ia[@]}" --archive "$work/archnl" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$work/archnl"; sr "rule 31" "assemble refuses an archive holding an apk whose NAME has a newline \
+(control character)" 'control' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 
 # the standard layout's oci-layout file must be exactly the 1.0.0 marker
 python3 - "$work" "$oc/good.tar" <<'P'
@@ -1099,7 +1184,9 @@ cp -R "$fx/archive" "$work/archidx"; mkdir -p "$work/idx-outside"; a0=$(dirname 
 sr2 "rule 36" "lock-proof: a symlinked <arch>/index in the archive is refused by the proof's own guard (internal/temp directory)" 'internal|temp directory|symlink' run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/archidx" --assemble-script "$work/ok-asm.sh" "${lp_args[@]}"
 # the "." / ".." refusal is shared: every root flag of assemble-image.sh is pinned, and --render-dir too
 mkdir -p "$work/rd-real"; ln -sfn "$work/rd-real" "$work/rd-link"
-sr "rule 31" "assemble refuses --render-dir 'link/.' (a symlinked render root spelled so that -L is false)" 'symlink|component|real directory' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$(mo)" --render-dir "$work/rd-link/."
+fixed12 archive="$fx/archive"; sr "rule 31" "assemble refuses --render-dir 'link/.' (a symlinked render root spelled \
+so that -L is false)" 'symlink|component|real directory' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec" \
+--render-dir "$work/rd-link/."
 t "rule 31" "...and nothing was written through the render link" test -z "$(ls -A "$work/rd-real")"
 for flag in archive melange-repo keyring-dir; do
   case $flag in archive) good="$fx/archive";; melange-repo) good="$fx/melrepo";; keyring-dir) good="$fx/keyring";; esac
@@ -1109,7 +1196,8 @@ for flag in archive melange-repo keyring-dir; do
 done
 # a control character in ANY path argument is refused up front, named plainly
 nlroot="$work/arch"$'\n'"nl"; cp -R "$fx/archive" "$nlroot"
-sr "rule 31" "assemble refuses a newline in the archive ROOT path up front (named, before any work)" 'control character' "${ia[@]}" --archive "$nlroot" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$nlroot"; sr "rule 31" "assemble refuses a newline in the archive ROOT path up front (named, before \
+any work)" 'control character' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 
 # ---- Opus round 9 (P5): the victim fields are validated before any copy, the physical path decides "inside", forwarded records are refused outside test mode -----
 mkbl() { python3 - "$BL" "$1" "$2" "$3" "$4" <<'P'
@@ -1157,18 +1245,22 @@ for proof in lock sealed; do
 done
 # bytes outside printable ASCII in a path argument (a C1 control such as U+009B passes [[:cntrl:]] in some locales)
 c1root="$work/arch"$'\xc2\x9b'"x"; cp -R "$fx/archive" "$c1root"
-sr "rule 31" "assemble refuses a byte >= 0x80 in a path argument (named)" 'control|byte|plain' "${ia[@]}" --archive "$c1root" --index-record "$idxrec" --out "$(mo)"
+fixed12 archive="$c1root"; sr "rule 31" "assemble refuses a byte >= 0x80 in a path argument (named)" \
+  'control|byte|plain' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$idxrec"
 # a value such as -P or - must not be read as an option of cd
 # (the script runs from the repository root only, so the directory named -P is made in the root for the run and removed at once)
 mkdir -p "$air/-P"; cp -R "$fx/keyring/." "$air/-P/"
-run_s bash -c "cd '$air' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI' --variant production --version 0.3.0 --keyring-dir -P --apko-config '$fx/apko.yaml' --base-lock '$BL' --melange-repo '$fx/melrepo' --key-record '$keyrec' --archive '$fx/archive' --index-record '$idxrec' --out '$(mo)'"
+run_s bash -c "cd '$air' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI' --variant production --version \
+0.3.0 --archive '$fx/archive' --melange-repo '$fx/melrepo' --keyring-dir -P --out '$(mo)' --apko-config \
+  '$fx/apko.yaml' --base-lock '$BL' --key-record '$keyrec' --index-record '$idxrec'"
 t "rule 31" "assemble-image: --keyring-dir '-P' is the directory named -P (cd -P -- is used, not read as an option): success" test "$(cat "$work/rc")" = 0
 rm -rf "$air/-P"
 # a CRLF index record is refused by the assembler too
 python3 - "$idxrec" "$work/idx-crlf.record" <<'P'
 import sys; s = open(sys.argv[1]).read(); assert "\n" in s; open(sys.argv[2], "w", newline="").write(s.replace("\n", "\r\n"))
 P
-sr "rule 31" "assemble refuses an index record with CRLF line ends (malformed, exit 2)" 'malformed' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx-crlf.record" --out "$(mo)"
+fixed12 archive="$fx/archive"; sr "rule 31" "assemble refuses an index record with CRLF line ends (malformed, exit 2)" \
+  'malformed' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$work/idx-crlf.record"
 # oci-digest: the index.json entry's media type
 python3 - "$work" "$oc/good.tar" <<'P'
 import json, sys, tarfile
@@ -1526,7 +1618,9 @@ for variant_ in absent dangling empty; do
     rm -f "$d_/$a_/APKINDEX.tar.gz"
     case $variant_ in dangling) ln -s "index/no-such-newer-index.tar.gz" "$d_/$a_/APKINDEX.tar.gz";; empty) : >"$d_/$a_/APKINDEX.tar.gz";; esac
   done
-  sd "rule 31" "a rebuild with the pointer APKINDEX.tar.gz $variant_ (the recorded index is present in index/): assembly succeeds and apko is run" '^apko build ' "${ia[@]}" --archive "$d_" --index-record "$idxrec" --out "$(mo)"
+  fixed12 archive="$d_"; sd "rule 31" "a rebuild with the pointer APKINDEX.tar.gz $variant_ (the recorded index is \
+present in index/): assembly succeeds and apko is run" '^apko build ' "${aie[@]}" "$AI" "${w12[@]}" --index-record \
+"$idxrec"
 done
 # F3 (both seats): only exit 1 inside the namespace means "could not reach out"; a killed (137, 143) or erroring (2) probe is inconclusive
 for st_ in 137 143 2; do
@@ -1791,13 +1885,15 @@ if __name__ == "__main__":
             print("%s: %s" % (name, b)); rc = 1
     # the check must see these (it is not vacuous)
     base = open("%s/bin/assemble-image.sh" % root).read()
+    inherit = base.replace("variant= version= archive=", "variant=$variant version= archive=", 1)   # the loop form
+    inherit = inherit.replace("variant=$2;", "variant=$variant$2;", 1)   # the straight-line form
     for label, mut in (("a lowercase caller default", base.replace("set -euo pipefail\n", "set -euo pipefail\nversion=${caller_version:-x}\n", 1)),
                        ("an uppercase caller read", base.replace("set -euo pipefail\n", "set -euo pipefail\nfoo=$CALLER_SETTING\n", 1)),
                        ("a self-referential default before any assignment", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzz=${zzz:-1}\n", 1)),
-                       ("a function-local lowercase default", base.replace("local errf=$tmp/apko.err rc", "local errf=${caller_error_log:-$tmp/apko.err} rc", 1)),
-                       ("an initialisation that reads the inherited value", base.replace("variant= version= archive=", "variant=$variant version= archive=", 1)),
+                       ("a function-local lowercase default", base + "f() { local errf=${caller_error_log:-x} rc; }\n"),
+                       ("an initialisation that reads the inherited value", inherit),
                        ("a builtin inspection of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nif declare -p AUDIT_UNLISTED_SETTING >/dev/null 2>&1; then exit 0; fi\n", 1)),
-                       ("a function-local self-default", base.replace("local errf=$tmp/apko.err rc", "local errf=${errf:-$tmp/apko.err} rc", 1)),
+                       ("a function-local self-default", base + "f() { local zzf=${zzf:-x} rc; }\n"),
                        ("an arithmetic read of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzn=$((CALLER_COUNT + 1))\n", 1)),
                        ("a test -v introspection", base.replace("set -euo pipefail\n", "set -euo pipefail\nif test -v AUDIT_SKIP_BUILD; then exit 0; fi\n", 1)),
                        ("a read of OPTARG", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"${OPTARG:-}\"\n", 1)),
@@ -1998,5 +2094,425 @@ for v_ in data-last data-first toplevel sigsum; do
   t "AC5" "a lock with the first package listed twice at one version ($v_ differs) is refused by verify-archive AND arch-check (exit 2, 'more than once')" bash -c "test \"\$(cat '$work/dupv-$v_.rc')\" = 2 && test \"\$(cat '$work/dupv-$v_.rc2')\" = 2 && grep -q 'more than once' '$work/dupv-$v_.out' && grep -q 'more than once' '$work/dupv-$v_.out2'"
 done
 # ---- end verbatim sections ----
+
+# ===== cache#770: assemble-image.sh and apko-lock.sh are straight-line text; checks are oci-digest.py subcommands =====
+# The cases say what assemble-image.sh said and did before: the same message, the same exit status, the same order.
+# They call the subcommands directly; the whole script is run by every case above.
+cat >"$work/ocd-cases.py" <<'PY'
+import os, subprocess, sys, tempfile
+
+ROOT, WORK = sys.argv[1], sys.argv[2]
+T = os.path.realpath(tempfile.mkdtemp(dir=WORK))
+P = "assemble-image.sh: "
+
+
+def helper(args, cwd=None):
+    r = subprocess.run(["python3", "-I", "-B", ROOT + "/bin/oci-digest.py"] + args,
+                       env={"PATH": os.environ["PATH"]}, cwd=cwd or T, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def report(label, problems):
+    print(("FAIL %s: %s" % (label, "; ".join(problems))) if problems else "ok " + label)
+
+
+def case(label, args, rc=0, out=None, err=None, cwd=None):
+    """one call; err None means: empty when rc is 0, not looked at otherwise"""
+    got_rc, got_out, got_err = helper(args, cwd)
+    if err is None and rc == 0:
+        err = ""
+    problems = []
+    if got_rc != rc:
+        problems.append("exit %r, wanted %r" % (got_rc, rc))
+    if out is not None and got_out.rstrip("\n") != out:
+        problems.append("stdout %r, wanted %r" % (got_out, out))
+    if err is not None and got_err != err:
+        problems.append("stderr %r, wanted %r" % (got_err, err))
+    report(label, problems)
+
+
+def refuse(label, args, msg, rc=2, **kw):
+    case(label, args, rc=rc, err=P + msg + "\n", **kw)
+
+
+def put(path, text=""):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+def mkdir(*parts):
+    path = os.path.join(T, *parts)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+# ---- variant-field and apk-version
+FIELDS = {"production": ("fscache", "build/apko.yaml", "build/locks/apko.base.lock.json"),
+          "fips": ("fscache-fips", "build/apko-fips.yaml", "build/locks/apko-fips.base.lock.json")}
+for variant, values in FIELDS.items():
+    for field, want in zip(("pkg", "config", "baselock"), values):
+        case("variant-field %s %s" % (variant, field), ["variant-field", variant, field], out=want)
+for version, want in (("0.3.0", "0.3.0"), ("0.3.0-rc1", "0.3.0_rc1"), ("1.0.0-rc12", "1.0.0_rc12"),
+                      ("0.0.0-rc.1", "0.0.0_rc1")):
+    case("apk-version %s" % version, ["apk-version", version], out=want)
+
+# ---- check-roots: archive, melange repo, keyring dir, out, render dir
+real = [mkdir("r", n) for n in ("archive", "melrepo", "keydir", "out")]
+spaced = mkdir("r", "with space")
+os.symlink(real[0], T + "/r/link")
+os.symlink(T + "/r/nowhere", T + "/r/dangling")
+PLACES = ("archive", "melrepo", "keydir", "out", "render")
+NAMES = ("--archive", "--melange-repo", "--keyring-dir", "--out", "--render-dir")
+CTRL = ("%s holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); "
+        "refusing, the path arguments are plain ASCII text")
+EMPTY = "%s is empty; refusing (an empty value would silently mean the current directory)"
+DOTS = "%s %s has a . or .. component after another component (it could hide a symlinked root); give the real path"
+LINK = "%s %s is a symlink; refusing (a root of the inputs or the result must be a real directory)"
+
+
+def roots(label, msg=None, **given):
+    """check-roots over the four real roots and no render directory, with the roots named in GIVEN replaced"""
+    values = real + [""]
+    for place, value in given.items():
+        values[PLACES.index(place)] = value
+    if msg is None:
+        case("check-roots: " + label, ["check-roots"] + values)
+    else:
+        refuse("check-roots: " + label, ["check-roots"] + values, msg)
+
+
+roots("four real directories and no render directory")
+roots("a render directory is judged like the others", render=spaced)
+roots("a space is printable ASCII", archive=spaced)
+roots("a leading ./ is allowed", archive="./r/archive")
+roots("a leading ../ is allowed", archive="../" + os.path.basename(T) + "/r/archive")
+for place, name in zip(PLACES, NAMES):
+    for value in ("a\nb", "a\tb", "a\x1bb", "a\x7fb", "café", "a\u0085b"):
+        roots("%s holding %r" % (name, value), CTRL % name, **{place: value})
+    if place != "render":
+        roots("%s empty" % name, EMPTY % name, **{place: ""})
+        roots("%s a symlink" % name, LINK % (name, T + "/r/link"), **{place: T + "/r/link"})
+    roots("%s a symlink with slashes behind it: the message shows them" % name,
+          LINK % (name, T + "/r/link//"), **{place: T + "/r/link//"})
+    roots("%s a symlink to nothing" % name, LINK % (name, T + "/r/dangling"), **{place: T + "/r/dangling"})
+    for dotted in ("/r/./x", "/r/../x", "/r/x/.", "/r/x/.."):
+        roots("%s holding %s" % (name, dotted), DOTS % (name, T + dotted), **{place: T + dotted})
+    roots("%s with dots and slashes behind: the message shows the name without them" % name,
+          DOTS % (name, T + "/r/./x"), **{place: T + "/r/./x//"})
+for lone in (".", ".."):
+    roots("a lone %r is refused as dots" % lone, DOTS % ("--archive", lone), archive=lone)
+# the roots are judged one after the other, and within one root in this order: control character, empty, dots, symlink
+BROKEN = ["a\nb", "", T + "/r/link", T + "/r/./x", ""]
+for i, (name, msg) in enumerate(zip(NAMES, (CTRL % "--archive", EMPTY % "--melange-repo",
+                                            LINK % ("--keyring-dir", T + "/r/link"), DOTS % ("--out", T + "/r/./x")))):
+    refuse("check-roots: %s is judged before the roots after it" % name, ["check-roots"] + real[:i] + BROKEN[i:], msg)
+refuse("check-roots: within one root a control character comes before the dots",
+       ["check-roots", T + "/r/./a\nb"] + real[1:] + [""], CTRL % "--archive")
+refuse("check-roots: within one root the dots come before the symlink",
+       ["check-roots", T + "/r/link/./x"] + real[1:] + [""], DOTS % ("--archive", T + "/r/link/./x"))
+
+# ---- abs-dir and abs-file
+W = mkdir("w")
+mkdir("w", "real")
+mkdir("w", "-P")
+os.symlink(W + "/real", W + "/via")
+put(W + "/real/f.txt", "x")
+case("abs-dir: a real directory", ["abs-dir", W + "/real"], out=W + "/real")
+case("abs-dir: a symlink is resolved", ["abs-dir", W + "/via"], out=W + "/real")
+case("abs-dir: a relative name", ["abs-dir", "real"], out=W + "/real", cwd=W)
+case("abs-dir: dot-dot is folded away", ["abs-dir", "real/../real"], out=W + "/real", cwd=W)
+case("abs-dir: a name that is not a directory stays as typed", ["abs-dir", "nope/x"], out="nope/x", cwd=W)
+case("abs-dir: a file stays as typed", ["abs-dir", "real/f.txt"], out="real/f.txt", cwd=W)
+case("abs-dir: a directory named -P is a directory, not an option", ["abs-dir", "-P"], out=W + "/-P", cwd=W)
+case("abs-file: a file", ["abs-file", W + "/real/f.txt"], out=W + "/real/f.txt")
+case("abs-file: the directory of the file is resolved", ["abs-file", W + "/via/f.txt"], out=W + "/real/f.txt")
+case("abs-file: a relative name", ["abs-file", "real/f.txt"], out=W + "/real/f.txt", cwd=W)
+case("abs-file: a name that is not there yet", ["abs-file", "real/new"], out=W + "/real/new", cwd=W)
+case("abs-file: a trailing slash is dropped (the shell basename did)", ["abs-file", "real/f.txt/"],
+     out=W + "/real/f.txt", cwd=W)
+case("abs-file: a bare name", ["abs-file", "f.txt"], out=W + "/real/f.txt", cwd=W + "/real")
+case("abs-file: a directory that is not there stays as typed", ["abs-file", "nope/x"], out="nope/x", cwd=W)
+
+# ---- check-inputs: archive, melange repo, keyring dir, out, config, base lock
+cfg, base = put(T + "/i/apko.yaml", "x"), put(T + "/i/base.lock.json", "{}")
+archive, melrepo, keydir = [mkdir("i", n) for n in ("archive", "melrepo", "keydir")]
+none = T + "/i/none"
+ADDR = "the archive, the melange repository and the keyring dir must be local directories, not addresses (%s)"
+
+
+def inputs(label, msg=None, **over):
+    given = dict(archive=archive, melrepo=melrepo, keydir=keydir, out="o", config=cfg, baselock=base)
+    given.update(over)
+    args = ["check-inputs"] + [given[k] for k in ("archive", "melrepo", "keydir", "out", "config", "baselock")]
+    refuse("check-inputs: " + label, args, msg) if msg else case("check-inputs: " + label, args)
+
+
+inputs("everything there")
+inputs("a keyring dir that is not there is not judged here", keydir=none)
+inputs("an https archive", ADDR % "https://x.example/a", archive="https://x.example/a")
+inputs("a file:// melange repo", ADDR % "file:///m", melrepo="file:///m")
+inputs("an address as the keyring dir", ADDR % "http://k", keydir="http://k")
+inputs("the addresses are looked at archive first", ADDR % "ftp://a", archive="ftp://a", melrepo="ftp://m")
+inputs("the archive is not a directory", "--archive is not a directory: " + none, archive=none)
+inputs("the archive is a file", "--archive is not a directory: " + cfg, archive=cfg)
+inputs("the melange repo is not a directory", "--melange-repo is not a directory: " + none, melrepo=none)
+inputs("the addresses come before the directories", ADDR % "ftp://a", archive="ftp://a", melrepo=none)
+inputs("the archive comes before the melange repo", "--archive is not a directory: " + none, archive=none, melrepo=none)
+inputs("no config", "apko config not found: " + none + ".yaml", config=none + ".yaml")
+inputs("a config that is a directory", "apko config not found: " + archive, config=archive)
+inputs("no base lock", "base lock not found: " + none + ".json", baselock=none + ".json")
+inputs("the melange repo comes before the config", "--melange-repo is not a directory: " + none,
+       melrepo=none, config=none + ".yaml")
+inputs("the config comes before the base lock", "apko config not found: " + none + ".yaml",
+       config=none + ".yaml", baselock=none + ".json")
+
+# ---- check-keydir
+KEYS = ("wolfi-signing.rsa.pub", "assembly.rsa.pub")
+NOKEY = "the keyring dir %s has no %s: every package is checked against its key (rule 19)"
+both = mkdir("k", "both")
+for key in KEYS:
+    put(both + "/" + key, "key")
+case("check-keydir: both keys there", ["check-keydir", both])
+only_assembly, only_wolfi = mkdir("k", "only-assembly"), mkdir("k", "only-wolfi")
+put(only_assembly + "/assembly.rsa.pub")
+put(only_wolfi + "/wolfi-signing.rsa.pub")
+refuse("check-keydir: no wolfi key", ["check-keydir", only_assembly], NOKEY % (only_assembly, KEYS[0]))
+refuse("check-keydir: no assembly key", ["check-keydir", only_wolfi], NOKEY % (only_wolfi, KEYS[1]))
+empty = mkdir("k", "empty")
+refuse("check-keydir: neither: the wolfi key is named first", ["check-keydir", empty], NOKEY % (empty, KEYS[0]))
+dirs = mkdir("k", "dirs")
+mkdir("k", "dirs", KEYS[0])
+refuse("check-keydir: a directory is not a key", ["check-keydir", dirs], NOKEY % (dirs, KEYS[0]))
+refuse("check-keydir: the directory is not there", ["check-keydir", T + "/k/none"], NOKEY % (T + "/k/none", KEYS[0]))
+links = mkdir("k", "links")
+for key in KEYS:
+    os.symlink(put(T + "/k/target-" + key, "key"), links + "/" + key)
+case("check-keydir: a link to a regular file is a file here (check-keys judges links later)", ["check-keydir", links])
+
+# ---- check-melrepo
+NOAPK = "the melange repository %s has no %s/%s-%s-r0.apk (our apk)"
+NOIDX = "the melange repository %s has no %s/APKINDEX.tar.gz"
+ARCHS = ("x86_64", "aarch64")
+
+
+def repo_with(name, apks, indexes):
+    d = mkdir("m", name)
+    for a in apks:
+        put("%s/%s/fscache-0.3.0_rc1-r0.apk" % (d, a))
+    for a in indexes:
+        put("%s/%s/APKINDEX.tar.gz" % (d, a))
+    return d
+
+
+def melrepo_case(label, d, msg=None, pkg="fscache", version="0.3.0_rc1"):
+    args = ["check-melrepo", d, pkg, version]
+    refuse("check-melrepo: " + label, args, msg) if msg else case("check-melrepo: " + label, args)
+
+
+d = repo_with("full", ARCHS, ARCHS)
+melrepo_case("apk and index for both architectures", d)
+melrepo_case("another version", d, NOAPK % (d, "x86_64", "fscache", "0.3.0"), version="0.3.0")
+melrepo_case("another package (the fips apk)", d, NOAPK % (d, "x86_64", "fscache-fips", "0.3.0_rc1"),
+              pkg="fscache-fips")
+d = repo_with("no-x86-apk", ["aarch64"], ARCHS)
+melrepo_case("no x86_64 apk", d, NOAPK % (d, "x86_64", "fscache", "0.3.0_rc1"))
+d = repo_with("no-x86-index", ARCHS, ["aarch64"])
+melrepo_case("no x86_64 index", d, NOIDX % (d, "x86_64"))
+d = repo_with("no-arm-apk", ["x86_64"], ARCHS)
+melrepo_case("no aarch64 apk", d, NOAPK % (d, "aarch64", "fscache", "0.3.0_rc1"))
+d = repo_with("no-arm-index", ARCHS, ["x86_64"])
+melrepo_case("no aarch64 index", d, NOIDX % (d, "aarch64"))
+d = repo_with("nothing", [], [])
+melrepo_case("nothing there: the x86_64 apk is asked for first", d, NOAPK % (d, "x86_64", "fscache", "0.3.0_rc1"))
+d = repo_with("apks-only", ARCHS, [])
+melrepo_case("the x86_64 index is asked for before the aarch64 apk", d, NOIDX % (d, "x86_64"))
+
+# ---- check-workdir
+EXISTS = "%s/%s already exists (%s)); refusing to replace it: remove it by hand if no other assembly is running"
+CRASHED = "a symlink, left by another run or a crashed one"
+case("check-workdir: nothing there", ["check-workdir", mkdir("wd", "clean")])
+case("check-workdir: a work directory that is not there", ["check-workdir", T + "/wd/none"])
+for name in ("archive", "melange-repo", "keyring"):
+    d = mkdir("wd", "dir-" + name)
+    mkdir("wd", "dir-" + name, name)
+    refuse("check-workdir: %s is a directory" % name, ["check-workdir", d], EXISTS % (d, name, "not a symlink"))
+    d = mkdir("wd", "file-" + name)
+    put(d + "/" + name)
+    refuse("check-workdir: %s is a file" % name, ["check-workdir", d], EXISTS % (d, name, "not a symlink"))
+    d = mkdir("wd", "link-" + name)
+    os.symlink(T + "/wd/clean", d + "/" + name)
+    refuse("check-workdir: %s is a link" % name, ["check-workdir", d], EXISTS % (d, name, CRASHED))
+    d = mkdir("wd", "dangling-" + name)
+    os.symlink(T + "/wd/none", d + "/" + name)
+    refuse("check-workdir: %s is a link to nothing" % name, ["check-workdir", d], EXISTS % (d, name, CRASHED))
+d = mkdir("wd", "two")
+put(d + "/keyring")
+mkdir("wd", "two", "melange-repo")
+refuse("check-workdir: archive, melange-repo, keyring: the first one there is named", ["check-workdir", d],
+       EXISTS % (d, "melange-repo", "not a symlink"))
+
+# ---- prepare-render
+tmp = mkdir("p", "tmp")
+NOT_EMPTY = ("--render-dir %s is not empty or cannot be listed; refusing "
+             "(a planted file would be used or written through)")
+LINKED = "--render-dir %s is a symlink; refusing (render files would be written through it)"
+case("prepare-render: no render directory: a private one under TMP", ["prepare-render", "", tmp], out=tmp + "/render")
+report("prepare-render: ... and it is made", [] if os.path.isdir(tmp + "/render") else ["TMP/render is not there"])
+new = T + "/p/new/deep"
+case("prepare-render: a render directory that is not there", ["prepare-render", new, tmp], out=new)
+report("prepare-render: ... and it is made", [] if os.path.isdir(new) else [new + " is not there"])
+empty = mkdir("p", "empty")
+case("prepare-render: an empty directory is used", ["prepare-render", empty, tmp], out=empty)
+planted, hidden = mkdir("p", "full"), mkdir("p", "hidden")
+put(planted + "/planted")
+put(hidden + "/.planted")
+refuse("prepare-render: a directory with a file in it", ["prepare-render", planted, tmp], NOT_EMPTY % planted)
+refuse("prepare-render: a hidden file counts too", ["prepare-render", hidden, tmp], NOT_EMPTY % hidden)
+os.symlink(empty, T + "/p/link")
+os.symlink(T + "/p/none", T + "/p/dangling")
+refuse("prepare-render: a symlink", ["prepare-render", T + "/p/link", tmp], LINKED % (T + "/p/link"))
+refuse("prepare-render: a link to nothing", ["prepare-render", T + "/p/dangling", tmp], LINKED % (T + "/p/dangling"))
+
+# ---- check-out
+STALE = "--out %s already holds %s; refusing to mix a new result with stale files (it is not empty)"
+case("check-out: a directory that is not there", ["check-out", T + "/c/none", "fips"])
+case("check-out: an empty directory", ["check-out", mkdir("c", "empty"), "fips"])
+other = mkdir("c", "other")
+for n in ("production", "production.digest", "production.manifests", "production.full.lock.json", "production-sbom"):
+    put(other + "/" + n)
+case("check-out: the other variant's files are left alone", ["check-out", other, "fips"])
+for n in ("fips", "fips.digest", "fips.manifests", "fips.full.lock.json", "fips-sbom"):
+    d = mkdir("c", "has-" + n)
+    put(d + "/" + n)
+    refuse("check-out: %s is already there" % n, ["check-out", d, "fips"], STALE % (d, n))
+d = mkdir("c", "dir-result")
+mkdir("c", "dir-result", "fips")
+refuse("check-out: a directory of the variant's name", ["check-out", d, "fips"], STALE % (d, "fips"))
+d = mkdir("c", "link-result")
+os.symlink(T + "/c/none", d + "/fips.digest")
+refuse("check-out: a link of the variant's name", ["check-out", d, "fips"], STALE % (d, "fips.digest"))
+d = mkdir("c", "several")
+for n in ("fips-sbom", "fips.manifests", "fips"):
+    put(d + "/" + n)
+refuse("check-out: of several names the first in the old order is named", ["check-out", d, "fips"], STALE % (d, "fips"))
+d = mkdir("c", "several2")
+for n in ("fips-sbom", "fips.manifests"):
+    put(d + "/" + n)
+refuse("check-out: variant, digest, manifests, full lock, sbom", ["check-out", d, "fips"],
+       STALE % (d, "fips.manifests"))
+afile = put(T + "/c/afile")
+refuse("check-out: a file where the directory should be", ["check-out", afile, "fips"],
+       "--out %s is not a directory" % afile)
+if os.geteuid() != 0:   # root lists any directory
+    closed = mkdir("c", "closed")
+    os.chmod(closed, 0)
+    refuse("check-out: a directory that cannot be listed", ["check-out", closed, "fips"],
+           "--out %s cannot be listed; refusing" % closed)
+    os.chmod(closed, 0o700)
+
+# ---- apko-verdict
+NOAPKO = "apko is not installed (the chain installs it before this step)"
+ATTEMPT = ("a network attempt was made inside the sealed apko call (the probe confirms the namespace has no route); "
+           "the build must use only declared inputs")
+LEAKY = ("apko failed with a network error, but the probe says the namespace is not sealed (exit %s); "
+         "fix the seal first")
+for kind in ("lock", "build"):
+    case("apko-verdict %s: exit 0 is fine" % kind, ["apko-verdict", kind, "0", ""])
+    refuse("apko-verdict %s: not installed" % kind, ["apko-verdict", kind, "127", ""], NOAPKO, rc=1)
+    refuse("apko-verdict %s: not installed, whatever the probe said" % kind, ["apko-verdict", kind, "127", "101"],
+           NOAPKO, rc=1)
+    refuse("apko-verdict %s: probe 101: a network attempt" % kind, ["apko-verdict", kind, "1", "101"], ATTEMPT, rc=4)
+    for probe in ("0", "1", "111"):
+        refuse("apko-verdict %s: probe %s: the namespace is not sealed" % (kind, probe),
+               ["apko-verdict", kind, "1", probe], LEAKY % probe, rc=1)
+    for code in ("1", "2", "137"):
+        refuse("apko-verdict %s: failed %s, no probe run" % (kind, code), ["apko-verdict", kind, code, ""],
+               "apko %s failed (exit %s)" % (kind, code), rc=1)
+
+# ---- pick-sbom
+SBOMS = ("apko wrote %d SBOM files and none is the image index SBOM (sbom-index.spdx.json); "
+         "cannot choose the one image SBOM")
+
+
+def sbom_dir(name, files, dirs=()):
+    d = mkdir("s", name)
+    for f in files:
+        put(d + "/" + f)
+    for sub in dirs:
+        mkdir("s", name, sub)
+    return d
+
+
+d = sbom_dir("one", ["sbom-spdx.json"])
+case("pick-sbom: one file is the one", ["pick-sbom", d], out=d + "/sbom-spdx.json")
+d = sbom_dir("one-name", ["image sbom.json"])
+case("pick-sbom: a name with a space", ["pick-sbom", d], out=d + "/image sbom.json")
+d = sbom_dir("only-index", ["sbom-index.spdx.json"])
+case("pick-sbom: the index alone", ["pick-sbom", d], out=d + "/sbom-index.spdx.json")
+d = sbom_dir("index-and-more", ["sbom-x86_64.spdx.json", "sbom-index.spdx.json", "sbom-aarch64.spdx.json"])
+case("pick-sbom: of several, the index is the one", ["pick-sbom", d], out=d + "/sbom-index.spdx.json")
+d = sbom_dir("hidden", ["sbom-spdx.json", ".hidden"])
+case("pick-sbom: a hidden file is not counted", ["pick-sbom", d], out=d + "/sbom-spdx.json")
+refuse("pick-sbom: two files and no index", ["pick-sbom", sbom_dir("two", ["a.json", "b.json"])], SBOMS % 2, rc=1)
+refuse("pick-sbom: no file", ["pick-sbom", sbom_dir("none", [])], SBOMS % 0, rc=1)
+refuse("pick-sbom: the only entry is a directory", ["pick-sbom", sbom_dir("dir-only", [], ["sbom-spdx.json"])],
+       SBOMS % 1, rc=1)
+refuse("pick-sbom: an index that is a directory is no index",
+       ["pick-sbom", sbom_dir("dir-index", ["a.json"], ["sbom-index.spdx.json"])], SBOMS % 2, rc=1)
+PY
+python3 "$work/ocd-cases.py" "$root" "$work" >"$work/ocd-cases.out" 2>&1
+while IFS= read -r l; do case $l in "ok "*) ok;; *) bad 770 "$l";; esac; done <"$work/ocd-cases.out"
+
+long_lines() { python3 - "$1" <<'PY'
+import sys
+long_lines = [n for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1) if len(line.rstrip("\n")) > 120]
+sys.exit("lines over 120 characters: %r" % long_lines[:20] if long_lines else 0)
+PY
+}
+t "770" "no line of bin/assemble-image.sh is longer than 120 characters" long_lines "$AI_PROD"
+t "770" "no line of bin/apko-lock.sh is longer than 120 characters" long_lines "$LK"
+t "770" "bin/assemble-image.sh makes no path absolute with cd and pwd in a substitution: the helper does" \
+  bash -c "! grep -v '^ *#' '$AI_PROD' | grep -Eq '[$][(] *cd '"
+
+# apko-lock.sh run from another directory: exit 2, and the output names the helper it could not find
+mkdir -p "$work/elsewhere"
+( cd "$work/elsewhere" && bash "$air/bin/apko-lock.sh" arch-check "$BL" >"$work/lk-else.log" 2>&1
+  echo $? >"$work/lk-else.rc" )
+t "770" "apko-lock.sh run from another directory exits 2 and names bin/oci-digest.py" \
+  bash -c "[ \"\$(cat '$work/lk-else.rc')\" = 2 ] && grep -q 'bin/oci-digest.py' '$work/lk-else.log'"
+
+# oci-digest.py takes the checksum kind of a lock section by name from hashlib: sha1 and sha256 are read, others refused
+python3 - "$root" "$BL" "$fx/archive" "$work" <<'PY' >"$work/kinds.out" 2>&1
+import base64, hashlib, json, subprocess, sys
+root, base, archive, work = sys.argv[1:5]
+lock = json.load(open(base))
+entries = sorted(lock["contents"]["packages"], key=lambda e: (e["architecture"], e["name"], e["version"]))
+first = "%s-%s.apk" % (entries[0]["name"], entries[0]["version"])
+
+
+def verify():
+    json.dump(lock, open(work + "/kinds.lock.json", "w"))
+    r = subprocess.run(["python3", "-I", "-B", root + "/bin/oci-digest.py", "lock", "verify-archive",
+                        "--lock", work + "/kinds.lock.json", "--archive", archive], capture_output=True, text=True)
+    return r.returncode, r.stderr
+
+
+for e in entries:   # control sums as sha256, data sums as sha1: right sums of the other kind are read just the same
+    raw = open("%s/%s/%s-%s.apk" % (archive, e["architecture"], e["name"], e["version"]), "rb").read()
+    for part, kind in (("control", "sha256"), ("data", "sha1")):
+        lo, hi = map(int, e[part]["range"][len("bytes="):].split("-"))
+        e[part]["checksum"] = kind + "-" + base64.b64encode(hashlib.new(kind, raw[lo:hi + 1]).digest()).decode()
+got = verify()
+print("ok" if got == (0, "") else "FAIL sums under the other allowed kind are not accepted: %r" % (got,))
+want = "apko-lock.sh: %s: cannot read the control range or checksum in the lock\n" % first
+for bad in ("md5-AAAA", "sha512-AAAA", "SHA256-AAAA", "blake2b-AAAA", "-AAAA", "sha256AAAA", "__class__-AAAA", ""):
+    entries[0]["control"]["checksum"] = bad
+    got = verify()
+    print("ok" if got == (1, want) else "FAIL checksum %r is not refused as unreadable: %r" % (bad, got))
+PY
+t "770" "oci-digest.py lock verify-archive: sha1 and sha256 sums are read, any other kind is refused as unreadable" \
+  bash -c "! grep -q FAIL '$work/kinds.out' && [ \"\$(grep -c '^ok' '$work/kinds.out')\" = 9 ]"
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -218,6 +218,7 @@ CHAIN_STEPS = {
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
+    "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)": "bash bin/build-sandbox-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
     "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
@@ -243,9 +244,10 @@ GUARD_STEPS = [
         "name": "suite floors only rise (against the merge base on a pull request)",
         "if": "${{ github.base_ref != '' }}",
         "env": {
-            "BASE": "${{ github.base_ref }}"
+            "BASE": "${{ github.base_ref }}",
+            "PR_BODY": "${{ github.event.pull_request.body }}"
         },
-        "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+        "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -311,6 +313,20 @@ elif sg[0] != SCAN_STEP:
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
 # a suite cannot be deleted, edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR
 # cannot change for itself (the gate runs main's copy), being changed first. Adding a suite to a split job means adding its step here.
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by
+    check-action-pins --verify-tags, pin-age and the daily audit (a Dependabot bump moves it), not by these lists. The
+    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
+    scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str) and u.count("@") == 1:
+        name, _, ref = u.partition("@")
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
 SPLIT_STEPS = json.loads(r'''{
  "allowlist-chain": [
   {
@@ -427,11 +443,12 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref }}",
+    "PR_BODY": "${{ github.event.pull_request.body }}"
    },
    "if": "${{ github.base_ref != '' }}",
    "name": "suite floors only rise (against the merge base on a pull request)",
-   "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+   "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
   },
   {
    "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
@@ -444,6 +461,10 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
    "run": "bash bin/chain-hostile-test.sh"
+  },
+  {
+   "name": "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)",
+   "run": "bash bin/build-sandbox-hostile-test.sh"
   },
   {
    "name": "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)",
@@ -715,7 +736,7 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {k} job is not named `{k}`")
             if sj.get("runs-on") != "ubuntu-latest":
                 bad.append(f"the {k} job does not run on exactly `ubuntu-latest`")
-            if sj.get("steps") != chain_shard_steps(n_):
+            if [_by_shape(s) for s in sj.get("steps") or []] != [_by_shape(s) for s in chain_shard_steps(n_)]:
                 bad.append(f"the {k} steps are not exactly the judged list (REQ-CI-001-AC1: every step of the one job in exactly one shard, unchanged, in order)")
         # REQ-CI-001-AC1/AC4, exactly once across the WHOLE workflow: a chain suite appears once more than it does in the other judged jobs (the pins-auditor
         # job runs one of them too) and nowhere else, so a copy kept in the allowlist job or in a renamed original job is refused
@@ -741,11 +762,21 @@ for jid, want_steps in SPLIT_STEPS.items():
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
     accepted = [want_steps]
-    if got not in accepted:
+    if [_by_shape(st) for st in got] not in [[_by_shape(st) for st in a] for a in accepted]:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
-        bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why) or 'a step differs in its command, env, uses, with or order'})")
+        if not why:      # the same names: say which step differs and in which keys
+            for _i, (_g, _w) in enumerate(zip(got, want_steps)):
+                _keys = sorted(k for k in set(_g) | set(_w) if _by_shape(_g).get(k) != _by_shape(_w).get(k))
+                if _keys:
+                    _nm = _g.get("name") or _g.get("uses")
+                    bad.append(f"the {jid} step {_i + 1} ({_nm}) differs in: {', '.join(_keys)}")
+                    break
+            else:
+                bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
+        else:
+            bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
 # and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
@@ -881,6 +912,22 @@ PY
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 
+# case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
+case_msg() {
+  local f="$work/$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$f" "$2" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ] && grep -qF -- "$3" <<<"$out"; then pass=$((pass+1)); echo "PASS $1 → bad, names: $3"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want bad naming: $3 ($out)"; fi
+}
+
 steps='d["jobs"]["allowlist"]["steps"]'
 pick='[s for s in '"$steps"' if (s.get("run") or "").startswith("python3 .github/agent/bin/check-action-pins.py")][0]'
 case_ the-real-hygiene      ok  ""
@@ -1008,7 +1055,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/build-sandbox-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
@@ -1148,6 +1195,9 @@ case_ chain-split-setup-dropped   bad "${SC}${S4}['steps'].pop(0)"
 case_ chain-split-shard-missing   bad "${SC}d['jobs'].pop('allowlist-chain-3')"
 case_ chain-split-shard-extra     bad "${SC}d['jobs']['allowlist-chain-5'] = {'name': 'allowlist-chain-5', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ chain-split-guard-dropped   bad "${SC}${S4}['steps'][:] = [x for x in ${S4}['steps'] if 'floors-vs-base' not in (x.get('run') or '')]"
+case_ chain-split-floors-body-in-run bad "${SC}[x.__setitem__('run', 'bash bin/suite-guard.sh floors-vs-base --allow-lowered \"\${{ github.event.pull_request.body }}\" x y') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-env-gone bad "${SC}[x['env'].pop('PR_BODY') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-other-env bad "${SC}[x['env'].__setitem__('PR_BODY', '\${{ github.event.pull_request.title }}') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
 case_ chain-split-old-steps-left  bad "${SC}${GT}['steps'].append(dict(${S1}['steps'][-1]))"
 # AC2: the gate keeps the name, needs every shard, always runs, takes no checkout and no action, and fails on anything but success (incl. a missing or empty result)
 case_ chain-split-gate-renamed    bad "${SC}${GT}['name'] = 'allowlist-chain-gate'"
@@ -1217,7 +1267,24 @@ case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.s
 case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
 case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+case_ g6-removed                bad "${PA}del ps[ix('bash bin/audit-record-test.sh')]"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+# a bump of an action that the judged jobs use (cache#790: setup-python 7.0.0 to 7.1.0) moves the digest in every judged
+# step; the digest value is judged by check-action-pins --verify-tags, pin-age and the daily audit, not by this list.
+# The action name and the full 40-hex shape of the ref stay exact.
+BUMP="for j in ('allowlist', 'allowlist-chain-1', 'allowlist-chain-2', 'allowlist-chain-3', 'allowlist-chain-4', "
+BUMP+="'allowlist-persona', 'allowlist-pins-auditor'): "
+BUMP+="[s.__setitem__('uses', '%s') for s in d['jobs'][j]['steps'] "
+BUMP+="if s.get('uses', '').startswith('actions/setup-python@')]"
+case_ uses-digest-bumped       ok  "${BUMP//%s/actions/setup-python@abababababababababababababababababababab}"
+case_ uses-tag-ref             bad "${BUMP//%s/actions/setup-python@v7}"
+case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababababababababababababababababa}"
+case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
+case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
+case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
+RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
+case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
+case_msg run-changed-names-key  "$RUNX" "differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"

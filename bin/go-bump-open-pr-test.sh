@@ -184,6 +184,12 @@ GIT
     for need in build/melange.yaml.tmpl TEMPLATE_SHA256 bin/gen-recipes.py build/melange.yaml build/melange-fips.yaml build/archive.json "go/go1.27.0.linux-amd64.tar.gz" "go/go1.27.0.linux-arm64.tar.gz" "not part of this pull request"; do
       grep -qF -- "$need" "$log.body" || why+=" the PR body does not name '$need';"
     done
+    # bot public text round 2: the body is plain public text, at most 10 non-blank lines, no requirement id and no release history,
+    # and clean under the repository's own customer-words check (the body as PR_BODY, an empty diff on stdin)
+    [ "$(grep -c . "$log.body")" -le 10 ] || why+=" the PR body has $(grep -c . "$log.body") non-blank lines (10 at most);"
+    ! grep -qE 'REQ-|CVE-|release scan|1\.25\.x' "$log.body" || why+=" the PR body names a requirement id, a CVE or release history;"
+    PR_TITLE=x PR_BODY="$(cat "$log.body")" CUSTOMER_WORDS_ALLOW="$(dirname "$SUT")/../.github/policy/customer-words-allow.txt" \
+      python3 -I "$(dirname "$SUT")/check-customer-words.py" </dev/null >/dev/null 2>&1 || why+=" the PR body fails bin/check-customer-words.py;"
   fi
   if [ "$chk" = 1 ]; then
     # the request the API receives: this branch, this base, no deletions, exactly the eight bumped files' bytes (the two go.mod files, the installer and its policy row), a headline, no author override

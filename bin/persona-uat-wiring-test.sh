@@ -34,6 +34,11 @@ SRC = [os.path.join(root, "bin", f) for f in ("persona-uat.py", "persona-uat-age
 
 def load(path): return yaml.load(open(path), Loader=yaml.BaseLoader)
 
+# The C loader and dumper when libyaml is there, else the Python ones: the round trip below only checks that the
+# mutated document is valid YAML.
+L = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+D = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+
 CLOUD = re.compile(r"\b(terraform|tofu|pulumi|eksctl|doctl|az|gcloud|aws|ibmcloud|oci|linode-cli|vultr-cli)\b")
 MODEL = re.compile(r"[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-")
 PIN_USES = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
@@ -1198,7 +1203,7 @@ def _mutate(name, expect, fn, which, BR, BF):
         result(False, f"mutation could not be applied ({name}): {type(e).__name__}: {e}"); return
     # round-trip through YAML text so the mutated document is valid YAML, not just a dict
     for doc in (r, f):
-        yaml.safe_load(yaml.safe_dump(doc))
+        yaml.load(yaml.dump(doc, Dumper=D), Loader=L)
     if (r, f, srcs) == (BR, BF, CLEAN_SRC) and (which != "tools" or t == TGOOD):
         result(False, f"mutation changed nothing ({name})"); return
     SRC_OVER.clear()
