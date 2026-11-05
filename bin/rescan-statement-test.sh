@@ -492,7 +492,7 @@ fi_issues "$D/fi-none.json" "10=$PLAIN (old)"
 fi_run "$D/fi-none.json" "$PLAIN";  fi_expect "no issue under either form prints nothing" ""
 # every way the list cannot be read is still an error, never "no issue"
 GH_FAIL=1 fi_run "$D/fi-pref.json" "$PLAIN"; fi_err "a gh failure must be an error for the prefixed form too"
-fi_run "$D/garbage-issues.json" "$PLAIN";    fi_err "an unreadable reply must be an error for the prefixed form too"
+fi_run "$D/garbage-issues.json" "$PLAIN";    fi_err "an unreadable reply must be an error, never no issue"
 mkdir -p "$D/bin-empty"; printf '#!/bin/bash\nexit 0\n' >"$D/bin-empty/gh"; chmod +x "$D/bin-empty/gh"
 GH_ISSUES=$D/fi-pref.json PATH="$D/bin-empty:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$PLAIN" >"$D/found.out" 2>/dev/null && rc=0 || rc=$?
 fi_err "an empty reply must be an error"
@@ -596,6 +596,15 @@ ok_msg = "steps.issue.outputs.issue" in t[v:t.index("exit 1", v)]
 sys.exit(0 if ok_id and ok_msg else 1)
 P
 then ok; else bad "the issue step needs 'id: issue' and the findings verdict line must name steps.issue.outputs.issue"; fi
+if python3 - "$WF" <<'P'
+import sys
+t = open(sys.argv[1]).read()
+v = t.index("name: a findings verdict fails the run")
+line = t[v:t.index("exit 1", v)]
+expr = "${{ steps.issue.outputs.issue || '(none: the issue step failed or was skipped)' }}"
+sys.exit(0 if "see tracking issue #" + expr in line else 1)
+P
+then ok; else bad "the findings verdict line must end 'see tracking issue #' plus steps.issue.outputs.issue with the fallback '(none: the issue step failed or was skipped)'"; fi
 if python3 - "$WF" <<'P'
 import sys
 t = open(sys.argv[1]).read()
