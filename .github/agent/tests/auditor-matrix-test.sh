@@ -2951,10 +2951,10 @@ promptsame="$(cmp -s .github/agent/prompts/adjudicator.md "$d4/prompt.before" &&
 { eq "$prop" "yes" && eq "$ev" "yes" && eq "$logsame" "yes" && eq "$promptsame" "yes"; } \
   && ok || no "proposal delivered w/ evidence; live log + prompt file unchanged" "prop=$prop ev=$ev log=$logsame prompt=$promptsame"
 
-begin "bot-text-2-proposals-note-plain" "the note in adjudicator-proposals.json says a reviewer promotes a proposal: no audit-lane, no owner word, and it passes the repository's customer-words check"
+begin "bot-text-2-proposals-note-plain" "the note in adjudicator-proposals.json says a reviewer promotes a proposal: no audit-lane, no requirement id, no owner word, and it passes the repository's customer-words check"
 note="$("$PY" -c 'import json,sys
 print(json.load(open(sys.argv[1])).get("note",""))' "$WORK/req16-ac4/.auditor/proposals/adjudicator-proposals.json" 2>/dev/null)"
-nok="no"; printf '%s' "$note" | grep -q 'and a reviewer promotes it to a trusted row' && ! printf '%s' "$note" | grep -qi 'audit-lane' && nok="yes"
+nok="no"; printf '%s' "$note" | grep -q 'and a reviewer promotes it to a trusted row' && ! printf '%s' "$note" | grep -qi 'audit-lane' && ! printf '%s' "$note" | grep -q 'REQ-' && nok="yes"
 wok="$(PR_TITLE=x PR_BODY="$note" "$PY" -I bin/check-customer-words.py </dev/null >/dev/null 2>&1 && echo yes || echo no)"
 { eq "$nok" "yes" && eq "$wok" "yes"; } && ok || no "the proposals note is plain (a reviewer promotes it; customer-words rc 0)" "words=$nok customer_words=$wok note=$note"
 

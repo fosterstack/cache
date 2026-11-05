@@ -58,6 +58,19 @@ class FakeRun:
         return [a for a, _ in self.calls]
 
 
+class FakeGhTitles(FakeRun):
+    """FakeRun that answers `gh issue list` by the --search title, wherever the flag stands in the argv (a rule key of the
+    form ("gh", "issue", "list", "--search", <title>)); every other command goes through FakeRun's prefix rules."""
+    def __call__(self, argv, **kw):
+        argv = list(argv)
+        if argv[:3] == ["gh", "issue", "list"] and "--search" in argv:
+            key = ("gh", "issue", "list", "--search", argv[argv.index("--search") + 1])
+            if key in self.rules:
+                self.calls.append((argv, kw)); rc, out, err = self.rules[key]
+                return subprocess.CompletedProcess(argv, rc, out, err)
+        return super().__call__(argv, **kw)
+
+
 SHA = "a" * 40
 OID = "b" * 40
 OLDHEAD = "c" * 40
@@ -1670,7 +1683,7 @@ class FixPR(Base):
         """_deliver_bumps over one major row with the real-gh path and a fake gh; returns (row, errs, fake)."""
         os.environ.pop("AUDITOR_GIT_SHIM_LOG", None); os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
         os.environ.update(env or {})
-        row = self.held_row(); fr = FakeRun(rules)
+        row = self.held_row(); fr = FakeGhTitles(rules)
         with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
                 mock.patch.object(R.subprocess, "run", fr):
             errs = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])[0]
@@ -1738,6 +1751,58 @@ class FixPR(Base):
         self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "comment"]])            # a near title is not the issue
         create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]
         self.assertEqual([c[c.index("--title") + 1] for c in create], [self.HELD_NEW_TITLE])        # created with the NEW title only
+
+    def raw_list_rule(self, title, stdout, rc=0):
+        return {("gh", "issue", "list", "--search", title): (rc, stdout, "")}
+
+    def assert_held_stops(self, rules, why):
+        row, errs, fr = self.held_run({**rules, ("gh", "issue", "create"): (0, "https://x/issues/15\n", ""),
+                                       ("gh", "issue", "comment"): (0, "", "")})
+        self.assertIn("held-major issue", errs, why)
+        self.assertTrue(row.get("pending_delivery"), why)
+        self.assertFalse([a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], why)
+
+    def test_an_unreadable_issue_list_reply_for_either_held_title_stops_delivery_before_any_create(self):
+        # F1: empty stdout, {} and "" (exit 0) for one title and [] for the other used to create an issue and report success (12 combinations with the panel's)
+        for reply in ("", "{}", '""'):
+            for bad, good in ((self.HELD_NEW_TITLE, self.HELD_OLD_TITLE), (self.HELD_OLD_TITLE, self.HELD_NEW_TITLE)):
+                self.assert_held_stops({**self.raw_list_rule(bad, reply), **self.raw_list_rule(good, "[]")}, (reply, bad))
+
+    def test_a_held_issue_list_reply_that_is_not_an_array_of_number_and_title_objects_fails_closed(self):
+        for reply in ("null", "5", "true", '"x"', '{"number": 3, "title": "t"}', "[1]", '["a"]', "[null]", "[[]]",
+                      '[{"title": "%s"}]' % self.HELD_NEW_TITLE, '[{"number": 3}]', '[{"number": 3, "title": "ok"}, 7]'):
+            for bad, good in ((self.HELD_NEW_TITLE, self.HELD_OLD_TITLE), (self.HELD_OLD_TITLE, self.HELD_NEW_TITLE)):
+                self.assert_held_stops({**self.raw_list_rule(bad, reply), **self.raw_list_rule(good, "[]")}, (reply, bad))
+
+    def test_with_real_delivery_off_an_empty_answer_makes_no_create_and_does_not_fail(self):
+        # plan mode: nothing is asked of gh at all; the empty answer of the plan is not a failure
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"; os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        row = self.held_row(); fr = FakeGhTitles({})
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
+                mock.patch.object(R.subprocess, "run", fr):
+            errs = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])[0]
+        self.assertEqual(errs, [])
+        self.assertFalse([a for a in fr.argvs() if a[:2] == ["gh", "issue"]])
+        self.assertIn("needs a manual change, issue NOT opened (delivery disabled)", row["action"])
+
+    def test_every_held_issue_search_asks_for_at_least_100_issues(self):
+        row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE), **self.list_rule(self.HELD_OLD_TITLE),
+                                       ("gh", "issue", "create"): (0, "https://x/issues/16\n", "")})
+        lists = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "list"]]
+        self.assertEqual([a[a.index("--search") + 1] for a in lists], [self.HELD_NEW_TITLE, self.HELD_OLD_TITLE])
+        for a in lists:
+            self.assertIn("--limit", a, a)
+            self.assertGreaterEqual(int(a[a.index("--limit") + 1]), 100, a)        # bin/rescan-statement.py:89-92: read every page, never the default 30
+
+    def test_the_proposals_note_carries_no_requirement_id_and_no_internal_word(self):
+        import ast
+        src = open(os.path.join(BIN, "auditor-run.py")).read()
+        notes = [n.value for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                 and n.value.startswith("MODEL PROPOSALS")]
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn("REQ-", notes[0]); self.assertNotIn("audit-lane", notes[0])
+        self.assertIn("a reviewer promotes it", notes[0])
+        self.words_ok(notes[0])
 
     def test_a_failed_issue_list_for_either_held_title_holds_and_creates_nothing(self):
         for failing in (self.HELD_NEW_TITLE, self.HELD_OLD_TITLE):

@@ -657,7 +657,10 @@ class PanelOwnerIssue(Tmp):
         def run(cmd, **kw):
             calls.append(list(cmd))
             if cmd[:3] == ["gh", "issue", "list"] and "--search" in cmd:
-                rc, rows = lists.get(cmd[cmd.index("--search") + 1], (0, []))
+                item = lists.get(cmd[cmd.index("--search") + 1], (0, []))
+                if isinstance(item, str):                              # a raw stdout, exit 0
+                    return types.SimpleNamespace(returncode=0, stdout=item, stderr="")
+                rc, rows = item
                 return types.SimpleNamespace(returncode=rc, stdout=json.dumps(rows) if rc == 0 else "", stderr="boom" if rc else "")
             out = ""
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
@@ -673,9 +676,10 @@ class PanelOwnerIssue(Tmp):
                 out = "{}"
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         err = None
+        self.rc = None
         with mock.patch("sys.stdout", new=io.StringIO()):
             try:
-                self.P.cmd_deliver(self.args, run=run)
+                self.rc = self.P.cmd_deliver(self.args, run=run)
             except RuntimeError as e:
                 err = e
         return calls, err
@@ -731,7 +735,53 @@ class PanelOwnerIssue(Tmp):
         for failing in (self.NEW, self.OLD):
             calls, err = self.deliver({failing: (1, [])})
             self.assertIsInstance(err, RuntimeError, failing)           # a failing gh stops the delivery, as _sh does for every call
+            self.assertRegex(str(err), r"issue.{0,6}list", failing)      # ... and the error names the failed command, not just any RuntimeError
+            self.assertIn("boom", str(err), failing)
+            last = [c for c in calls if c[:2] == ["gh", "issue"]][-1]    # the failing list is the last issue call made: nothing followed it
+            self.assertEqual((last[:3], last[last.index("--search") + 1]), (["gh", "issue", "list"], failing))
+            self.assertEqual(calls[-1], last, failing)
             self.assertFalse([c for c in calls if c[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], failing)
+
+
+    def assert_stops(self, lists, why):
+        calls, err = self.deliver(lists)
+        self.assertIsInstance(err, RuntimeError, why)                    # the same path as a failed list: _sh's RuntimeError stops the delivery
+        self.assertRegex(str(err), r"issue.{0,6}list", why)              # ... and names the issue list
+        self.assertFalse([c for c in calls if c[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], why)
+        last = [c for c in calls if c[:2] == ["gh", "issue"]][-1]        # nothing was asked of gh after the unreadable list
+        self.assertEqual(calls[-1], last, why)
+
+    def test_an_unreadable_issue_list_reply_for_either_title_stops_delivery_before_any_create(self):
+        # F1: empty stdout, {} and "" (exit 0) for one title and [] for the other used to create an issue and report success
+        for reply in ("", "{}", '""'):
+            for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
+                self.assert_stops({bad: reply, good: (0, [])}, (reply, bad))
+
+    def test_a_list_reply_that_is_not_an_array_of_number_and_title_objects_fails_closed(self):
+        for reply in ("null", "5", "true", '"x"', '{"number": 3, "title": "t"}', "[1]", '["a"]', "[null]", "[[]]",
+                      '[{"title": "%s"}]' % self.NEW, '[{"number": 3}]', '[{"number": 3, "title": "ok"}, 7]'):
+            for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
+                self.assert_stops({bad: reply, good: (0, [])}, (reply, bad))
+
+    def test_plan_mode_with_no_answer_makes_no_create_and_does_not_fail(self):
+        self.args.dry_run = True                                          # real delivery off: _sh returns "" and runs nothing
+        calls, err = self.deliver({})
+        self.assertIsNone(err); self.assertEqual(self.rc, 0)
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "issue"]])
+        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "0"}):
+            self.args.dry_run = False
+            calls, err = self.deliver({})
+        self.assertIsNone(err); self.assertEqual(self.rc, 0)
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "issue"]])
+
+    def test_every_owner_issue_search_asks_for_at_least_100_issues(self):
+        calls, err = self.deliver({})
+        self.assertIsNone(err)
+        lists = self.owner_lists(calls)
+        self.assertEqual([c[c.index("--search") + 1] for c in lists], [self.NEW, self.OLD])
+        for c in lists:
+            self.assertIn("--limit", c, c)
+            self.assertGreaterEqual(int(c[c.index("--limit") + 1]), 100, c)      # bin/rescan-statement.py:89-92: read every page, never the default 30
 
 
 class OldBotWordsAreGone(unittest.TestCase):
