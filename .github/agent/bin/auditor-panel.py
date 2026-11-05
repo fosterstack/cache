@@ -1382,6 +1382,21 @@ def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
     return ""
 
 
+def _issue_rows(out, real):
+    """The rows of a `gh issue list --json number,title` answer. With real delivery the answer must be a JSON array of
+    objects that each carry a number and a title: an empty or unreadable answer stops the delivery here, so it can never read
+    as "no issue found" and lead to a create. Plan mode runs nothing, so its empty answer is no rows."""
+    if not real:
+        return []
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list) or not all(isinstance(r, dict) and "number" in r and isinstance(r.get("title"), str) for r in rows):
+        raise RuntimeError("gh issue list answered something that is not a list of number and title objects: %r" % public(str(out))[:200])
+    return rows
+
+
 GUARD_CHECK = "only-the-app-pushes-auditor-lane"
 
 
@@ -1743,8 +1758,8 @@ def cmd_deliver(a, run=subprocess.run):
         body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
         n = ""
         for t in (OWNER_TITLE, OLD_OWNER_TITLE):    # one search per title, new then old; the label is also on the per-finding issues, so the title must match exactly
-            rows = json.loads(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", t,
-                                   "--json", "number,title"], plan, real, run, env=ienv) or "[]")
+            rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", t,
+                                    "--limit", "100", "--json", "number,title"], plan, real, run, env=ienv), real)
             hit = [r["number"] for r in rows if r.get("title") == t]
             if hit:
                 n = str(hit[0]); break

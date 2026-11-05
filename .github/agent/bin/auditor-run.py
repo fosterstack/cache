@@ -766,11 +766,19 @@ def _emit_held_issue(title, body, dry, would, cves=(), target=None):
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
         for t in _held_titles(title):          # one search per title: a search for the new words does not return an old-titled issue
-            r = subprocess.run(["gh", "issue", "list", "--search", t, "--state", "open", "--json", "number,title"],
-                capture_output=True, text=True, env=ienv)
+            r = subprocess.run(["gh", "issue", "list", "--search", t, "--state", "open", "--limit", "100", "--json",
+                "number,title"], capture_output=True, text=True, env=ienv)
             if r.returncode != 0:
                 print("held-major issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
-            found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == t]
+            try:
+                rows = json.loads(r.stdout)
+            except ValueError:
+                rows = None
+            # an empty or unreadable answer is a failed discovery, never "no issue found": a create after it could duplicate one
+            if not isinstance(rows, list) or not all(isinstance(i, dict) and "number" in i and isinstance(i.get("title"), str)
+                                                     for i in rows):
+                print("held-major issue discovery FAILED: the issue list answer is not a list of number and title objects"); return False, None
+            found = [i for i in rows if i["title"] == t]
             if found:
                 c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body],
                     capture_output=True, text=True, env=ienv)
@@ -2377,7 +2385,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     "note": ("MODEL PROPOSALS — not applied. Each entry is a model suggestion for a "
                              "new known-defect-log entry or knowledge note; it takes effect only "
                              "after this PR is merged and a reviewer promotes it to a "
-                             "trusted row. The auditor never applies these itself (REQ-AUD-16 AC4).")})
+                             "trusted row. The auditor never applies these itself.")})
     # Scopes whose carried acceptance expired and were reopened this run — delivery drops those
     # exact statements/ignores by canonical SCOPE (never CVE-wide), never renewing them
     # (REQ-AUD-13 AC6). Serialized as [[products], [purls]] pairs.
