@@ -892,7 +892,7 @@ mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/r
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
 t "rule 32" "every live fetch is a shell line in the ruled grammar (fixed flags, literal operand forms)" \
   python3 -I - "$RF_PROD" <<'PYT'
-import re, sys
+import os, re, sys
 s = open(sys.argv[1]).read()
 lines = [l for l in s.split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]   # the fetch lines are the ones carrying the fixed flag cluster
 shell = [l for l in lines if l.lstrip().startswith("/usr/bin/")]
@@ -907,7 +907,7 @@ bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
 # the Alpine operand is exactly one form: another host, branch, architecture or a bare URL stays refused
 tail = '--proto =https --tlsv1.2 -o "$tmp/x" '
-head = "  /usr/bin/curl -q -fsSL -g --max-filesize 9 --max-time 9 "
+head = "  /usr/bin/%s -q -fsSL -g --max-filesize 9 --max-time 9 " % os.environ["FETCH"]   # the suite names the download tool in one place only
 for u in ('"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f"',):
     assert g.match(head + tail + u), "the one Alpine form is admitted"
 ALP = "https://dl-cdn.alpinelinux.org/alpine/"
@@ -1916,8 +1916,7 @@ while IFS='|' read -r lab txt; do
   t "AC40" "refresh: vm-kernel.lock $lab is refused (exit 2, names it) before any apko call" \
     bash -c "$(declare -f rc vm_refused); CALLS='$CALLS'; work='$work'; vm_refused vm-kernel.lock"
   t "AC40" "refresh: ...vm-kernel.lock $lab: the archive is unchanged" test "$(treehash "$work/ar")" = "$before"
-  t "AC40" "refresh: ...vm-kernel.lock $lab: no network call at all (no download, no apko)" \
-    bash -c "! grep -Eq '^(curl|apko) ' '$CALLS'"
+  t "AC40" "refresh: ...vm-kernel.lock $lab: no network call at all (no download, no apko)" bash -c "! grep -Eq '^($FETCH|apko) ' '$CALLS'"
 done <<'DATA'
 with a row that has no hash|linux-virt=6.18.60-r0\n
 with a short hash|linux-virt=6.18.60-r0 sha256:abc123\n
