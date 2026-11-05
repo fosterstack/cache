@@ -5612,6 +5612,7 @@ fi
 #   HL:gate      the _run line that blanks a row of this kind whose line fails _hash_locked_line_ok(...)
 #   HL:file      the file is not bin/refresh-inputs.sh            HL:host      the operand host is not dl-cdn.alpinelinux.org
 #   HL:path      the operand path is not /alpine/v3.24/main/x86_64/$f   HL:operands  there is not exactly one operand
+#   HL:raw       the file does not hold the canonical raw line (eight spaces of indent plus the flat line) as one whole line    HL:die  the text after || is not the fixed die message
 #   HL:flags     the flags are not the fixed list in the fixed order, or -g/-q/--proto =https/--tlsv1.2 is missing
 #   HL:lock      the lock file read from the head tree is missing or not a regular file (a malformed lock is refused by the inventory parser before the gate runs)
 #   HL:verifier  the row's verifier (the physical line of the fetch script that checks a download's sha256 against the lock) is not in the verifier's file exactly once, as a whole line with no whitespace twin, or that file is not the fetch file, or the row's line is not the file's line
@@ -5687,8 +5688,11 @@ hl_exec() { # CHECKER [stop]: HLBAD = the names of the cases that do not give th
   done
 }
 F=bin/refresh-inputs.sh; V=$HLROW
-# the positive: the exact line of cache#840 (refresh-inputs.sh:1351 at 6f96e1bf), a valid lock at the head that is the same as at the base (no package moves)
+# the positive: the exact line of cache#840 (refresh-inputs.sh:1379 at 2120c271), a valid lock at the head that is the same as at the base (no package moves)
 hl_case ruled-ok 0 $F "$HLK" "$V" = "$HLK"
+# round 2 seat B, P4: the physical line 1379 of cache#840 (2120c271) bin/refresh-inputs.sh, typed out in full (cache1: exactly 8 leading spaces, no tab, no trailing space), not built from HLKA/HLKB
+HLREAL=$'        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f" || die "could not download the kernel package from the Alpine mirror" 1'
+hl_case real-840-line 0 $F "$HLREAL" "$V" = "$HLREAL"
 # the line: host, scheme, path, operands
 ln="$HLKA \"https://example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-other 1 $F "$ln" "$V" = "$ln"
 ln="$HLKA \"https://dl-cdn.alpinelinux.org.example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-suffix 1 $F "$ln" "$V" = "$ln"
@@ -5740,8 +5744,12 @@ hl_case raw-extra-space-in-flags 1 $F "${HLK/ -q -fsSL/ -q  -fsSL}" "$V" = "$HLK
 hl_case raw-extra-space-before-tail 1 $F "${HLK/ || die/  || die}" "$V" = "$HLK"
 hl_case raw-tab-between-flags 1 $F "${HLK/ -q -fsSL/ -q	-fsSL}" "$V" = "$HLK"
 hl_case raw-indent-changed 1 $F "${HLK#    }" "$V" = "$HLK"
-hl_case raw-no-space-before-tail 1 $F "$HLKA \"$HLUR\"$HLKB" "$V" = "$HLK"
+ln="$HLKA \"$HLUR\"$HLKB"; hl_case raw-no-space-before-tail 1 $F "$ln" "$V" = "$ln"   # the row is bound to this very line, so only the gate refuses it
 ln="$HLKA\"$HLUR\" $HLKB"; hl_case operand-glued-to-output-operand 1 $F "$ln" "$V" = "$ln"
+# round 2 seat B, P1: a URL operand without its closing quote is not an operand (the tokenizer falls through to \S+ and the last character was cut as if it were the quote)
+ln="$HLKA \"${HLUR}Z $HLKB"; hl_case operand-quote-unclosed-trailing-char 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"${HLUR}/ $HLKB"; hl_case operand-quote-unclosed-trailing-slash 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\"\" $HLKB"; hl_case operand-extra-closing-quote 1 $F "$ln" "$V" = "$ln"
 ln="${HLKA%\"} \"$HLUR\" $HLKB"; hl_case output-operand-quote-unbalanced 1 $F "$ln" "$V" = "$ln"
 ln="$HLKA \" $HLUR\" $HLKB"; hl_case url-leading-space 1 $F "$ln" "$V" = "$ln"
 ln="$HLKA \"$HLUR \" $HLKB"; hl_case url-trailing-space 1 $F "$ln" "$V" = "$ln"
@@ -5803,6 +5811,9 @@ hl_case lock-sha-upper-case 2 $F "$HLK" "$V" "${V/3ff658cf/3FF658CF}" "$HLK"
 hl_case lock-row-without-sha 2 $F "$HLK" "$V" "linux-virt=6.18.60-r0" "$HLK"
 hl_case lock-row-version-not-a-pin 2 $F "$HLK" "$V" "${V/6.18.60-r0/latest}" "$HLK"
 hl_case lock-row-repeated 2 $F "$HLK" "$V" "$V"$'\n'"$V" "$HLK"
+# round 2 seat B, P5: a lock with carriage returns is refused again (as at 9ec03778)
+hl_case lock-crlf-head 1 $F "$HLK" "$V" "$V"$'\r' "$HLK"
+hl_case lock-crlf-base-and-head 1 $F "$HLK" "$V"$'\r' = "$HLK"
 hl_case lock-comment-invalid-byte-base 2 $F "$HLK" "# "$'\xff'$'\n'"$V" = "$HLK"
 hl_case lock-comment-invalid-byte-head 2 $F "$HLK" "$V" "# "$'\xff'$'\n'"$V" "$HLK"
 hl_exec "$chk"
@@ -5839,6 +5850,8 @@ else
   hl_mutant path-check-dropped tag path
   hl_mutant second-operand-accepted tag operands
   hl_mutant flags-check-dropped tag flags
+  hl_mutant raw-line-check-dropped tag raw
+  hl_mutant die-text-check-dropped tag die
   hl_mutant lock-check-dropped tag lock
   hl_mutant verifier-check-dropped tag verifier
   hl_mutant verifier-sha-check-dropped tag verifier-sha
