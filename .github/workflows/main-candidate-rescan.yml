@@ -1046,7 +1046,7 @@ jobs:
             core.setOutput('issue', String(number));
 
       - name: a findings verdict fails the run (visible red, same bar as the gate)
-        if: steps.statement.outputs.outcome == 'findings'
+        if: always() && steps.statement.outputs.outcome == 'findings'
         run: |
           echo "::error::rescan found findings for ${TARGET_RELEASE} ${TARGET_VARIANT} (${TARGET_SCANNER}) — see tracking issue #${{ steps.issue.outputs.issue }}" >&2
           exit 1
