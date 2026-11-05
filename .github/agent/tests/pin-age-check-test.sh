@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34, REQ-SUP-001-AC35
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -11,7 +11,7 @@
 #   registry-push. A source of commit-date, tag-date or image-config is NEVER a proof (the publisher or the builder controls it).
 set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
-here=$(cd "$(dirname "$0")" && pwd)
+here=$(cd "${PIN_AGE_TEST_HERE:-$(dirname "$0")}" && pwd)
 root=$(cd "$here/../../.." && pwd)
 chk="$here/../supply-chain/pin-age-check.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -5602,6 +5602,178 @@ else
   # mutant row-version-passthrough: the version check of the row parser (the call of the predicate shared with is_pin) replaced by pass-through; the row cases must see it.
   mutant row-version-passthrough pin-inventory.py '        if not is_pin(m.group(2)):' '        if False:' "rv$RPIDS"
 fi
+
+# --- HLF-BEGIN: REQ-SUP-001-AC35, the hash-locked fetch ruling kind (orchestrator ruling Nov 5, cache#840 F3 option c) -----------------------------------
+# The one kernel fetch line of bin/refresh-inputs.sh is ruled by a row that starts with HASH_LOCKED_RULING, and only when the line is the fixed shape, the file holds it
+# once, and the lock file build/locks/vm-kernel.lock at the HEAD tree is a regular file of 1 to 500 pinned rows. The host, the path prefix, the file and the lock file are
+# constants of the checker; a row carries only its five usual fields. Everything here is self-contained: it needs only the base repository built above.
+# THE CODE CONTRACT the mutants below anchor on (pin-age-check.py): a constant HASH_LOCKED_RULING (the prefix, added to the accepted tuple of _run as `, HASH_LOCKED_RULING)) for r in rs):`),
+# and these tagged lines, each `<indent>if <condition>:  # HL:<tag>` with the refusal on the next line, exactly one line per tag:
+#   HL:gate      the _run line that blanks a row of this kind whose line fails _hash_locked_line_ok(...)
+#   HL:file      the file is not bin/refresh-inputs.sh            HL:host      the operand host is not dl-cdn.alpinelinux.org
+#   HL:path      the operand path is not /alpine/v3.24/main/x86_64/$f   HL:operands  there is not exactly one operand
+#   HL:flags     the flags are not the fixed list in the fixed order, or -g/-q/--proto =https/--tlsv1.2 is missing
+#   HL:lock      the lock file read from the head tree is missing, a link, empty, over 500 rows, or has a row that is not name=version sha256:<64 lowercase hex>
+# and ONE line `<indent>rev = head  # HL:head` (the revision the lock file is read from).
+HLP='hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): '
+HLUR='https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f'
+HLKA='        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f"'
+HLKB='|| die "could not download the kernel package from the Alpine mirror" 1'
+HLK="$HLKA \"$HLUR\" $HLKB"
+HLOTHER='curl -fsSL https://example.com/x -o /tmp/x'
+HLROW='linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e'
+echo '{"times": {}}' >"$work/hl-none.fx.json"
+hl_row() { # OUT FILE LINE PREFIX: the row for the download segment of LINE, bound to LINE, as the scan flattens it (the same as mkrowpf)
+  python3 - "$@" <<'PY'
+import hashlib, json, re, sys
+out, f, line, pref = sys.argv[1:5]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+flat = " ".join(line.split()); segs = [s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s)]
+rows = [{"file": f, "form": "a download", "key": H(sg), "line": H(flat), "ruling": pref + "pinned by file and whole line"} for sg in dict.fromkeys(segs)]
+json.dump({"exceptions": [], "unmeasured_text": rows}, open(out, "w"))
+PY
+}
+hl_repo() { # NAME FILE BODY LOCKBASE LOCKHEAD [link]: LOCK specs: text | - (absent) | = (unchanged, head only) | @link | @empty | @many (501 rows); link: FILE is a symlink at the head
+  rm -rf "${work:?}/$1"; cp -R "$base" "$work/$1"
+  python3 - "$work/$1" "$2" "$3" "$4" "$5" "${6:-}" <<'PY'
+import os, pathlib, subprocess, sys
+root, f, body, lb, lh, fmode = sys.argv[1:7]; R = pathlib.Path(root)
+g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+GOOD = "linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e\n"
+lock = R / "build/locks/vm-kernel.lock"
+def put(spec):
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if lock.is_symlink() or lock.exists(): lock.unlink()
+    if spec == "-": return
+    if spec == "@link":
+        (lock.parent / "real.lock").write_text(GOOD); os.symlink("real.lock", lock)
+    elif spec == "@empty": lock.write_text("")
+    elif spec == "@many": lock.write_text("".join("pkg%d=1.0.%d-r0 sha256:%064x\n" % (i, i, i) for i in range(501)))
+    else: lock.write_text(spec if spec.endswith("\n") else spec + "\n")
+p = R / f; p.parent.mkdir(parents=True, exist_ok=True)
+put(lb); p.write_text("#!/bin/sh\n"); g("add", "-A"); g("commit", "-q", "-m", "base2")
+if lh != "=": put(lh)
+if fmode == "link":
+    (p.parent / "hl-target.sh").write_text("#!/bin/sh\n" + body + "\n"); p.unlink(); os.symlink("hl-target.sh", p)
+else:
+    p.write_text("#!/bin/sh\n" + body + "\n")
+g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", "head")
+PY
+}
+HLN=(); declare -A HLW
+hl_case() { # NAME WANT FILE BODY LOCKBASE LOCKHEAD ROWLINE [PREFIX] [ROWFILE] [link]: WANT is the exit code (0 = ruled by the new kind)
+  HLN+=("$1"); HLW[$1]=$2
+  hl_repo "hl-$1" "$3" "$4" "$5" "$6" "${10:-}"
+  hl_row "$work/hl-$1.json" "${9:-$3}" "$7" "${8:-$HLP}"
+}
+hl_exec() { # CHECKER [stop]: HLBAD = the names of the cases that do not give the wanted exit code
+  HLBAD=""; local n w rc
+  for n in "${HLN[@]}"; do
+    w=${HLW[$n]}; rc=0
+    python3 "$1" --root "$work/hl-$n" --base HEAD~1 --head HEAD --fixtures "$work/hl-none.fx.json" --now "$NOW" --exceptions "$work/hl-$n.json" >"$work/hl-$n.out" 2>&1 || rc=$?
+    if [ "$rc" -ne "$w" ] || { [ "$w" -eq 0 ] && ! grep -q 'ruled text.*hash-locked fetch' "$work/hl-$n.out"; }; then
+      HLBAD="$HLBAD $n"; if [ "${2:-}" = stop ]; then return 0; fi
+    fi
+  done
+}
+F=bin/refresh-inputs.sh; V=$HLROW
+# the positive: the exact line of cache#840 (refresh-inputs.sh:1351 at 6f96e1bf), a valid lock at the head that is the same as at the base (no package moves)
+hl_case ruled-ok 0 $F "$HLK" "$V" = "$HLK"
+# the line: host, scheme, path, operands
+ln="$HLKA \"https://example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-other 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org.example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-suffix 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org@example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-userinfo 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"http://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case scheme-http 1 $F "$ln" "$V" = "$ln"
+for pv in "v3.25/main/x86_64" "edge/main/x86_64" "v3.24/community/x86_64" "v3.24/main/aarch64" "v3.24/main/x86_64/sub"; do
+  nm=path-${pv//\//-}; ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/$pv/\$f\" $HLKB"
+  hl_case "$nm" 1 $F "$ln" "$V" = "$ln"
+done
+ln="$HLKA \"$HLUR\" \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/other.apk\" $HLKB"; hl_case operand-second 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.60-r0.apk\" $HLKB"; hl_case operand-literal 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\$f/../x\" $HLKB"; hl_case operand-climbing 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\$f $HLKB"; hl_case operand-unquoted 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\" $HLKB"; hl_case operand-no-variable 1 $F "$ln" "$V" = "$ln"
+# the flags: one missing, one added, in the wrong order
+for fv in "-q" "-g" "--proto =https" "--tlsv1.2" "--max-time 900"; do
+  nm=flag-missing-${fv%% *}; ln="${HLKA/ $fv/} \"$HLUR\" $HLKB"
+  hl_case "$nm" 1 $F "$ln" "$V" = "$ln"
+done
+for fv in "-K /tmp/c" "--resolve dl-cdn.alpinelinux.org:443:127.0.0.1" "--url https://example.com/x" "-x http://p:1" "-k"; do
+  nm=flag-added-${fv%% *}; ln="${HLKA/ -g / -g $fv } \"$HLUR\" $HLKB"
+  hl_case "$nm" 1 $F "$ln" "$V" = "$ln"
+done
+ln="${HLKA/ -q -fsSL -g / -fsSL -q -g } \"$HLUR\" $HLKB"; hl_case flags-reordered 1 $F "$ln" "$V" = "$ln"
+# the tail: `|| true`, no `|| die`, a pipe, a second command, a redirection
+ln="$HLKA \"$HLUR\" || true"; hl_case tail-or-true 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\""; hl_case tail-none 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB | sh"; hl_case tail-pipe 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB; id"; hl_case tail-semicolon 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB && id"; hl_case tail-and 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB "'`id`'; hl_case tail-backtick 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB "'$(id)'; hl_case tail-substitution 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB > /tmp/o"; hl_case tail-redirect 1 $F "$ln" "$V" = "$ln"
+# the row: another prefix, the prefix on another line, the same line in another file, hashes of another line
+hl_case row-prefix-pinned-fetch 1 $F "$HLK" "$V" = "$HLK" 'pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+hl_case row-prefix-live-fetch 1 $F "$HLK" "$V" = "$HLK" 'live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): '
+hl_case prefix-on-another-line 1 $F "$HLK"$'\n'"$HLOTHER" "$V" = "$HLOTHER"
+hl_case prefix-on-an-unrelated-alpine-line 1 $F "$HLK"$'\n'"curl -fsSL https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/evil.apk -o /tmp/e" "$V" = "$HLK"
+hl_case same-line-other-file 1 bin/other.sh "$HLK" "$V" = "$HLK"
+hl_case row-names-another-line 1 $F "$HLKA \"https://example.com/x/\$f\" $HLKB" "$V" = "$HLK"
+# the file: the line twice, a whitespace twin, a carriage return, a symlink
+hl_case line-twice 1 $F "$HLK"$'\n'"$HLK" "$V" = "$HLK"
+hl_case line-whitespace-twin 1 $F "$HLK"$'\n'"${HLK/ -q / -q	}" "$V" = "$HLK"
+hl_case line-with-cr 1 $F "$HLK"$'\r' "$V" = "$HLK"
+hl_case file-is-a-symlink 1 $F "$HLK" "$V" = "$HLK" "$HLP" "" link
+# the lock: missing, removed at the head, a link, empty, 501 rows, a malformed row, a repeated row
+hl_case lock-missing 1 $F "$HLK" - = "$HLK"
+hl_case lock-removed-at-head 1 $F "$HLK" "$V" - "$HLK"
+hl_case lock-is-a-symlink 2 $F "$HLK" "$V" @link "$HLK"
+hl_case lock-empty 2 $F "$HLK" "$V" @empty "$HLK"
+hl_case lock-501-rows 2 $F "$HLK" "$V" @many "$HLK"
+hl_case lock-sha-63-hex 2 $F "$HLK" "$V" "${V%?}" "$HLK"
+hl_case lock-sha-65-hex 2 $F "$HLK" "$V" "${V}a" "$HLK"
+hl_case lock-sha-upper-case 2 $F "$HLK" "$V" "${V/3ff658cf/3FF658CF}" "$HLK"
+hl_case lock-row-without-sha 2 $F "$HLK" "$V" "linux-virt=6.18.60-r0" "$HLK"
+hl_case lock-row-version-not-a-pin 2 $F "$HLK" "$V" "${V/6.18.60-r0/latest}" "$HLK"
+hl_case lock-row-repeated 2 $F "$HLK" "$V" "$V"$'\n'"$V" "$HLK"
+hl_exec "$chk"
+for n in "${HLN[@]}"; do
+  CASE="hash-locked fetch (AC35), $n: exit ${HLW[$n]}$([ "${HLW[$n]}" -eq 0 ] && echo ', ruled under the new prefix' || true)"
+  if [[ " $HLBAD " == *" $n "* ]]; then bad "$CASE"; else ok "$CASE"; fi
+done
+# --- mutants: one edit each of the tagged lines (see the contract above), in a temp copy of the scripts; every mutant must make at least one case above fail --------------------------
+hl_mutant() { # NAME MODE ARG: MODE tag (the line `if ...:  # HL:ARG` becomes `if False:`), head (`rev = head  # HL:head` reads HEAD~1), prefix (HASH_LOCKED_RULING leaves the accepted tuple)
+  local m="$work/hlmut/$1" rcm=0; rm -rf "${work:?}/hlmut/$1"; mkdir -p "$m"; cp -R "$here/../supply-chain/." "$m/"
+  python3 - "$m/pin-age-check.py" "$2" "$3" <<'PY' || rcm=$?
+import re, sys
+p, mode, arg = sys.argv[1:4]; s = open(p).read()
+if mode == "tag":
+    pat = re.compile(r"^(\s*)if (.*):(\s*)# HL:" + re.escape(arg) + r"[ \t]*$", re.M); n = len(pat.findall(s)); s = pat.sub(r"\1if False:\3# HL:" + arg, s)
+elif mode == "head":
+    pat = re.compile(r"^(\s*)rev = head(\s*)# HL:head[ \t]*$", re.M); n = len(pat.findall(s)); s = pat.sub(r'\1rev = "HEAD~1"\2# HL:head', s)
+else:
+    old = ", HASH_LOCKED_RULING)) for r in rs):"; n = s.count(old); s = s.replace(old, ")) for r in rs):")
+sys.exit(3) if n != 1 else open(p, "w").write(s)
+PY
+  CASE="hash-locked fetch mutant $1: the edit applies (its tagged line is in pin-age-check.py exactly once)"
+  if [ "$rcm" -ne 0 ]; then echo "PENDING-CODE: mutant $1 cannot apply ($2 $3)"; bad "$CASE"; return 0; fi
+  hl_exec "$m/pin-age-check.py" stop
+  CASE="hash-locked fetch mutant $1 is killed (a case above fails)"
+  if [ -n "$HLBAD" ]; then ok "$CASE"; echo "mutant killed: $1 (first failing case:$HLBAD)"; else bad "$CASE"; echo "mutant SURVIVED: $1"; fi
+}
+if [ -n "$HLBAD" ] || ! grep -q 'HASH_LOCKED_RULING' "$chk"; then
+  CASE="hash-locked fetch mutants need a green baseline and the code contract (cases failing now:${HLBAD:- none})"; echo "PENDING-CODE: the mutants below are not run until every case above passes on the real code"; bad "$CASE"
+else
+  hl_mutant gate-removed tag gate
+  hl_mutant file-check-dropped tag file
+  hl_mutant host-check-dropped tag host
+  hl_mutant path-check-dropped tag path
+  hl_mutant second-operand-accepted tag operands
+  hl_mutant flags-check-dropped tag flags
+  hl_mutant lock-check-dropped tag lock
+  hl_mutant lock-read-from-the-base head head
+  hl_mutant prefix-not-accepted prefix prefix
+fi
+# --- HLF-END
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
