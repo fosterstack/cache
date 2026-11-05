@@ -2,6 +2,7 @@
 
 DRAFT. Every line marked TO-VERIFY has not been run against a real release.
 For v0.2.x releases, use [Verify our images](verify-images.md).
+Images and signed files are checked with the release public key, not a workflow identity; the provenance (step 2) with the Sign workflow's identity.
 
 You need cosign, gh and jq. The steps cover both images: production and -fips.
 Set these once:
@@ -10,6 +11,7 @@ Set these once:
 - `<IMAGE_REF_FIPS>`: the -fips image by digest, as repository@sha256:digest.
 - `<TAG>`: the release tag, for example v0.3.0.
 - `<IDENTITY>`: https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/<TAG>, the workflow that signs the provenance.
+- `release.rsa.pub`: the release public key, `build/keys/release.rsa.pub` at the release tag. Fetch it once: `curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<TAG>/build/keys/release.rsa.pub`.
 
 ## 1. Image signatures
 
@@ -17,13 +19,9 @@ Did our release workflow sign these exact images? TO-VERIFY: the signing workflo
 
 ```sh
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF> \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify --key release.rsa.pub <IMAGE_REF>
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF_FIPS> \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify --key release.rsa.pub <IMAGE_REF_FIPS>
 ```
 
 ## 2. Provenance
@@ -57,21 +55,13 @@ Each SBOM lists what is in an image; each lock lists the packages the image was 
 
 ```sh
 # Not run before release.
-cosign verify-blob --bundle production.sbom.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com production.sbom.json
+cosign verify-blob --key release.rsa.pub --bundle production.sbom.json.bundle production.sbom.json
 # Not run before release.
-cosign verify-blob --bundle fips.sbom.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.sbom.json
+cosign verify-blob --key release.rsa.pub --bundle fips.sbom.json.bundle fips.sbom.json
 # Not run before release.
-cosign verify-blob --bundle production.full.lock.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com production.full.lock.json
+cosign verify-blob --key release.rsa.pub --bundle production.full.lock.json.bundle production.full.lock.json
 # Not run before release.
-cosign verify-blob --bundle fips.full.lock.json.bundle \
-  --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json
+cosign verify-blob --key release.rsa.pub --bundle fips.full.lock.json.bundle fips.full.lock.json
 ```
 
 ## What this shows, and what it does not
