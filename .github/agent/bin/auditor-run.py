@@ -775,9 +775,11 @@ def _emit_held_issue(title, body, dry, would, cves=(), target=None):
             except ValueError:
                 rows = None
             # an empty or unreadable answer is a failed discovery, never "no issue found": a create after it could duplicate one
-            if not isinstance(rows, list) or not all(isinstance(i, dict) and "number" in i and isinstance(i.get("title"), str)
+            if not isinstance(rows, list) or not all(isinstance(i, dict) and isinstance(i.get("number"), int)
+                                                     and not isinstance(i["number"], bool) and i["number"] > 0
+                                                     and isinstance(i.get("title"), str)
                                                      for i in rows):
-                print("held-major issue discovery FAILED: the issue list answer is not a list of number and title objects"); return False, None
+                print("held-major issue discovery FAILED: the issue list answer is not a list of positive-integer number and title objects"); return False, None
             found = [i for i in rows if i["title"] == t]
             if found:
                 c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body],

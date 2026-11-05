@@ -1392,8 +1392,10 @@ def _issue_rows(out, real):
         rows = json.loads(out)
     except ValueError:
         rows = None
-    if not isinstance(rows, list) or not all(isinstance(r, dict) and "number" in r and isinstance(r.get("title"), str) for r in rows):
-        raise RuntimeError("gh issue list answered something that is not a list of number and title objects: %r" % public(str(out))[:200])
+    if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get("number"), int)
+                                                     and not isinstance(r["number"], bool) and r["number"] > 0
+                                                     and isinstance(r.get("title"), str) for r in rows):
+        raise RuntimeError("gh issue list answered something that is not a list of positive-integer number and title objects: %r" % public(str(out))[:200])
     return rows
 
 
