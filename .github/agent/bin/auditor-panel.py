@@ -1747,10 +1747,12 @@ def cmd_deliver(a, run=subprocess.run):
                 _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)    # a failure stops delivery
     ienv = dict(os.environ, GH_TOKEN=os.environ.get("AUDITOR_ISSUES_TOKEN", os.environ.get("GH_TOKEN", "")))
     if day["issue"]:
-        n = _sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan", "--search", ISSUE_TITLE,
-                 "--json", "number", "--jq", ".[0].number"], plan, real, run, env=ienv).strip()
-        if n:                   # the rescan's tracking issue, when it is open
-            _sh(["gh", "issue", "comment", n, "--body", day["issue"]], plan, real, run, env=ienv)
+        rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan",
+                                "--search", ISSUE_TITLE, "--limit", "100", "--json", "number,title"],
+                               plan, real, run, env=ienv), real)
+        hit = [r["number"] for r in rows if r.get("title") in (policy.subject(ISSUE_TITLE), ISSUE_TITLE)]
+        if hit:                 # the rescan's tracking issue, when it is open
+            _sh(["gh", "issue", "comment", str(hit[0]), "--body", day["issue"]], plan, real, run, env=ienv)
         else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
             for lab in ("daily-rescan", "security"):    # a missing label would lose the issue: create it first (not forced)
                 _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
