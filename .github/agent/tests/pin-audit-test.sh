@@ -1212,6 +1212,15 @@ for _ in range(3):
         inv.inventory(dict(long_line)); raise SystemExit("no raise")
     except RuntimeError:
         pass
+# the kernel lock's items (label, src, sums, step) are the same with no memo, with a cold memo and with a warm one
+lock_text = "linux-virt=6.18.60-r0 sha256:" + "a" * 64 + "\n"
+def lock_dump():
+    return sorted((k, i.label, i.src, tuple(i.sums), i.step) for k, i in inv.inventory({inv.KERNEL_LOCK: lock_text}).items())
+inv._MEMO_ON[0] = False
+no_memo = lock_dump()
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+cold, warm = lock_dump(), lock_dump()
+assert no_memo and no_memo == cold == warm, ("the lock's items differ between no memo, a cold memo and a warm memo", no_memo, cold, warm)
 PY
 CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
 check_bg python3 - "$aud" "$here/../../.." <<'PY'
@@ -1232,26 +1241,25 @@ revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).spl
 assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
 def lock_keys(r, repo=None):      # the items the kernel lock of that revision adds: the memo-time oracle predates the lock and cannot know them
-    # the revision's own kernel lock, read as strictly as the inventory reads it; anything it would refuse fails here, naming the revision
+    # the revision's own kernel lock, read by the inventory's own row parser; whatever it would refuse fails here, naming the revision
     repo = repo or root
     ls = subprocess.run(["git", "-C", repo, "ls-tree", "-z", r, "--", inv.KERNEL_LOCK], capture_output=True)
     assert ls.returncode == 0, "cannot list %s at %s" % (inv.KERNEL_LOCK, r)
     if not ls.stdout:
         return set()                          # no lock at this revision: nothing the oracle cannot see
-    assert ls.stdout.split()[0] != b"120000", "%s at %s is a symbolic link" % (inv.KERNEL_LOCK, r)
+    mode = ls.stdout.split()[0]
+    assert mode != b"120000", "%s at %s is a symbolic link" % (inv.KERNEL_LOCK, r)
+    if mode not in (b"100644", b"100755"):
+        return set()                          # a directory or a submodule at the path is no lock file: the inventory reads none
     p = subprocess.run(["git", "-C", repo, "show", r + ":" + inv.KERNEL_LOCK], capture_output=True)
     assert p.returncode == 0, "cannot read %s at %s" % (inv.KERNEL_LOCK, r)
-    keys = set()
     try:
-        for ln in p.stdout.decode("utf-8").split("\n"):
-            row = ln.strip()
-            if not row or row.startswith("#"):
-                continue
-            name, version = row.split()[0].split("=", 1)
-            keys.add("apk:%s@%s" % (name, version))
-    except (UnicodeDecodeError, ValueError, IndexError) as e:
+        text = p.stdout.decode("utf-8")
+        assert len(text) <= inv.MAX_FILE, "the file is too large to read safely"
+        items = inv._kernel_lock_items(inv.KERNEL_LOCK, text)
+    except (UnicodeDecodeError, RuntimeError, AssertionError) as e:
         raise AssertionError("%s at %s cannot be read as the inventory reads it (%s)" % (inv.KERNEL_LOCK, r, e))
-    return keys
+    return {i.key for i in items}
 def _tree(repo, mode, data):
     blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], input=data, capture_output=True, check=True).stdout.decode().strip()
     idx = tempfile.mktemp(prefix="cache1-idx.", dir=repo)
@@ -1270,6 +1278,11 @@ with tempfile.TemporaryDirectory(prefix="cache1-lockkeys.") as lk:
     assert ok(b"  " + row.strip() + b"  \n") == {"apk:linux-virt@6.18.60-r0"}, "a padded row"
     assert ok(b"x86_64/linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n") == {"apk:x86_64/linux-virt@6.18.60-r0"}, "a row with an arch prefix"
     for what, data, mode in (("a row without '='", b"linux-virt sha256:" + b"a" * 64 + b"\n", "100644"),
+                             ("a row without a sha256", b"linux-virt=6.18.60-r0\n", "100644"),
+                             ("a version that is not a pin (latest)", b"linux-virt=latest sha256:" + b"a" * 64 + b"\n", "100644"),
+                             ("a short digest", b"linux-virt=6.18.60-r0 sha256:" + b"a" * 40 + b"\n", "100644"),
+                             ("a duplicate row", row + b"linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n", "100644"),
+                             ("a lock with only a comment", b"# nothing here\n", "100644"),
                              ("a lock that is not UTF-8", row + b"\xff\xfe\n", "100644"),
                              ("a symbolic link", b"build/locks/other", "120000")):
         tr = _tree(lk, mode, data)
@@ -1280,6 +1293,12 @@ with tempfile.TemporaryDirectory(prefix="cache1-lockkeys.") as lk:
         else:
             raise SystemExit("lock_keys accepted " + what)
     assert lock_keys("4b825dc642cb6eb9a060e54bf8d69288fbee4904", repo=lk) == set(), "a revision with no lock names no keys"
+    # a TREE at the lock's path is no lock file (the inventory reads none): no keys and no false red
+    sub = subprocess.run(["git", "-C", lk, "hash-object", "-w", "--stdin"], input=b"x", capture_output=True, check=True).stdout.decode().strip()
+    idx2 = tempfile.mktemp(prefix="cache1-idx.", dir=lk); env2 = dict(os.environ, GIT_INDEX_FILE=idx2)
+    subprocess.run(["git", "-C", lk, "update-index", "--add", "--cacheinfo", "100644,%s,%s/inner" % (sub, inv.KERNEL_LOCK)], env=env2, check=True)
+    tree_at_path = subprocess.run(["git", "-C", lk, "write-tree"], env=env2, capture_output=True, check=True).stdout.decode().strip(); os.unlink(idx2)
+    assert lock_keys(tree_at_path, repo=lk) == set(), "a directory at the lock path names no keys"
 def run(mod, r, skip=()):
     try:
         d = mod.load_at(root, r)
