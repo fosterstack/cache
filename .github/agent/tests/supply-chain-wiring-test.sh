@@ -319,13 +319,16 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
         if gdir not in gm:
             bad.append(f"the gomod {gdir} entry is missing")
             continue
-        if nog(gm[gdir]) != {"package-ecosystem": "gomod", "directory": gdir, "schedule": {"interval": "weekly"}}:
-            bad.append(f"the gomod {gdir} entry is not unchanged")
-        if "cooldown" in gm[gdir]:
-            bad.append(f"the gomod {gdir} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+        if gdir == "/":
+            if nog(gm[gdir]) != {"package-ecosystem": "gomod", "directory": gdir, "schedule": {"interval": "weekly"}}:
+                bad.append(f"the gomod {gdir} entry is not unchanged")
+            if "cooldown" in gm[gdir]:
+                bad.append(f"the gomod {gdir} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+        # tools/requirements is a CI tool like tools/govulncheck: the same exact 7-day wait (its bumps change what validates the requirements)
+        elif nog(gm[gdir]) != {"package-ecosystem": "gomod", "directory": gdir, "schedule": {"interval": "weekly"}, "cooldown": {"default-days": "7"}}:
+            bad.append(f"the gomod {gdir} entry is not exactly weekly with a 7-day cooldown (default-days: 7) and nothing else")
     # the pinned Go source scanner (advisor Oct 12, ruling G): tools/govulncheck is its own module, bumped through the reviewed path with the same 7-day wait as the
     # actions and the pip pins (it is a tool, not a product dependency: the product's CVE-fix target above stays without a cooldown)
-    tool = [u for u in d.get("updates", []) if u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck"]
     if len(tool) != 1:
         bad.append(f"the govulncheck tool entry (gomod, /tools/govulncheck) is missing or repeated ({len(tool)})")
     elif tool[0] != {"package-ecosystem": "gomod", "directory": "/tools/govulncheck", "schedule": {"interval": "weekly"}, "cooldown": {"default-days": "7"}}:
@@ -413,7 +416,7 @@ result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a par
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on the product gomod entries, the govulncheck tool entry weekly with its own 7-day cooldown, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on the root gomod entry, the tools/requirements and govulncheck tool entries weekly with their own 7-day cooldown, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -696,8 +699,10 @@ mut_db("the tools/requirements entry is removed (named)", "the gomod /tools/requ
 mut_db("the tools/requirements group is dropped", "the gomod /tools/requirements groups are not exactly gomod-minor-patch", lambda d: gmod(d, "/tools/requirements").pop("groups"))
 mut_db("the tools/requirements group takes a major", "the gomod /tools/requirements gomod-minor-patch group is not exactly",
        lambda d: gmod(d, "/tools/requirements")["groups"]["gomod-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
-mut_db("the tools/requirements entry gets a cooldown", "the gomod /tools/requirements entry has a cooldown", lambda d: gmod(d, "/tools/requirements").update(cooldown={"default-days": "7"}))
-mut_db("the tools/requirements schedule changes", "the gomod /tools/requirements entry is not unchanged", lambda d: gmod(d, "/tools/requirements")["schedule"].update(interval="daily"))
+mut_db("the tools/requirements entry loses its cooldown", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements").pop("cooldown"))
+mut_db("the tools/requirements cooldown is 3 days", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements")["cooldown"].update({"default-days": "3"}))
+mut_db("the tools/requirements cooldown gains a semver override", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements")["cooldown"].update({"semver-patch-days": "0"}))
+mut_db("the tools/requirements schedule changes", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements")["schedule"].update(interval="daily"))
 mut_db("the tools/requirements group gets applies-to", "sets applies-to", lambda d: gmod(d, "/tools/requirements")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
 mut_db("the root gomod entry is duplicated", "duplicate gomod / entry", lambda d: d["updates"].append(copy.deepcopy(gmod(d, "/"))))
 mut_db("the root entry is broken while tools/requirements stays", "the gomod / entry is not unchanged", lambda d: gmod(d, "/")["schedule"].update(interval="monthly"))
