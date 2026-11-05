@@ -1231,15 +1231,22 @@ paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":
 revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
 assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
-def run(mod, r):
+def lock_keys(r):      # the items the kernel lock of that revision adds: the memo-time oracle predates the lock and cannot know them
+    p = subprocess.run(["git", "-C", root, "show", r + ":" + inv.KERNEL_LOCK], capture_output=True, text=True)
+    if p.returncode != 0:
+        return set()
+    return {"apk:%s@%s" % tuple(ln.split()[0].split("=", 1)) for ln in p.stdout.splitlines() if ln.strip() and not ln.startswith("#")}
+def run(mod, r, skip=()):
     try:
-        return dump(mod.load_at(root, r))
+        d = mod.load_at(root, r)
     except RuntimeError as e:
         return "raise:" + str(e)
+    assert all(k in d for k in skip), ("a kernel lock row is not an item of the revision", r)
+    return dump({k: i for k, i in d.items() if k not in skip})
 want = {r: run(parent, r) for r in revs}
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for r in revs + list(reversed(revs)):
-    assert run(inv, r) == want[r], r
+    assert run(inv, r, lock_keys(r)) == want[r], r
 PY
 
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"

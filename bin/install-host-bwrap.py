@@ -197,7 +197,7 @@ def unpack(data, stage, owner, owners, what):
         norm = "/".join(p for p in parts if p not in ("", "."))
         if not norm:
             continue
-        if m.isfile() or m.islnk():   # only files go through a symlinked directory; the rest keep their path
+        if m.isfile() or m.islnk():   # only files pass through a symlinked directory; the rest keep their path
             check_skipped(norm, what, "other")
             names = norm.split("/")
             norm = "/".join(real_dir_parts(stage, names[:-1], what) + names[-1:])

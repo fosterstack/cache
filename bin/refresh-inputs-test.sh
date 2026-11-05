@@ -2057,16 +2057,16 @@ dangle() {   # dangle LABEL NAME: the path now in the repository or archive is a
     bash -c "$(declare -f rcnz inlog); work='$work'; rcnz && inlog '$2'"
   t "AC41" "refresh: ...$1 is a dangling symlink: no traceback in the log" bash -c "! grep -q Traceback '$work/log'"
 }
-mkrepo; rm -f "$work/ar/$KAPK"; ln -s /nonexistent/kernel.apk "$work/ar/$KAPK"
+mkrepo; rm -f "$work/ar/$KAPK"; ln -s nonexistent/kernel.apk "$work/ar/$KAPK"
 dangle "the archived kernel package" linux-virt-6.18.60-r0
 mkrepo; rm -f "$work/rp/build/locks/vm-kernel.lock"
-ln -s /nonexistent/lock "$work/rp/build/locks/vm-kernel.lock"
+ln -s nonexistent/lock "$work/rp/build/locks/vm-kernel.lock"
 dangle "build/locks/vm-kernel.lock" vm-kernel.lock
 mkrepo; rm -f "$work/rp/build/vm-keys/$KNAME"
-ln -s /nonexistent/key "$work/rp/build/vm-keys/$KNAME"
+ln -s nonexistent/key "$work/rp/build/vm-keys/$KNAME"
 dangle "the committed kernel key" kernel-key-6165ee59
 mkrepo; rm -f "$work/rp/build/locks/vm-host.lock"
-ln -s /nonexistent/lock "$work/rp/build/locks/vm-host.lock"
+ln -s nonexistent/lock "$work/rp/build/locks/vm-host.lock"
 dangle "build/locks/vm-host.lock" vm-host.lock
 # F4 (b): no archived kernel and a waiting refresh pull request: no download, the run stops for the waiting pull request
 mkrepo; rm -f "$work/ar/$KAPK"; before=$(treehash "$work/ar"); waitrun
