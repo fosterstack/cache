@@ -226,13 +226,8 @@ def _load_baselines(directory):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="admission-tag-signer")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("route")
+    r = sub.add_parser("route", allow_abbrev=False)      # `--tag` must not be read as a short `--tag-object`
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
-    # --tag and --tags are accepted and ignored: this router runs from main while build-admit runs from the tagged
-    # commit, so an
-    # older tagged commit still passes them
-    r.add_argument("--tag")
-    r.add_argument("--tags")
     b = sub.add_parser("baseline")
     b.add_argument("--tag", required=True)
     b.add_argument("--owner-baselines", required=True, help="the directory owner-baselines wrote")

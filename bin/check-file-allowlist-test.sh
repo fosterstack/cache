@@ -122,10 +122,10 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 212 allow patterns: chain-v030's 210 (207 plus the customer-word check's three), minus the bin/dispatch-fixer.sh
-# pattern, plus three this branch adds (bin/build-freeze.sh, the release-key files, the witness-real collections);
+# 211 allow patterns: chain-v030's 210 (207 plus the customer-word check's three), minus the bin/dispatch-fixer.sh
+# pattern, plus two this branch adds (bin/build-freeze.sh, the witness-real collections);
 # the chain-*-test pattern is wider and the Fulcio and TSA PEM pattern keeps only the Fulcio file (no count change)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 212, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 211, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -173,7 +173,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "fe5674a7439e9ab623a594b819e2415460bc4f628e6a94d4acc8c82b17eddc5f"
+PINNED_SHA256 = "d35f08cc8299d26df79cae3021b42d41376764916d9fcdbf1efce8dc01e11e77"
 if rstart and rend:
     import hashlib
     _b = _rawlines

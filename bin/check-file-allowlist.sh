@@ -152,7 +152,6 @@ ALLOW_PATTERNS=(
   '^bin/chain-(verify|hostile|records|sign-wiring|no-keyless-tag|manifest|rekor-key|trust-files)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
   '^\.github/policy/rekor\.pub$'
   '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'

@@ -55,6 +55,14 @@ run = [s["run"] for s in steps if s.get("name", "").startswith("open or update t
 assert len(run) == 1, "drift-issue step not found"
 open(sys.argv[2], "w").write(run[0])
 PY
+# the guard job exports nothing: the fixer dispatch that read its output is gone, so an output nobody reads is dead surface
+if python3 - "$repo/.github/workflows/ci.yml" <<'PY'
+import sys, yaml
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]
+assert "outputs" not in job, "the guard job still exports %s" % sorted(job["outputs"])
+PY
+then echo "ok: the required-check guard job exports no output nobody reads"; pass=$((pass+1))
+else echo "FAIL: the required-check guard job exports an output nobody reads"; fail=$((fail+1)); fi
 mkdir -p "$w/stub"
 cat > "$w/stub/gh" <<'EOF'
 #!/usr/bin/env bash

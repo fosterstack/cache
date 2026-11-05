@@ -871,8 +871,6 @@ jobs:
   required-check-guard:
     name: required-check guard
     runs-on: ubuntu-latest
-    outputs:
-      drift_issue: ${{ steps.drift-issue.outputs.issue }}
     permissions:
       contents: read
       issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)

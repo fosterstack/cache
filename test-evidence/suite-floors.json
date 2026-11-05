@@ -1,6 +1,6 @@
 {
  "acceptance-maven-413-test.sh": 6,
- "admission-tag-signer-test.sh": 60,
+ "admission-tag-signer-test.sh": 61,
  "analyze-egress-trace-test.sh": 11,
  "auditor-labels-test.sh": 22,
  "auditor-matrix-test.sh": 313,
@@ -56,7 +56,7 @@
  "refresh-inputs-test.sh": 342,
  "release-notes-signed-test.sh": 11,
  "release-patch-wiring-test.sh": 196,
- "required-check-guard-test.sh": 17,
+ "required-check-guard-test.sh": 18,
  "rescan-current-only-test.sh": 33,
  "rescan-statement-test.sh": 198,
  "scout-root-cause-test.sh": 33,

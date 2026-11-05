@@ -1862,6 +1862,33 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
+  - id: REQ-DEP-004
+    title: A held bump or drift dispatches the fixer
+    statement: >
+      A held Dependabot major, or a required-check drift issue, shall send one
+      generic dispatch to the ops repository so an agent fixes our side; a
+      failed dispatch shall be a warning and never undo the hold.
+    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/ci.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: register row 76 (owner, Sep 29 2026), the cache side
+    confidence: implementation-only
+    deprecated: true
+    deprecated_reason: The fixer dispatch was removed from the repository (bin/dispatch-fixer.sh and the drift-fixer-dispatch job are gone); a held bump and a drift issue now stay as the issue the guard opened.
+    acceptance_criteria:
+      - id: REQ-DEP-004-AC1
+        given: a completed hold
+        when: the reviewer finishes it
+        then: it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-004-AC2
+        given: a required-check drift issue opened by the guard
+        when: hygiene has seen it
+        then: the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   - id: REQ-REL-008
     title: The workflow set is limited to a fixed list (20 files today)
     statement: >
@@ -1897,9 +1924,9 @@ requirements:
     title: Automatic patch releases
     statement: >
       Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at once for a critical or high fix,
-      otherwise at most once a day, signed keylessly by release.yml's own identity, run through the full release chain,
-      with generated notes, VEX updated, floating tags moved by the owner's rule, and a failed stage abandoned without
-      retry. Minor and major releases stay the owner's.
+      otherwise at most once a day, tagged only by a signer that source admission accepts (never by a keyless identity, and never unsigned), run through the full release chain,
+      with generated notes, VEX updated, floating tags moved by the maintainer's rule, and a failed stage abandoned without
+      retry. Minor and major releases stay the maintainer's.
     source: [.github/workflows/release.yml, .github/workflows/stage-admission.yml]
     tier: community
     introduced: v0.3.0
@@ -1978,15 +2005,15 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC5
-        given: "a patch tag"
-        when: "CI creates it"
-        then: "it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere"
+        given: "a patch that release.yml has decided"
+        when: "CI decides it"
+        then: "the deciding job creates, signs and pushes no tag, holds no token that could push one and names no keyless signing tool; its output `tagged` is false until a signer that source admission accepts cuts the tag, and an unsigned tag is never cut"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC6
         given: "a release tag"
         when: "source admission verifies it"
-        then: "it accepts the owner's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity for patch tags only; any other signer, or that identity on a minor or major tag, is refused"
+        then: "it accepts only the maintainer's SSH signature (allowed-signers), for any tag; any other signer, a keyless identity included, is refused"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC7
@@ -3219,9 +3246,9 @@ requirements:
         status: approved
 
   - id: REQ-CHAIN-002
-    title: Timestamps, the transparency log and the per-tag release policy
+    title: The release key manifest, the transparency log and the per-tag release policy
     statement: >
-      Every keyless signature in the release chain shall carry Sigstore's public timestamp so it can be checked after its ten-minute certificate expires, everything a customer verifies shall have an entry in Rekor, and each tag shall have a release policy made from a committed template that accepts exactly the stage identities of that tag and no others, where the build and rebuild stages' identity is stage-sign.yml's (a Build or Rebuild record is accepted only under it, never under the former stage-build.yml or stage-reproducibility.yml identity).
+      Every signed record in the release chain shall be signed with the one release signing key (a key held in a hardware-backed key service) and checked from files alone against the public key that a signed key manifest vouches for, with no certificate, no timestamp authority and no signing time window; the SLSA provenance and the signed release policy, which a customer verifies, shall each have a correctly signed entry in Rekor; and each tag shall have a release policy made from a committed template that holds the release key and the stages of that tag, where a record is bound to its stage by its type and collection name and never by who signed it.
     source: [.github/policy/release-policy.template.json, bin/chain-verify.py, .github/policy/sigstore-trust.json]
     tier: community
     introduced: v0.3.0
@@ -3229,51 +3256,32 @@ requirements:
     confidence: implementation-only
     notes: |
       Status:
-      - Round 7: `policy make` and `sign --check` take the committed trust file and the three PEMs next to the template as defaults (overridable by flags), with the same trust-hash check, so the first signed rc-tag run's and Release's pinned lines pass no file flags. PR 1 writes the template and the verify side only; Release signing the finished policy (rule 57) is PR 4. Witness's stage records cannot go to Rekor (Witness has no Rekor support); they carry the timestamp authority's stamp and are kept as release evidence (rule 53b).
+      - `policy make` and `sign --check` take the committed template and the key manifest next to it (the release public key and its validity window, signed by the offline root key) as defaults, overridable by flags, with the same manifest checks, so the signed rc-tag run's and Release's pinned lines pass no file flags. Release signing the finished policy comes after the verify side. Witness's stage records have no Rekor entry (Witness has no Rekor support); they are signed with the release key and kept as release evidence.
       Decisions:
-      - Step-8 round 1:
-      - (a) the certificate chain is checked against the policy's root ONLY (the system trust store is switched off with -no-CAfile -no-CApath -no-CAstore -trusted), and tested with an attacker CA in SSL_CERT_FILE and SSL_CERT_DIR;
-      - (b) timestamps come in two forms, a bare token in Witness records (go-witness timestamp/tsp.go) and a whole DER TimeStampResponse in a Sigstore bundle (protobuf-specs sigstore_common.proto), read by their type;
-      - (c) Rekor is pinned to v1 by .github/policy/cosign-signing-config.json (cosign v3.1.3 `--signing-config`, an advisor-visible change to the pinned cosign command line: the default would use the TUF signing config, which may name Rekor v2 with no signed entry timestamp), and the log key in the trust file is the v1 key only;
-      - (e) a record with a repeated JSON key or any signature count but one is refused.
-      - Step-8 round 2 (NB-1, Opus): the certificate field of a record, and the verifier of a Rekor entry's body, must be EXACTLY ONE certificate PEM block with nothing but whitespace around it and no bytes after the certificate's outer SEQUENCE; the identity is read from that one DER and openssl verifies a PEM re-made from the same DER (before this, text or base64 before a genuine block was skipped by openssl but read as the identity by the homemade DER reader, so a self-made certificate with the right identity placed before any genuine certificate was accepted); every JSON reader is UTF-8 only (UTF-16/32 are refused, not guessed).
-      - `sign --check` and `check-build-record` take exactly one of --template (the committed template: the per-tag policy is made there from GITHUB_REF) and --policy (a finished policy); the stage-sign.yml line and its pin changed from `--policy <template>` to `--template <template>`.
-      - The flag `--rekor-stub` keeps its name only because later pull requests (PR 2-4) pin lines against it; it names the file of Rekor entries a bundle carries.
-      - Opus N-9 is left as a documented note (no change).
-      - Step-8 round 3 (B-1, both seats): the time of a timestamp is read ONLY from the bare token that the timestamp authority signed (a whole response is first required to have a clean status, no status string other than the TSA default ("unspecified") and no failure info, and is then reduced to its token with `openssl ts -reply -token_out`; the TSA's signature is verified over that same token), because a response's status section lies outside the TSA's signature and an edited statusString `x\nTime stamp: <date>` used to set the time compared with the certificate's validity; the stamp form is bound to the record type (a Witness collection carries the bare token `tsp`, the provenance the whole response `rfc3161-response`; the signed release policy either, PR 4 decides) and a mismatch is refused; a genTime with milliseconds is read and the fraction dropped; a certificate with a repeated extension (a second SAN, a second Build Config URI) is refused; the DER reader is not a general parser and trusts only the structure of a Fulcio-signed certificate.
-      - `actions` follows a listed local composite action wherever it is stored, including under .github/workflows/, and skips following only a reference that names a .yml/.yaml file (a reusable workflow, judged as a workflow of its own).
-      - The token of the key and token attempts must name exactly <repo>/.github/workflows/stage-sign.yml@<ref> of this repository (GITHUB_REPOSITORY).
-      - Codex security round 1 (Oct 10):
-      - (S1) after cosign, `sign` refuses a bundle with no or an empty timestamp list or Rekor entry list, naming each, verifies the two files it wrote as stage sign and requires the payload cosign signed to be, as parsed JSON with exact types (true is not 1, 1 is not 1.0), the statement Sign built (Opus round-1 verify F1, H2) before it prints ok; --out must not exist yet (., a folder, a file or a symlink is a usage error before anything runs) and any refusal, or any failure of that self-check, removes only the files Sign wrote and the folder it made (H1);
-      - (S2) a Rekor entries file whose `entries` is not a list of objects is a refusal, never a traceback;
-      - (S3) base64 must be canonical (re-encoding gives the same text) and JSON readers refuse NaN, Infinity, -Infinity and numbers that overflow to infinity (1e400);
-      - (S4) only `actions` imports PyYAML; the Sign path runs on the standard library.
-      - Codex security round 3 (Oct 10): an envelope field of the wrong JSON type is a refusal, and the issuer (.1.8) and Build Config URI (.1.18) extensions must each be one DER UTF8String TLV (Fulcio's v2 OID specification).
-      - Codex security round 2 (Oct 10): every certificate of the Fulcio chain and of the TSA chain is checked AT the stamp's authenticated genTime (openssl -attime at the whole second below it, never -no_check_time), so an intermediate or a TSA signer that had expired, or was not yet valid, then is refused; genTime keeps its fraction (12:00:00.5 is after a certificate ending 12:00:00; for the certificate window openssl's check at the whole second below already decides, the fraction decides the 10-minute allowance after the verification clock, and a case pins that); a Rekor entry's logIndex and integratedTime must be canonical decimal strings, which fits the protobuf-JSON Sigstore bundle (int64 as strings): the Rekor REST API writes these fields as JSON numbers, which are refused, so the later pull request that produces the --rekor-stub file must take the entries from the bundle or emit protobuf-JSON strings; `sign` with no cosign on PATH is a refusal that removes the output folder it made.
-      - Advisor reading, Oct 9 (handoff 0334; the ratified text is unchanged): a stage's identity in rules 52/52a/57 is the certificate whose SAN (Build Signer URI) is the stage file at the tag AND whose Build Config URI extension (OID 1.3.6.1.4.1.57264.1.18, the top-level workflow) is release.yml at the same tag, issued by GitHub's OIDC issuer; the policy pins all three.
-      - Witness's own verify can check the issuer but not the Build Config URI (in-toto-witness options/verify.go:80-99), so bin/chain-verify.py checks it.
+      - Rekor is pinned to v1 by .github/policy/cosign-signing-config.json (the signing tool's `--signing-config`): the default configuration could name Rekor v2, which has no signed entry timestamp; the log key in the trust file is the v1 key only.
+      - A record with a repeated JSON key, any signature count but one, or an envelope field of the wrong type is refused; base64 must be canonical and the JSON readers are UTF-8 only.
+      - `sign --check` and `check-build-record` take exactly one of --template (the per-tag policy is made there from GITHUB_REF) and --policy (a finished policy). The flag `--rekor-stub` names the file of Rekor entries a bundle carries.
       Stated exclusions:
-      - (d) the Rekor entry in the tests is SYNTHETIC but has the real fields (sigstore-go pkg/tlog/entry.go, protobuf-specs sigstore_rekor.proto, Rekor dsse 0.0.1); the first signed rc-tag run captures a genuine bundle to replace it, and confirms the cosign bundle shape and whether the issuer extension is .1.8 or .1.1;
+      - The Rekor entry in the tests is synthetic but has the real fields; the first signed rc-tag run captures a genuine bundle to replace it.
       Open items:
-      - OPEN until one genuine cosign v3.1.3 bundle is captured at the first signed rc-tag run (cutover checklist): the verifier requires BOTH a Rekor v1 inclusionPromise (signed entry timestamp) and an inclusionProof with a checkpoint signed by the same Rekor key (the entry is in the tree); an entry with only one of them is refused. The audit path and checkpoint code is run against a real public Rekor v1 dsse entry (read-only); a bundle written by cosign itself is not yet captured.
-      - The OIDC issuer is read from OID .1.8; the spike certificate dumps list .1.1 and not .1.8, so the first signed rc-tag run must confirm .1.8 is present on a real certificate.
+      - Until one genuine bundle is captured at the first signed rc-tag run, the verifier requires both a Rekor v1 signed entry timestamp and an inclusion proof with a checkpoint signed by the same Rekor key; an entry with only one of them is refused.
     acceptance_criteria:
       - id: REQ-CHAIN-002-AC1
-        given: "a keyless record whose certificate expired 15 or more minutes ago"
+        given: "a record signed with the release key"
         when: "bin/chain-verify.py checks it from files alone with the network cut"
-        then: "it is accepted when it carries a valid timestamp from the authority named in the release policy and refused when the timestamp is missing, from another authority, dated before the certificate's validity or after it expired, taken over a different signature, or when the payload or the signature was altered after signing; the same record is refused when the policy names no authority; the check runs with the network cut"
+        then: "it is accepted when it is a DSSE envelope with exactly one signature, made by the policy's release key over the payload, and with no certificate, intermediates or timestamp field; it is refused when it was signed by another key, by the building job's throwaway key or by no key, when the payload or the signature was altered after signing, when it still carries a certificate or a timestamp (an old-form record), and when its type does not belong to the stage it is checked for; no time inside a record is trusted, and the check runs with the network cut"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-002-AC2
-        given: "the committed policy template and a tag T"
+        given: "the committed policy template, the key manifest and a tag T"
         when: "the policy for T is made and used to check records"
-        then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag, a tag that only begins like T, a branch, another repository or a certificate from another OIDC issuer, requires the certificate's Build Config URI extension to be release.yml of this repository at T (so a second workflow that calls a stage file is refused even though its SAN is the stage's), and pins Sigstore's root, the timestamp authority's root and the Rekor key by the hashes in the committed trust file, refusing a bundle whose hash differs"
+        then: "the key manifest (the release public key, its key id, its validity window and any revocation), signed by the offline root key, is checked first and a policy is made only when it holds; a manifest signed by another root key, altered after signing, not yet valid, past its validity or revoked at or before the verification time is refused and no policy file is written; the policy holds the release key and no certificate root, timestamp authority or OIDC issuer; a tag that is not a version tag, a pull request ref and the snapshot version are refused, and a branch makes a dry-run policy that is accepted for the Sign stage only; and the Rekor key is pinned by the hash in the committed trust file, refusing a file whose hash differs"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-002-AC3
-        given: "a customer-verifiable record (image signature, SLSA provenance, SBOM, lock or release file signature)"
+        given: "a customer-verifiable record (the SLSA provenance or the signed release policy)"
         when: "bin/chain-verify.py checks it"
-        then: "whether a record needs a Rekor entry is decided by its type, never by a flag the caller sets: every type except Witness's stage records (the SLSA provenance, the signed release policy, and the rest) is refused unless Rekor holds a correctly signed entry (a Rekor v1 dsse entry, as a Sigstore bundle carries it) for that very record, whose body binds the record's payload hash, signature and certificate, which names the policy's log and whose integrated time lies inside the certificate's validity; an entry for another record (or with another record's signature or certificate), with a bad or edited signed timestamp, or from another key is refused; Witness's stage records are exempt and are checked for the timestamp instead"
+        then: "whether a record needs a Rekor entry is decided by its type, never by a flag the caller sets: the SLSA provenance and the signed release policy are refused unless Rekor holds a correctly signed entry (a Rekor v1 dsse entry) for that very record, whose body binds the record's payload hash and signature, whose verifier is the policy's release key, which names the policy's log and carries an inclusion proof; an entry for another record (or with another record's signature or another key as its verifier), with a bad or edited signed entry timestamp, without an inclusion proof or from another log key is refused; no time inside an entry is trusted (an entry integrated long ago is accepted); Witness's stage records have no entry and are exempt"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-002-AC4
@@ -3502,7 +3510,7 @@ requirements:
       - id: REQ-CHAIN-004-AC4
         given: "a tag push, with the policy inputs on protected main and the tagged commit as the thing being admitted"
         when: "bin/build-admit.py runs"
-        then: "it makes every check stage-admission.yml makes today and drops none: the ref is a tag and matches the strict version syntax before anything else reads it; the policy files come from origin/main and never from the tagged commit; the tag is annotated and its signature is the maintainer's SSH key, or for a patch tag the release workflow's keyless identity with the exact issuer, repository, ref and commit, with non-empty signer evidence; the tagged commit is signed by the maintainer or the pinned web-flow key and is an ancestor of origin/main; every required check is green, pinned to its app, on the tagged commit (push scope) or on the merged pull request's head (pull_request scope), unknown scopes and a count that differs are refused, and commit statuses never satisfy a check; an approved ACs baseline exists for the version, and the freeze check found it consistent: the check runs in its own job before Build (no token, no Witness step), and admission requires that job's `freeze-ok COMMIT BASE` line for the tagged commit and the baseline it uses, and prints the file's sha256 and the line as log lines (the Build record binds the downloaded file as a Witness material) (a CI patch uses its line's maintainer-approved baseline only when the requirements are unchanged, REQ-REL-009-AC13); and it writes the canonical admission evidence; any failure exits non-zero naming the check and builds nothing"
+        then: "it makes every check stage-admission.yml makes today and drops none: the ref is a tag and matches the strict version syntax before anything else reads it; the policy files come from origin/main and never from the tagged commit; the tag is annotated and its signature is the maintainer's SSH key (allowed-signers), with non-empty signer evidence, and a keyless signature is refused without any keyless verifier being run; the tagged commit is signed by the maintainer or the pinned web-flow key and is an ancestor of origin/main; every required check is green, pinned to its app, on the tagged commit (push scope) or on the merged pull request's head (pull_request scope), unknown scopes and a count that differs are refused, and commit statuses never satisfy a check; an approved ACs baseline exists for the version, and the freeze check found it consistent: the check runs in its own job before Build (no token, no Witness step), and admission requires that job's `freeze-ok COMMIT BASE` line for the tagged commit and the baseline it uses, and prints the file's sha256 and the line as log lines (the Build record binds the downloaded file as a Witness material) (a CI patch uses its line's maintainer-approved baseline only when the requirements are unchanged, REQ-REL-009-AC13); and it writes the canonical admission evidence; any failure exits non-zero naming the check and builds nothing"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC5
