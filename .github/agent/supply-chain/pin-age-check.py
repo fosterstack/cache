@@ -1797,6 +1797,9 @@ _LOOPBACK_OK = {}
 
 
 PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # nineteen script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
+HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "   # the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
+HL_FILE, HL_LOCK, HL_HOST, HL_PATH = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f"
+_HL_FLAGS = re.compile(r'/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[A-Za-z0-9_./${}-]+"')
 PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
     'bin/release-assets.sh': [
         'gh release download "$rel" -D release-published',
@@ -1864,6 +1867,54 @@ def _pinned_line_ok(root, head, f, lh):
             ok = False
         _PINNED_OK[key] = ok
     return _PINNED_OK[key]
+
+
+def _head_file(root, rev, f):
+    """The bytes of the regular file f (not a link) in the tree of rev (the working tree when rev is None); None when it is missing, a link or unreadable."""
+    try:
+        if rev is None:
+            path = os.path.join(root, f)
+            return open(path, "rb").read() if os.path.isfile(path) and not os.path.islink(path) else None
+        ent = subprocess.run(["git", "-C", root, "ls-tree", rev, "--", f], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
+        if len(ent) < 4 or ent[0] not in ("100644", "100755") or ent[1] != "blob":
+            return None
+        return subprocess.run(["git", "-C", root, "show", f"{rev}:{f}"], capture_output=True, check=True, timeout=120).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+
+def _hash_locked_line_ok(root, head, f, flat):
+    """REQ-SUP-001-AC35: True only for the one kernel fetch line of bin/refresh-inputs.sh: the fixed curl flags in the fixed order, one double-quoted operand
+    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f, then `|| die "plain text" 1`; the file holds that line once (no whitespace twin, no carriage return);
+    and the head tree holds the kernel lock file as a regular file of pinned rows (1 to 500), whose sha256 the refresh job checks before it keeps a package."""
+    if f != HL_FILE:  # HL:file
+        return False
+    left, _, right = flat.partition("||")
+    if not re.fullmatch(r'\s*die "[^"$`\\]*" 1\s*', right):
+        return False
+    start = _HL_FLAGS.match(left)
+    if not start or re.search(r"[;&|<>`]|\$\(", left):  # HL:flags
+        return False
+    ops = re.findall(r'"[^"]*"|\S+', left[start.end():])
+    if len(ops) != 1 or not ops[0].startswith('"'):  # HL:operands
+        return False
+    url = urllib.parse.urlsplit(ops[0][1:-1])
+    if url.scheme != "https" or url.netloc != HL_HOST:  # HL:host
+        return False
+    if url.path != HL_PATH or url.query or url.fragment:  # HL:path
+        return False
+    raw = _head_file(root, head, f)
+    if raw is None or b"\r" in raw or sum(" ".join(ln.split()) == flat for ln in raw.decode("utf-8", "replace").split("\n")) != 1:
+        return False
+    rev = head  # HL:head
+    lock = _head_file(root, rev, HL_LOCK)
+    try:
+        rows = inv._kernel_lock_items(HL_LOCK, lock.decode("utf-8")) if lock and b"\r" not in lock else None
+    except (RuntimeError, UnicodeDecodeError):
+        rows = None
+    if not rows:  # HL:lock
+        return False
+    return True
 
 
 def _loopback_line_ok(root, head):
@@ -2220,7 +2271,7 @@ def _run(a, moved, fx, now):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         rs = [r if r is None or _context_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row with a context that does not hold rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING, HASH_LOCKED_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
@@ -2230,6 +2281,8 @@ def _run(a, moved, fx, now):
             rs = [None]                                  # the loopback ruling on any line but the helper's one pinned line rules nothing (AC25)
         if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # the pinned-fetch ruling on any line but one of the nineteen pinned lines of its own file rules nothing (AC26)
+        if any(r and r[0].startswith(HASH_LOCKED_RULING) and not _hash_locked_line_ok(a.root, a.head, k[0], _LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):  # HL:gate
+            rs = [None]                                  # the hash-locked ruling on any line but the kernel fetch line, with its lock at the head, rules nothing (AC35)
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
