@@ -1686,7 +1686,7 @@ class FixPR(Base):
         row = self.held_row(); fr = FakeGhTitles(rules)
         with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
                 mock.patch.object(R.subprocess, "run", fr):
-            errs = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])[0]
+            errs, self.held_out = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])
         return row, errs, fr
 
     def list_rule(self, title, rc=0, rows=()):
@@ -1803,6 +1803,33 @@ class FixPR(Base):
         self.assertNotIn("REQ-", notes[0]); self.assertNotIn("audit-lane", notes[0])
         self.assertIn("a reviewer promotes it", notes[0])
         self.words_ok(notes[0])
+
+    BAD_NUMBERS = (None, False, True, "", "7", 0, -3, 1.5, [], {})          # none of these is an issue number: a positive integer, a bool is not one
+
+    def test_an_issue_list_row_whose_number_is_not_a_positive_integer_stops_delivery_before_any_create(self):
+        # seat A (cache#837 r2): the validator only checked that "number" exists, so null, false, "" and objects passed and a matching row
+        # with number "" went on to a create, another garbage value to a comment on an invalid issue identifier
+        for number in self.BAD_NUMBERS:
+            for bad, good in ((self.HELD_NEW_TITLE, self.HELD_OLD_TITLE), (self.HELD_OLD_TITLE, self.HELD_NEW_TITLE)):
+                for rows in ([{"number": number, "title": bad}], [{"number": number, "title": "auditor: another issue"}]):
+                    why = (number, bad, rows[0]["title"])
+                    self.assert_held_stops({**self.raw_list_rule(bad, json.dumps(rows)), **self.raw_list_rule(good, "[]")}, why)
+                    self.assertIn("held-major issue discovery FAILED", self.held_out, why)
+
+    def test_an_issue_list_row_with_a_positive_integer_number_still_works(self):
+        # the controls: a matching row is commented, a non-matching row with a valid number is ignored and the issue is created
+        new = [{"number": 42, "title": self.HELD_NEW_TITLE}]
+        row, errs, fr = self.held_run({**self.raw_list_rule(self.HELD_NEW_TITLE, json.dumps(new)), **self.raw_list_rule(self.HELD_OLD_TITLE, "[]")})
+        self.assertEqual(errs, [])
+        self.assertIn(["gh", "issue", "comment", "42", "--body", self.HELD_BODY], fr.argvs())
+        other = [{"number": 8, "title": "auditor: another issue"}]
+        row, errs, fr = self.held_run({**self.raw_list_rule(self.HELD_NEW_TITLE, json.dumps(other)),
+                                       **self.raw_list_rule(self.HELD_OLD_TITLE, json.dumps(other)),
+                                       ("gh", "issue", "create"): (0, "https://x/issues/17\n", "")})
+        self.assertEqual(errs, [])
+        create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]
+        self.assertEqual([c[c.index("--title") + 1] for c in create], [self.HELD_NEW_TITLE])
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "comment"]])
 
     def test_a_failed_issue_list_for_either_held_title_holds_and_creates_nothing(self):
         for failing in (self.HELD_NEW_TITLE, self.HELD_OLD_TITLE):

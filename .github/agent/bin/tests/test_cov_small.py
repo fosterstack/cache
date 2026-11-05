@@ -763,6 +763,28 @@ class PanelOwnerIssue(Tmp):
             for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
                 self.assert_stops({bad: reply, good: (0, [])}, (reply, bad))
 
+    BAD_NUMBERS = (None, False, True, "", "7", 0, -3, 1.5, [], {})          # none of these is an issue number: a positive integer, a bool is not one
+
+    def test_an_issue_list_row_whose_number_is_not_a_positive_integer_stops_delivery_before_any_create(self):
+        # seat A (cache#837 r2): the validator only checked that "number" exists, so a matching row with number "" went on to a create
+        # and null, false and objects to a comment on an invalid issue identifier
+        for number in self.BAD_NUMBERS:
+            for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
+                for rows in ([{"number": number, "title": bad}], [{"number": number, "title": "auditor: another issue"}]):
+                    self.assert_stops({bad: json.dumps(rows), good: (0, [])}, (number, bad, rows[0]["title"]))
+
+    def test_an_issue_list_row_with_a_positive_integer_number_still_works(self):
+        calls, err = self.deliver({self.NEW: (0, [{"number": 42, "title": self.NEW}]), self.OLD: (0, [])})      # the control: commented
+        self.assertIsNone(err)
+        self.assertEqual([c[3] for c in calls if c[:3] == ["gh", "issue", "comment"]], ["42"])
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "create"]])
+        other = [{"number": 8, "title": "auditor: another issue"}]                                          # a non-matching row: ignored, created
+        calls, err = self.deliver({self.NEW: (0, other), self.OLD: (0, other)})
+        self.assertIsNone(err)
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "comment"]])
+        creates = [c for c in calls if c[:3] == ["gh", "issue", "create"]]
+        self.assertEqual([c[c.index("--title") + 1] for c in creates], [self.NEW])
+
     def test_plan_mode_with_no_answer_makes_no_create_and_does_not_fail(self):
         self.args.dry_run = True                                          # real delivery off: _sh returns "" and runs nothing
         calls, err = self.deliver({})
