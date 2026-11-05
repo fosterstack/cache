@@ -18,14 +18,50 @@ updates:
     # construction and none can ever merge. Grouping makes them one PR that
     # moves all pins together. (Found Sep 7, 2026: PRs #12/#13/#15.)
     groups:
+      # Major only: a codeql-action major stays its own lane task. It must come first and be major-only:
+      # Dependabot gives a dependency to the first group that matches it, so its minor and patch fall through
+      # to actions-minor-patch below.
       codeql-action:
         patterns:
           - "github/codeql-action*"
+        update-types:
+          - "major"
+      # Minor and patch updates of all actions, codeql-action included, arrive as ONE pull request
+      # instead of one each; a major never joins (it stays a lane task).
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    # Minor and patch updates of Go modules arrive as ONE pull request instead of one each;
+    # a major never joins (it stays a lane task).
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # tools/requirements is its own Go module (ci.yml runs it with go -C tools/requirements); same shape as the root module.
+  - package-ecosystem: "gomod"
+    directory: "/tools/requirements"
+    schedule:
+      interval: "weekly"
+    # Minor and patch updates arrive as ONE pull request instead of one each; a major never joins (it stays a lane task).
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # The pinned Go source scanner of the release chain's Check stage (advisor Oct 12, ruling G): tools/govulncheck is its own module (go.mod and go.sum are the pin), so a
   # new version reaches it through this reviewed path, with the same 7-day wait as the actions and the pip pins. Dependabot moves go.mod and go.sum; ci.yml's `go install
@@ -56,3 +92,13 @@ updates:
         patterns:
           - "pydantic"
           - "pydantic-core"
+      # Minor and patch updates of the other agent packages arrive as ONE pull request instead of one each (audit
+      # ruling Oct 31): one head, one review, one audit record. A major never joins (it stays a lane task, bump rule 3).
+      # It comes after pydantic: Dependabot gives a dependency to the first group that matches it.
+      # pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any other pin): a pip bump never joins.
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+        exclude-patterns:
+          - "pip"
