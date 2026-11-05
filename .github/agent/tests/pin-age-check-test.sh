@@ -5468,8 +5468,40 @@ head = "".join(open(sys.argv[1]).readlines()[:16])
 assert "apk" in head, "the header of pin-age-check-test.sh does not name apk"
 PY
 }
+# --- round 2 (seat A): the ROW parser refuses a version that is not a pin, also when the row did not change ------------------------------------
+# A row whose version is main, 3x, 1x, latest or x is read by the row grammar but is no pin; if it sits unchanged in base and head nothing "moves" and the check
+# would pass with it in the file. The parser itself must refuse it (exit 2, "not a pin"), changed or not.
+rp() {   # ID VERSION
+  local id=$1 ver=$2
+  lcase2 "lrp_$id" "w('$rowx1\n')" "w('$rowx1\nx86_64/badver=$ver sha256:$H3\n')"      # the bad row is NEW in the head
+  lcase2 "lru_$id" "w('$rowx1\nx86_64/badver=$ver sha256:$H3\n')" "$RM"                # the bad row is in BOTH commits: the hole
+  eval "lc_rp_$id() { lrun lrp_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lrp_$id.out\" && grep -qi 'not a pin' \"\$work/lrp_$id.out\" && grep -q 'vm-kernel.lock' \"\$work/lrp_$id.out\"; }"
+  eval "lc_ru_$id() { lrun lru_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lru_$id.out\" && grep -qi 'not a pin' \"\$work/lru_$id.out\"; }"
+  RPIDS="$RPIDS rp_$id ru_$id"
+}
+RPIDS=""
+rp main main; rp 3x 3x; rp 1x 1x; rp latest latest; rp x x
+lc_rv() {   # the row parser itself: bad versions raise RuntimeError naming the file and saying "not a pin"; good ones become apk items
+  python3 -I - "$LINV" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+for v in ("main", "3x", "1x", "latest", "x"):
+    try:
+        inv.inventory({inv.KERNEL_LOCK: "x86_64/badver=%s sha256:%s\n" % (v, "3" * 64)})
+    except RuntimeError as e:
+        assert "not a pin" in str(e).lower() and "vm-kernel.lock" in str(e), (v, str(e))
+    else:
+        raise AssertionError("the row parser accepted the version %r" % v)
+for v in ("1.1.1w-r0", "2023c-r0", "6.18.60-r0"):
+    items = inv.inventory({inv.KERNEL_LOCK: "x86_64/linux-virt=%s sha256:%s\n" % (v, "4" * 64)})
+    assert list(items) == ["apk:x86_64/linux-virt@" + v] and items["apk:x86_64/linux-virt@" + v].kind == "apk", (v, list(items))
+real = "linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e\n"
+items = inv.inventory({inv.KERNEL_LOCK: real})
+assert list(items) == ["apk:linux-virt@6.18.60-r0"] and items["apk:linux-virt@6.18.60-r0"].sum, list(items)
+PY
+}
 LCOLD="a b c d e f g h h2 i u"
-LCNEW="g1a g1b g1c g1w g2a g2b g2c g3a g3b g3c g3d g3e g3f g4a g4b g4u$G5IDS g6a g6b g6u g8 g9a g9b g10a g10b"
+LCNEW="g1a g1b g1c g1w g2a g2b g2c g3a g3b g3c g3d g3e g3f g4a g4b g4u$G5IDS g6a g6b g6u g8 g9a g9b g10a g10b rv$RPIDS"
 LCIDS="$LCOLD $LCNEW"
 lc_all() { LCFAIL=""; local i; for i in ${LCSEL:-$LCIDS}; do "lc_$i" >/dev/null 2>&1 || LCFAIL="$LCFAIL $i"; done; }
 CASE="kernel row a: one moved row, first seen 2 days ago: FAILS (exit 1) and says it is too young"; check lc_a
@@ -5515,6 +5547,17 @@ CASE="kernel row G9 exactly 500 rows are accepted (exit 0)"; check lc_g9a
 CASE="kernel row G9 501 rows are refused (exit 2)"; check lc_g9b
 CASE="kernel row G10 the item-kind list in the header of pin-inventory.py names apk"; check lc_g10a
 CASE="kernel row G10 the header of pin-age-check-test.sh names apk"; check lc_g10b
+CASE="kernel row G6b the row parser takes 1.1.1w-r0, 2023c-r0, 6.18.60-r0 and the real row cache#840 wrote, and REFUSES main, 3x, 1x, latest, x (RuntimeError naming the file, \"not a pin\")"; check lc_rv
+CASE="kernel row G6b a NEW row with the version main is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_main
+CASE="kernel row G6b the SAME row with the version main in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_main
+CASE="kernel row G6b a NEW row with the version 3x is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_3x
+CASE="kernel row G6b the SAME row with the version 3x in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_3x
+CASE="kernel row G6b a NEW row with the version 1x is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_1x
+CASE="kernel row G6b the SAME row with the version 1x in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_1x
+CASE="kernel row G6b a NEW row with the version latest is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_latest
+CASE="kernel row G6b the SAME row with the version latest in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_latest
+CASE="kernel row G6b a NEW row with the version x is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_x
+CASE="kernel row G6b the SAME row with the version x in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_x
 
 # --- mutants: one exact edit each, in a temp copy of the scripts; every mutant must make at least one case above fail --------------------------------
 # The edits anchor on these exact strings (the first is the line the code change must add to pin-inventory.py; the others are existing code):
@@ -5555,6 +5598,9 @@ else
   mutant reorder-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum or (k.startswith("apk:") and list(base_items).index(k) != list(head_items).index(k))]'
   mutant removal-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [base_items[k] for k in sorted(base_items) if k.startswith("apk:") and k not in head_items] + [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]'
   mutant row-error-skipped pin-inventory.py 'raise RuntimeError(f"{path}:{n}: a lock row is not '"'"'<name>=<version> sha256:<64 hex>'"'"': its age cannot be judged")' 'continue' "$G5IDS"
+  # mutant row-version-passthrough: the version check of the row parser replaced by pass-through. Its anchor is the line the coder writes in _kernel_lock_items that calls the
+  # predicate shared with is_pin; that line does not exist yet. Until the anchor is supplied this is a loud FAIL, not a skipped mutant.
+  CASE="kernel row mutant row-version-passthrough has an anchor (the line of _kernel_lock_items that calls the predicate shared with is_pin)"; echo "PENDING-CODE: mutant row-version-passthrough needs the exact text of that line"; bad "$CASE"
 fi
 
 echo "pin-age-check: $pass passed, $failn failed"
