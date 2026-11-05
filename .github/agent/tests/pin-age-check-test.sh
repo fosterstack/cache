@@ -5436,9 +5436,9 @@ lc_g6u() {
   python3 -I - "$LCHK" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pac", sys.argv[1]); pac = importlib.util.module_from_spec(spec); spec.loader.exec_module(pac)
-for v in ("1.1.1w-r0", "2023c-r0", "6.18.60-r0", "20260909-r3", "0.13.1-r0"):
+for v in ("1.1.1w-r0", "2023c-r0", "6.18.60-r0", "20260909-r3", "0.13.1-r0", "1.0b-r0"):
     assert pac.is_pin(v), v
-for v in ("main", "latest", "1.*", "3.x", ">=1.2", "~1.2.3", "nightly", "", "1.2.3 || 2.0"):
+for v in ("main", "latest", "1.*", "3.x", ">=1.2", "~1.2.3", "nightly", "", "1.2.3 || 2.0", "3x", "1x", "2.x-r0"):
     assert not pac.is_pin(v), v
 PY
 }
