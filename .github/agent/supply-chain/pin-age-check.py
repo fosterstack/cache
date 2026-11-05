@@ -1908,12 +1908,13 @@ def _hash_locked_line_ok(root, head, f, flat, ver):
     if "/" + rest != HL_PATH:  # HL:path
         return False
     raw = _head_file(root, head, f)
-    if raw is None or b"\r" in raw or sum(" ".join(ln.split()) == flat for ln in raw.decode("utf-8", "replace").split("\n")) != 1 or (HL_INDENT + flat).encode() not in raw.split(b"\n"):
+    rows = raw.split(b"\n") if raw is not None else []
+    if raw is None or b"\r" in raw or sum(b" ".join(ln.split()) == flat.encode() for ln in rows) != 1 or (HL_INDENT + flat).encode() not in rows:
         return False
-    rows = raw.decode("utf-8", "replace").split("\n")
-    if not ver or ver[0] != HL_FILE or rows.count(ver[1]) != 1 or sum(" ".join(ln.split()) == " ".join(ver[1].split()) for ln in rows) != 1:  # HL:verifier
+    vb = ver[1].encode("utf-8", "surrogatepass") if ver else b""
+    if not ver or ver[0] != HL_FILE or rows.count(vb) != 1 or sum(b" ".join(ln.split()) == b" ".join(vb.split()) for ln in rows) != 1:  # HL:verifier
         return False
-    if hashlib.sha256(ver[1].encode()).hexdigest() != ver[2]:  # HL:verifier-sha
+    if hashlib.sha256(vb).hexdigest() != ver[2]:  # HL:verifier-sha
         return False
     rev = head  # HL:head
     if _head_file(root, rev, HL_LOCK) is None:  # HL:lock
