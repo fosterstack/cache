@@ -54,6 +54,9 @@ updates:
     directory: "/tools/requirements"
     schedule:
       interval: "weekly"
+    # Same 7-day wait as the govulncheck tool module: its bumps change what validates the requirements.
+    cooldown:
+      default-days: 7
     # Minor and patch updates arrive as ONE pull request instead of one each; a major never joins (it stays a lane task).
     groups:
       gomod-minor-patch:
