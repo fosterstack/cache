@@ -244,13 +244,23 @@ def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
-        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
-                           capture_output=True, text=True, env=ienv)
+        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--limit", "100", "--json",
+                            "number,title"], capture_output=True, text=True, env=ienv)
         if r.returncode != 0:
             # a FAILED discovery must NOT fall through to a duplicate create that abandons the
             # existing acceptance pointer (R1 outer round-3 #2): abort as a failure.
             print("owner-issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
-        found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
+        try:
+            rows = json.loads(r.stdout)
+        except ValueError:
+            rows = None
+        # an empty or unreadable answer is a failed discovery, never "no issue found": a create could duplicate one
+        if not isinstance(rows, list) or not all(
+                isinstance(i, dict) and isinstance(i.get("number"), int) and not isinstance(i["number"], bool)
+                and i["number"] > 0 and isinstance(i.get("title"), str) for i in rows):
+            print("owner-issue discovery FAILED: the issue list answer is not a list of number and title objects")
+            return False, None
+        found = [i for i in rows if i["title"] == title]
         if found:
             num = found[0]["number"]
             c = subprocess.run(["gh", "issue", "comment", str(num), "--body", body], capture_output=True, text=True, env=ienv)
@@ -466,9 +476,9 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     short = (commit or "unknown")[:12]
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = policy.subject("update suppressions (%d statements)" % nstmt)
-    body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
+    body = "Automated suppression update from the daily CVE auditor. Draft for review."
     # REQ-AUD-16 AC4/AC3: carry model PROPOSALS and the generated knowledge doc in the same draft
-    # PR (proposals take effect only after the owner merges + an audit-lane reviewer promotes them).
+    # PR (proposals take effect only after the owner merges + a reviewer promotes them).
     extra = [p for p in (".auditor/proposals/adjudicator-proposals.json", ".auditor/knowledge.md")
              if os.path.exists(os.path.join(out, p))]
     staged = [".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"] + extra
@@ -729,9 +739,22 @@ def _open_dependabot_prs(ws):
         return None, "gh pr list: unreadable answer"
 
 
+HELD_TAIL = "needs a manual change"
+OLD_HELD_TAIL = "held as a harness lane task"   # OLD_HELD_TAIL only finds issues opened before this change; nothing is created with it
+
+
+def _held_titles(title):
+    """The titles an open held-major issue can carry: the current one, then the one issues opened before the wording
+    changed carry (found and commented, never created again)."""
+    if title.endswith(" " + HELD_TAIL):
+        return [title, title[:-len(HELD_TAIL)] + OLD_HELD_TAIL]
+    return [title]
+
+
 def _emit_held_issue(title, body, dry, would, cves=(), target=None):
-    """Open OR update the issue that hands a held MAJOR bump to a harness lane as a task (rc-5b A6: a major is judged
-    by a machine, never by the owner). NOT an owner-decision issue: no owner label, no assignee. Returns (ok, ref)
+    """Open OR update the issue that hands a held MAJOR bump to a person as a task (rc-5b A6: a major is judged by a
+    machine, never by the repository owner). Not an owner-decision issue: no owner label, no assignee. An issue opened
+    under the old title is still found, one title after the other (new, then old), and commented. Returns (ok, ref)
     like _emit_owner_issue."""
     cmd = "gh issue create --title %s" % shlex.quote(title)
     if dry:
@@ -740,9 +763,10 @@ def _emit_held_issue(title, body, dry, would, cves=(), target=None):
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         prior = open(log).read() if os.path.exists(log) else ""
-        if ("issue create --title %s" % shlex.quote(title)) in prior:
-            open(log, "a").write("gh issue comment --title %s --body %s\n" % (shlex.quote(title), shlex.quote(body)))
-            return True, "shim-updated"
+        for t in _held_titles(title):
+            if ("issue create --title %s" % shlex.quote(t)) in prior:
+                open(log, "a").write("gh issue comment --title %s --body %s\n" % (shlex.quote(t), shlex.quote(body)))
+                return True, "shim-updated"
         open(log, "a").write(cmd + " --body " + shlex.quote(body) + "\n")
         failing = bool(os.environ.get("AUDITOR_SHIM_ISSUE_FAIL"))
         return (not failing), (None if failing else "shim-created")
@@ -751,15 +775,26 @@ def _emit_held_issue(title, body, dry, would, cves=(), target=None):
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
-        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
-            capture_output=True, text=True, env=ienv)
-        if r.returncode != 0:
-            print("held-major issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
-        found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
-        if found:
-            c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body], capture_output=True,
-                text=True, env=ienv)
-            return (c.returncode == 0), found[0]["number"]
+        for t in _held_titles(title):          # one search per title: a search for the new words does not return an old-titled issue
+            r = subprocess.run(["gh", "issue", "list", "--search", t, "--state", "open", "--limit", "100", "--json",
+                "number,title"], capture_output=True, text=True, env=ienv)
+            if r.returncode != 0:
+                print("held-major issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
+            try:
+                rows = json.loads(r.stdout)
+            except ValueError:
+                rows = None
+            # an empty or unreadable answer is a failed discovery, never "no issue found": a create after it could duplicate one
+            if not isinstance(rows, list) or not all(isinstance(i, dict) and isinstance(i.get("number"), int)
+                                                     and not isinstance(i["number"], bool) and i["number"] > 0
+                                                     and isinstance(i.get("title"), str)
+                                                     for i in rows):
+                print("held-major issue discovery FAILED: the issue list answer is not a list of positive-integer number and title objects"); return False, None
+            found = [i for i in rows if i["title"] == t]
+            if found:
+                c = subprocess.run(["gh", "issue", "comment", str(found[0]["number"]), "--body", body],
+                    capture_output=True, text=True, env=ienv)
+                return (c.returncode == 0), found[0]["number"]
         c = subprocess.run(["gh", "issue", "create", "--title", title, "--body", body], capture_output=True, text=True,
             env=ienv)
         if c.returncode != 0:
@@ -803,10 +838,10 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
         if delivered[tk][2] in ("delivered", "delivered-unchecked", "would") and _is_major_bump(fb0.get("module"),
             fb0.get("from"), fb0.get("to")):
             cves = sorted({g["fix_bump"].get("cve") or g["id"] for g in group})
-            title = policy.subject("major bump %s -> %s held as a harness lane task" % (fb0["module"], fb0["to"]))
+            title = policy.subject("major bump %s -> %s %s" % (fb0["module"], fb0["to"], HELD_TAIL))
             body = ("The daily CVE auditor found a fixed version of %s that is a MAJOR transition (%s -> %s). "
-                    "A major bump means an API changed (judged by a machine, not by the repository owner), "
-                    "so the auditor opened the draft PR but did not arm it; a harness lane makes the change on our "
+                    "A major bump means an API changed, "
+                    "so the auditor opened the draft PR but did not arm it; a person has to make the change on our "
                     "side.\n\n- Vulnerabilities: %s\n- Draft PR: %s\n"
                     % (fb0["module"], fb0.get("from"), fb0["to"], ", ".join(cves), delivered[tk][0] or "(dry run)"))
             held[tk] = _emit_held_issue(title, body, dry, would, cves=cves, target="%s %s -> %s" % (fb0["module"],
@@ -823,10 +858,10 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
                 if hold[1] == "dry":
                     held_note = "; MAJOR transition: the held-major issue would be opened (dry run)"
                 elif hold[1] == "skipped":
-                    held_note = "; MAJOR transition: held as a harness lane task, issue NOT opened (delivery disabled)"
+                    held_note = "; MAJOR transition: needs a manual change, issue NOT opened (delivery disabled)"
                 else:
                     ref = hold[1] if hold[1] not in (None, "shim-created", "shim-updated") else "opened"
-                    held_note = "; MAJOR transition: held as a harness lane task (issue %s)" % ref
+                    held_note = "; MAJOR transition: needs a manual change (issue %s)" % ref
             else:
                 held_note = "; MAJOR transition: the held-major issue FAILED to open (run INCOMPLETE)"
                 r["pending_delivery"] = True
@@ -2361,8 +2396,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     "candidate_commit": m.get("commit"),
                     "note": ("MODEL PROPOSALS — not applied. Each entry is a model suggestion for a "
                              "new known-defect-log entry or knowledge note; it takes effect only "
-                             "after this PR is merged and an audit-lane reviewer promotes it to a "
-                             "trusted row. The auditor never applies these itself (REQ-AUD-16 AC4).")})
+                             "after this PR is merged and a reviewer promotes it to a "
+                             "trusted row. The auditor never applies these itself.")})
     # Scopes whose carried acceptance expired and were reopened this run — delivery drops those
     # exact statements/ignores by canonical SCOPE (never CVE-wide), never renewing them
     # (REQ-AUD-13 AC6). Serialized as [[products], [purls]] pairs.
