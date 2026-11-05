@@ -202,11 +202,17 @@ def tree_files(root, rev):
                     raise RuntimeError(f"{n} is too large to read safely")
         return out
     for n, blob in _listing(root, rev):
-        if blob not in _BLOBS:
+        if n == KERNEL_LOCK:    # the lock is read strictly: a byte that is not UTF-8 is an error, never a replacement character
+            try:
+                out[n] = subprocess.run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True, check=True).stdout.decode("utf-8")
+            except (subprocess.CalledProcessError, UnicodeDecodeError) as e:
+                raise RuntimeError(f"{n} cannot be read as UTF-8 text: its rows would go unaged ({e})")
+        elif blob not in _BLOBS:
             _BLOBS[blob] = git(root, "cat-file", "blob", blob)
-        if len(_BLOBS[blob]) > MAX_FILE:
+        if n != KERNEL_LOCK:
+            out[n] = _BLOBS[blob]
+        if len(out[n]) > MAX_FILE:
             raise RuntimeError(f"{n} is too large to read safely")
-        out[n] = _BLOBS[blob]
     return out
 
 
