@@ -440,18 +440,33 @@ cat >"$D/run-script.js" <<'JS'
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const [, , scriptFile, issuesFile] = process.argv;
+const mode = JSON.parse(process.env.CASE || '{}');
 const all = JSON.parse(fs.readFileSync(issuesFile, 'utf8'));
-const calls = { comment: [], create: [], pages: [] };
+const calls = { comment: [], create: [], pages: [], createFull: [], labels: [], gets: [], info: [], outputs: {} };
+const written = {};
 const listForRepo = async (p) => { const per = p.per_page || 30, page = p.page || 1; calls.pages.push(page); return { data: all.slice((page - 1) * per, page * per) }; };
+const notFound = () => Object.assign(new Error('Not Found'), { status: 404 });
 const github = {
   paginate: async (fn, params) => { let out = [], page = 1; for (;;) { const r = await fn({ ...params, page }); out = out.concat(r.data); if (r.data.length < (params.per_page || 30)) break; page++; } return out; },
   rest: { issues: { listForRepo,
-    createComment: async (p) => { calls.comment.push(p.issue_number); }, createLabel: async () => {}, create: async (p) => { calls.create.push(p.title); } } },
+    createComment: async (p) => { calls.comment.push(p.issue_number); return { data: mode.noCommentId ? {} : { id: 9001 } }; },
+    createLabel: async (p) => { calls.labels.push(p.name); },
+    create: async (p) => { calls.create.push(p.title); calls.createFull.push(p); written[4242] = { number: 4242, title: p.title, state: 'open' }; return { data: { number: 4242 } }; },
+    get: async (p) => {
+      calls.gets.push(p.issue_number);
+      if (mode.get === '404') throw notFound();
+      const found = written[p.issue_number] || all.find(i => i.number === p.issue_number);
+      if (!found) throw notFound();
+      if (mode.get === 'wrongtitle') return { data: { ...found, title: 'other' } };
+      if (mode.get === 'closed') return { data: { ...found, state: 'closed' } };
+      return { data: { state: 'open', ...found } };
+    } } },
 };
+const core = { info: (m) => calls.info.push(String(m)), setOutput: (k, v) => { calls.outputs[k] = String(v); } };
 const context = { repo: { owner: 'fosterstack', repo: 'cache' }, serverUrl: 'https://github.com', runId: 1 };
 const t = { release: 'v0.3.0', variant: 'production', digest: 'sha256:abcdef0123456789abcdef', scanner: 'osv-scanner' };
 const script = fs.readFileSync(scriptFile, 'utf8').replace(/\$\{\{ toJSON\(matrix\.target\) \}\}/, JSON.stringify(t));
-new AsyncFunction('github', 'context', script)(github, context).then(() => { console.log(JSON.stringify(calls)); }, (e) => { console.error(e.stack); process.exit(1); });
+new AsyncFunction('github', 'context', 'core', script)(github, context, core).then(() => { console.log(JSON.stringify(calls)); }, (e) => { console.error(e.stack); process.exit(1); });
 JS
 issues "$D/issues-js.json" 230 "Daily rescan: findings in v0.3.0 production @abcdef012345 (osv-scanner)"
 command -v node >/dev/null || { bad "node is required for the github-script pagination test"; }
@@ -466,6 +481,39 @@ items = json.load(open(sys.argv[1])); items[3]["title"] = "Daily rescan: finding
 P
 node "$D/run-script.js" "$D/script.js" "$D/issues-js-pr.json" >"$D/js.out" 2>"$D/js.err" || true
 if [ "$(jq -c '.comment' "$D/js.out")" = "[]" ] && [ "$(jq '.create | length' "$D/js.out")" = "1" ]; then ok; else bad "the tracking-issue step took a pull request for the tracking issue ($(cat "$D/js.out"))"; fi
+
+TITLE_JS="Daily rescan: findings in v0.3.0 production @abcdef012345 (osv-scanner)"
+node_case() { # case-json issues-file : the step's calls on stdout, its exit code in $rc
+  CASE="$1" node "$D/run-script.js" "$D/script.js" "$2" >"$D/js.out" 2>"$D/js.err" && rc=0 || rc=$?
+}
+issues "$D/issues-none.json" -1 x
+node_case '{}' "$D/issues-none.json"
+if [ "$rc" = 0 ] && [ "$(jq -c '[.createFull[] | [.title, .labels]]' "$D/js.out")" = "[[\"$TITLE_JS\",[\"daily-rescan\",\"security\"]]]" ] \
+  && [ "$(jq -c '.labels' "$D/js.out")" = '["daily-rescan","security"]' ]; then ok; else bad "no open issue: the step must create exactly one issue with the title and both labels, after trying both labels ($(cat "$D/js.out" "$D/js.err"))"; fi
+if jq -e '.info | any(test("open daily-rescan issues")) and any(test("match"))' "$D/js.out" >/dev/null; then ok; else bad "the step must log how many open daily-rescan issues it read and whether the title matched ($(cat "$D/js.out"))"; fi
+if jq -e '.info | any(test("created #4242"))' "$D/js.out" >/dev/null; then ok; else bad "the step must log 'created #<number>' after a create ($(cat "$D/js.out"))"; fi
+if jq -e '.gets == [4242] and .outputs.issue == "4242"' "$D/js.out" >/dev/null; then ok; else bad "after a create the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
+for mode in '{"get":"404"}' '{"get":"wrongtitle"}' '{"get":"closed"}'; do
+  node_case "$mode" "$D/issues-none.json"
+  if [ "$rc" != 0 ]; then ok; else bad "after a create the step must fail when the read-back is $mode ($(cat "$D/js.out"))"; fi
+done
+node_case '{}' "$D/issues-js.json"
+if [ "$rc" = 0 ] && jq -e '.info | any(test("commented on #770"))' "$D/js.out" >/dev/null; then ok; else bad "the step must log 'commented on #<number>' after a comment ($(cat "$D/js.out" "$D/js.err"))"; fi
+if jq -e '.gets == [770] and .outputs.issue == "770"' "$D/js.out" >/dev/null; then ok; else bad "after a comment the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
+node_case '{"noCommentId":true}' "$D/issues-js.json"
+if [ "$rc" != 0 ]; then ok; else bad "the step must fail when the comment answer has no id ($(cat "$D/js.out"))"; fi
+node_case '{"get":"404"}' "$D/issues-js.json"
+if [ "$rc" != 0 ]; then ok; else bad "after a comment the step must fail when the read-back is a 404 ($(cat "$D/js.out"))"; fi
+if python3 - "$WF" <<'P'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index("name: file/update a tracking issue on findings")
+v = t.index("name: a findings verdict fails the run")
+ok_id = "id: issue" in t[i:t.index("script: |", i)]
+ok_msg = "steps.issue.outputs.issue" in t[v:t.index("exit 1", v)]
+sys.exit(0 if ok_id and ok_msg else 1)
+P
+then ok; else bad "the issue step needs 'id: issue' and the findings verdict line must name steps.issue.outputs.issue"; fi
 
 # ---- round 1 of the review of #268: fail-closed matching (closed rules, not residuals) ----------------------------------------------------------------------------
 CAND_REPO="ghcr.io/fosterstack/cache-candidates"

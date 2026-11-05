@@ -241,26 +241,30 @@ const fs = require("fs");
 const [, , scriptPath, mode, outPath] = process.argv;
 const labels = new Set(mode === "both" ? ["daily-rescan", "security"] : []);
 const calls = [];
+let made = null;
 const listForRepo = async () => ({ data: [] });
 const github = { paginate: async (fn, p) => (await fn(p)).data, rest: { issues: {
   listForRepo,
-  createComment: async () => ({}),
+  createComment: async () => ({ data: { id: 1 } }),
+  get: async () => ({ data: made }),
   createLabel: async ({ name }) => {
     calls.push("createLabel:" + name);
     if (mode === "denied") { const e = new Error("Resource not accessible"); e.status = 403; throw e; }
     if (labels.has(name)) { const e = new Error("Validation Failed: already_exists"); e.status = 422; throw e; }
     labels.add(name); return {};
   },
-  create: async ({ labels: want }) => {
+  create: async ({ labels: want, title }) => {
     calls.push("create:" + want.join(","));
     for (const l of want) if (!labels.has(l)) { const e = new Error("Validation Failed: label " + l + " does not exist"); e.status = 422; throw e; }
-    return { data: { number: 1 } };
+    made = { number: 1, title, state: "open" };
+    return { data: made };
   },
 } } };
 const context = { repo: { owner: "o", repo: "r" }, serverUrl: "https://github.com", runId: 1 };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const fn = new AsyncFunction("github", "context", "core", fs.readFileSync(scriptPath, "utf8"));
-fn(github, context, {}).then(() => fs.writeFileSync(outPath, JSON.stringify({ ok: true, calls })),
+const core = { info: () => {}, setOutput: () => {} };
+fn(github, context, core).then(() => fs.writeFileSync(outPath, JSON.stringify({ ok: true, calls })),
   (e) => fs.writeFileSync(outPath, JSON.stringify({ ok: false, error: String(e.message), calls })));
 JS
 for mode in none both denied; do node "$work/runjs.js" "$work/rescan-step.js" "$mode" "$work/js-$mode.json" >/dev/null 2>&1 || true; done
