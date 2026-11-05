@@ -5606,7 +5606,7 @@ fi
 # --- HLF-BEGIN: REQ-SUP-001-AC35, the hash-locked fetch ruling kind (orchestrator ruling Nov 5, cache#840 F3 option c) -----------------------------------
 # The one kernel fetch line of bin/refresh-inputs.sh is ruled by a row that starts with HASH_LOCKED_RULING, and only when the line is the fixed shape, the file holds it
 # once, and the lock file build/locks/vm-kernel.lock at the HEAD tree is a regular file of 1 to 500 pinned rows. The host, the path prefix, the file and the lock file are
-# constants of the checker; a row carries only its five usual fields. Everything here is self-contained: it needs only the base repository built above.
+# constants of the checker; a row carries its five usual fields and two of its own: `verifier` {file, line} and `verifier-line-sha256`. Everything here is self-contained: it needs only the base repository built above.
 # THE CODE CONTRACT the mutants below anchor on (pin-age-check.py): a constant HASH_LOCKED_RULING (the prefix, added to the accepted tuple of _run as `, HASH_LOCKED_RULING)) for r in rs):`),
 # and these tagged lines, each `<indent>if <condition>:  # HL:<tag>` with the refusal on the next line, exactly one line per tag:
 #   HL:gate      the _run line that blanks a row of this kind whose line fails _hash_locked_line_ok(...)
@@ -5614,7 +5614,8 @@ fi
 #   HL:path      the operand path is not /alpine/v3.24/main/x86_64/$f   HL:operands  there is not exactly one operand
 #   HL:flags     the flags are not the fixed list in the fixed order, or -g/-q/--proto =https/--tlsv1.2 is missing
 #   HL:lock      the lock file read from the head tree is missing or not a regular file (a malformed lock is refused by the inventory parser before the gate runs)
-#   HL:verifier  the verifier line (the physical line of the fetch script that checks a download's sha256 against the lock) is not in the file exactly once, as a whole line with no whitespace twin, or its sha256 is not the row's verifier-line-sha256
+#   HL:verifier  the row's verifier (the physical line of the fetch script that checks a download's sha256 against the lock) is not in the verifier's file exactly once, as a whole line with no whitespace twin, or that file is not the fetch file, or the row's line is not the file's line
+#   HL:verifier-sha  the sha256 of that line in the head file is not the row's verifier-line-sha256
 # and ONE line `<indent>rev = head  # HL:head` (the revision the lock file is read from).
 HLP='hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): '
 HLUR='https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f'
@@ -5625,12 +5626,19 @@ HLOTHER='curl -fsSL https://example.com/x -o /tmp/x'
 HLVL='    if hashlib.sha256(raw).hexdigest() != want_sha:'  # the verifier: bin/refresh-inputs.sh verify_kernel at cache#840 2120c27:754; every body below gets it appended once unless HLNV=1
 HLROW='linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e'
 echo '{"times": {}}' >"$work/hl-none.fx.json"
-hl_row() { # OUT FILE LINE PREFIX: the row for the download segment of LINE, bound to LINE, as the scan flattens it (the same as mkrowpf)
-  python3 - "$@" <<'PY'
-import hashlib, json, re, sys
+hl_row() { # OUT FILE LINE PREFIX: the row for the download segment of LINE, bound to LINE, as the scan flattens it (the same as mkrowpf), plus the verifier fields of the kind;
+  # env: HLVF (the verifier's file), HLVLINE (its line), HLVSHA (verifier-line-sha256), each default to the right value; HLVER and HLVSHA = - leave a field out, HLVER = raw JSON; HLVEXTRA=1 adds a key
+  HLVL="$HLVL" python3 - "$@" <<'PY'
+import hashlib, json, os, re, sys
 out, f, line, pref = sys.argv[1:5]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 flat = " ".join(line.split()); segs = [s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s)]
 rows = [{"file": f, "form": "a download", "key": H(sg), "line": H(flat), "ruling": pref + "pinned by file and whole line"} for sg in dict.fromkeys(segs)]
+e = os.environ; vl = e["HLVL"]; ver = e.get("HLVER") or {"file": e.get("HLVF", "bin/refresh-inputs.sh"), "line": e.get("HLVLINE", vl)}; sha = e.get("HLVSHA") or H(vl)
+if isinstance(ver, str): ver = None if ver == "-" else json.loads(ver)
+if isinstance(ver, dict) and e.get("HLVEXTRA"): ver["note"] = "x"
+for r in rows:
+    if ver is not None: r["verifier"] = ver
+    if sha != "-": r["verifier-line-sha256"] = sha
 json.dump({"exceptions": [], "unmeasured_text": rows}, open(out, "w"))
 PY
 }
@@ -5715,8 +5723,8 @@ ln="$HLKA \"$HLUR\" $HLKB "'`id`'; hl_case tail-backtick 1 $F "$ln" "$V" = "$ln"
 ln="$HLKA \"$HLUR\" $HLKB "'$(id)'; hl_case tail-substitution 1 $F "$ln" "$V" = "$ln"
 ln="$HLKA \"$HLUR\" $HLKB > /tmp/o"; hl_case tail-redirect 1 $F "$ln" "$V" = "$ln"
 # the row: another prefix, the prefix on another line, the same line in another file, hashes of another line
-hl_case row-prefix-pinned-fetch 1 $F "$HLK" "$V" = "$HLK" 'pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
-hl_case row-prefix-live-fetch 1 $F "$HLK" "$V" = "$HLK" 'live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): '
+HLVER=- HLVSHA=- hl_case row-prefix-pinned-fetch 1 $F "$HLK" "$V" = "$HLK" 'pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+HLVER=- HLVSHA=- hl_case row-prefix-live-fetch 1 $F "$HLK" "$V" = "$HLK" 'live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): '
 hl_case same-line-other-file 1 bin/other.sh "$HLK" "$V" = "$HLK"
 hl_case row-names-another-line 1 $F "$HLKA \"https://example.com/x/\$f\" $HLKB" "$V" = "$HLK"
 # the file: the line twice, a whitespace twin, a carriage return, a symlink
@@ -5760,6 +5768,23 @@ HLNV=1 hl_case verifier-with-cr 1 $F "$HLK"$'\n'"$HLVL"$'\r' "$V" = "$HLK"
 HLNV=1 hl_case verifier-other-operator 1 $F "$HLK"$'\n'"${HLVL/!=/==}" "$V" = "$HLK"
 hl_case verifier-twice 1 $F "$HLK"$'\n'"$HLVL" "$V" = "$HLK"
 hl_case verifier-whitespace-twin 1 $F "$HLK"$'\n'"${HLVL/if hashlib/if  hashlib}" "$V" = "$HLK"
+# the row's two fields (round 1 seat D, orchestrator answer 10:08Z): the sha256 is a row field, the checker hashes the file's line and compares; absent or wrong fields rule nothing
+HLSHA=$(printf %s "$HLVL" | sha256sum | cut -d' ' -f1)
+HLSHAX=$([ "${HLSHA:0:1}" = 0 ] && echo 1 || echo 0)${HLSHA:1}   # the right sha with its first digit changed
+HLVSHA=$HLSHAX hl_case verifier-sha-wrong 1 $F "$HLK" "$V" = "$HLK"
+HLVER=- HLVSHA=- hl_case row-without-verifier-fields 1 $F "$HLK" "$V" = "$HLK"
+HLVF=bin/other.sh hl_case verifier-file-other 1 $F "$HLK" "$V" = "$HLK"
+HLVLINE="${HLVL/!=/==}" hl_case verifier-row-line-differs 1 $F "$HLK" "$V" = "$HLK"
+# the loader: a field that is malformed, alone, or on another kind of row stops the check
+HLVSHA="${HLSHA%?}" hl_case verifier-sha-63-hex 2 $F "$HLK" "$V" = "$HLK"
+HLVSHA="${HLSHA^^}" hl_case verifier-sha-upper-case 2 $F "$HLK" "$V" = "$HLK"
+HLVSHA=- hl_case verifier-sha-missing 2 $F "$HLK" "$V" = "$HLK"
+HLVER=- hl_case verifier-object-missing 2 $F "$HLK" "$V" = "$HLK"
+HLVEXTRA=1 hl_case verifier-extra-key 2 $F "$HLK" "$V" = "$HLK"
+HLVER='"bin/refresh-inputs.sh"' hl_case verifier-not-an-object 2 $F "$HLK" "$V" = "$HLK"
+HLVER='{"file": "bin/refresh-inputs.sh"}' hl_case verifier-without-line 2 $F "$HLK" "$V" = "$HLK"
+HLVER='{"file": "", "line": "x"}' hl_case verifier-empty-file 2 $F "$HLK" "$V" = "$HLK"
+hl_case other-kind-row-with-verifier-fields 2 $F "$HLK" "$V" = "$HLK" 'pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
 # the lock: missing, removed at the head, a link, empty, 501 rows, a malformed row, a repeated row
 hl_case lock-missing 1 $F "$HLK" - = "$HLK"
 hl_case lock-removed-at-head 1 $F "$HLK" "$V" - "$HLK"
@@ -5808,6 +5833,7 @@ else
   hl_mutant flags-check-dropped tag flags
   hl_mutant lock-check-dropped tag lock
   hl_mutant verifier-check-dropped tag verifier
+  hl_mutant verifier-sha-check-dropped tag verifier-sha
   hl_mutant lock-read-from-the-base head head
   hl_mutant prefix-not-accepted prefix prefix
 fi
