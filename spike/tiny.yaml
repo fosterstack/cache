@@ -10,6 +10,8 @@ environment:
   contents:
     packages:
       - busybox
+      - wget
+      - ca-certificates-bundle
 
 pipeline:
   - name: identity
@@ -18,26 +20,30 @@ pipeline:
       echo "SPIKE-GUEST: root-mount=$(busybox awk '$2=="/"{print $1" "$3}' /proc/mounts | head -1)"
   - name: egress
     runs: |
-      T=""
-      busybox --list | grep -qx timeout && T="busybox timeout 8"
-      echo "SPIKE-GUEST: applets nc=$(busybox --list | grep -cx nc) nslookup=$(busybox --list | grep -cx nslookup) timeout=$(busybox --list | grep -cx timeout) mount=$(busybox --list | grep -cx mount)"
-      rc=0; $T busybox nc -w 3 1.1.1.1 443 </dev/null >/dev/null 2>&1 || rc=$?
+      echo "SPIKE-GUEST: applets=$(busybox --list | tr '\n' ' ')"
+      echo "SPIKE-GUEST: wget=$(command -v wget || echo none)"
+      rc=0; wget -T 6 -t 1 -q -O /dev/null https://1.1.1.1/ >/dev/null 2>&1 || rc=$?
       echo "SPIKE-GUEST: egress-connect rc=$rc"
-      rc=0; $T busybox nslookup example.com 10.0.2.3 >/dev/null 2>&1 || rc=$?
+      rc=0; wget -T 6 -t 1 -q -O /dev/null https://example.com/ >/dev/null 2>&1 || rc=$?
       echo "SPIKE-GUEST: dns rc=$rc"
   - name: hostile
     runs: |
-      echo "SPIKE-GUEST: 9p-mounts=$(busybox awk '$3=="9p"{print $1" "$2" "$4}' /proc/1/mounts 2>/dev/null | tr '\n' ';')"
-      SHARE=$(busybox awk '$1=="defaultshare"{print $2}' /proc/1/mounts 2>/dev/null | head -n 1)
-      echo "SPIKE-GUEST: share=${SHARE:-none}"
-      if [ -n "$SHARE" ] && [ -d "/proc/1/root$SHARE" ]; then
-        W9="/proc/1/root$SHARE"
-        echo "SPIKE-GUEST: share-holds=$(ls -A "$W9" 2>&1 | head -n 4 | tr '\n' ' ')"
-        rc=0; busybox mount -o remount,rw "$W9" >/dev/null 2>&1 || rc=$?; echo "SPIKE-GUEST: remount-rw rc=$rc"
-        rc=0; echo guest > "$W9/spike-guest-file" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: write-in-share rc=$rc"
-        rc=0; ln -s /tmp/spike-canary-outside "$W9/spike-escape-link" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: symlink-in-share rc=$rc"
-        rc=0; echo SPIKE-GUEST-WROTE >> "$W9/spike-escape-link" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: write-through-link rc=$rc"
-        rc=0; echo SPIKE-GUEST-WROTE > "$W9/spike-canary-in-checkout.txt" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: overwrite-checkout-copy rc=$rc"
+      P=/proc/1/root
+      LD=$(ls $P/usr/lib/ld-linux-*.so.* $P/lib/ld-linux-*.so.* 2>/dev/null | head -n 1)
+      M="$LD --library-path $P/usr/lib:$P/lib $P/usr/bin/mount"
+      echo "SPIKE-GUEST: mount-program loader=${LD:-none} mount=$([ -x $P/usr/bin/mount ] && echo yes || echo no)"
+      echo "SPIKE-GUEST: 9p-mounts-before=$(busybox awk '$3=="9p"{print $1" "$2" "$4}' /proc/1/mounts 2>/dev/null | tr '\n' ';')"
+      mkdir -p /tmp/spike-9p
+      rc=0; $M -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 defaultshare /tmp/spike-9p >/tmp/spike-mount.out 2>&1 || rc=$?
+      echo "SPIKE-GUEST: 9p-remount rc=$rc out=$(head -c 240 /tmp/spike-mount.out | tr '\n' ' ')"
+      if [ "$rc" = 0 ]; then
+        echo "SPIKE-GUEST: share-holds=$(ls -A /tmp/spike-9p | head -n 4 | tr '\n' ' ')"
+        rc=0; $M -o remount,rw /tmp/spike-9p >/dev/null 2>&1 || rc=$?; echo "SPIKE-GUEST: remount-rw rc=$rc"
+        rc=0; echo guest > /tmp/spike-9p/spike-guest-file 2>/dev/null || rc=$?; echo "SPIKE-GUEST: write-in-share rc=$rc"
+        rc=0; ln -s /tmp/spike-canary-outside /tmp/spike-9p/spike-escape-link 2>/dev/null || rc=$?; echo "SPIKE-GUEST: symlink-in-share rc=$rc"
+        rc=0; echo SPIKE-GUEST-WROTE >> /tmp/spike-9p/spike-escape-link 2>/dev/null || rc=$?; echo "SPIKE-GUEST: write-through-link rc=$rc"
+        rc=0; echo SPIKE-GUEST-WROTE > /tmp/spike-9p/spike-canary-in-checkout.txt 2>/dev/null || rc=$?; echo "SPIKE-GUEST: overwrite-checkout-copy rc=$rc"
+        echo "SPIKE-GUEST: link-target-seen-by-guest=$(readlink /tmp/spike-9p/spike-escape-link 2>&1)"
       fi
       echo "SPIKE-GUEST: hostile done"
   - name: install

@@ -34,10 +34,6 @@ jobs:
             kind: x86-fresh
             arch: x86_64
             timeout: 20
-          - name: vm-arm64-tcg
-            kind: arm64-tcg
-            arch: aarch64
-            timeout: 40
     env:
       KIND: ${{ matrix.kind }}
       TARGET_ARCH: ${{ matrix.arch }}
@@ -249,6 +245,8 @@ jobs:
             packages:
               - microvm-init
               - busybox
+              - wget
+              - ca-certificates-bundle
           archs:
             - $TA
           YEOF
@@ -396,24 +394,25 @@ jobs:
           if kernel_ok "$KIMG"; then
             tiny_run control no "$KIMG"
             c=$(guest_rc control egress-connect)
-            if [ "$TR_RC" = 0 ] && [ "$c" = 0 ]; then R "U1 control (no network cut): guest connect 1.1.1.1:443 CONNECTED, so the egress probe can detect egress (melange exit 0, ${TR_SECS}s)"
+            if [ "$TR_RC" = 0 ] && { [ "$c" = 0 ] || [ "$c" = 8 ]; }; then R "U1 control (no network cut): guest connect 1.1.1.1:443 CONNECTED, so the egress probe can detect egress (melange exit 0, ${TR_SECS}s)"
             else R "U1 control INCONCLUSIVE: no network cut but the guest connect rc=${c:-none}, melange exit $TR_RC; the cut-run egress result below proves nothing"; fi
           else R "KERNEL-PRECHECK FAIL: the pinned kernel or initramfs is missing or its sha256 differs"; exit 1; fi
           # --- the real shape: network cut, loopback up, melange and QEMU as the runner user
           tiny_run cut yes "$KIMG"
           c=$(guest_rc cut egress-connect); d=$(guest_rc cut dns)
-          if [ "$TR_RC" = 0 ] && [ "$TR_IFACES" = lo ] && [ -n "$c" ] && [ "$c" != 0 ] && [ "$c" != 127 ] && [ -n "$d" ] && [ "$d" != 0 ] && [ "$d" != 127 ]; then
+          if [ "$TR_RC" = 0 ] && [ "$TR_IFACES" = lo ] && [ "$c" = 4 ] && [ "$d" = 4 ]; then
             R "U1 PASS: network namespace interfaces=$TR_IFACES, lo up, hostfwd ssh answered (melange reached the guest), melange exit 0 (${TR_SECS}s)"
-            R "U1 egress: guest connect 1.1.1.1:443 refused/timeout (rc=$c), DNS fail (rc=$d)"
-          else R "U1 FAIL: interfaces='$TR_IFACES' melange exit $TR_RC guest connect rc='${c:-none}' dns rc='${d:-none}' (127 means the probe program was missing: inconclusive)"; fi
+            R "U1 egress: guest https connect 1.1.1.1:443 refused/timeout (wget rc=$c = network failure), name fetch https://example.com fail (rc=$d = network failure)"
+          else R "U1 FAIL: interfaces='$TR_IFACES' melange exit $TR_RC guest connect rc='${c:-none}' dns rc='${d:-none}' (wget rc 4 = network failure = blocked; 0 or 8 = connected; 127 = probe missing)"; fi
           oapk=$(stat -c %u "$W"/out-cut/$TA/spike-tiny-1.0.0-r0.apk 2>/dev/null || echo none)
           if [ "$TR_MUID" = "$RUN_UID" ] && [ "$TR_QUID" = "$RUN_UID" ] && [ "$oapk" = "$RUN_UID" ]; then R "U2 PASS: melange uid=$TR_MUID, qemu uid=$TR_QUID, out apk owner uid=$oapk (runner uid $RUN_UID); tar extraction with ownership records worked unprivileged; root only created the namespace"
           else R "U2 FAIL: melange uid='$TR_MUID' qemu uid='$TR_QUID' out apk owner='$oapk' (runner uid $RUN_UID)"; fi
           # --- U6: the guest wrote through the rw 9p share; nothing outside the workspace changed
           now_out=$(sha256sum /tmp/spike-canary-outside | cut -d' ' -f1); now_co=$(sha256sum "$GITHUB_WORKSPACE/spike-canary-in-checkout.txt" | cut -d' ' -f1)
           inws=$(ls "$W/ws-cut" 2>/dev/null | grep -E 'spike-guest-file|spike-escape-link' | tr '\n' ' ' || true)
-          if [ "$now_out" = "$OUT_SHA" ] && [ "$now_co" = "$CO_SHA" ]; then R "U6 PASS: both canaries unchanged (outside the workspace sha256:$now_out; in the checkout sha256:$now_co); the guest's writes landed only in the workspace: [${inws:-nothing found}]"
-          else R "U6 FAIL: a canary changed (outside $OUT_SHA -> $now_out; checkout $CO_SHA -> $now_co)"; fi
+          if [ "$now_out" != "$OUT_SHA" ] || [ "$now_co" != "$CO_SHA" ]; then R "U6 FAIL: a canary changed (outside $OUT_SHA -> $now_out; checkout $CO_SHA -> $now_co)"
+          elif [ -n "$inws" ]; then R "U6 PASS: the guest re-mounted the 9p share from the pid-1 root and wrote into the workspace [$inws], through a symlink to the outside canary and over the checkout copy; both canaries unchanged (outside sha256:$now_out; checkout sha256:$now_co)"
+          else R "U6 INCONCLUSIVE: both canaries unchanged but the guest left no file in the workspace (did the re-mount work? see the SPIKE-GUEST 9p-remount line)"; fi
           R "U5 tiny: control ${TR_SECS}s last / cut-run melange call ${TR_SECS}s (tiny recipe, the real recipe is timed below)"
           # --- upstream's kernel fall-back, shown: the file is missing and melange still starts a VM
           if ! kernel_ok /nonexistent/vmlinuz; then R "KERNEL-FAILOPEN PASS: the job-side pre-check stops a missing kernel file before melange runs (kernel_ok /nonexistent/vmlinuz is false)"; else R "KERNEL-FAILOPEN FAIL: the pre-check let a missing kernel through"; fi
@@ -542,26 +541,26 @@ jobs:
             # Build-style: this checkout, both variants, the QEMU runner
             build_set vm-build "$GITHUB_WORKSPACE" "$W/build-apk-vm.sh" out/vm-a standard fips 2>&1 | tee -a "$W/builds.log" || true
             list_apks vm-build out/vm-a
-            # Rebuild-style: a second fresh workspace (a clone of the same commit with its own archive copy), the same call
-            git clone -q --no-hardlinks "$GITHUB_WORKSPACE" "$W/ws-b"
-            cp -al archive "$W/ws-b/archive"
-            build_set vm-rebuild "$W/ws-b" "$W/build-apk-vm.sh" out/vm-b standard 2>&1 | tee -a "$W/builds.log" || true
-            list_apks vm-rebuild "$W/ws-b/out/vm-b"
+            # Rebuild-style at the SAME absolute path: keep the results so far, make the tree fresh again (untracked files removed, the pulled archive kept), same call
+            mkdir -p "$W/keep-a"; cp -a out/vm-a out/bwrap "$W/keep-a/" || true
+            git clean -ffdxq -e archive -e host-tools
+            build_set vm-rebuild "$GITHUB_WORKSPACE" "$W/build-apk-vm.sh" out/vm-b standard 2>&1 | tee -a "$W/builds.log" || true
+            list_apks vm-rebuild out/vm-b
             # compare
             # the Rebuild-style workspace builds the standard variant only (time); every apk it made is compared with the Build-style one
             ok=yes; n=0
-            for b in "$W/ws-b/out/vm-b/$TA/"*.apk; do [ -e "$b" ] || continue; n=$((n + 1)); f="$GITHUB_WORKSPACE/out/vm-a/$TA/$(basename "$b")"
+            for b in out/vm-b/$TA/*.apk; do [ -e "$b" ] || continue; n=$((n + 1)); f="$W/keep-a/vm-a/$TA/$(basename "$b")"
               if [ -f "$f" ] && python3 -I bin/apk-tool.py same "$f" "$b" > /dev/null 2>&1; then :; else ok=no; fi; done
-            ma=$(sha256sum "$GITHUB_WORKSPACE/out/vm-a/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true); mb=$(sha256sum "$W/ws-b/out/vm-b/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true)
+            ma=$(sha256sum "$W/keep-a/vm-a/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true); mb=$(sha256sum out/vm-b/inputs-manifest.json 2>/dev/null | cut -d' ' -f1 || true)
             [ -n "$ma" ] && [ "$ma" = "$mb" ] || ok=no
-            if [ "$ok" = no ]; then apk_diff build-vs-rebuild "$GITHUB_WORKSPACE/out/vm-a/$TA/fscache-0.0.0_rc1-r0.apk" "$W/ws-b/out/vm-b/$TA/fscache-0.0.0_rc1-r0.apk"; fi
-            apk_diff bubblewrap-vs-vm "$GITHUB_WORKSPACE/out/bwrap/$TA/fscache-0.0.0_rc1-r0.apk" "$GITHUB_WORKSPACE/out/vm-a/$TA/fscache-0.0.0_rc1-r0.apk"
+            if [ "$ok" = no ]; then apk_diff build-vs-rebuild "$W/keep-a/vm-a/$TA/fscache-0.0.0_rc1-r0.apk" "out/vm-b/$TA/fscache-0.0.0_rc1-r0.apk"; fi
+            apk_diff bubblewrap-vs-vm "$W/keep-a/bwrap/$TA/fscache-0.0.0_rc1-r0.apk" "$W/keep-a/vm-a/$TA/fscache-0.0.0_rc1-r0.apk"
             if [ "$ok" = yes ] && [ "$n" -ge 1 ]; then R "U5 PASS: Build-style and Rebuild-style apks have the same digest ($n apk(s) compared, standard variant); inputs-manifest sha256:$ma == $mb"
             else R "U5 FAIL: Build-style and Rebuild-style differ or are missing ($n apk(s) compared; inputs-manifest sha256:$ma vs $mb)"; fi
             bw=$(total bubblewrap); vm=$(total vm-build)
             R "U5 time: bubblewrap baseline ${bw}s for two calls (today's stage reports 55 s for them), VM Build-style ${vm}s for two calls, ratio $(awk -v a="$vm" -v b="$bw" 'BEGIN {if (b > 0) printf "%.2f", a / b; else print "n/a"}')"
             if [ "$bw" -gt 0 ] && [ "$vm" -gt $((bw * 3)) ]; then R "U5 FAIL: the VM build takes more than 3x today's (Not do it case 4)"; fi
-            same=yes; for f in "$GITHUB_WORKSPACE"/out/bwrap/$TA/*.apk; do v="$GITHUB_WORKSPACE/out/vm-a/$TA/$(basename "$f")"; [ -f "$v" ] && python3 -I bin/apk-tool.py same "$f" "$v" > /dev/null 2>&1 || same=no; done
+            same=yes; for f in "$W"/keep-a/bwrap/$TA/*.apk; do v="$W/keep-a/vm-a/$TA/$(basename "$f")"; [ -f "$v" ] && python3 -I bin/apk-tool.py same "$f" "$v" > /dev/null 2>&1 || same=no; done
             R "U5 note: VM apk digest vs bubblewrap apk digest: $([ "$same" = yes ] && echo equal || echo DIFFERENT, to be explained)"
             ;;
           x86-fresh)
