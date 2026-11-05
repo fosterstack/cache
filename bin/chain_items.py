@@ -29,6 +29,7 @@ ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architectu
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
 TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
                "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN",
+               "RELEASE_KMS_KEY_REF", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",      # the release signing key's reference and the AWS session the credentials step makes
                "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "APK_RELEASE_SIGNING_KEY")      # rc-2 R4 (Fable): Release's own three credentials, which its six Witness records could carry
 
 

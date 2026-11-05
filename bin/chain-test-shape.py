@@ -887,7 +887,7 @@ NS_SHA = {
     "bin/chain-verify.py": "8913741c8e9470165392fe96c72e4611d96507423a8c6e7bbf625262df77a50c",
     "bin/chain_common.py": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
     "bin/chain_hostile.py": "377ac8e8f5440fb51616ae937416ba0a206c70bce93999270c2df5cfb9c92d0c",
-    "bin/chain_items.py": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6",
+    "bin/chain_items.py": "c69580d89199e651ae7be569559899d15d9aa7c7a429fc672737fe59cc37faa4",
     "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
     "bin/install-host-bwrap.py": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",

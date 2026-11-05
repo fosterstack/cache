@@ -325,12 +325,13 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "0b95fcac85c4e52273299b557d78fb9677bb2ec1901a137bb3ebe22dc879dccd",
+      "sha256": "10dbfa9eb6287aded9f92f4557bbd8344f0726fa890c2361689d262510c163e4",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
         "DOCKERHUB_USERNAME",
-        "DOCKERHUB_TOKEN"
+        "DOCKERHUB_TOKEN",
+        "RELEASE_KMS_KEY_REF"
       ],
       "arg_map": {
         "release-verify": "bin/release-verify.sh",
@@ -343,7 +344,7 @@
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   --env-add-sensitive-key RELEASE_KMS_KEY_REF   --env-add-sensitive-key AWS_ACCESS_KEY_ID   --env-add-sensitive-key AWS_SECRET_ACCESS_KEY   --env-add-sensitive-key AWS_SESSION_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
           "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
         },
         {
@@ -630,7 +631,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "a2d194f4f616f4c050b69a1966384275889da42a1d6b90de8cb1b0a31386c2d6"
+      "sha256": "c69580d89199e651ae7be569559899d15d9aa7c7a429fc672737fe59cc37faa4"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -1723,12 +1724,13 @@
         "bin/vex-forms.py"
       ],
       "signs": "other",
-      "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "c502757722331900fbb6a60d7d7b3c65d9b97a6e0610294da48462520e95c293",
+      "reason": "Release, step release-sign: cosign signatures made with the release KMS key (reached through the AWS credentials step), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "sha256": "45badb97bed004ac20f681164792607b996d3317d940da001cce56bc7d86a894",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
-        "GH_TOKEN"
+        "GH_TOKEN",
+        "RELEASE_KMS_KEY_REF"
       ],
       "exceptions": [
         {
@@ -1874,7 +1876,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "f0f2083bca437f02dece6af7dce3fb03bd40d9f5e667c4fe0bbc236949e96a46",
+      "sha256": "90ea148d814a0e929101a70588461fd6f0a261094182dbcc1549471528449d70",
       "env_mentions": [
         {
           "name": "ENV",
@@ -2685,6 +2687,20 @@
       "name": "DOCKERHUB_TOKEN",
       "script": "bin/release-sign.sh",
       "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "RELEASE_KMS_KEY_REF",
+      "script": "bin/release-sign.sh",
+      "why": "Release: the reference of the release signing key (awskms:///alias/...), one literal in this step's env; cosign reads the key through it and it is never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "RELEASE_KMS_KEY_REF",
+      "script": "bin/witnessed.sh",
+      "why": "Release: the wrapper receives the key reference from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
       "file": ".github/workflows/stage-promote.yml",
       "job": "release"
     }

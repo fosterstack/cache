@@ -41,9 +41,12 @@ UP = {"release-evidence", "witness-release", "witness-release-verify"}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
-WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
+WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY) | {"RELEASE_KMS_KEY_REF"}, "release-assets": {"GH_TOKEN"},
        "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
 CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+AWS_PIN = "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd"
+AWS_WITH = {"role-to-assume": "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing", "aws-region": "us-east-1"}   # the same pin and values as bin/chain-test-signers.py
+KMS_NAMES = {"RELEASE_KMS_KEY_REF", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}   # the signing key's reference and the AWS session of the credentials step: never printed, never in a record
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
@@ -265,6 +268,10 @@ def stage(path):
             kinds.append("up"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
                 bad.append("upload-artifact must be digest-pinned with a name in %s: %s" % (sorted(UP), w))
+        elif u.startswith("aws-actions/configure-aws-credentials@"):
+            kinds.append("aws")
+            if u.split(" ")[0] != AWS_PIN or s.get("with") != AWS_WITH or s.get("env") is not None:
+                bad.append("the AWS credentials step must be %s with exactly %s and no env: %s" % (AWS_PIN, AWS_WITH, s))
         elif u:
             bad.append("uses not allowed in the Release stage: %s" % u)
         elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
@@ -277,7 +284,7 @@ def stage(path):
             kinds.append("RE:" + r.split()[-1].split("/")[0][len("witness-"):])
         else:
             bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
-        want_if = RC_IF if kinds and kinds[-1][:2] in ("W:", "RE") and kinds[-1] not in ("W:release-verify", "RE:release-verify") else None
+        want_if = RC_IF if kinds and (kinds[-1][:2] in ("W:", "RE") or kinds[-1] == "aws") and kinds[-1] not in ("W:release-verify", "RE:release-verify") else None
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
             bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
                        % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
@@ -307,8 +314,11 @@ def stage(path):
         bad.append("the witnessed steps must be exactly %s, in this order, found %s" % (STEPS, [w[2:] for w in ws]))
     last_w = max((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
     first_w = min((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
-    if first_w >= 0 and any(not k.startswith("W:") for k in kinds[first_w:last_w + 1]):
-        bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % kinds[first_w:last_w + 1])
+    inside = kinds[first_w:last_w + 1]
+    if inside.count("aws") > 1 or ("aws" in inside and inside[inside.index("aws") + 1] != "W:release-sign") or "aws" in kinds and "aws" not in inside:
+        bad.append("the one AWS credentials step must sit directly before the release-sign step: %s" % kinds)
+    if first_w >= 0 and any(not k.startswith("W:") and k != "aws" for k in inside):
+        bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % inside)
     if any(k.startswith("install:") for k in kinds[5:]):
         bad.append("between the checkout and the downloads exactly the four installs are allowed, and no install after them: %s" % kinds)
     after = kinds[last_w + 1:]
@@ -475,7 +485,7 @@ def scan(path, jsonpath):
             bad.append("%s:%d sets a PATH-like variable" % (os.path.basename(path), n))
         if re.search(r"\bset\s+-\w*x|xtrace", l):
             bad.append("%s:%d turns on tracing (it would print credentials)" % (os.path.basename(path), n))
-        if re.search(r"\b(echo|printf|cat|tee)\b[^;&|]*\$\{?(%s)\b" % "|".join(sorted(CREDS)), l) and not re.fullmatch(KEYWRITE, l.strip()):
+        if re.search(r"\b(echo|printf|cat|tee)\b[^;&|]*\$\{?(%s)\b" % "|".join(sorted(CREDS | KMS_NAMES)), l) and not re.fullmatch(KEYWRITE, l.strip()):
             bad.append("%s:%d prints a credential" % (os.path.basename(path), n))
         if re.search(r"melange\s+build|apko\s+build|go\s+build|docker\s+build|buildx", l):
             bad.append("%s:%d is a build command: Release builds nothing" % (os.path.basename(path), n))
@@ -521,7 +531,7 @@ def record(path, values):
         text = raw + "\n" + payload
     except Exception:
         return ["not a DSSE envelope with a base64 payload"]
-    for n in sorted(CREDS | {"ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "SIGSTORE_ID_TOKEN"}):
+    for n in sorted(CREDS | KMS_NAMES | {"ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "SIGSTORE_ID_TOKEN"}):
         if n in text:
             bad.append("the record names %s" % n)
     for v in values:
@@ -563,12 +573,15 @@ def metadata(path):
     if sorted(atts) != sorted(want):
         bad.append("release-sign.sh must hold exactly these two `cosign attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
                    "the Docker Hub mirror best-effort with a warning): %r" % atts)
-    unkeyed = [l for l in lines if re.match(r"cosign (sign|sign-blob|attest) ", l) and not l.startswith(tuple('cosign %s --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json ' % c for c in ("sign", "sign-blob", "attest")))]
-    if unkeyed:      # handoff 0713 P3: every signature is made with the release KMS key the job pins, and keeps its Rekor entry through the signing config
-        bad.append("every cosign signing line must be `--yes --key \"$RELEASE_KMS_KEY_REF\" --signing-config .github/policy/cosign-signing-config.json ...`: %r" % unkeyed[:2])
-    if sorted(atts) != sorted(want):
-        pass
-    elif marks.get("attest") is not None:
+    keyed = 'cosign {} --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json '
+    blob = re.compile(re.escape(keyed.format("sign-blob")) + r"--bundle [\w./-]+ [\w./-]+")
+    allowed = want | {keyed.format("sign") + '"$host/$repo@$digest"', 'cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"',
+                      'cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"'}
+    # handoff 0713 P3: every signature is made with the release KMS key the job pins and keeps its Rekor entry through the signing config; any other line that runs cosign is refused
+    odd = [l for l in lines if re.search(r"(?<![\w-])cosign(?![\w-])", l) and l not in allowed and not blob.fullmatch(l)]
+    if odd:
+        bad.append("every cosign signing line must be exactly `--yes --key \"$RELEASE_KMS_KEY_REF\" --signing-config .github/policy/cosign-signing-config.json ...` and nothing else: %r" % odd[:2])
+    if sorted(atts) == sorted(want) and marks.get("attest") is not None:
         loop = next((i for i in range(marks["attest"], -1, -1) if lines[i].startswith("for digest in ")), None)
         if loop is None or lines[loop] != 'for digest in "$prod" "$fips"; do':
             bad.append('the manifest attestations must sit inside `for digest in "$prod" "$fips"; do` (both public digests)')

@@ -450,6 +450,16 @@ def run_plan(plan):
     return failed
 
 
+def place_release_key():
+    key = "build/keys/release.rsa.pub"
+    if os.path.exists(ASSETS + "/release.rsa.pub"):
+        refuse("%s/release.rsa.pub exists: a published asset must not stand in for the committed key" % ASSETS)
+    if not os.path.isfile(key) or os.path.getsize(key) == 0:
+        refuse("%s is missing or empty: the commands that verify with --key release.rsa.pub need it" % key)
+    with open(key, "rb") as src, open(ASSETS + "/release.rsa.pub", "wb") as dst:
+        dst.write(src.read())
+
+
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
     if not TAG.match(tag):
@@ -459,6 +469,7 @@ def main():
     if not os.path.isdir(ASSETS):
         refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can "
                "resolve its files; nothing is run" % ASSETS)
+    place_release_key()
     failed = run_plan(plan)
     if failed:
         refuse("post-publish verification failed: %d of %d runs failed: %s"

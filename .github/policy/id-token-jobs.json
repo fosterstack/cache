@@ -49,7 +49,7 @@
   {
    "workflow": "release.yml",
    "job": "release",
-   "reason": "calls stage-promote.yml: Release, whose Witness steps and keyless cosign signatures mint the signing identity (REQ-CHAIN-007)"
+   "reason": "calls stage-promote.yml: Release, whose Witness steps mint the signing identity and whose AWS credentials step assumes the release signing role (REQ-CHAIN-007)"
   },
   {
    "workflow": "scan.yml",
@@ -79,7 +79,7 @@
   {
    "workflow": "stage-promote.yml",
    "job": "release",
-   "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
+   "reason": "Release (REQ-CHAIN-007): Witness steps mint the signing identity and the AWS credentials step assumes the release signing role for release-sign.sh's KMS signatures; the one job with a registry credential, the apk signing key and packages: write"
   },
   {
    "workflow": "stage-sign.yml",

@@ -4,7 +4,7 @@
 # It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68) and the pinned melange (for the apk re-signing, REQ-CHAIN-007-AC1), the earlier stages' artifacts, then six Witness steps through the one helper,
 # each a committed script: release-verify (no credential is bound to this step: the tag, the release policy, every earlier stage's record in rule 69's order),
 # release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
-# release-sign (keyless signatures with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
+# release-sign (signatures made with the release KMS key, each with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
 # commands that need a registry, run against what was just published, in both registries; rule 79 as amended by the owner on Oct 10). Release creates no tag.
 # A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after the verify job: the release job carries the job-level condition below and is skipped (and every
 # witnessed step after release-verify carries it too), so no secret or key is bound to any step, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
@@ -213,12 +213,19 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-publish bin/release-publish.sh
+      - name: AWS, as the release signing role (federated; kms:Sign on the release signing key only)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          aws-region: us-east-1
       - name: release-sign under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witnessed.sh release-sign bin/release-sign.sh
       - name: release-assets under Witness
         if: ${{ !contains(github.ref_name, '-') }}

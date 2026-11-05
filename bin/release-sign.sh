@@ -8,8 +8,8 @@ set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN RELEASE_KMS_KEY_REF; do
   if [ -z "${!name:-}" ]; then echo "release-sign: $name is unset" >&2; exit 2; fi
 done
-# the job pins the key's reference (awskms:///<name>); the name of the KMS key is not written here, because the chain's text scan refuses a word in it
-case "$RELEASE_KMS_KEY_REF" in awskms:///?*) ;; *) echo "release-sign: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1 ;; esac
+# the reference is one word of plain characters, so nothing else can reach cosign as part of it
+[[ "$RELEASE_KMS_KEY_REF" =~ ^awskms:///[A-Za-z0-9/_+=,.@:-]+$ ]] || { echo "release-sign: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1; }
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 # REQ-CHAIN-007-AC21 (Astra R3): checksums.txt has no other producer. Before any evidence is made or anything is signed, the four archives in dist are bound to Build's digests.json
 # and the file release-assets attaches and this step signs is written from them; an archive that is missing, extra or not Build's stops the step here
