@@ -162,10 +162,8 @@ Set `FSCACHE_MAX_BYTES` to your eviction cap and size the disk above it; see
 
 ## Configuration
 
-All configuration is environment variables — the full table is in the
-[README](../README.md#build-and-run-from-source): `FSCACHE_ADDR`,
-`FSCACHE_DATA_DIR`, `FSCACHE_MAX_BYTES`, `FSCACHE_USERNAME` /
-`FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
+All configuration is environment variables. The full table, with defaults, is in the
+[README](../README.md#build-and-run-from-source).
 
 ## Build from source
 
