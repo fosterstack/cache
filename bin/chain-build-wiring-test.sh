@@ -1056,7 +1056,7 @@ case("AC17 a noarch package is accepted", setup=lambda d: apk(d + "/archive/" + 
 case("AC17 a file that is not an apk (not gzip) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "wb").write(b"not an apk"), want=1)
 case("AC17 an apk that is a symlink instead of a file is refused", setup=lambda d: (os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), os.symlink(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", d + "/archive/" + ARCH + "/libcap-2.78-r4.apk")), want=1)
 for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("a .. part", [("usr/../../evil", "file", b"E", None)]),
-                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
+                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
                    ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)]),
                    ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
                    ("two symlinks that together leave the directory (a -> . ; b -> a/../probe)", [("a", "sym", ".", None), ("b", "sym", "a/../probe", None)]),
@@ -3707,7 +3707,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1275
+EXPECT=1298
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
