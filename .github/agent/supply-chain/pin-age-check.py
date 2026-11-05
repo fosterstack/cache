@@ -1799,7 +1799,8 @@ _LOOPBACK_OK = {}
 PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # nineteen script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
 HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "   # the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
 HL_FILE, HL_LOCK, HL_HOST, HL_PATH, HL_INDENT = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f", " " * 8
-_HL_FLAGS = re.compile(r'/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[A-Za-z0-9_./${}-]+" ')
+_HL_FLAGS = re.compile(re.escape('/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" '))
+_HL_DIE = ' die "could not download the kernel package from the Alpine mirror" 1'
 PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
     'bin/release-assets.sh': [
         'gh release download "$rel" -D release-published',
@@ -1887,11 +1888,11 @@ def _hash_locked_line_ok(root, head, f, flat):
     """REQ-SUP-001-AC35: True only for the one kernel fetch line of bin/refresh-inputs.sh: the fixed curl flags in the fixed order, one double-quoted operand
     https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f compared as written, then `|| die "plain text" 1`; the file holds that line once, as the whole raw line
     (eight spaces of indent, single spaces, nothing after it; no whitespace twin, no carriage return);
-    and the head tree holds the kernel lock file as a regular file of pinned rows (1 to 500), whose sha256 the refresh job checks before it keeps a package."""
+    and the head tree holds the kernel lock file as a regular file (the inventory refuses a malformed one first), whose sha256 the refresh job checks before it keeps a package."""
     if f != HL_FILE:  # HL:file
         return False
     left, _, right = flat.partition("||")
-    if not re.fullmatch(r'\s*die "[^"$`\\]*" 1\s*', right):
+    if right != _HL_DIE:
         return False
     start = _HL_FLAGS.match(left)
     if not start or re.search(r"[;&|<>`]|\$\(", left):  # HL:flags
@@ -1909,12 +1910,7 @@ def _hash_locked_line_ok(root, head, f, flat):
     if raw is None or b"\r" in raw or sum(" ".join(ln.split()) == flat for ln in raw.decode("utf-8", "replace").split("\n")) != 1 or (HL_INDENT + flat).encode() not in raw.split(b"\n"):
         return False
     rev = head  # HL:head
-    lock = _head_file(root, rev, HL_LOCK)
-    try:
-        rows = inv._kernel_lock_items(HL_LOCK, lock.decode("utf-8")) if lock and b"\r" not in lock else None
-    except (RuntimeError, UnicodeDecodeError):
-        rows = None
-    if not rows:  # HL:lock
+    if _head_file(root, rev, HL_LOCK) is None:  # HL:lock
         return False
     return True
 
