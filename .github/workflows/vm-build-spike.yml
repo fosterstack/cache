@@ -306,6 +306,13 @@ jobs:
           exec $ld --library-path \$R/usr/lib:\$R/usr/lib64:\$R/lib \$R/usr/bin/$HOSTPKG -L \$R/usr/share/qemu "\$@"
           WEOF
           sudo install -m 0755 "$W/qemu-wrapper" "/usr/local/bin/$HOSTPKG"
+          # melange only looks for the qemu of the machine it runs on (qemu-system-x86_64 here: exec.LookPath, qemu_runner.go) even when it builds another architecture;
+          # a stub that exits at once satisfies the lookup, nothing ever runs it as a VM
+          if [ "$HOSTPKG" != qemu-system-x86_64 ]; then
+            printf '#!/bin/sh\necho "spike stub: only present so melange finds a qemu for the host architecture" >&2\nexit 1\n' > "$W/qemu-stub-x86"
+            sudo install -m 0755 "$W/qemu-stub-x86" /usr/local/bin/qemu-system-x86_64
+            R "U3 note: melange's usability check looks for qemu-system-x86_64 on PATH when it builds $TA; a stub is installed for that lookup"
+          fi
           ver=$("/usr/local/bin/$HOSTPKG" --version | head -n 1)
           machines=$("/usr/local/bin/$HOSTPKG" -M help | grep -cE '^(microvm|virt) ' || true)
           if [ "$machines" -ge 1 ]; then R "U3 PASS: $ver runs from the unpacked archive closure ($(wc -l < "$W/lock/host.rows") packages, no package manager), machine type listed; accelerators: $("/usr/local/bin/$HOSTPKG" -accel help 2>&1 | tr '\n' ' ')"
@@ -422,8 +429,11 @@ jobs:
             kill -0 "$fpid" 2>/dev/null || break
             sleep 0.5
           done
+          [ -n "${q:-}" ] && echo "OBSERVE failopen: qemu command line: $(tr '\0' ' ' < "/proc/$q/cmdline" | cut -c1-700)" || true
           [ -n "${q:-}" ] && kill "$q" 2>/dev/null || true
           kill "$fpid" 2>/dev/null || true; wait "$fpid" 2>/dev/null || true
+          echo "---- tail of the fall-back run's melange log ----"; tail -n 15 "$W/tiny-fo.log" | cut -c1-260
+          echo "boot kernel files on this runner: $(ls -l /boot/vmlinuz* 2>&1 | head -n 3 | tr '\n' ';')"
           case "${used:-none}" in
             *"/nonexistent"*) R "KERNEL-FAILOPEN upstream: NOT reproduced; qemu was started with '$used'";;
             none|"") R "KERNEL-FAILOPEN upstream: inconclusive; no qemu -kernel argument was seen";;
@@ -487,6 +497,34 @@ jobs:
                 echo "BUILD $label $v $(( $(date +%s) - s0 ))"
               done )
           }
+          apk_diff() {   # apk_diff LABEL A B: what differs between two apks (names, sizes, mtimes, small text members as a diff)
+            python3 -I - "$2" "$3" "$W/src/install-host-bwrap.py" <<'PYEOF' 2>&1 | head -n 70 | sed "s/^/APKDIFF $1: /" || true
+          import difflib, hashlib, importlib.util, io, sys, tarfile
+          a, b, ihb = sys.argv[1:4]
+          spec = importlib.util.spec_from_file_location("ihb", ihb); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          def load(p):
+              parts = m.members(open(p, "rb").read(), p)
+              out = {}
+              for kind, seg in (("control", parts[-2][1]), ("data", parts[-1][1])):
+                  t = tarfile.open(fileobj=io.BytesIO(seg), mode="r:")
+                  for mem in t.getmembers():
+                      body = t.extractfile(mem).read() if mem.isreg() else (mem.linkname or "").encode()
+                      out[(kind, mem.name)] = (hashlib.sha256(body).hexdigest(), mem.size, mem.mtime, body if len(body) < 20000 else None)
+              return out
+          A, B = load(a), load(b)
+          n = 0
+          for k in sorted(set(A) | set(B)):
+              if k not in A or k not in B:
+                  print("only in %s: %s %s" % ("A" if k in A else "B", k[0], k[1])); n += 1; continue
+              if A[k][0] != B[k][0] or A[k][2] != B[k][2]:
+                  n += 1
+                  print("%s %s: sha %s vs %s, size %d vs %d, mtime %s vs %s" % (k[0], k[1], A[k][0][:12], B[k][0][:12], A[k][1], B[k][1], A[k][2], B[k][2]))
+                  if A[k][3] is not None and B[k][3] is not None and A[k][0] != B[k][0]:
+                      for l in list(difflib.unified_diff(A[k][3].decode("utf-8", "replace").splitlines(), B[k][3].decode("utf-8", "replace").splitlines(), lineterm="", n=0))[:16]:
+                          print("   " + l[:200])
+          print("members compared: %d control+data; differing: %d" % (len(set(A) | set(B)), n))
+          PYEOF
+          }
           list_apks() {   # list_apks LABEL DIR
             local f
             for f in "$2"/$TA/*.apk; do [ -e "$f" ] || continue
@@ -516,6 +554,8 @@ jobs:
               if [ -f "$f" ] && python3 -I bin/apk-tool.py same "$f" "$b" > /dev/null 2>&1; then :; else ok=no; fi; done
             ma=$(sha256sum "$GITHUB_WORKSPACE/out/vm-a/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true); mb=$(sha256sum "$W/ws-b/out/vm-b/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true)
             [ -n "$ma" ] && [ "$ma" = "$mb" ] || ok=no
+            if [ "$ok" = no ]; then apk_diff build-vs-rebuild "$GITHUB_WORKSPACE/out/vm-a/$TA/fscache-0.0.0_rc1-r0.apk" "$W/ws-b/out/vm-b/$TA/fscache-0.0.0_rc1-r0.apk"; fi
+            apk_diff bubblewrap-vs-vm "$GITHUB_WORKSPACE/out/bwrap/$TA/fscache-0.0.0_rc1-r0.apk" "$GITHUB_WORKSPACE/out/vm-a/$TA/fscache-0.0.0_rc1-r0.apk"
             if [ "$ok" = yes ] && [ "$n" -ge 1 ]; then R "U5 PASS: Build-style and Rebuild-style apks have the same digest ($n apk(s) compared, standard variant); inputs-manifest sha256:$ma == $mb"
             else R "U5 FAIL: Build-style and Rebuild-style differ or are missing ($n apk(s) compared; inputs-manifest sha256:$ma vs $mb)"; fi
             bw=$(total bubblewrap); vm=$(total vm-build)

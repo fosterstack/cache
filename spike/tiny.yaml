@@ -18,8 +18,13 @@ pipeline:
       echo "SPIKE-GUEST: root-mount=$(busybox awk '$2=="/"{print $1" "$3}' /proc/mounts | head -1)"
   - name: egress
     runs: |
-      busybox timeout 8 busybox nc -w 3 1.1.1.1 443 </dev/null >/dev/null 2>&1; echo "SPIKE-GUEST: egress-connect rc=$?"
-      busybox timeout 8 busybox nslookup example.com 10.0.2.3 >/dev/null 2>&1; echo "SPIKE-GUEST: dns rc=$?"
+      T=""
+      busybox --list | grep -qx timeout && T="busybox timeout 8"
+      echo "SPIKE-GUEST: applets nc=$(busybox --list | grep -cx nc) nslookup=$(busybox --list | grep -cx nslookup) timeout=$(busybox --list | grep -cx timeout) mount=$(busybox --list | grep -cx mount)"
+      rc=0; $T busybox nc -w 3 1.1.1.1 443 </dev/null >/dev/null 2>&1 || rc=$?
+      echo "SPIKE-GUEST: egress-connect rc=$rc"
+      rc=0; $T busybox nslookup example.com 10.0.2.3 >/dev/null 2>&1 || rc=$?
+      echo "SPIKE-GUEST: dns rc=$rc"
   - name: hostile
     runs: |
       echo "SPIKE-GUEST: 9p-mounts=$(busybox awk '$3=="9p"{print $1" "$2" "$4}' /proc/1/mounts 2>/dev/null | tr '\n' ';')"
@@ -28,11 +33,11 @@ pipeline:
       if [ -n "$SHARE" ] && [ -d "/proc/1/root$SHARE" ]; then
         W9="/proc/1/root$SHARE"
         echo "SPIKE-GUEST: share-holds=$(ls -A "$W9" 2>&1 | head -n 4 | tr '\n' ' ')"
-        busybox mount -o remount,rw "$W9" >/dev/null 2>&1; echo "SPIKE-GUEST: remount-rw rc=$?"
-        echo guest > "$W9/spike-guest-file" 2>/dev/null; echo "SPIKE-GUEST: write-in-share rc=$?"
-        ln -s /tmp/spike-canary-outside "$W9/spike-escape-link" 2>/dev/null; echo "SPIKE-GUEST: symlink-in-share rc=$?"
-        echo SPIKE-GUEST-WROTE >> "$W9/spike-escape-link" 2>/dev/null; echo "SPIKE-GUEST: write-through-link rc=$?"
-        echo SPIKE-GUEST-WROTE > "$W9/spike-canary-in-checkout.txt" 2>/dev/null; echo "SPIKE-GUEST: overwrite-checkout-copy rc=$?"
+        rc=0; busybox mount -o remount,rw "$W9" >/dev/null 2>&1 || rc=$?; echo "SPIKE-GUEST: remount-rw rc=$rc"
+        rc=0; echo guest > "$W9/spike-guest-file" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: write-in-share rc=$rc"
+        rc=0; ln -s /tmp/spike-canary-outside "$W9/spike-escape-link" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: symlink-in-share rc=$rc"
+        rc=0; echo SPIKE-GUEST-WROTE >> "$W9/spike-escape-link" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: write-through-link rc=$rc"
+        rc=0; echo SPIKE-GUEST-WROTE > "$W9/spike-canary-in-checkout.txt" 2>/dev/null || rc=$?; echo "SPIKE-GUEST: overwrite-checkout-copy rc=$rc"
       fi
       echo "SPIKE-GUEST: hostile done"
   - name: install
