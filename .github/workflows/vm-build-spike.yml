@@ -26,11 +26,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: vm-x86
-            kind: x86
-            runner: ubuntu-24.04
-            arch: x86_64
-            timeout: 30
           - name: vm-arm
             kind: arm
             runner: ubuntu-24.04-arm
@@ -315,6 +310,14 @@ jobs:
               set -- "\$@" "\$a"; prev=\$o
             done
           fi
+          # diagnostic: the kernel command line without quiet and with loglevel=7; keep a copy of the initrd melange hands to qemu
+          prev=""; n=\$#
+          while [ \$n -gt 0 ]; do
+            a=\$1; shift; n=\$((n - 1)); o=\$a
+            if [ "\$prev" = -append ]; then a=\$(printf '%s' "\$a" | sed -e 's/ quiet / /' -e 's/\$/ loglevel=7/'); fi
+            if [ "\$prev" = -initrd ] && [ -f "\$a" ]; then cp "\$a" $W/initrd-copy.cpio; fi
+            set -- "\$@" "\$a"; prev=\$o
+          done
           echo "qemu-wrapper args: \$*" >> $W/qemu-args.log
           exec $ld --library-path \$R/usr/lib:\$R/usr/lib64:\$R/lib \$R/usr/bin/$HOSTPKG -L \$R/usr/share/qemu "\$@"
           WEOF
@@ -375,6 +378,28 @@ jobs:
           R "PROBE ($KIND $TA) exit code: $rc (0 held, 4 not held, 1 probe error or no evidence, 2 refused)"
           [ "$rc" = 0 ] || R "PROBE FAIL: exit $rc"
 
+      - name: "initramfs inspection (arm diagnostic)"
+        if: ${{ !cancelled() }}
+        run: |
+          set -uo pipefail
+          W="$RUNNER_TEMP/spike"
+          for f in "$W/initramfs-1.cpio" "$W/initrd-copy.cpio"; do
+            echo "======== $f"
+            [ -f "$f" ] || { echo "(missing)"; continue; }
+            echo "size: $(stat -c %s "$f")"; echo "first bytes: $(head -c 16 "$f" | od -An -tx1)"
+            d=$(mktemp -d); m=$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')
+            case "$m" in 1f8b*) c="zcat";; 28b52ffd) c="zstdcat";; fd377a58) c="xzcat";; *) c="cat";; esac
+            echo "reader: $c (magic $m)"
+            ( cd "$d" && $c "$f" | cpio -id --quiet 2>"$d.err" ); echo "unpack rc=$? err: $(head -c 300 "$d.err" 2>/dev/null)"
+            echo "first 20 names of cpio -t:"; $c "$f" | cpio -t 2>/dev/null | head -n 20
+            echo "top level: $(ls -A "$d" | tr '\n' ' ')"
+            for i in init sbin/init; do
+              if [ -e "$d/$i" ] || [ -L "$d/$i" ]; then echo "$i: $(ls -l "$d/$i" | cut -c1-200); first bytes: $(head -c 20 "$d/$i" | od -An -tx1); e_machine bytes 18-19: $(dd if="$d/$i" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1)"; else echo "$i: absent"; fi
+            done
+            rm -rf "$d" "$d.err"
+          done
+          echo "======== qemu console, first 200 lines after 'starting VM'"
+          awk '/qemu: starting VM/{f=1} f' "$W/probe-melange.log" | head -n 200 | cut -c1-260
       - name: "results"
         if: ${{ !cancelled() }}
         run: |
