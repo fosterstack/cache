@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC18
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed-local.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -957,6 +958,8 @@ def tar_bytes(entries):
                 ti.type = tarfile.LNKTYPE; ti.linkname = data; t.addfile(ti)
             elif kind == "dev":
                 ti.type = tarfile.CHRTYPE; ti.devmajor = 1; ti.devminor = 3; t.addfile(ti)
+            elif kind == "fifo":
+                ti.type = tarfile.FIFOTYPE; t.addfile(ti)
     return buf.getvalue()
 
 
@@ -1133,6 +1136,106 @@ case("AC17 aarch64 is accepted and reads archive/aarch64/", arch="aarch64", setu
 case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refused (exit 1) and leaves neither the host-tools directory, a staging directory nor a temporary wrapper", setup=lambda d: os.makedirs(d + "/bin/bwrap"), want=1, nothing_written=False,
      after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
 case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
+# REQ-CHAIN-004-AC18: a hard link to a regular file the SAME package already unpacked is copied, never linked;
+# every other hard link, a device or a fifo is refused; a lib64 alias stands beside files placed below it
+# only while no file path has two owners.
+CAPF = ("usr/lib/libcap.so.2.78", "file", b"CAP", None)
+GLIBC_BASE = [("usr/lib/libc.so.6", "file", b"LIBC", None),
+              ("usr/bin/ld.so", "sym", "../../lib64/ld-linux-x86-64.so.2", None)]
+
+
+def lc(extra, first=True):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", ([CAPF] if first else []) + extra)
+    return setup
+
+
+def gl(extra):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", "glibc", "2.43-r13", GLIBC_BASE + extra)
+    return setup
+
+
+def a_hard_copy(d, r):
+    a_basic(d, r)
+    h = d + "/host-tools/usr/lib/"
+    s, c = os.lstat(h + "libcap.so.2.78"), os.lstat(h + "libcap.so.2.hard")
+    assert not os.path.islink(h + "libcap.so.2.hard") and os.path.isfile(h + "libcap.so.2.hard"), "not a regular file"
+    assert open(h + "libcap.so.2.hard", "rb").read() == b"CAP", "the bytes differ"
+    assert s.st_ino != c.st_ino and s.st_nlink == 1 and c.st_nlink == 1, "the two names are one file (a real link)"
+
+
+case("AC18 a hard link to a regular file of the SAME package is accepted: a separate regular file, equal bytes",
+     setup=lc([("usr/lib/libcap.so.2.hard", "hard", "usr/lib/libcap.so.2.78", None)]), after=a_hard_copy)
+case("AC18 the copy made for a hard link keeps the target's executable bit",
+     setup=lc([("usr/bin/capx", "file", b"X", 0o755), ("usr/bin/capy", "hard", "usr/bin/capx", None)]),
+     after=lambda d, r: os.access(d + "/host-tools/usr/bin/capy", os.X_OK)
+     or (_ for _ in ()).throw(AssertionError("m")))
+for label, ent in (
+        ("an absolute path", [("usr/lib/h", "hard", "/etc/passwd", None)]),
+        ("a path with a .. part that leaves the directory", [("usr/lib/h", "hard", "../../etc/passwd", None)]),
+        ("a .. part that stays inside but is not normalised",
+         [("usr/lib/h", "hard", "usr/lib/../lib/libcap.so.2.78", None)]),
+        ("a path that does not exist in the package", [("usr/lib/h", "hard", "usr/lib/nothing", None)]),
+        ("a symlink of the same package", [("usr/lib/libcap.so.2", "sym", "libcap.so.2.78", None),
+                                           ("usr/lib/h", "hard", "usr/lib/libcap.so.2", None)]),
+        ("a directory of the same package", [("usr/lib/h", "hard", "usr/lib", None)]),
+        ("itself", [("usr/lib/h", "hard", "usr/lib/h", None)]),
+        ("a file that comes LATER in the same package (not yet unpacked)",
+         [("usr/lib/h", "hard", "usr/lib/later", None), ("usr/lib/later", "file", b"L", None)])):
+    case("AC18 a hard link to %s is refused (exit 1), nothing written" % label, setup=lc(ent), want=1)
+case("AC18 a hard link to a file ANOTHER package already unpacked (glibc, earlier) is refused, nothing written",
+     setup=lc([("usr/lib/h", "hard", "usr/lib/libc.so.6", None)]), want=1)
+case("AC18 a hard link to a file of a package that comes LATER in the lock is refused, nothing written",
+     setup=gl([("usr/lib/h", "hard", "usr/lib/libcap.so.2.78", None)]), want=1)
+case("AC18 a hard link whose target is a skipped absolute link is refused, nothing written",
+     setup=lc([("etc/mtab", "sym", "/proc/mounts", None), ("usr/lib/h", "hard", "etc/mtab", None)]), want=1)
+case("AC18 a device entry is still refused (exit 1), nothing written",
+     setup=lc([("usr/lib/dev", "dev", None, None)]), want=1)
+case("AC18 a fifo entry is still refused (exit 1), nothing written",
+     setup=lc([("usr/lib/fifo", "fifo", None, None)]), want=1)
+FFI = "libffi=3.8.0-r2\n"
+
+
+def libffi(files):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libffi-3.8.0-r2.apk", "libffi", "3.8.0-r2", files)
+    return setup
+
+
+def a_alias(d, r):
+    a_basic(d, r)
+    h = d + "/host-tools/usr/"
+    assert os.path.islink(h + "lib64") and os.readlink(h + "lib64") == "lib", "usr/lib64 is not the alias to lib"
+    assert open(h + "lib64/libffi.so.8", "rb").read() == b"FFI" and open(h + "lib/libffi.so.8", "rb").read() == b"FFI"
+
+
+def alias_and_ffi(d):
+    lc([("usr/lib64", "sym", "lib", None)])(d); libffi([("usr/lib64/libffi.so.8", "file", b"FFI", None)])(d)
+
+
+case("AC18 usr/lib64 as a symlink to lib and a file below it in another package: accepted, the file lands in lib",
+     setup=alias_and_ffi, lock=LOCK + FFI, after=a_alias)
+case("AC18 ...the same file below usr/lib64 and below usr/lib in two packages is refused (two owners), nothing written",
+     setup=lambda d: (lc([("usr/lib64", "sym", "lib", None), ("usr/lib/libffi.so.8", "file", b"ONE", None)])(d),
+                      libffi([("usr/lib64/libffi.so.8", "file", b"TWO", None)])(d)), lock=LOCK + FFI, want=1)
+for label, ent in (
+        ("a target outside the root (usr/lib64 -> ../../outside)", [("usr/lib64", "sym", "../../outside", None)]),
+        ("a chain that leaves the root (a -> . ; usr/lib64 -> ../a/../../out)",
+         [("a", "sym", ".", None), ("usr/lib64", "sym", "../a/../../out", None)]),
+        ("a directory entry over the link in the same package (usr/lib64 -> lib ; usr/lib64/)",
+         [("usr/lib64", "sym", "lib", None), ("usr/lib64", "dir", None, None)]),
+        ("a link over a directory entry in the same package (usr/lib64/ ; usr/lib64 -> lib)",
+         [("usr/lib64", "dir", None, None), ("usr/lib64", "sym", "lib", None)]),
+        ("a link over a file below it (usr/lib64/x ; usr/lib64 -> lib)",
+         [("usr/lib64/x", "file", b"X", None), ("usr/lib64", "sym", "lib", None)])):
+    case("AC18 a lib64 alias with %s is refused (exit 1), nothing written" % label, setup=lc(ent), want=1)
+case("AC18 a directory entry of another package over the lib64 alias is refused, nothing written",
+     setup=lambda d: (lc([("usr/lib64", "sym", "lib", None)])(d), libffi([("usr/lib64", "dir", None, None)])(d)),
+     lock=LOCK + FFI, want=1)
+case("AC18 a symlink placed by another package over a directory the first package holds is refused, nothing written",
+     setup=lambda d: (lc([("usr/lib64/x", "file", b"X", None)])(d), libffi([("usr/lib64", "sym", "lib", None)])(d)),
+     lock=LOCK + FFI, want=1)
 text = open(script).read()
 for word in sys.argv[3].split("|"):
     print(("ok   " if word not in text else "FAIL ") + "AC17 the host-tools script never names %r (no network, no package manager, no sudo, no other program)" % word)

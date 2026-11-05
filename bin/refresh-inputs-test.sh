@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34, REQ-REFRESH-001-AC35, REQ-REFRESH-001-AC36, REQ-REFRESH-001-AC37, REQ-REFRESH-001-AC38
+# proves: REQ-REFRESH-001-AC39, REQ-REFRESH-001-AC40, REQ-REFRESH-001-AC41
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -98,6 +99,57 @@ P
 mkdir -p "$fx/repo/build/locks"; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$fx/repo/build/locks/archive-keys.sha256"
 # REQ-REFRESH-001-AC35: the packages the Build jobs run ON the runner (data file) and the committed lock of their resolution; the fixture holds the same closure as melange.lock
 printf 'packages:\n  - busybox\n  - ca-certificates-bundle\n' >"$fx/repo/build/host-tools.yaml"; cp "$fx/melange.lock" "$fx/repo/build/locks/host-tools.lock"
+# REQ-REFRESH-001-AC39..AC41: the VM build's inputs (lists, locks, the kernel row, its key, signed packages)
+python3 - "$fx" <<'P'
+import gzip, hashlib, io, json, os, subprocess, sys, tarfile
+fx = sys.argv[1]
+NAME = "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
+def gz(b):
+    o = io.BytesIO()
+    with gzip.GzipFile(fileobj=o, mode="wb", mtime=0) as g: g.write(b)
+    return o.getvalue()
+def tarb(members):
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for n, d in members:
+            i = tarfile.TarInfo(n); i.size = len(d); i.mtime = 0; t.addfile(i, io.BytesIO(d))
+    return b.getvalue()
+def genkey(name):
+    pem = "%s/%s.pem" % (fx, name)
+    subprocess.run(["openssl", "genrsa", "-out", pem, "2048"], check=True, capture_output=True)
+    pub = subprocess.run(["openssl", "rsa", "-in", pem, "-pubout"], check=True, capture_output=True).stdout
+    open("%s/%s.pub" % (fx, name), "wb").write(pub)
+def kernel_apk(path, key, member=NAME, datahash=None):
+    data = gz(tarb([("boot/vmlinuz-virt", b"KERNEL")]))
+    dh = datahash or hashlib.sha256(data).hexdigest()
+    pkginfo = "pkgname = linux-virt\npkgver = 6.18.60-r0\narch = x86_64\ndatahash = %s\n" % dh
+    ctl = gz(tarb([(".PKGINFO", pkginfo.encode())]))
+    open(path + ".ctl", "wb").write(ctl)
+    sig = subprocess.run(["openssl", "dgst", "-sha1", "-sign", "%s/%s.pem" % (fx, key), path + ".ctl"],
+                         check=True, capture_output=True).stdout
+    os.remove(path + ".ctl")
+    open(path, "wb").write(gz(tarb([(".SIGN.RSA." + member, sig)])) + ctl + data)
+genkey("alpinekey"); genkey("alpineother")
+os.makedirs(fx + "/kernel", exist_ok=True)
+kernel_apk(fx + "/kernel/good.apk", "alpinekey")
+kernel_apk(fx + "/kernel/othersig.apk", "alpineother")
+kernel_apk(fx + "/kernel/othername.apk", "alpinekey", member="someone-else-6165ee59.rsa.pub")
+kernel_apk(fx + "/kernel/baddatahash.apk", "alpinekey", datahash="0" * 64)
+open(fx + "/kernel/notapk.apk", "wb").write(b"not an apk")
+live = json.load(open(fx + "/live-same.lock.json"))["contents"]["packages"]
+open(fx + "/vm.lock", "w").write("".join(sorted("%s=%s\n" % (e["name"], e["version"])
+                                                 for e in live if e["architecture"] == "x86_64")))
+P
+printf 'packages:\n  - busybox\n' >"$fx/repo/build/vm-host.yaml"
+printf 'packages:\n  - ca-certificates-bundle\n' >"$fx/repo/build/vm-guest.yaml"
+cp "$fx/vm.lock" "$fx/repo/build/locks/vm-host.lock"; cp "$fx/vm.lock" "$fx/repo/build/locks/vm-guest.lock"
+KNAME=alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+KSHA=$(shasum -a 256 "$fx/kernel/good.apk" | cut -d' ' -f1)
+mkdir -p "$fx/repo/build/keys"; cp "$fx/alpinekey.pub" "$fx/repo/build/keys/$KNAME"
+printf 'linux-virt=6.18.60-r0 sha256:%s\n' "$KSHA" >"$fx/repo/build/locks/vm-kernel.lock"
+KKEY=$(shasum -a 256 "$fx/alpinekey.pub" | cut -d' ' -f1)
+printf '%s sha256:%s\n' "$KNAME" "$KKEY" >>"$fx/repo/build/locks/archive-keys.sha256"
+cp "$fx/kernel/good.apk" "$fx/archive/x86_64/linux-virt-6.18.60-r0.apk"
 mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/"; rm -rf "$work/ar"; cp -R "$fx/archive" "$work/ar"; for a in x86_64 aarch64; do cp -n "$fx/envrepo/$a/"*.apk "$work/ar/$a/"; done   # melange's build tools are archived too
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
@@ -1736,5 +1788,133 @@ mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$wo
 mkrepo; cp "$work/ht.lock" "$work/rp/build/locks/host-tools.lock"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk" 2>/dev/null || { cp "$fx/live/x86_64/zlib-1.3.2-r0.apk" "$work/ar/x86_64/"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk"; }; cp -n "$fx/live/aarch64/zlib-1.3.2-r0.apk" "$work/ar/aarch64/"
 run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC36" "refresh: a damaged archived package that only the host tools name (zlib) is found: exit 1, names the file, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'zlib-1.3.2-r0.apk' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# ===== REQ-REFRESH-001-AC39..AC41: the VM build's inputs (two lists, x86_64 locks, the kernel row and its check) =====
+# The lists resolve through the same stub as the other locks; their apko paths carry the names vm-host and vm-guest.
+RR() { run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+RRE() { run_s2 "${rfe[@]}" "$@" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+vmcalls() { grep "^apko lock " "$CALLS" | grep -c "$1"; }
+vm_both() { [ "$(rc)" = 0 ] && [ "$(vmcalls vm-host)" = 1 ] && [ "$(vmcalls vm-guest)" = 1 ]; }
+vm_x86only() {
+  grep '^apko lock ' "$CALLS" | grep "$1" | grep -q -- '--arch x86_64 ' &&
+    ! grep '^apko lock ' "$CALLS" | grep "$1" | grep -q aarch64
+}
+vm_refused() {   # exit 2, the file named, no apko call, no pull request
+  [ "$(rc)" = 2 ] && grep -q "$1" "$work/log" && [ "$(grep -c '^apko lock ' "$CALLS")" -eq 0 ] &&
+    ! grep -q '^gh pr create' "$CALLS"
+}
+no_pr() { ! grep -q '^gh pr create' "$CALLS"; }
+mkrepo; RR
+t "AC39" "refresh: each VM list gets its own apko lock (vm-host, vm-guest), x86_64 only" \
+  bash -c "$(declare -f rc vmcalls vm_both vm_x86only); CALLS='$CALLS'; work='$work'; vm_both &&
+  vm_x86only vm-host && vm_x86only vm-guest"
+t "AC39" "refresh: VM locks equal to the live resolution change nothing (no commit, no push, no pull request)" \
+  bash -c "! grep -Eq '^(gh |git( -C [^ ]+)? (commit|push|checkout))' '$CALLS'"
+cp "$fx/live-new.lock.json" "$work/ln.json"
+mkrepo; RRE STUB_LOCK="$work/ln.json"
+t "AC39" "refresh: a changed resolution writes both VM locks as sorted name=version lines (new tzdata in each)" \
+  bash -c "for f in vm-host vm-guest; do l='$work/rp/build/locks/'\$f.lock; grep -q '^tzdata=2026b-r0\$' \$l &&
+  test \"\$(sort \$l)\" = \"\$(cat \$l)\" || exit 1; done"
+t "AC39" "refresh: both VM locks go in the one refresh pull request, never merged by the job" \
+  bash -c "test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/vm-host.lock' &&
+  $GHPATHS | grep -q 'build/locks/vm-guest.lock' && ! grep -Eq '^gh pr merge|--admin|--auto' '$CALLS'"
+t "AC39" "refresh: the VM lists carry no waiting period" \
+  bash -c "! grep -Eqi 'cooldown|too young|minimum age' '$work/log'"
+for L in vm-host vm-guest; do
+  mkrepo; rm -f "$work/rp/build/$L.yaml"; RR
+  t "AC39" "refresh: no build/$L.yaml is refused (exit 2, names it) before any apko call" vm_refused "$L.yaml"
+  mkrepo; rm -f "$work/rp/build/locks/$L.lock"; RR
+  t "AC39" "refresh: no build/locks/$L.lock is refused (exit 2, names it) before any apko call" vm_refused "$L.lock"
+  while IFS='|' read -r lab txt; do
+    mkrepo; printf '%b' "$txt" >"$work/rp/build/$L.yaml"; RR
+    t "AC39" "refresh: build/$L.yaml $lab is refused (exit 2, names it) before any apko call" vm_refused "$L.yaml"
+  done <<'DATA'
+with a duplicate packages key|packages:\n  - busybox\npackages:\n  - zlib\n
+whose packages is a mapping|packages: {busybox: null}\n
+with an empty package list|packages: []\n
+with a package that pins a version|packages:\n  - busybox=1.37.0-r5\n
+with a package name that is a path|packages:\n  - ../busybox\n
+with a package named twice|packages:\n  - busybox\n  - busybox\n
+with another top-level key|packages:\n  - busybox\nrepositories:\n  - https://example.invalid\n
+DATA
+  while IFS='|' read -r lab txt; do
+    mkrepo; printf '%b' "$txt" >"$work/rp/build/locks/$L.lock"; RR
+    t "AC39" "refresh: build/locks/$L.lock $lab is refused (exit 2, names it) before any apko call" vm_refused "$L.lock"
+  done <<'DATA'
+with a row that is not name=version|busybox=1.37.0-r5\nnonsense\n
+with a package named twice|busybox=1.37.0-r5\nbusybox=1.36.0-r0\n
+with a name that is a path|../busybox=1.37.0-r5\n
+with a version that is a path|busybox=../1.37.0-r5\n
+with a blank row|busybox=1.37.0-r5\n\nzlib=1.3.2-r0\n
+with a carriage return|busybox=1.37.0-r5\r\nzlib=1.3.2-r0\n
+whose last row has no line end|busybox=1.37.0-r5\nzlib=1.3.2-r0
+DATA
+done
+# ---- AC40: the kernel lock is validated whole, before any apko call or network use ----
+HX=$(printf 'a%.0s' $(seq 1 64)); HX2=$(printf 'b%.0s' $(seq 1 64)); HU=$(printf 'A%.0s' $(seq 1 64))
+while IFS='|' read -r lab txt; do
+  mkrepo; before=$(treehash "$work/ar")
+  printf '%b' "${txt//HX2/$HX2}" | sed "s/HX/$HX/g;s/HU/$HU/g" >"$work/rp/build/locks/vm-kernel.lock"; RR
+  t "AC40" "refresh: vm-kernel.lock $lab is refused (exit 2, names it) before any apko call" \
+    bash -c "$(declare -f rc vm_refused); CALLS='$CALLS'; work='$work'; vm_refused vm-kernel.lock"
+  t "AC40" "refresh: ...vm-kernel.lock $lab: the archive is unchanged" test "$(treehash "$work/ar")" = "$before"
+done <<'DATA'
+with a row that has no hash|linux-virt=6.18.60-r0\n
+with a short hash|linux-virt=6.18.60-r0 sha256:abc123\n
+with an upper-case hash|linux-virt=6.18.60-r0 sha256:HU\n
+with a hash that has no sha256 prefix|linux-virt=6.18.60-r0 HX\n
+with a name twice|linux-virt=6.18.60-r0 sha256:HX\nlinux-virt=6.18.61-r0 sha256:HX2\n
+with rows not sorted by name|linux-virt=6.18.60-r0 sha256:HX\nlinux-lts=6.18.60-r0 sha256:HX2\n
+whose last row has no line end|linux-virt=6.18.60-r0 sha256:HX
+with a carriage return|linux-virt=6.18.60-r0 sha256:HX\r\n
+with a version that has a path part|linux-virt=../6.18.60-r0 sha256:HX\n
+with a name that is a path|../linux-virt=6.18.60-r0 sha256:HX\n
+with a name outside the plain grammar|Linux Virt=6.18.60-r0 sha256:HX\n
+with two spaces before the hash|linux-virt=6.18.60-r0  sha256:HX\n
+with a blank row|linux-virt=6.18.60-r0 sha256:HX\n\n
+with no rows at all|
+DATA
+# ---- AC41: the kernel package is checked in its own step before the archive keeps it ----
+KAPK=x86_64/linux-virt-6.18.60-r0.apk
+mkrepo; RR
+t "AC41" "refresh: the committed kernel package passes (hash, key, signature, datahash): exit 0, named in the log" \
+  bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'linux-virt-6.18.60-r0' '$work/log' && test -f '$work/ar/$KAPK'"
+t "AC41" "refresh: ...a passing kernel row opens no pull request" no_pr
+t "AC41" "refresh: ...the kernel package is not read by bin/apk-tool.py (its own step)" \
+  bash -c "! grep -E 'apk-tool.py' '$work/log' | grep -q linux-virt"
+kfail() {   # kfail LABEL WORD APK [LOCKHASH]: the archive holds APK as the kernel package; the run must refuse it
+  mkrepo; cp "$fx/kernel/$3" "$work/ar/$KAPK"
+  h=${4:-$(shasum -a 256 "$work/ar/$KAPK" | cut -d' ' -f1)}
+  printf 'linux-virt=6.18.60-r0 sha256:%s\n' "$h" >"$work/rp/build/locks/vm-kernel.lock"
+  lk=$(cat "$work/rp/build/locks/vm-kernel.lock"); before=$(treehash "$work/ar"); RR
+  t "AC41" "refresh: a kernel package with $1 is refused (non-zero, names linux-virt and $2), no pull request" \
+    bash -c "test \"\$(cat '$work/rc')\" != 0 && test \"\$(cat '$work/rc')\" != 127 &&
+    grep -q 'linux-virt' '$work/log' && grep -qi '$2' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+  t "AC41" "refresh: ...$1: the kernel lock is not changed" \
+    bash -c "test \"\$(cat '$work/rp/build/locks/vm-kernel.lock')\" = '$lk'"
+  t "AC41" "refresh: ...$1: the archive tree is unchanged" test "$(treehash "$work/ar")" = "$before"
+}
+kfail "a whole-file hash that differs from the lock" sha256 good.apk "$HX"
+kfail "a signature made by another key" signature othersig.apk
+kfail "a signature header that names another key" key othername.apk
+kfail "a datahash that is not the data segment's sha256" datahash baddatahash.apk
+kfail "bytes that are not a package" 'linux-virt' notapk.apk
+mkrepo; printf 'bad\n' >"$work/rp/build/keys/$KNAME"; RR
+t "AC41" "refresh: a committed kernel key that is not the pinned one is refused (names archive-keys.sha256)" \
+  bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'archive-keys.sha256' '$work/log' &&
+  ! grep -q '^gh pr create' '$CALLS'"
+mkrepo; grep -v "$KNAME" "$work/rp/build/locks/archive-keys.sha256" >"$work/ak"
+cp "$work/ak" "$work/rp/build/locks/archive-keys.sha256"; RR
+t "AC41" "refresh: a kernel key with no line in archive-keys.sha256 is refused (names the key)" \
+  bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q '6165ee59' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# the archive lacks the package: it is downloaded from the one pinned Alpine address and kept only when it passes
+KURL=https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.60-r0.apk
+mkrepo; rm -f "$work/ar/$KAPK"; mkdir -p "$work/kdl/x86_64"; cp "$fx/kernel/good.apk" "$work/kdl/$KAPK"
+RRE STUB_CURL_DIR="$work/kdl"
+t "AC41" "refresh: a kernel package the archive lacks is downloaded from the pinned address, checked and kept" \
+  bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q '$KURL' '$CALLS' && test -f '$work/ar/$KAPK'"
+mkrepo; rm -f "$work/ar/$KAPK"; cp "$fx/kernel/othersig.apk" "$work/kdl/$KAPK"; RRE STUB_CURL_DIR="$work/kdl"
+t "AC41" "refresh: a downloaded kernel package that fails its check is refused and not kept (no pull request)" \
+  bash -c "test \"\$(cat '$work/rc')\" != 0 && test \"\$(cat '$work/rc')\" != 127 &&
+  ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/$KAPK'"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -3604,6 +3604,12 @@ requirements:
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
+      - id: REQ-CHAIN-004-AC18
+        given: "the installer of AC17 (bin/install-host-bwrap.py; this amends AC17, which refuses every hard link) unpacking a package set that holds a hard link, or a package whose usr/lib64 is a link to usr/lib"
+        when: "it unpacks the data of the packages"
+        then: "a hard link is accepted only when its target is a regular file that the SAME package has already unpacked inside the new directory, the target passing the same inside-the-directory checks as a symlink target; its bytes are then copied into a separate regular file and no link is made, and a hard link to an absolute path, to a path that leaves the directory, to a path another package owns, to a link, a directory or a file not yet unpacked is refused with nothing written; a device, a fifo or any other kind of entry is still refused; a symlink whose target stays inside the directory may stand where another package places files below it (lib64 beside lib) only when no file path is owned by two packages, and a symlink that points outside, however the other links are chained, a directory entry over a link, or a link over a directory are refused with nothing written"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
     statement: >
@@ -4408,7 +4414,7 @@ requirements:
     title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
     statement: >
       Once a day a job shall re-make the image lock files and re-resolve melange's build tools against live Wolfi; if anything changed it archives the new packages by digest, updates the locks and opens a pull request, never pushing to main; otherwise it does nothing. This job is the only updater of image recipes, apk packages and lock files. If Wolfi's signing key changed the job stops, opens no pull request and flags it for a human. If an old upstream version disappears the job notes it and does not fail. New Wolfi packages get no waiting period; signature and checksum checks and archiving still apply. The job's pull requests go through all normal checks and the rebuild-from-archive test. In the same daily run it shall also read Go's own certified-module file and, when a newer Go Cryptographic Module is certified, open a pull request that moves the FIPS build to it. The archive's package index shall be kept as the original Wolfi-signed file, versioned by its sha256, verified against the archived key, and an existing file under a digest name must hash to that name or the run fails closed.
-    source: [bin/refresh-inputs.sh, build/host-tools.yaml, build/locks/host-tools.lock, .github/workflows/go-freshness.yml, .github/dependabot.yml]
+    source: [bin/refresh-inputs.sh, build/host-tools.yaml, build/locks/host-tools.lock, build/vm-host.yaml, build/vm-guest.yaml, build/locks/vm-host.lock, build/locks/vm-guest.lock, build/locks/vm-kernel.lock, .github/workflows/go-freshness.yml, .github/dependabot.yml]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 32, 44-49 and 73 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, REFRESH-1..6, APKO-25, FIPS-59; rule 48 "dont do this 7 day hold on wolfi.")
@@ -4641,6 +4647,24 @@ requirements:
         given: "the refresh changed build/locks/host-tools.lock"
         when: "bin/refresh-inputs.sh refresh finishes"
         then: "the lock goes in the same one refresh pull request as the other lock changes and the archive pointer (AC5), never merged by the job, and the host tools carry no waiting period (AC7)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC39
+        given: "build/vm-host.yaml (the packages the VM build runs on the runner: the emulator) and build/vm-guest.yaml (the packages it runs inside the guest), each with its committed lock, build/locks/vm-host.lock and build/locks/vm-guest.lock"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "each list is resolved and its lock written exactly as AC35 does for the host tools (apko lock against https://packages.wolfi.dev/os, every package archived under the checks of AC3 before any lock changes, sorted name=version lines, nothing committed when the resolution equals the lock), but for x86_64 only, and the same refusals hold for each of the two data files and two locks: a repository without the file or the lock, a data file that is not exactly one packages key holding a non-empty list of unique plain names, and a lock with a row that is not a name=version of the closed grammar or that repeats a name are refused (exit 2, naming the file) before any apko call; a damaged or missing archived package stops the job as in AC36; their changes go in the same one refresh pull request as the other locks (AC38) and carry no waiting period (AC7)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC40
+        given: "the committed build/locks/vm-kernel.lock, which names the Alpine kernel package the VM build boots"
+        when: "bin/refresh-inputs.sh refresh reads it"
+        then: "a lock that is not valid is refused before any network call (exit 2, naming build/locks/vm-kernel.lock): it must end with a line end and hold one or more rows of the form `name=version sha256:HEX` (one space; HEX exactly 64 lowercase hex digits), sorted by name, no name twice, no row without a hash, no short hash, no carriage return, and the version must be a plain version string without a path part; the job reads only the committed rows and never moves them (a new kernel version is a reviewed change to this file, so that the supply-chain age check sees the exact row first in a pull request)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC41
+        given: "a valid build/locks/vm-kernel.lock (AC40), the Alpine package signing key committed as build/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub with its sha256 in build/locks/archive-keys.sha256, and the archive"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "in its own step (not bin/apk-tool.py, which refuses Alpine's package format), the job reads the named package from the archive, or downloads it over HTTPS from the one pinned Alpine address when the archive lacks it, and keeps it only when all three hold: the sha256 of the whole file equals the lock's hash, the signature header names the committed key and verifies over the control segment with that key, and the sha256 of the data segment equals the datahash the control segment records; the committed key's sha256 must equal its line in build/locks/archive-keys.sha256 before it is used; any failure exits non-zero naming the package and the check, keeps nothing new in the archive, changes no lock and opens no pull request"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-ARCHIVE-001
