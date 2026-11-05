@@ -6,7 +6,7 @@
 #   python3 bin/pin-age-check.py --root REPO --base REV --head REV --fixtures FILE [--json FILE] [--now ISO] [--min-days N]
 #   exit 0: nothing moved, or every moved version is old enough; exit 1: a moved version is too young or its age cannot be proven.
 #   An item is "<kind>:<name>@<version>"; kinds: action (version = the pinned commit), tool (the installer actions' version inputs and install-scanner.sh's
-#   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest).
+#   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest), apk (name@version of a row of build/locks/vm-kernel.lock; the row's sha256 is its sum).
 #   Fixtures: {"now": ISO, "times": {ITEM: {"time": ISO, "source": S}}, "first_seen": {ITEM: ISO}}. Sources that count: github-release, pypi, go-index,
 #   registry-push. A source of commit-date, tag-date or image-config is NEVER a proof (the publisher or the builder controls it).
 set -euo pipefail
@@ -5318,8 +5318,160 @@ two = apks(sys.argv[3], "HEAD")
 assert list(two) == ["apk:x86_64/linux-virt@6.18.61-r0"], two
 PY
 }
-LCIDS="a b c d e f g h h2 i u"
-lc_all() { LCFAIL=""; local i; for i in $LCIDS; do "lc_$i" >/dev/null 2>&1 || LCFAIL="$LCFAIL $i"; done; }
+# --- round 1 (seats A, B, D): the reader refuses what it cannot read, and the rows are judged like every other pin (G1 to G10) ------------------
+HXL=$(printf 'abcdef01%.0s' $(seq 8)); HXU=$(printf '%s' "$HXL" | tr a-f A-F); H63=${H1:0:63}; H65="${H1}a"
+cat >"$work/lw.py" <<'PY'
+import os, pathlib
+K = "build/locks/vm-kernel.lock"
+def _clear(p):
+    if os.path.islink(p) or os.path.exists(p):
+        os.unlink(p)
+def w(text, path=K):
+    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True); _clear(p)
+    p.write_bytes(text if isinstance(text, bytes) else text.encode())
+def link(target, path=K):
+    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True); _clear(p); os.symlink(target, p)
+def rm(path=K):
+    _clear(path)
+PY
+pyi() { printf "import sys; sys.path.insert(0, '%s'); from lw import *; %s" "$work" "$1"; }
+# lcase2 NAME 'python for the base commit' 'python for the head commit' (helpers w(text[,path]), link(target[,path]), rm([path]) from $work/lw.py)
+lcase2() {
+  local n=$1
+  rm -rf "${work:?}/${n:?}"; cp -R "$base" "$work/$n"
+  ( cd "$work/$n"
+    python3 -c "$(pyi "$2")"; git add -A; git -c user.name=t -c user.email=t@x commit -q --allow-empty -m base2
+    python3 -c "$(pyi "$3")"; git add -A; git -c user.name=t -c user.email=t@x commit -q --allow-empty -m head )
+}
+RM="pathlib.Path('README.md').write_text('hi')"
+# G1: the lock path is a symlink: refused (exit 2), the target's name is never parsed
+lcase2 lg1a "w('$rowx1\n')" "link('elsewhere.txt')"
+lcase2 lg1b "w('$rowx1\n')" "link('x86_64/linux-virt=6.18.62-r0 sha256:$H4')"          # the link's TARGET text is itself a valid row
+lcase2 lg1c "w('$rowx1\n')" "w('$rowx2\n', 'build/locks/real.lock'); link('real.lock')"   # a link to a real file holding a valid row
+lcase2 lg1w "w('$rowx1\n')" "$RM"
+( cd "$work/lg1w" && printf '%s\n' "$rowx2" >build/locks/real.lock && python3 -c "$(pyi "link('real.lock')")" )   # the symlink exists only in the working tree
+# G2: the same name=version twice
+lcase2 lg2a "w('$rowx1\n')" "w('$rowx2\nx86_64/linux-virt=6.18.61-r0 sha256:$H3\n')"
+lcase2 lg2b "w('$rowx1\n')" "w('x86_64/linux-virt=6.18.61-r0 sha256:$H3\n$rowx2\n')"
+lcase2 lg2c "w('$rowx1\n')" "w('$rowx2\n$rowx2\n')"
+# G3: the file exists and holds no row
+lcase2 lg3a "w('$rowx1\n')" "w('')"
+lcase2 lg3b "w('$rowx1\n')" "w('# only a comment\n')"
+lcase2 lg3c "w('$rowx1\n')" "w('\n\n   \n')"
+lcase2 lg3d "pass" "w('')"
+lcase2 lg3e "pass" "$RM"
+lcase2 lg3f "w('$rowx1\n')" "rm()"
+# G4: the row cache#840 wrote (no arch prefix)
+line4="linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e"
+lcase2 lg4 "pass" "w('$line4\n')"
+# G5: a row that cannot be read stops the check (exit 2), whatever else the file holds
+g5() { local id=$1 content=$2; lcase2 "lg5_$id" "w('$rowx1\n')" "w($content)"
+  eval "lc_g5_$id() { lrun lg5_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'its age cannot be judged' \"\$work/lg5_$id.out\"; }"; G5IDS="$G5IDS g5_$id"; }
+G5IDS=""
+g5 hex63  "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$H63\n'"
+g5 hex65  "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$H65\n'"
+g5 nosum  "'$rowx2\nx86_64/linux-virt=6.18.62-r0\n'"
+g5 upper  "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$HXU\n'"
+g5 eq2    "'$rowx2\nx86_64/linux-virt=6.18.62=r0 sha256:$H1\n'"
+g5 junk   "'$rowx2\nthis is not a row\n'"
+g5 nul    "b'$rowx2\nx86_64/linux-virt=6.18.62-r0\x00 sha256:$H1\n'"
+g5 tail   "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$H1 # note\n'"
+# G6: apk versions the row grammar takes, is_pin takes too
+lcase2 lg6 "pass" "w('x86_64/openssl=1.1.1w-r0 sha256:$H1\nx86_64/tzdata=2023c-r0 sha256:$H2\n')"
+# G8: a tracked kernel lock that cannot be read in the working tree
+lcase2 lg8 "w('$rowx1\n')" "$RM"
+( cd "$work/lg8" && rm -f build/locks/vm-kernel.lock && mkdir build/locks/vm-kernel.lock )      # tracked path, a directory now: opening it fails like an unreadable file would
+# G9: the row cap is 500
+rows500=$(python3 -c "import hashlib; print(''.join('pkg%04d=1.0-r0 sha256:%s\n' % (i, hashlib.sha256(str(i).encode()).hexdigest()) for i in range(500)))")
+rows501=$(python3 -c "import hashlib; print(''.join('pkg%04d=1.0-r0 sha256:%s\n' % (i, hashlib.sha256(str(i).encode()).hexdigest()) for i in range(501)))")
+printf '%s' "$rows500" >"$work/rows500.txt"; printf '%s' "$rows501" >"$work/rows501.txt"
+lcase2 lg9a "w(open('$work/rows500.txt').read())" "w(open('$work/rows500.txt').read()); $RM"
+lcase2 lg9b "w(open('$work/rows501.txt').read())" "w(open('$work/rows501.txt').read()); $RM"
+
+fx0='{"times": {}}'
+lc_g1a() { lrun lg1a "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg1a.out"; }
+lc_g1b() { lrun lg1b "$(fx1 "apk:x86_64/linux-virt@6.18.62-r0" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg1b.out"; }
+lc_g1c() { lrun lg1c "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg1c.out"; }
+lc_g1w() {   # the working-tree path (rev None): a symlinked kernel lock is refused by tree_files and by load_at
+  python3 -I - "$LINV" "$work/lg1w" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+for fn in (lambda: inv.tree_files(sys.argv[2], None), lambda: inv.load_at(sys.argv[2], None)):
+    try:
+        fn()
+    except RuntimeError as e:
+        assert "vm-kernel.lock" in str(e), str(e)
+    else:
+        raise AssertionError("a symlinked kernel lock in the working tree was read")
+PY
+}
+lc_g2a() { lrun lg2a "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg2a.out"; }
+lc_g2b() { lrun lg2b "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg2b.out"; }
+lc_g2c() { lrun lg2c "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg2c.out"; }     # decision: two IDENTICAL rows are an error too
+lc_g3a() { lrun lg3a "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3a.out"; }
+lc_g3b() { lrun lg3b "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3b.out"; }
+lc_g3c() { lrun lg3c "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3c.out"; }
+lc_g3d() { lrun lg3d "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3d.out"; }
+lc_g3e() { lrun lg3e "$fx0"; test "$rc" -eq 0 && grep -qi 'no pin moved' "$work/lg3e.out"; }            # a missing file stays allowed
+lc_g3f() { lrun lg3f "$fx0"; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lg3f.out"; }                   # so does a file that is removed
+lc_g4a() { lrun lg4 "$(fx1 "apk:linux-virt@6.18.60-r0" "$D2")"; test "$rc" -eq 1 && grep -qi 'too young' "$work/lg4.out"; }
+lc_g4b() { lrun lg4 "$(fx1 "apk:linux-virt@6.18.60-r0" "$D8")"; test "$rc" -eq 0 && grep -q 'apk:linux-virt@6.18.60-r0' "$work/lg4.out"; }
+lc_g4u() {
+  python3 -I - "$LINV" "$work/lg4" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+it = inv.load_at(sys.argv[2], "HEAD").get("apk:linux-virt@6.18.60-r0")
+assert it is not None and it.kind == "apk" and it.name == "linux-virt" and it.version == "6.18.60-r0" and it.sum, it
+PY
+}
+lc_g6a() {
+  lrun lg6 "{\"times\": {}, \"first_seen\": {\"apk:x86_64/openssl@1.1.1w-r0\": \"$D2\", \"apk:x86_64/tzdata@2023c-r0\": \"$D2\"}}"
+  test "$rc" -eq 1 && test "$(grep -ci 'too young' "$work/lg6.out")" -ge 2 && ! grep -qi 'not a pin' "$work/lg6.out"
+}
+lc_g6b() {
+  lrun lg6 "{\"times\": {}, \"first_seen\": {\"apk:x86_64/openssl@1.1.1w-r0\": \"$D8\", \"apk:x86_64/tzdata@2023c-r0\": \"$D8\"}}"
+  test "$rc" -eq 0 && grep -q 'apk:x86_64/openssl@1.1.1w-r0' "$work/lg6.out" && grep -q 'apk:x86_64/tzdata@2023c-r0' "$work/lg6.out"
+}
+lc_g6u() {
+  python3 -I - "$LCHK" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pac", sys.argv[1]); pac = importlib.util.module_from_spec(spec); spec.loader.exec_module(pac)
+for v in ("1.1.1w-r0", "2023c-r0", "6.18.60-r0", "20260909-r3", "0.13.1-r0"):
+    assert pac.is_pin(v), v
+for v in ("main", "latest", "1.*", "3.x", ">=1.2", "~1.2.3", "nightly", "", "1.2.3 || 2.0"):
+    assert not pac.is_pin(v), v
+PY
+}
+lc_g8() {   # the working-tree read of the kernel lock fails: tree_files RAISES (as for PERSONA_TOOLS), it does not skip the file
+  python3 -I - "$LINV" "$work/lg8" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+try:
+    inv.tree_files(sys.argv[2], None)
+except RuntimeError as e:
+    assert "vm-kernel.lock" in str(e), str(e)
+else:
+    raise AssertionError("an unreadable kernel lock was skipped")
+PY
+}
+lc_g9a() { lrun lg9a "$fx0"; test "$rc" -eq 0 && grep -qi 'no pin moved' "$work/lg9a.out"; }          # exactly 500 rows are accepted
+lc_g9b() { lrun lg9b "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg9b.out"; }              # 501 are refused
+lc_g10a() { python3 -I - "$LINV" <<'PY'
+import sys
+head = "".join(open(sys.argv[1]).readlines()[:14])
+assert "apk" in head, "the item-kind list in the header of pin-inventory.py does not name apk"
+PY
+}
+lc_g10b() { python3 -I - "$here/pin-age-check-test.sh" <<'PY'
+import sys
+head = "".join(open(sys.argv[1]).readlines()[:16])
+assert "apk" in head, "the header of pin-age-check-test.sh does not name apk"
+PY
+}
+LCOLD="a b c d e f g h h2 i u"
+LCNEW="g1a g1b g1c g1w g2a g2b g2c g3a g3b g3c g3d g3e g3f g4a g4b g4u$G5IDS g6a g6b g6u g8 g9a g9b g10a g10b"
+LCIDS="$LCOLD $LCNEW"
+lc_all() { LCFAIL=""; local i; for i in ${LCSEL:-$LCIDS}; do "lc_$i" >/dev/null 2>&1 || LCFAIL="$LCFAIL $i"; done; }
 CASE="kernel row a: one moved row, first seen 2 days ago: FAILS (exit 1) and says it is too young"; check lc_a
 CASE="kernel row b: the same row first seen 8 days ago passes (exit 0) and the check NAMES the item"; check lc_b
 CASE="kernel row c: no lock row moves (another file changes): exit 0, no apk item"; check lc_c
@@ -5331,12 +5483,45 @@ CASE="kernel row h: rows reordered, a comment edited, blank lines added: nothing
 CASE="kernel row h2: a row removed: nothing moved, exit 0"; check lc_h2
 CASE="kernel row i: a moved row with no first-seen proof: exit 1 'age not provable' (never a pass)"; check lc_i
 CASE="kernel row u: the inventory lists the row as kind apk with key apk:<name>@<version>, and the sha256 is its sum"; check lc_u
+CASE="kernel row G1 a kernel lock that is a symlink (git mode 120000) is refused: exit 2, 'cannot run'"; check lc_g1a
+CASE="kernel row G1 a symlink whose TARGET TEXT is a valid row is refused (exit 2), its name is never parsed as a row"; check lc_g1b
+CASE="kernel row G1 a symlink to a real file holding a valid row is still refused (exit 2)"; check lc_g1c
+CASE="kernel row G1 a symlinked kernel lock in the working tree (rev None) is refused by tree_files and load_at"; check lc_g1w
+CASE="kernel row G2 two rows with one name=version and different digests: exit 2 (identity never merges)"; check lc_g2a
+CASE="kernel row G2 the same two rows in the other order: exit 2"; check lc_g2b
+CASE="kernel row G2 two IDENTICAL rows: exit 2 too (a duplicate row is an error)"; check lc_g2c
+CASE="kernel row G3 the kernel lock exists and is empty: exit 2 (the control may not cover nothing)"; check lc_g3a
+CASE="kernel row G3 the kernel lock holds only a comment: exit 2"; check lc_g3b
+CASE="kernel row G3 the kernel lock holds only blank lines: exit 2"; check lc_g3c
+CASE="kernel row G3 a NEW kernel lock that is empty: exit 2"; check lc_g3d
+CASE="kernel row G3 the kernel lock is missing and nothing moved: exit 0, says so"; check lc_g3e
+CASE="kernel row G3 the kernel lock is removed by the pull request: exit 0 (a missing file stays allowed)"; check lc_g3f
+CASE="kernel row G4 the row cache#840 wrote (no arch prefix), first seen 2 days ago: FAILS (exit 1) 'too young'"; check lc_g4a
+CASE="kernel row G4 the same row first seen 8 days ago passes (exit 0) and is named"; check lc_g4b
+CASE="kernel row G4 the inventory lists that exact row as apk:linux-virt@6.18.60-r0 with a sum"; check lc_g4u
+CASE="kernel row G5 an unreadable row (hex63) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_hex63
+CASE="kernel row G5 an unreadable row (hex65) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_hex65
+CASE="kernel row G5 an unreadable row (nosum) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_nosum
+CASE="kernel row G5 an unreadable row (upper) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_upper
+CASE="kernel row G5 an unreadable row (eq2) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_eq2
+CASE="kernel row G5 an unreadable row (junk) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_junk
+CASE="kernel row G5 an unreadable row (nul) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_nul
+CASE="kernel row G5 an unreadable row (tail) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_tail
+CASE="kernel row G6 rows with versions 1.1.1w-r0 and 2023c-r0, first seen 2 days ago: both FAIL as 'too young' (they are pins, not 'not a pin')"; check lc_g6a
+CASE="kernel row G6 the same rows first seen 8 days ago pass (exit 0) and are named"; check lc_g6b
+CASE="kernel row G6 is_pin takes 1.1.1w-r0, 2023c-r0 and the other apk versions, and still refuses main, latest, 1.*, 3.x, ranges, nightly"; check lc_g6u
+CASE="kernel row G8 a tracked kernel lock that cannot be read in the working tree RAISES, it is not skipped"; check lc_g8
+CASE="kernel row G9 exactly 500 rows are accepted (exit 0)"; check lc_g9a
+CASE="kernel row G9 501 rows are refused (exit 2)"; check lc_g9b
+CASE="kernel row G10 the item-kind list in the header of pin-inventory.py names apk"; check lc_g10a
+CASE="kernel row G10 the header of pin-age-check-test.sh names apk"; check lc_g10b
 
 # --- mutants: one exact edit each, in a temp copy of the scripts; every mutant must make at least one case above fail --------------------------------
 # The edits anchor on these exact strings (the first is the line the code change must add to pin-inventory.py; the others are existing code):
 #   KERNEL_LOCK = "build/locks/vm-kernel.lock"                                  (pin-inventory.py: the one constant _wanted and the row reader both use)
 #   return _sumid(self.sums)                                                    (pin-inventory.py, Item.sum)
 #   if age + 1e-9 < min_days:                                                   (pin-age-check.py, judge_item)
+#   raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")    (pin-inventory.py, _kernel_lock_items)
 #   return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]    (pin-inventory.py, moved)
 mutate() {   # NAME FILE OLD NEW -> $work/mut/NAME/.github/agent/supply-chain, rc 3 when OLD is not found exactly once
   local m="$work/mut/$1"; rm -rf "${m:?}"; mkdir -p "$m/.github/agent" "$m/.github/policy"
@@ -5349,12 +5534,12 @@ s = open(p).read()
 sys.exit(3) if s.count(old) != 1 else open(p, "w").write(s.replace(old, new))
 PY
 }
-mutant() {   # NAME FILE OLD NEW
-  local rcm=0; mutate "$1" "$2" "$3" "$4" || rcm=$?
+mutant() {   # NAME FILE OLD NEW [CASES]: the cases that must see it (default: the first eleven)
+  local rcm=0 sel=${5:-$LCOLD}; mutate "$1" "$2" "$3" "$4" || rcm=$?
   CASE="kernel row mutant $1: the edit applies to the code"
   if [ "$rcm" -ne 0 ]; then echo "PENDING-CODE: mutant $1 cannot apply (its anchor in $2 is missing or not unique): $3"; bad "$CASE"; return; fi
   LCHK="$work/mut/$1/.github/agent/supply-chain/pin-age-check.py"; LINV="$work/mut/$1/.github/agent/supply-chain/pin-inventory.py"
-  lc_all
+  LCSEL="$sel"; lc_all; LCSEL=""
   CASE="kernel row mutant $1 is killed (a case above fails)"
   if [ -n "$LCFAIL" ]; then ok "$CASE"; echo "mutant killed: $1 (failing cases:$LCFAIL)"; else bad "$CASE"; echo "mutant SURVIVED: $1"; fi
   LCHK=$chk; LINV=$here/../supply-chain/pin-inventory.py
@@ -5369,6 +5554,7 @@ else
   mutant apk-judged-old-enough pin-age-check.py 'if age + 1e-9 < min_days:' 'if item.kind != "apk" and age + 1e-9 < min_days:'
   mutant reorder-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum or (k.startswith("apk:") and list(base_items).index(k) != list(head_items).index(k))]'
   mutant removal-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [base_items[k] for k in sorted(base_items) if k.startswith("apk:") and k not in head_items] + [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]'
+  mutant row-error-skipped pin-inventory.py 'raise RuntimeError(f"{path}:{n}: a lock row is not '"'"'<name>=<version> sha256:<64 hex>'"'"': its age cannot be judged")' 'continue' "$G5IDS"
 fi
 
 echo "pin-age-check: $pass passed, $failn failed"
