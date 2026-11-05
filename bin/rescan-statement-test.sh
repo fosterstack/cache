@@ -455,11 +455,12 @@ const github = {
     get: async (p) => {
       calls.gets.push(p.issue_number);
       if (mode.get === '404') throw notFound();
-      const found = written[p.issue_number] || all.find(i => i.number === p.issue_number);
-      if (!found) throw notFound();
+      const seen = written[p.issue_number] || all.find(i => i.number === p.issue_number);
+      if (!seen) throw notFound();
+      const found = { state: 'open', ...seen };
       if (mode.get === 'wrongtitle') return { data: { ...found, title: 'other' } };
       if (mode.get === 'closed') return { data: { ...found, state: 'closed' } };
-      return { data: { state: 'open', ...found } };
+      return { data: found };
     } } },
 };
 const core = { info: (m) => calls.info.push(String(m)), setOutput: (k, v) => { calls.outputs[k] = String(v); } };
@@ -489,21 +490,23 @@ node_case() { # case-json issues-file : the step's calls on stdout, its exit cod
 issues "$D/issues-none.json" -1 x
 node_case '{}' "$D/issues-none.json"
 if [ "$rc" = 0 ] && [ "$(jq -c '[.createFull[] | [.title, .labels]]' "$D/js.out")" = "[[\"$TITLE_JS\",[\"daily-rescan\",\"security\"]]]" ] \
-  && [ "$(jq -c '.labels' "$D/js.out")" = '["daily-rescan","security"]' ]; then ok; else bad "no open issue: the step must create exactly one issue with the title and both labels, after trying both labels ($(cat "$D/js.out" "$D/js.err"))"; fi
-if jq -e '.info | any(test("open daily-rescan issues")) and any(test("match"))' "$D/js.out" >/dev/null; then ok; else bad "the step must log how many open daily-rescan issues it read and whether the title matched ($(cat "$D/js.out"))"; fi
-if jq -e '.info | any(test("created #4242"))' "$D/js.out" >/dev/null; then ok; else bad "the step must log 'created #<number>' after a create ($(cat "$D/js.out"))"; fi
+  && [ "$(jq -c '.labels' "$D/js.out")" = '["daily-rescan","security"]' ] \
+  && jq -e '(.create | length) == 1 and .comment == []' "$D/js.out" >/dev/null; then ok; else bad "no open issue: the step must create exactly one issue with the title and both labels, after trying both labels ($(cat "$D/js.out" "$D/js.err"))"; fi
+if jq -e '.info == ["read 250 open daily-rescan issues; title match: none", "created #4242"]' "$D/js.out" >/dev/null; then ok; else bad "after a create the step must log exactly the read line with the count and 'none', then 'created #<number>' ($(cat "$D/js.out"))"; fi
 if jq -e '.gets == [4242] and .outputs.issue == "4242"' "$D/js.out" >/dev/null; then ok; else bad "after a create the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
-for mode in '{"get":"404"}' '{"get":"wrongtitle"}' '{"get":"closed"}'; do
-  node_case "$mode" "$D/issues-none.json"
-  if [ "$rc" != 0 ]; then ok; else bad "after a create the step must fail when the read-back is $mode ($(cat "$D/js.out"))"; fi
+for mode_msg in '{"get":"404"}|Not Found' '{"get":"wrongtitle"}|#4242 reads back as "other" (open)' '{"get":"closed"}|(closed), not the open tracking issue'; do
+  node_case "${mode_msg%%|*}" "$D/issues-none.json"
+  if [ "$rc" != 0 ] && grep -qF "${mode_msg#*|}" "$D/js.err"; then ok; else bad "after a create the step must fail with '${mode_msg#*|}' when the read-back is ${mode_msg%%|*} ($(cat "$D/js.out" "$D/js.err"))"; fi
 done
 node_case '{}' "$D/issues-js.json"
-if [ "$rc" = 0 ] && jq -e '.info | any(test("commented on #770"))' "$D/js.out" >/dev/null; then ok; else bad "the step must log 'commented on #<number>' after a comment ($(cat "$D/js.out" "$D/js.err"))"; fi
-if jq -e '.gets == [770] and .outputs.issue == "770"' "$D/js.out" >/dev/null; then ok; else bad "after a comment the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
+if [ "$rc" = 0 ] && jq -e '.info == ["read 250 open daily-rescan issues; title match: #770", "commented on #770"]' "$D/js.out" >/dev/null; then ok; else bad "after a comment the step must log exactly the read line with the count and '#<number>', then 'commented on #<number>' ($(cat "$D/js.out" "$D/js.err"))"; fi
+if jq -e '.gets == [770] and .outputs.issue == "770" and .comment == [770] and .create == []' "$D/js.out" >/dev/null; then ok; else bad "after a comment the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
 node_case '{"noCommentId":true}' "$D/issues-js.json"
-if [ "$rc" != 0 ]; then ok; else bad "the step must fail when the comment answer has no id ($(cat "$D/js.out"))"; fi
-node_case '{"get":"404"}' "$D/issues-js.json"
-if [ "$rc" != 0 ]; then ok; else bad "after a comment the step must fail when the read-back is a 404 ($(cat "$D/js.out"))"; fi
+if [ "$rc" != 0 ] && grep -qF "the comment on #770 came back without an id" "$D/js.err"; then ok; else bad "the step must fail with 'the comment on #770 came back without an id' when the comment answer has no id ($(cat "$D/js.out" "$D/js.err"))"; fi
+for mode_msg in '{"get":"404"}|Not Found' '{"get":"wrongtitle"}|#770 reads back as "other" (open)' '{"get":"closed"}|(closed), not the open tracking issue'; do
+  node_case "${mode_msg%%|*}" "$D/issues-js.json"
+  if [ "$rc" != 0 ] && grep -qF "${mode_msg#*|}" "$D/js.err"; then ok; else bad "after a comment the step must fail with '${mode_msg#*|}' when the read-back is ${mode_msg%%|*} ($(cat "$D/js.out" "$D/js.err"))"; fi
+done
 if python3 - "$WF" <<'P'
 import sys
 t = open(sys.argv[1]).read()
@@ -514,6 +517,14 @@ ok_msg = "steps.issue.outputs.issue" in t[v:t.index("exit 1", v)]
 sys.exit(0 if ok_id and ok_msg else 1)
 P
 then ok; else bad "the issue step needs 'id: issue' and the findings verdict line must name steps.issue.outputs.issue"; fi
+if python3 - "$WF" <<'P'
+import sys
+t = open(sys.argv[1]).read()
+v = t.index("name: a findings verdict fails the run")
+cond = [l for l in t[v:].split("\n")[1:3] if l.strip().startswith("if:")]
+sys.exit(0 if cond and "always()" in cond[0] and "steps.statement.outputs.outcome == 'findings'" in cond[0] else 1)
+P
+then ok; else bad "the findings verdict step must run when the issue step fails: its if: needs always() with the findings outcome"; fi
 
 # ---- round 1 of the review of #268: fail-closed matching (closed rules, not residuals) ----------------------------------------------------------------------------
 CAND_REPO="ghcr.io/fosterstack/cache-candidates"
