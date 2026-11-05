@@ -64,6 +64,10 @@ VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "
 VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
 def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
+KMS_REF = "awskms:///alias/fosterstack-release-signing"
+AWS = ("      - name: AWS, as the release signing role (federated; kms:Sign on the release signing key only)\n        if: ${{ !contains(github.ref_name, '-') }}\n"
+       "        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0\n        with:\n"
+       "          role-to-assume: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          aws-region: us-east-1\n")
 # REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
 # no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read + id-token write
 # only (Witness needs the identity token), no environment, no secret, and reads only the result file; `release` needs both, is skipped for a release candidate, holds the environment and the three
@@ -85,7 +89,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
          + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
-         + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
+         + wit("release-publish", REG) + AWS + wit("release-sign", dict(REG, RELEASE_KMS_KEY_REF=KMS_REF)) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
          + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"))      # rc-2 R4: the six records are checked for a token before any upload
          + up("release-evidence") + up("witness-release"))
 open(w + "/stage.yml", "w").write(stage)
@@ -183,7 +187,8 @@ def env(c): return {"payloadType": "application/vnd.in-toto+json", "payload": ba
 json.dump(env(col), open(w + "/record.json", "w"))
 for name, add in (("r_name", {"GH_TOKEN": "x"}), ("r_dh", {"DOCKERHUB_TOKEN": "x"}), ("r_apk", {"APK_RELEASE_SIGNING_KEY": "x"}),
                   ("r_idt", {"ACTIONS_ID_TOKEN_REQUEST_URL": "u"}), ("r_rt", {"ACTIONS_RUNTIME_TOKEN": "t"}),
-                  ("r_val", {"X": "SENTINEL-VALUE-123"}), ("r_jwt", {"X": "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"})):
+                  ("r_val", {"X": "SENTINEL-VALUE-123"}), ("r_jwt", {"X": "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"}),
+                  ("r_kmsref", {"RELEASE_KMS_KEY_REF": "x"}), ("r_awsid", {"AWS_ACCESS_KEY_ID": "x"}), ("r_awssec", {"AWS_SECRET_ACCESS_KEY": "x"}), ("r_awstok", {"AWS_SESSION_TOKEN": "x"})):
     c = json.loads(json.dumps(col)); c["predicate"]["attestations"][0]["attestation"]["variables"].update(add)
     json.dump(env(c), open(f"{w}/{name}.json", "w"))
 open(w + "/r_plain.json", "w").write(json.dumps(col))                              # a bare statement, not an envelope
@@ -360,7 +365,7 @@ c c_hubapk  '=APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}' '
 c c_assets  '=      - name: release-assets\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-assets\n' 'release-assets' "AC2 the assets step without its token"
 c c_assreg  '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ github.token }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed.sh release-assets' 'release-assets' "AC2 a registry token in the assets step"
 c c_ghsec   '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ secrets.OTHER }}\n        run: bash bin/witnessed.sh release-assets' 'whole read' "AC2 GH_TOKEN from another secret"
-c c_part    '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}x\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'whole read' "AC2 a credential read in part"
+c c_part    '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witnessed.sh release-sign' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}x\n          GH_TOKEN: ${{ github.token }}\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witnessed.sh release-sign' 'whole read' "AC2 a credential read in part"
 c c_foo     '=APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}' 'APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n          FOO: bar' 'release-apks' "AC2 an extra variable in the apk step"
 c c_upenv   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence' '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        env:\n          GH_TOKEN: ${{ github.token }}\n        with:\n          name: release-evidence' 'only the witnessed' "AC2 an env on an upload step"
 c c_pvnone  '=      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-postverify\n' 'release-postverify' "AC2 (rule 79) the post-publish step without its read token"
@@ -514,6 +519,10 @@ rec r_idt  "ACTIONS_ID_TOKEN_REQUEST_URL" "AC12 the identity token request in th
 rec r_rt   "ACTIONS_RUNTIME_TOKEN"       "AC12 the runtime token in the record"
 rec r_val  "credential value"            "AC12 a credential value in the record"
 rec r_jwt  "compact JWT"                 "AC12 a compact JWT in the record"
+rec r_kmsref "RELEASE_KMS_KEY_REF"        "AC12 the release KMS key reference variable named in the record"
+rec r_awsid  "AWS_ACCESS_KEY_ID"          "AC12 the AWS access key id variable named in the record"
+rec r_awssec "AWS_SECRET_ACCESS_KEY"      "AC12 the AWS secret access key variable named in the record"
+rec r_awstok "AWS_SESSION_TOKEN"          "AC12 the AWS session token variable named in the record"
 rec r_plain "DSSE envelope"              "AC12 a bare statement is not an envelope (it would hide the payload from a text search)"
 rec r_garbage "DSSE envelope"            "AC12 a payload that is not a statement"
 # ---- AC13: the old authorization machinery ----------------------------------------------------------------------------------
@@ -584,7 +593,116 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-EXPECT=283
+# ---- handoff 0713 P3 / cache#853: release signing with the release KMS key, wired end to end --------------------------------------------------------
+# every signing line of bin/release-sign.sh is judged as a whole line, not by how it starts: a second --key, a prefix, another spelling of the word cosign all fail
+KW='cosign signing line'
+sg m_k_dup   '(--signing-config \.github/policy/cosign-signing-config\.json )("\$host/\$repo@\$digest")'   '\1--key awskms:///alias/other \2'    "$KW" "P3 a second --key after the approved arguments of the image signature"
+sg m_k_empty '(--signing-config \.github/policy/cosign-signing-config\.json )("\$host/\$repo@\$digest")'   '\1--key "" \2'                       "$KW" "P3 an appended empty --key (cosign makes an ephemeral key of it) on the image signature"
+sg m_k_cmd   '(\n +)cosign sign --yes --key'                                                                '\1command cosign sign --yes --key'  "$KW" "P3 the image signature spelled \`command cosign sign\`"
+sg m_k_tab   '(\n +)cosign sign --yes --key'                                                                $'\\1cosign\tsign --yes --key'        "$KW" "P3 a tab between cosign and sign"
+sg m_k_two   '(\n)cosign sign-blob --yes --key'                                                             '\1cosign  sign-blob --yes --key'    "$KW" "P3 two spaces between cosign and sign-blob"
+sg m_k_semi  '(mkdir -p release-evidence\n)'                                                                '\1true; cosign sign-blob --yes --bundle b.json policy.json\n' "$KW" "P3 an unkeyed sign-blob after a semicolon"
+sg m_k_glob  '(\n +)cosign sign --yes --key'                                                                '\1cosign --verbose sign --yes --key' "$KW" "P3 a global flag before sign"
+sg m_k_or    '(\n +)cosign sign --yes --key'                                                                '\1false || cosign sign --yes --key' "$KW" "P3 the image signature after ||"
+sg m_k_if    '(\n +)(cosign sign --yes --key [^\n]*)'                                                       '\1if \2; then :; fi'                "$KW" "P3 the image signature as an if condition"
+sg m_k_ab    '(mkdir -p release-evidence\n)'                                                                '\1cosign attest-blob --yes --signing-config .github/policy/cosign-signing-config.json --statement s.json --bundle b.json\n' "$KW" "P3 an unkeyed cosign attest-blob line"
+sg m_k_var   '(\ncosign sign-blob --yes --key )"\$RELEASE_KMS_KEY_REF"'                                      '\1"$OTHER_KEY"'                      "$KW" "P3 a sign-blob keyed with another variable"
+sg m_k_eq    '(\ncosign sign-blob --yes )--key "\$RELEASE_KMS_KEY_REF"'                                    '\1--key="$RELEASE_KMS_KEY_REF"'      "$KW" "P3 --key= instead of --key and a space"
+cat > "$work/kmswf.py" <<'PY'
+import json, os, re, sys, yaml
+root = sys.argv[1]
+KMS, ROLE = "awskms:///alias/fosterstack-release-signing", "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+AWS = "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd"
+raw = open(os.path.join(root, ".github/workflows/stage-promote.yml")).read()
+steps = yaml.safe_load(raw)["jobs"]["release"]["steps"]
+out = []
+def case(label, good, why=""): out.append(("ok   " if good else "FAIL ") + "P3 " + label + ("" if good else " -> " + str(why)[:200]))
+sign = next((i for i, s in enumerate(steps) if s.get("name") == "release-sign under Witness"), None)
+aws = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("aws-actions/configure-aws-credentials@")]
+a = steps[aws[0]] if aws else {}
+case("the release job has exactly one AWS credentials step, before release-sign under Witness", len(aws) == 1 and sign is not None and aws[0] < sign, "aws steps at %s, release-sign at %s" % (aws, sign))
+case("the AWS credentials step is the pinned aws-actions/configure-aws-credentials v6.3.0 (the pin ci.yml and release.yml use)", str(a.get("uses")) == AWS and (AWS + " # v6.3.0") in raw, a.get("uses"))
+case("the AWS credentials step assumes exactly the release signing role in us-east-1 and takes nothing else", a.get("with") == {"role-to-assume": ROLE, "aws-region": "us-east-1"} and not a.get("env"), a.get("with"))
+case("the AWS credentials step carries the same condition as release-sign (a release candidate assumes no role)", sign is not None and a.get("if") == steps[sign].get("if") and a.get("if") is not None, a.get("if"))
+env = (steps[sign].get("env") or {}) if sign is not None else {}
+case("the release-sign step gives RELEASE_KMS_KEY_REF the one literal alias reference", env.get("RELEASE_KMS_KEY_REF") == KMS, env.get("RELEASE_KMS_KEY_REF"))
+case("no other step of the release job receives RELEASE_KMS_KEY_REF", [i for i, s in enumerate(steps) if "RELEASE_KMS_KEY_REF" in (s.get("env") or {})] == ([sign] if env.get("RELEASE_KMS_KEY_REF") else []) and bool(env.get("RELEASE_KMS_KEY_REF")), [s.get("name") for s in steps if "RELEASE_KMS_KEY_REF" in (s.get("env") or {})])
+head = raw.split("\nname:")[0]
+case("the stage file's header comment no longer calls the release signatures keyless", "keyless" not in head.lower(), re.findall(r".*keyless.*", head)[:1])
+pol = json.load(open(os.path.join(root, ".github/policy/chain-scripts.json")))
+row = next((r for r in pol["scripts"] if r["path"] == "bin/release-sign.sh"), {})
+case("chain-scripts.json: the bin/release-sign.sh row lists RELEASE_KMS_KEY_REF in reads_env and no longer says keyless", "RELEASE_KMS_KEY_REF" in row.get("reads_env", []) and "keyless" not in row.get("reason", "").lower(), row.get("reads_env"))
+amb = {(e["script"], e["file"], e["job"]) for e in pol["ambient_env"] if e["name"] == "RELEASE_KMS_KEY_REF"}
+case("chain-scripts.json: ambient_env lists RELEASE_KMS_KEY_REF for bin/release-sign.sh and the wrapper bin/witnessed.sh in stage-promote.yml job release",
+     amb == {("bin/release-sign.sh", ".github/workflows/stage-promote.yml", "release"), ("bin/witnessed.sh", ".github/workflows/stage-promote.yml", "release")}, sorted(amb))
+idj = json.load(open(os.path.join(root, ".github/policy/id-token-jobs.json")))["jobs"]
+rel = [e for e in idj if (e["workflow"], e["job"]) in (("release.yml", "release"), ("stage-promote.yml", "release"))]
+case("id-token-jobs.json: the two Release entries no longer name keyless cosign signatures", len(rel) == 2 and not any("keyless cosign" in e["reason"] for e in rel), [e["reason"][:60] for e in rel])
+wit = open(os.path.join(root, "bin/witnessed.sh")).read()
+miss = [n for n in ("RELEASE_KMS_KEY_REF", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN") if ("--env-add-sensitive-key " + n) not in wit]
+case("bin/witnessed.sh keeps the key reference and the AWS credential names out of the Witness environment record (sensitive-key list)", not miss, "missing " + ", ".join(miss))
+items = open(os.path.join(root, "bin/chain_items.py")).read()
+tn = re.search(r"TOKEN_NAMES = \((.*?)\)", items, re.S).group(1)
+miss2 = [n for n in ("RELEASE_KMS_KEY_REF", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN") if '"%s"' % n not in tn]
+case("bin/chain_items.py refuses a record that names the key reference or an AWS credential (TOKEN_NAMES)", not miss2, "missing " + ", ".join(miss2))
+print("\n".join(out))
+PY
+while IFS= read -r l; do
+  case "$l" in ok*) ok "${l#ok   }";; *) bad "${l#FAIL }";; esac
+done < <(python3 "$work/kmswf.py" "$root" 2>&1)
+cat > "$work/kmsdocs.py" <<'PY'
+import json, os, re, sys
+root = sys.argv[1]
+out = []
+def case(label, good, why=""): out.append(("ok   " if good else "FAIL ") + "P3 " + label + ("" if good else " -> " + str(why)[:220]))
+def read(f): return open(os.path.join(root, f)).read()
+def commands(t):
+    """the verify commands of the fenced blocks, each with whether the block follows a sentence about releases before v0.3.0 (the older certificate form, which stays documented)"""
+    out_ = []
+    for m in re.finditer(r"```[a-z]*\n(.*?)```", t, re.S):
+        older = "before v0.3.0" in t[max(0, m.start() - 700):m.start()].lower()
+        for l in re.sub(r"\\\n\s*", " ", m.group(1)).split("\n"):
+            l = l.strip()
+            if re.match(r"cosign verify(-attestation|-blob)? ", l): out_.append((re.sub(r"\s+", " ", l), older))
+    return out_
+def customer_forms(cmds):
+    return [c for c, older in cmds if not older and "slsa.dev/provenance" not in c and ("fosterstack/cache" in c or "<IMAGE_REF" in c or c.startswith("cosign verify-blob ") or "release-manifest" in c)]
+KEY = "release.rsa.pub"
+FETCH = re.compile(r"curl -fsSLO \"?https://raw\.githubusercontent\.com/fosterstack/cache/(v\$\{VER(SION)?\}|<TAG>)/build/keys/release\.rsa\.pub\"?")
+def keyed(c): return re.search(r"--key[ =]release\.rsa\.pub(?= |$)", c) is not None and "--certificate-identity" not in c and len(re.findall(r"--key\b", c)) == 1
+for f in ("docs/verify-release.md", "docs/verify-images.md", "docs/install.md", "docs/using-our-vex.md", "RELEASING.md"):
+    txt = read(f)
+    mine = customer_forms(commands(txt))
+    bad_ = [c[:90] for c in mine if not keyed(c)]
+    case("%s: every verify of an image, its manifest attestation or a signed release file (but the older certificate form) is exactly --key release.rsa.pub with no certificate identity (%d commands)" % (f, len(mine)), mine and not bad_, bad_[:1] or "no verify command found")
+    case("%s tells the reader to fetch release.rsa.pub from build/keys/ at the release tag (curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<tag>/build/keys/release.rsa.pub)" % f, FETCH.search(re.sub(r"\s+", " ", txt)) is not None)
+for f in ("docs/verify-release.md", "docs/verify-images.md", "docs/install.md", "docs/using-our-vex.md"):
+    case("%s no longer says the release signatures are keyless" % f, "keyless" not in read(f).lower(), re.findall(r".*keyless.*", read(f), re.I)[:1])
+rows = json.load(open(os.path.join(root, "docs/verify-release.cannot-run.json")))
+img = [r["command"] for r in rows if ("<IMAGE_REF" in r["command"] and r["command"].startswith("cosign ")) or r["command"].startswith("cosign verify-blob ")]
+bad_ = [c[:90] for c in img if not keyed(c)]
+case("docs/verify-release.cannot-run.json (what release-postverify runs): every image and signed-file verify is exactly --key release.rsa.pub with no certificate identity (%d rows)" % len(img), img and not bad_, bad_[:1] or "no row found")
+prov = [r["command"] for r in rows if "slsa.dev/provenance/v1" in r["command"] and r["command"].startswith("cosign verify-blob-attestation")]
+case("docs/verify-release.cannot-run.json keeps the certificate-identity check of Sign's provenance (Sign's own signature stays keyless in this change)", prov and all("--certificate-identity" in c for c in prov), prov[:1])
+vcr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
+vb = [b for b in vcr["blocks"] if "cosign verify-attestation" in b]
+case("docs/using-our-vex.cannot-run.json: the manifest verify block is exactly --key release.rsa.pub with no certificate identity", vb and all(keyed(re.sub(r"\s+", " ", b.replace("\\\n", " "))) for b in vb), [b[:90] for b in vb][:1] or "no block found")
+rl = re.sub(r"\s+", " ", read("RELEASING.md"))
+case("RELEASING.md says once: until the key manifest is published, the key file named in this repository is the reference", rl.lower().count("until the key manifest is published, the key file named in this repository is the reference") == 1, rl.lower().count("until the key manifest is published"))
+case("README.md no longer says the image is keylessly signed", "keylessly signed" not in read("README.md").lower())
+for f, ph in (("RELEASING.md", "release files keyless"), ("docs/verify-images.md", "files keyless, under `stage-promote.yml`"), ("docs/verify-images.md", "cosign keyless blob-signature"), ("docs/verify-images.md", "There is no signing key to leak")):
+    case("%s no longer says %r of the release signatures" % (f, ph), ph not in re.sub(r"\s+", " ", read(f)))
+print("\n".join(out))
+PY
+while IFS= read -r l; do
+  case "$l" in ok*) ok "${l#ok   }";; *) bad "${l#FAIL }";; esac
+done < <(python3 "$work/kmsdocs.py" "$root" 2>&1)
+# only bin/release-sign.sh may run cosign to sign: a keyed signing line added to another release script is caught by its row's tool list
+rsx() { mkdir -p "$work/rsx_$1"; cp "$root/bin/$1.sh" "$work/rsx_$1/$1.sh"
+  printf '\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle b.json f\n' >> "$work/rsx_$1/$1.sh"
+  expect caught "P3 a keyed cosign sign-blob line added to bin/$1.sh is refused (only bin/release-sign.sh lists cosign)" "uses 'cosign'" scan "$work/rsx_$1/$1.sh" "$root/.github/policy/chain-scripts.json"; }
+for n in release-publish release-assets release-verify; do rsx "$n"; done
+EXPECT=337
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

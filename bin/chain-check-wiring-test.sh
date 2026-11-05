@@ -166,6 +166,10 @@ exec witness run --step "$step" \\
   --env-add-sensitive-key DOCKERHUB_USERNAME \\
   --env-add-sensitive-key DOCKERHUB_TOKEN \\
   --env-add-sensitive-key SIGSTORE_ID_TOKEN \\
+  --env-add-sensitive-key RELEASE_KMS_KEY_REF \\
+  --env-add-sensitive-key AWS_ACCESS_KEY_ID \\
+  --env-add-sensitive-key AWS_SECRET_ACCESS_KEY \\
+  --env-add-sensitive-key AWS_SESSION_TOKEN \\
   -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]

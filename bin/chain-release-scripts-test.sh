@@ -22,6 +22,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
+export RELEASE_ROOT="$root"
 python3 - "$@" <<'PY'
 import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
@@ -60,6 +61,7 @@ esac''',
  "cosign": r'''#!/usr/bin/env bash
 echo "cosign $*" >> "$LOG"
 echo "$PWD" >> "$LOG.cwd"
+for a in "$@"; do if [ "$a" = release.rsa.pub ]; then [ -f release.rsa.pub ] || { echo "open release.rsa.pub: no such file or directory" >&2; exit 1; }; cat release.rsa.pub >> "$LOG.keyseen"; fi; done
 if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
@@ -196,6 +198,7 @@ def adm(t, tag, base, **over):
     d = {"tag": tag, "sha": "c" * 40, "baseline_version": base, "baseline": "requirements/releases/%s.yaml" % base}
     d.update(over)
     json.dump(d, open(os.path.join(t, "witness-build/admission-baseline.json"), "w"))
+KEYTXT = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA-release-key-test\n-----END PUBLIC KEY-----\n"
 def tree(extra_env=None):
     t = tempfile.mkdtemp(); fb = os.path.join(t, ".fakebin"); os.makedirs(fb); os.makedirs(os.path.join(t, "bin")); os.makedirs(os.path.join(t, "reg"))
     for n, body in FAKES.items():
@@ -245,10 +248,11 @@ def tree(extra_env=None):
                  ("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz")):
         open(os.path.join(t, "dist", n), "wb").write(k.encode())
     os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
+    os.makedirs(os.path.join(t, "build/keys")); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write(KEYTXT)
     os.makedirs(os.path.join(t, "release-published"), exist_ok=True)   # what release-assets.sh downloads the published release into (gh release download -D release-published)
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
     return t
-KMS = "awskms:///alias/fosterstack-release-signing"      # the value the release job pins in RELEASE_KMS_KEY_REF (handoff 0713 P3)
+KMS = "awskms:///alias/fosterstack-release-signing"      # the value stage-promote.yml gives RELEASE_KMS_KEY_REF; the P3 workflow cases below read it from that file
 def run(t, script, env=None, creds=None, tag="v0.3.0"):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
@@ -522,7 +526,7 @@ blobs = " ".join(l for l in L if l.startswith("cosign sign-blob"))
 for f in ("production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json", "vendor-evidence.json", "dependency-list.json", "checksums.txt", "policy.json"):
     check(f in blobs, "AC8 %s is signed with a bundle" % f)
 check(all("--bundle" in l for l in L if l.startswith("cosign sign-blob")), "AC8 every signed file gets a bundle")
-# handoff 0713 P3 (ratify B): every signature is made with the release KMS key, named by the job (RELEASE_KMS_KEY_REF), and keeps its Rekor entry through the signing config
+# handoff 0713 P3 (ratify B): customers check every signature against the one published KMS key, so a call without --key would leave an artifact they cannot check
 signing = [l for l in L if l.startswith(("cosign sign ", "cosign sign-blob", "cosign attest "))]
 check(len(signing) == 17 and all((" --key " + KMS + " ") in l and " --signing-config .github/policy/cosign-signing-config.json " in l for l in signing),
       "P3 each of the 17 cosign calls (4 image signatures, 4 attestations, 9 signed files) signs with --key and then the signing config", str(len(signing)) + " " + str([l for l in signing if (" --key " + KMS + " ") not in l][:2]))
@@ -531,6 +535,35 @@ tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": 
 check(rc != 0 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(tn) if l.startswith(("cosign", "vendor-provenance"))], "P3 a job with no RELEASE_KMS_KEY_REF stops the step before anything is made or signed, naming the variable", "rc=%s %s" % (rc, first(se)))
 tb = tree(); rc, so, se = run(tb, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "arn:aws:kms:us-east-1:111122223333:key/abc"})
 check(rc != 0 and not [l for l in log(tb) if l.startswith("cosign")], "P3 a key reference that is not awskms:/// is refused before any signature", "rc=%s %s" % (rc, first(se)))
+def files_of(t):
+    out = []
+    for dp, dn, fn in os.walk(t):
+        out += [os.path.relpath(os.path.join(dp, f), t) for f in fn if f != "calls.log"]
+    return sorted(out)
+def refused_ref(val, label, want_rc=None):
+    t = tree(); before = files_of(t)
+    rc, so, se = run(t, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": val})
+    check(rc != 0 and (want_rc is None or rc == want_rc) and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(t) if l.startswith(("cosign", "vendor-provenance"))] and files_of(t) == before,
+          label, "rc=%s %s" % (rc, first(se)))
+refused_ref("", "P3 an EMPTY RELEASE_KMS_KEY_REF stops the step with exit 2 before anything is made or signed", 2)
+refused_ref("awskms:///a --other", "P3 a reference with a space (a second word for cosign) is refused before anything is made or signed", 1)
+refused_ref("awskms:///a\nb", "P3 a reference with a newline is refused before anything is made or signed", 1)
+refused_ref("awskms:///a\tb", "P3 a reference with a tab is refused before anything is made or signed", 1)
+refused_ref("awskms:///*", "P3 a reference that is only a glob character is refused before anything is made or signed", 1)
+refused_ref("awskms:///", "P3 a reference with an empty key name is refused before anything is made or signed", 1)
+tn2 = tree(); before_n = files_of(tn2); rcn, son, sen = run(tn2, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
+check(rcn == 2 and files_of(tn2) == before_n, "P3 an absent RELEASE_KMS_KEY_REF leaves no file behind (nothing is made before the check)", "rc=%s %s" % (rcn, first(sen)))
+import yaml
+rel_steps = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/stage-promote.yml")))["jobs"]["release"]["steps"]
+rs_env = next((x.get("env") or {} for x in rel_steps if x.get("name") == "release-sign under Witness"), {})
+need = re.search(r"for name in ([A-Z_ ]+); do", open(os.path.join(BIN, "release-sign.sh")).read()).group(1).split()
+check(set(need) <= set(rs_env), "P3 the release job's release-sign step passes every variable bin/release-sign.sh requires (the harness default above must not stand in for the workflow)",
+      "the step env lacks " + ", ".join(sorted(set(need) - set(rs_env))))
+wf_ref = rs_env.get("RELEASE_KMS_KEY_REF")
+check(isinstance(wf_ref, str) and re.fullmatch(r"awskms:///[A-Za-z0-9/_-]+", wf_ref) is not None, "P3 the step gives RELEASE_KMS_KEY_REF one literal awskms:/// reference (no expression, no secret)", repr(wf_ref))
+twf = tree(); rcw, sow, sew = run(twf, "release-sign", creds=REG, env={"NO_KMS_REF": "1", "RELEASE_KMS_KEY_REF": wf_ref or ""})
+sigw = [l for l in log(twf) if l.startswith(("cosign sign ", "cosign sign-blob", "cosign attest "))]
+check(rcw == 0 and len(sigw) == 17 and all((" --key " + (wf_ref or "-") + " ") in l for l in sigw), "P3 bin/release-sign.sh run with exactly the reference the workflow gives signs all 17 calls with it", "rc=%s %s" % (rcw, first(sew)))
 # REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): release-sign.sh makes dist/checksums.txt itself, from the four archives Build recorded, before its first signature
 t21 = tree(); rc21, so21, se21 = run(t21, "release-sign", creds=REG)
 ARC21 = sorted((("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
@@ -844,6 +877,25 @@ for bad_cmd, what in (("jq -e '.ok == true'", "no file operand (it would read st
                       ("jq -n 1", "jq -n alone")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "other.json": OK}); check(rc != 0 and not calls(t), "AC20 post-publish: a jq-only command with %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, "jq -c '.ok' provenance.bundle.json | jq -e '. == true'"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 post-publish: a jq pipe whose first jq reads a verified file is accepted (the later jq reads the pipe)", "rc=%s %s" % (rc, first(se)))
+# the release key is the committed build/keys/release.rsa.pub, never a release asset: the commands that say `--key release.rsa.pub` find it in release-published/ (the working directory)
+PVK = "cosign verify --key release.rsa.pub <IMAGE_REF>"
+PVKB = "cosign verify-blob --key release.rsa.pub --bundle b.json x.txt"
+KPATH = "build/keys/release.rsa.pub"
+def keyseen(t):
+    p = os.path.join(t, "calls.log.keyseen"); return open(p).read() if os.path.exists(p) else ""
+t, rc, so, se = pv([PVK, PVKB])
+check(rc == 0 and len(calls(t)) == 3, "AC20 post-publish: `--key release.rsa.pub` commands run (two registries for the image form, once for the blob form)", "rc=%s %s calls=%s" % (rc, first(se), calls(t)))
+check(keyseen(t) == KEYTXT * 3, "AC20 post-publish: every `--key release.rsa.pub` command finds the committed key in its working directory, byte for byte", repr(keyseen(t))[:120])
+check(os.path.exists(os.path.join(t, "release-published/release.rsa.pub")) and open(os.path.join(t, "release-published/release.rsa.pub")).read() == KEYTXT, "AC20 post-publish: release-published/release.rsa.pub is a byte-for-byte copy of build/keys/release.rsa.pub")
+for what, mutate in (("missing", lambda t: os.remove(os.path.join(t, KPATH))), ("empty", lambda t: open(os.path.join(t, KPATH), "w").write(""))):
+    t = tree(); mutate(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+    rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+    check(rc != 0 and KPATH in se and not calls(t), "AC20 post-publish: a %s %s in the checkout fails the run, naming it, before any command runs" % (what, KPATH), "rc=%s %s" % (rc, first(se)))
+t = tree(); open(os.path.join(t, "release-published/release.rsa.pub"), "w").write("a published asset\n")
+os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc != 0 and "release-published/release.rsa.pub" in se and not calls(t) and open(os.path.join(t, "release-published/release.rsa.pub")).read() == "a published asset\n", "AC20 post-publish: a release asset named release.rsa.pub is refused, never overwritten and never taken for the committed key, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV1, PV3]); check(rc == 0 and len(calls(t)) == 4 and keyseen(t) == "", "AC20 post-publish: commands that do not name release.rsa.pub run as before", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([]); check(rc == 0 and not calls(t), "AC20 post-publish: an empty list runs nothing and passes with the assets directory present")
 # round 1 (both seats): the grammar is CLOSED, so none of these reads a file nothing verified
 for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined short options (-ef loads a program file)"), ("jq -er '.ok' provenance.bundle.json", "combined short options (-er)"),
@@ -929,7 +981,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "405"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "422"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

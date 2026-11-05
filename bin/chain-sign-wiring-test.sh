@@ -3358,7 +3358,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='efb81a90da53fc970cef9a28b15ea7b19553707eca093a756131fba43b168900'
+FX_PIN='4abbea267b457909008e0cd7aaf796c73be938dc54f8f7f3ed03d8398fbcd976'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5002,6 +5002,72 @@ while IFS= read -r l; do
   case "$l" in ok*) pass=$((pass + 1)); echo "$l";; *) failn=$((failn + 1)); echo "$l";; esac
 done < <(python3 "$work/setupgo.py" 2>&1)
 
+# ---- cache#853 (handoff 0713 P3): the release signing role is assumed by ONE pinned action step in Release's job, and the key reference is one literal in release-sign's step env -------
+# the stage grammar run on edited copies of the REAL stage-promote.yml: the step the final workflow has is accepted; the same step anywhere else, or changed, is refused
+cat > "$work/awsgram.py" <<'PY'
+import copy, importlib.util, os, sys, yaml
+root = os.environ["CHAIN_ROOT"]
+spec = importlib.util.spec_from_file_location("cts", root + "/bin/chain-test-signers.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+rows, errs, names = m.load_scripts(root)
+AWS = "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0"
+ROLE, REGION, KMS = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing", "us-east-1", "awskms:///alias/fosterstack-release-signing"
+def load(f): return yaml.load(open(os.path.join(root, ".github/workflows", f)).read(), Loader=yaml.BaseLoader)
+def run(f, d):
+    e, _ = m.stage_grammar(f, d, rows, names, ".github/workflows/" + f)
+    return [x for x in e if "aws-actions" in x or "RELEASE_KMS_KEY_REF" in x or "uses" in x or "env" in x]
+def aws_step(**kw):
+    s = {"name": "AWS, as the release signing role (federated; kms:Sign on the release key only)", "if": "${{ !contains(github.ref_name, '-') }}", "uses": AWS,
+         "with": {"role-to-assume": ROLE, "aws-region": REGION}}
+    s.update(kw); return s
+def sign_i(d): return next(i for i, s in enumerate(d["jobs"]["release"]["steps"]) if s.get("name") == "release-sign under Witness")
+def final(d, **kw):
+    st = d["jobs"]["release"]["steps"]; i = sign_i(d)
+    have = [k for k, x in enumerate(st) if str(x.get("uses", "")).startswith("aws-actions/configure-aws-credentials@")]
+    if have: st[have[0]] = aws_step(**kw)
+    else: st.insert(i, aws_step(**kw)); i += 1
+    st[i].setdefault("env", {})["RELEASE_KMS_KEY_REF"] = KMS
+    return d
+def mut(f, edit):
+    d = copy.deepcopy(load(f)); edit(d); return d
+out = []
+def case(label, want_bad, got): out.append((label, bool(got) == want_bad, got[:1]))
+case("the final workflow shape (the pinned AWS credentials step before release-sign, RELEASE_KMS_KEY_REF as one literal in its env) passes the stage grammar", False, run("stage-promote.yml", mut("stage-promote.yml", final)))
+def alone(d): final(d); del d["jobs"]["release"]["steps"][sign_i(d)]["env"]["RELEASE_KMS_KEY_REF"]
+case("the AWS credentials step alone (no key reference in release-sign's env) passes the stage grammar", False, run("stage-promote.yml", mut("stage-promote.yml", alone)))
+def kms_only(d): d["jobs"]["release"]["steps"][sign_i(d)].setdefault("env", {})["RELEASE_KMS_KEY_REF"] = KMS
+case("the literal key reference in release-sign's env alone passes the stage grammar (the closed env lists name it)", False, run("stage-promote.yml", mut("stage-promote.yml", kms_only)))
+def other_step(d):
+    final(d); st = d["jobs"]["release"]["steps"]
+    j = next(i for i, s in enumerate(st) if s.get("name") == "release-assets under Witness"); st[j].setdefault("env", {})["RELEASE_KMS_KEY_REF"] = KMS
+case("the key reference in the env of another Release step is refused", True, run("stage-promote.yml", mut("stage-promote.yml", other_step)))
+def secret_val(d): final(d); d["jobs"]["release"]["steps"][sign_i(d)]["env"]["RELEASE_KMS_KEY_REF"] = "${{ secrets.RELEASE_KMS_KEY_REF }}"
+case("the key reference taken from a secret is refused", True, run("stage-promote.yml", mut("stage-promote.yml", secret_val)))
+def var_val(d): final(d); d["jobs"]["release"]["steps"][sign_i(d)]["env"]["RELEASE_KMS_KEY_REF"] = "${{ vars.RELEASE_KMS_KEY_REF }}"
+case("the key reference taken from a repository variable is refused", True, run("stage-promote.yml", mut("stage-promote.yml", var_val)))
+def verify_job(d): d["jobs"]["verify"]["steps"].insert(1, aws_step())
+case("the AWS credentials step in Release's verify job is refused", True, run("stage-promote.yml", mut("stage-promote.yml", verify_job)))
+def build_job(d): d["jobs"]["apk"]["steps"].insert(1, aws_step())
+case("the AWS credentials step in Build's apk job is refused", True, run("stage-build.yml", mut("stage-build.yml", build_job)))
+def sign_job(d): d["jobs"]["sign"]["steps"].insert(1, aws_step())
+case("the AWS credentials step in Sign's job is refused", True, run("stage-sign.yml", mut("stage-sign.yml", sign_job)))
+case("another role ARN is refused", True, run("stage-promote.yml", mut("stage-promote.yml", lambda d: final(d, **{"with": {"role-to-assume": ROLE + "-x", "aws-region": REGION}}))))
+case("another region is refused", True, run("stage-promote.yml", mut("stage-promote.yml", lambda d: final(d, **{"with": {"role-to-assume": ROLE, "aws-region": "eu-west-1"}}))))
+case("a with: key beside the role and the region is refused", True, run("stage-promote.yml", mut("stage-promote.yml", lambda d: final(d, **{"with": {"role-to-assume": ROLE, "aws-region": REGION, "role-duration-seconds": "900"}}))))
+case("a floating tag instead of the pinned digest is refused", True, run("stage-promote.yml", mut("stage-promote.yml", lambda d: final(d, uses="aws-actions/configure-aws-credentials@v6"))))
+case("another digest is refused", True, run("stage-promote.yml", mut("stage-promote.yml", lambda d: final(d, uses="aws-actions/configure-aws-credentials@" + "1" * 40 + " # v6.3.0"))))
+case("an env on the action step is refused", True, run("stage-promote.yml", mut("stage-promote.yml", lambda d: final(d, env={"AWS_REGION": REGION}))))
+def second(d): final(d); d["jobs"]["release"]["steps"].insert(sign_i(d), aws_step())
+case("a second AWS credentials step in the Release job is refused", True, run("stage-promote.yml", mut("stage-promote.yml", second)))
+def after_sign(d):
+    final(d); st = d["jobs"]["release"]["steps"]; i = sign_i(d); a = st.pop(i - 1); st.insert(sign_i(d) + 1, a)
+case("the AWS credentials step after release-sign is refused", True, run("stage-promote.yml", mut("stage-promote.yml", after_sign)))
+for label, ok_, got in out:
+    print(("ok   " if ok_ else "FAIL ") + "P3 " + label + ("" if ok_ else " -> %r" % got))
+PY
+while IFS= read -r l; do
+  case "$l" in ok*) pass=$((pass + 1)); echo "$l";; *) failn=$((failn + 1)); echo "$l";; esac
+done < <(python3 "$work/awsgram.py" 2>&1)
+
 # ---- Codex A r4 #2 / B F1: the judge prints its findings as structured ids, one for one with its own list (CHAIN_FINDINGS=1; stderr; output only) ----------------
 fj="$work/fj"; mkdir -p "$fj"
 d=$(tracked_copy fjson); printf 'cosign attest --type slsaprovenance x\n' > "$d/bin/fj-signer.sh"; ( cd "$d" && git add -A 2> /dev/null || true )
@@ -5094,7 +5160,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2114
+EXPECT=2131
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
