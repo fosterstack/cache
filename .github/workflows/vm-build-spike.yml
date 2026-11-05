@@ -1,0 +1,534 @@
+name: package build in its own VM (spike)
+
+on:
+  pull_request:
+    branches:
+      - chain-v030
+
+permissions:
+  contents: read
+
+env:
+  ALPINE_BRANCH: v3.24
+  ALPINE_KERNEL_VERSION: 6.18.60-r0
+  ALPINE_KEY_NAME: alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+  ALPINE_KEY_URL_1: https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+  ALPINE_KEY_URL_2: https://gitlab.alpinelinux.org/alpine/aports/-/raw/3150f5e6f1fc3f871a89ec8cb82ed183c05c6185/main/alpine-keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  vm:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: vm-x86
+            kind: x86
+            arch: x86_64
+            timeout: 30
+          - name: vm-x86-fresh
+            kind: x86-fresh
+            arch: x86_64
+            timeout: 20
+          - name: vm-arm64-tcg
+            kind: arm64-tcg
+            arch: aarch64
+            timeout: 40
+    env:
+      KIND: ${{ matrix.kind }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: KVM for the runner user (the three documented lines)
+        if: ${{ matrix.kind != 'arm64-tcg' }}
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then echo "KVM PASS: /dev/kvm present, mode $(stat -c %a /dev/kvm), readable and writable by $(id -un)" | tee -a "$W/results.txt"
+          else echo "KVM FAIL: /dev/kvm missing or not accessible to $(id -un)" | tee -a "$W/results.txt"; exit 1; fi
+      - name: "tools and keys"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          mkdir -p "$W"/{bin,src,keys,cfg,lock,tmp,home}
+          # the build tools, pinned by checksum by the repository's own installer
+          bash bin/install-build-tools.sh melange "$W/bin"
+          bash bin/install-build-tools.sh apko "$W/bin"
+          # the Wolfi key: its sha256 must be the one the repository pins
+          curl -sfL --max-time 60 -o "$W/keys/wolfi-signing.rsa.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          pin=$(awk '$1=="wolfi-signing.rsa.pub" {sub("sha256:", "", $2); print $2}' build/locks/archive-keys.sha256)
+          got=$(sha256sum "$W/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)
+          if [ -n "$pin" ] && [ "$pin" = "$got" ]; then R "KEY wolfi-signing.rsa.pub sha256:$got equals the repository pin"; else R "FETCH FAIL key mismatch: wolfi-signing.rsa.pub sha256:$got, pin '$pin'"; exit 1; fi
+          # the Alpine key: from two places, both must give the same bytes
+          curl -sfL --max-time 60 -o "$W/keys/alpine-1.pub" "$ALPINE_KEY_URL_1"
+          curl -sfL --max-time 60 -o "$W/keys/alpine-2.pub" "$ALPINE_KEY_URL_2"
+          if cmp -s "$W/keys/alpine-1.pub" "$W/keys/alpine-2.pub"; then
+            R "KEY $ALPINE_KEY_NAME sha256:$(sha256sum "$W/keys/alpine-1.pub" | cut -d' ' -f1) from $ALPINE_KEY_URL_1 and $ALPINE_KEY_URL_2 (equal)"
+          else R "FETCH FAIL key mismatch: the two Alpine key URLs give different bytes"; exit 1; fi
+      - name: "helper programs"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          # helper programs of the spike (python, standard library only), written here so the workflow is one file
+          cat > "$W/src/fetch.py" <<'PYEOF'
+          import base64, hashlib, importlib.util, io, json, os, re, subprocess, sys, tarfile, tempfile, urllib.request
+          want, outdir, key, ihb, index_url, prefix = sys.argv[1:7]
+          spec = importlib.util.spec_from_file_location("ihb", ihb); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          raw = urllib.request.urlopen(index_url, timeout=120).read()
+          parts = m.members(raw, "APKINDEX.tar.gz")
+          sig_tar = tarfile.open(fileobj=io.BytesIO(parts[0][1]), mode="r:")
+          signame = [n for n in sig_tar.getnames() if n.startswith(".SIGN.RSA")]
+          assert len(signame) == 1, signame
+          alg = "sha256" if signame[0].startswith(".SIGN.RSA256.") else "sha1"
+          keyname = signame[0].split(".", 3)[3]
+          pem = re.search(r"-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+?-----END PUBLIC KEY-----\n", open(key).read()).group(0)
+          with tempfile.TemporaryDirectory() as d:
+              open(d + "/k.pem", "w").write(pem); open(d + "/s.bin", "wb").write(sig_tar.extractfile(signame[0]).read()); open(d + "/i.bin", "wb").write(parts[1][0])
+              r = subprocess.run(["/usr/bin/openssl", "dgst", "-" + alg, "-verify", d + "/k.pem", "-signature", d + "/s.bin", d + "/i.bin"], capture_output=True, text=True)
+          if r.returncode != 0 or "Verified OK" not in r.stdout:
+              print("FETCH FAIL index signature does not verify against", key); sys.exit(1)
+          idx = {}
+          for rec in tarfile.open(fileobj=io.BytesIO(parts[1][1]), mode="r:").extractfile("APKINDEX").read().decode().split("\n\n"):
+              f = dict(l.split(":", 1) for l in rec.splitlines() if ":" in l)
+              if "P" in f: idx[(f["P"], f["V"], f.get("A"))] = (f["C"], f.get("t", "-"))
+          print("FETCH-INDEX %s sha256:%s sig:verified:%s(%s) packages:%d" % (index_url, hashlib.sha256(raw).hexdigest(), keyname, alg, len(idx)))
+          bad = 0
+          for p in json.load(open(want)):
+              name, ver, arch, url = p["name"], p["version"], p["architecture"], p["url"]
+              assert url.startswith(prefix), url
+              dest = os.path.join(outdir, arch); os.makedirs(dest, exist_ok=True)
+              path = os.path.join(dest, "%s-%s.apk" % (name, ver))
+              body = urllib.request.urlopen(url, timeout=300).read()
+              open(path, "wb").write(body)
+              pp = m.members(body, path)
+              chk = "Q1" + base64.b64encode(hashlib.sha1(pp[-2][0]).digest()).decode()
+              info = m.pkginfo(pp[-2][1], path)
+              dh = hashlib.sha256(pp[-1][0]).hexdigest() == info.get("datahash")
+              ic, it = idx.get((name, ver, arch), (None, "-"))
+              inidx = ic == chk and (p.get("checksum") in (None, chk))
+              ok = dh and inidx
+              print(("FETCH %s %s %s sha256:%s index-checksum:match datahash:ok index-build-time:%s" % (name, ver, arch, hashlib.sha256(body).hexdigest(), it))
+                    if ok else "FETCH FAIL %s %s index-checksum=%s datahash=%s" % (name, ver, inidx, dh))
+              bad += 0 if ok else 1
+          sys.exit(1 if bad else 0)
+          PYEOF
+          cat > "$W/src/unpack.py" <<'PYEOF'
+          import importlib.util, io, os, sys, tarfile
+          rows, archive, root, ihb, arch = sys.argv[1:6]
+          spec = importlib.util.spec_from_file_location("ihb", ihb); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          os.makedirs(root)
+          n = 0
+          for row in open(rows).read().split("\n"):
+              if not row: continue
+              name, ver = row.split("=", 1)
+              raw = open("%s/%s/%s-%s.apk" % (archive, arch, name, ver), "rb").read()
+              t = tarfile.open(fileobj=io.BytesIO(m.members(raw, name)[-1][1]), mode="r:")
+              for mem in t.getmembers():
+                  p = os.path.normpath(mem.name)
+                  if p.startswith("/") or p.startswith(".."): print("UNPACK skip", name, mem.name); continue
+                  if mem.issym() and mem.linkname.startswith("/"): print("UNPACK skip absolute link", name, mem.name); continue
+                  if mem.isdev() or mem.isfifo(): print("UNPACK skip device", name, mem.name); continue
+                  if os.path.islink(os.path.join(root, p)) and mem.isdir(): continue
+                  t.extract(mem, root, filter="tar")
+                  n += 1
+          print("UNPACK done: %d entries into %s" % (n, root))
+          PYEOF
+          cat > "$W/src/kernel.py" <<'PYEOF'
+          import hashlib, importlib.util, io, os, sys, tarfile
+          apk, ihb, out = sys.argv[1:4]
+          spec = importlib.util.spec_from_file_location("ihb", ihb); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          t = tarfile.open(fileobj=io.BytesIO(m.members(open(apk, "rb").read(), apk)[-1][1]), mode="r:")
+          os.makedirs(out)
+          n = 0
+          for mem in t.getmembers():
+              p = os.path.normpath(mem.name)
+              if p.startswith(("/", "..")): raise SystemExit("KERNEL FAIL path " + mem.name)
+              if p.startswith("boot/vmlinuz") and mem.isreg():
+                  t.extract(mem, out, filter="data"); os.rename(os.path.join(out, p), os.path.join(out, "vmlinuz")); n += 1
+              elif p.startswith("lib/modules/") and (mem.isreg() or mem.isdir()):
+                  t.extract(mem, out, filter="data"); n += 1
+              elif p.startswith("lib/modules/") and mem.issym():
+                  print("KERNEL note: symlink in the modules tree skipped:", mem.name, "->", mem.linkname)
+          vm = os.path.join(out, "vmlinuz")
+          assert os.path.isfile(vm), "no vmlinuz in the apk"
+          os.rename(os.path.join(out, "lib/modules"), os.path.join(out, "modules"))
+          print("KERNEL image sha256:%s bytes:%d modules:%s entries:%d" % (hashlib.sha256(open(vm, "rb").read()).hexdigest(), os.path.getsize(vm), sorted(os.listdir(os.path.join(out, "modules"))), n))
+          PYEOF
+          # the command that runs inside the new network namespace: loopback up, then everything unprivileged
+          cat > "$W/src/netns-run.sh" <<'SHEOF'
+          #!/bin/bash
+          # args: UID GID HOME TMPDIR COMMAND...   (runs as root in a fresh network namespace)
+          set -eu
+          u=$1; g=$2; h=$3; t=$4; shift 4
+          /usr/sbin/ip link set lo up
+          exec /usr/bin/setpriv --reuid="$u" --regid="$g" --clear-groups /usr/bin/env HOME="$h" TMPDIR="$t" "$@"
+          SHEOF
+          chmod 0755 "$W/src/netns-run.sh"
+          cp bin/install-host-bwrap.py "$W/src/install-host-bwrap.py"
+          cp bin/apk-tool.py "$W/src/apk-tool.py"
+      - name: "FETCH (spike only: Wolfi closures, Alpine kernel)"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$W/lock" "$W/cfg"
+          lock_to_want() { python3 -I -c '
+          import json, sys
+          d = json.load(open(sys.argv[1]))["contents"]["packages"]
+          json.dump([{"name": p["name"], "version": p["version"], "architecture": p["architecture"], "url": p["url"], "checksum": p["checksum"]} for p in d], open(sys.argv[2], "w"))
+          print(len(d))' "$1" "$2"; }
+          # 1. the packages that run on the runner: QEMU and what it needs (Wolfi, x86_64 hosted)
+          cat > "$W/cfg/host.yaml" <<YEOF
+          contents:
+            repositories:
+              - https://packages.wolfi.dev/os
+            keyring:
+              - $W/keys/wolfi-signing.rsa.pub
+            packages:
+              - $HOSTPKG
+          archs:
+            - x86_64
+          YEOF
+          "$W/bin/apko" lock "$W/cfg/host.yaml" --output "$W/lock/host.lock.json" >/dev/null
+          n=$(lock_to_want "$W/lock/host.lock.json" "$W/lock/host.want.json")
+          python3 -I "$W/src/fetch.py" "$W/lock/host.want.json" "$W/dl-host" "$W/keys/wolfi-signing.rsa.pub" "$W/src/install-host-bwrap.py" \
+            https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz https://packages.wolfi.dev/os/ | tee "$W/fetch-host.log"
+          R "FETCH host closure ($HOSTPKG): $n packages, $(grep -c '^FETCH FAIL' "$W/fetch-host.log" || true) failed"
+          # 2. the packages that run in the guest: the init and a shell, for the TARGET architecture
+          cat > "$W/cfg/guest.yaml" <<YEOF
+          contents:
+            repositories:
+              - https://packages.wolfi.dev/os
+            keyring:
+              - $W/keys/wolfi-signing.rsa.pub
+            packages:
+              - microvm-init
+              - busybox
+          archs:
+            - $TA
+          YEOF
+          "$W/bin/apko" lock "$W/cfg/guest.yaml" --output "$W/lock/guest.lock.json" >/dev/null
+          n=$(lock_to_want "$W/lock/guest.lock.json" "$W/lock/guest.want.json")
+          python3 -I "$W/src/fetch.py" "$W/lock/guest.want.json" "$W/repo" "$W/keys/wolfi-signing.rsa.pub" "$W/src/install-host-bwrap.py" \
+            "https://packages.wolfi.dev/os/$TA/APKINDEX.tar.gz" https://packages.wolfi.dev/os/ | tee "$W/fetch-guest.log"
+          R "FETCH guest closure ($TA: microvm-init, busybox): $n packages, $(grep -c '^FETCH FAIL' "$W/fetch-guest.log" || true) failed"
+          # 3. the kernel: Alpine stable, one exact version, index signature checked against the key from two places
+          printf '[{"name": "linux-virt", "version": "%s", "architecture": "%s", "url": "https://dl-cdn.alpinelinux.org/alpine/%s/main/%s/linux-virt-%s.apk"}]' \
+            "$ALPINE_KERNEL_VERSION" "$TA" "$ALPINE_BRANCH" "$TA" "$ALPINE_KERNEL_VERSION" > "$W/lock/kernel.want.json"
+          python3 -I "$W/src/fetch.py" "$W/lock/kernel.want.json" "$W/dl-kernel" "$W/keys/alpine-1.pub" "$W/src/install-host-bwrap.py" \
+            "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/$TA/APKINDEX.tar.gz" "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/" | tee "$W/fetch-kernel.log"
+          python3 -I "$W/src/kernel.py" "$W/dl-kernel/$TA/linux-virt-$ALPINE_KERNEL_VERSION.apk" "$W/src/install-host-bwrap.py" "$W/kernel-$TA" | tee "$W/kernel.log"
+          sha256sum "$W/kernel-$TA/vmlinuz" | cut -d' ' -f1 > "$W/kernel.sha"
+          R "FETCH kernel linux-virt $ALPINE_KERNEL_VERSION ($TA): $(grep '^FETCH linux-virt' "$W/fetch-kernel.log" | sed 's/^FETCH //')"
+          if grep -q 'FETCH FAIL' "$W/fetch-host.log" "$W/fetch-guest.log" "$W/fetch-kernel.log"; then R "FETCH FAIL: see the step log"; exit 1; fi
+          touch "$W/fetch.ok"
+          echo "datahash note: every apk's data segment sha256 equals the datahash its control segment records (checked in fetch.py); Wolfi apks carry no signature of their own, the signed index binds each by checksum; the Alpine apk is bound the same way by its signed index"
+      - name: "U3 and U4 (QEMU from the closure, initramfs offline)"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          cd "$GITHUB_WORKSPACE"
+          [ -f "$W/fetch.ok" ] || { R "SKIP: U3/U4 not run, FETCH did not finish"; exit 1; }
+          python3 -I -c '
+          import json, sys
+          open(sys.argv[2], "w").write("".join("%s=%s\n" % (p["name"], p["version"]) for p in json.load(open(sys.argv[1]))))' "$W/lock/host.want.json" "$W/lock/host.rows"
+          # what the strict installer of the repository (bubblewrap's) says about this closure: information for the real inputs PR
+          sed -e "s#usr/bin/bwrap#usr/bin/$HOSTPKG#g" "$W/src/install-host-bwrap.py" > "$W/src/install-host-strict.py"
+          if python3 -I "$W/src/install-host-strict.py" --archive "$W/dl-host" --lock "$W/lock/host.rows" --root "$W/strict-try" --bin "$W/strict-bin" > "$W/strict.out" 2>&1; then
+            R "U3 note: the strict installer (install-host-bwrap.py with the binary name changed) unpacks this closure"
+          else
+            R "U3 note: the strict installer refuses this closure: $(grep -v 'skipped absolute link' "$W/strict.out" | tail -1 | cut -c1-220)"
+            grep -v '^wolfi-baselayout=' "$W/lock/host.rows" > "$W/lock/host.nobase.rows"
+            if python3 -I "$W/src/install-host-strict.py" --archive "$W/dl-host" --lock "$W/lock/host.nobase.rows" --root "$W/strict-try2" --bin "$W/strict-bin2" > "$W/strict2.out" 2>&1; then
+              R "U3 note: without wolfi-baselayout the strict installer unpacks it"
+            else R "U3 note: without wolfi-baselayout the strict installer still refuses: $(grep -v 'skipped absolute link' "$W/strict2.out" | tail -1 | cut -c1-220)"; fi
+          fi
+          # the spike's own lenient unpack (tar filter, no link or device tricks): the closure goes into host-tools
+          python3 -I "$W/src/unpack.py" "$W/lock/host.rows" "$W/dl-host" "$W/host-tools" "$W/src/install-host-bwrap.py" x86_64 | tail -1
+          ld=$(ls "$W"/host-tools/usr/lib/ld-linux-x86-64.so.2)
+          cat > "$W/qemu-wrapper" <<WEOF
+          #!/bin/sh
+          R=$W/host-tools
+          export QEMU_MODULE_DIR=\$R/usr/lib/qemu
+          exec $ld --library-path \$R/usr/lib:\$R/usr/lib64:\$R/lib \$R/usr/bin/$HOSTPKG -L \$R/usr/share/qemu "\$@"
+          WEOF
+          sudo install -m 0755 "$W/qemu-wrapper" "/usr/local/bin/$HOSTPKG"
+          ver=$("/usr/local/bin/$HOSTPKG" --version | head -n 1)
+          machines=$("/usr/local/bin/$HOSTPKG" -M help | grep -cE '^(microvm|virt) ' || true)
+          if [ "$machines" -ge 1 ]; then R "U3 PASS: $ver runs from the unpacked archive closure ($(wc -l < "$W/lock/host.rows") packages, no package manager), machine type listed; accelerators: $("/usr/local/bin/$HOSTPKG" -accel help 2>&1 | tr '\n' ' ')"
+          else R "U3 FAIL: $HOSTPKG does not list the machine type ($ver)"; exit 1; fi
+          # the initramfs, offline: a local repository (indexed with a key made here), built twice under a cut network
+          "$W/bin/melange" keygen "$W/spike.rsa" >/dev/null 2>&1
+          "$W/bin/melange" index --signing-key "$W/spike.rsa" -o "$W/repo/$TA/APKINDEX.tar.gz" "$W"/repo/$TA/*.apk >/dev/null 2>&1
+          for i in 1 2; do
+            if ! in_netns /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$W/bin/melange" initramfs --arch "$TA" \
+                 --repository "$W/repo" --keyring "$W/spike.rsa.pub" --keyring "$W/keys/wolfi-signing.rsa.pub" -o "$W/initramfs-$i.cpio" > "$W/initramfs-$i.log" 2>&1; then
+              R "U4 FAIL: melange initramfs (build $i) did not finish offline: $(tail -n 2 "$W/initramfs-$i.log" | tr '\n' ' ' | cut -c1-240)"; exit 1
+            fi
+          done
+          a=$(sha256sum "$W/initramfs-1.cpio" | cut -d' ' -f1); b=$(sha256sum "$W/initramfs-2.cpio" | cut -d' ' -f1)
+          same=DIFFERENT; [ "$a" = "$b" ] && same=identical
+          R "U4 PASS: initramfs built offline in a network-cut namespace from a local repository, sha256:$a ($(stat -c %s "$W/initramfs-1.cpio") bytes); second build sha256:$b ($same; not a gate)"
+          echo "$a" > "$W/initramfs.sha"
+      - name: "U1, U2, U6 and the kernel fall-back (tiny recipe)"
+        if: ${{ !cancelled() && matrix.kind == 'x86' }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          cd "$GITHUB_WORKSPACE"
+          [ -f "$W/fetch.ok" ] && [ -f "$W/initramfs.sha" ] || { R "SKIP: tiny builds not run (an earlier step failed)"; exit 1; }
+          cp spike/tiny.yaml "$W/tiny.yaml"
+          KIMG=$W/kernel-$TA/vmlinuz; KMOD=$W/kernel-$TA/modules; INIT=$W/initramfs-1.cpio
+          # the job-side pre-check melange does not make (it falls back to /boot/vmlinuz when the file is missing)
+          kernel_ok() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$(cat "$W/kernel.sha")" ] && [ -d "$KMOD" ] && [ -f "$INIT" ] && [ "$(sha256sum "$INIT" | cut -d' ' -f1)" = "$(cat "$W/initramfs.sha")" ]; }
+          echo "canary outside the workspace" > /tmp/spike-canary-outside
+          echo "canary in the checkout" > "$GITHUB_WORKSPACE/spike-canary-in-checkout.txt"
+          OUT_SHA=$(sha256sum /tmp/spike-canary-outside | cut -d' ' -f1); CO_SHA=$(sha256sum "$GITHUB_WORKSPACE/spike-canary-in-checkout.txt" | cut -d' ' -f1)
+          # tiny_run LABEL netns(yes|no) KERNEL-PATH: one melange build of the tiny recipe with the QEMU runner, as the runner user
+          tiny_run() {
+            local label=$1 netns=$2 kimg=$3 tmp="$W/tmp-$1" cache="$W/cache-$1" out="$W/out-$1" ws="$W/ws-$1"
+            mkdir -p "$tmp" "$cache" "$out" "$ws"
+            local envv=(PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME="$W/home" LC_ALL=C SOURCE_DATE_EPOCH=1700000000 TMPDIR="$tmp"
+                        QEMU_KERNEL_IMAGE="$kimg" QEMU_KERNEL_MODULES="$KMOD" QEMU_BASE_INITRAMFS="$INIT")
+            local margs=(build "$W/tiny.yaml" --arch "$TA" --runner qemu --namespace fosterstack --signing-key "$W/spike.rsa"
+              --keyring-append "$W/keys/wolfi-signing.rsa.pub" --keyring-append "$W/spike.rsa.pub" --repository-append "$W/repo"
+              --build-date 2023-11-14T22:13:20Z --cache-dir "$cache" --source-dir "$GITHUB_WORKSPACE" --out-dir "$out" --workspace-dir "$ws"
+              --disk 4Gi --memory 2Gi --cpu 2 --timeout 15m)
+            local start; start=$(date +%s)
+            if [ "$netns" = yes ]; then in_netns /usr/bin/env -i "${envv[@]}" "$W/bin/melange" "${margs[@]}" > "$W/tiny-$label.log" 2>&1 &
+            else /usr/bin/env -i "${envv[@]}" "$W/bin/melange" "${margs[@]}" > "$W/tiny-$label.log" 2>&1 & fi
+            local pid=$! mpid="" qpid="" i
+            TR_IFACES="-"; TR_MUID="-"; TR_QUID="-"
+            for i in $(seq 1 240); do
+              mpid=$(pgrep -x melange | head -n 1 || true); qpid=$(pgrep -f "host-tools/usr/bin/$HOSTPKG" | head -n 1 || true)
+              [ -n "$mpid" ] && [ -n "$qpid" ] && break
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.5
+            done
+            if [ -n "$mpid" ] && [ -n "$qpid" ]; then
+              TR_MUID=$(awk '/^Uid:/ {print $2}' "/proc/$mpid/status" 2>/dev/null || echo "?"); TR_QUID=$(awk '/^Uid:/ {print $2}' "/proc/$qpid/status" 2>/dev/null || echo "?")
+              TR_IFACES=$(sudo -n /usr/bin/nsenter -t "$qpid" -n /usr/sbin/ip -o link 2>/dev/null | awk -F': ' '{print $2}' | tr '\n' ',' | sed 's/,$//')
+            fi
+            TR_RC=0; wait "$pid" || TR_RC=$?
+            TR_SECS=$(( $(date +%s) - start ))
+            grep 'SPIKE-GUEST' "$W/tiny-$label.log" | sed 's/^[0-9\/]* [0-9:]* INFO //' || true
+          }
+          guest_rc() { sed -n "s/.*SPIKE-GUEST: $2 rc=\([0-9]*\).*/\1/p" "$W/tiny-$1.log" | head -n 1; }
+          # --- control: no network cut. The egress probe must be able to succeed, or a failure in the cut run means nothing
+          if kernel_ok "$KIMG"; then
+            tiny_run control no "$KIMG"
+            c=$(guest_rc control egress-connect)
+            if [ "$TR_RC" = 0 ] && [ "$c" = 0 ]; then R "U1 control (no network cut): guest connect 1.1.1.1:443 CONNECTED, so the egress probe can detect egress (melange exit 0, ${TR_SECS}s)"
+            else R "U1 control INCONCLUSIVE: no network cut but the guest connect rc=${c:-none}, melange exit $TR_RC; the cut-run egress result below proves nothing"; fi
+          else R "KERNEL-PRECHECK FAIL: the pinned kernel or initramfs is missing or its sha256 differs"; exit 1; fi
+          # --- the real shape: network cut, loopback up, melange and QEMU as the runner user
+          tiny_run cut yes "$KIMG"
+          c=$(guest_rc cut egress-connect); d=$(guest_rc cut dns)
+          if [ "$TR_RC" = 0 ] && [ "$TR_IFACES" = lo ] && [ -n "$c" ] && [ "$c" != 0 ] && [ "$c" != 127 ] && [ -n "$d" ] && [ "$d" != 0 ] && [ "$d" != 127 ]; then
+            R "U1 PASS: network namespace interfaces=$TR_IFACES, lo up, hostfwd ssh answered (melange reached the guest), melange exit 0 (${TR_SECS}s)"
+            R "U1 egress: guest connect 1.1.1.1:443 refused/timeout (rc=$c), DNS fail (rc=$d)"
+          else R "U1 FAIL: interfaces='$TR_IFACES' melange exit $TR_RC guest connect rc='${c:-none}' dns rc='${d:-none}' (127 means the probe program was missing: inconclusive)"; fi
+          oapk=$(stat -c %u "$W"/out-cut/$TA/spike-tiny-1.0.0-r0.apk 2>/dev/null || echo none)
+          if [ "$TR_MUID" = "$RUN_UID" ] && [ "$TR_QUID" = "$RUN_UID" ] && [ "$oapk" = "$RUN_UID" ]; then R "U2 PASS: melange uid=$TR_MUID, qemu uid=$TR_QUID, out apk owner uid=$oapk (runner uid $RUN_UID); tar extraction with ownership records worked unprivileged; root only created the namespace"
+          else R "U2 FAIL: melange uid='$TR_MUID' qemu uid='$TR_QUID' out apk owner='$oapk' (runner uid $RUN_UID)"; fi
+          # --- U6: the guest wrote through the rw 9p share; nothing outside the workspace changed
+          now_out=$(sha256sum /tmp/spike-canary-outside | cut -d' ' -f1); now_co=$(sha256sum "$GITHUB_WORKSPACE/spike-canary-in-checkout.txt" | cut -d' ' -f1)
+          inws=$(ls "$W/ws-cut" 2>/dev/null | grep -E 'spike-guest-file|spike-escape-link' | tr '\n' ' ')
+          if [ "$now_out" = "$OUT_SHA" ] && [ "$now_co" = "$CO_SHA" ]; then R "U6 PASS: both canaries unchanged (outside the workspace sha256:$now_out; in the checkout sha256:$now_co); the guest's writes landed only in the workspace: [${inws:-nothing found}]"
+          else R "U6 FAIL: a canary changed (outside $OUT_SHA -> $now_out; checkout $CO_SHA -> $now_co)"; fi
+          R "U5 tiny: control ${TR_SECS}s last / cut-run melange call ${TR_SECS}s (tiny recipe, the real recipe is timed below)"
+          # --- upstream's kernel fall-back, shown: the file is missing and melange still starts a VM
+          if ! kernel_ok /nonexistent/vmlinuz; then R "KERNEL-FAILOPEN PASS: the job-side pre-check stops a missing kernel file before melange runs (kernel_ok /nonexistent/vmlinuz is false)"; else R "KERNEL-FAILOPEN FAIL: the pre-check let a missing kernel through"; fi
+          mkdir -p "$W/tmp-fo" "$W/cache-fo" "$W/out-fo" "$W/ws-fo"
+          /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME="$W/home" LC_ALL=C SOURCE_DATE_EPOCH=1700000000 TMPDIR="$W/tmp-fo" \
+            QEMU_KERNEL_IMAGE=/nonexistent/vmlinuz QEMU_KERNEL_MODULES="$KMOD" QEMU_BASE_INITRAMFS="$INIT" "$W/bin/melange" build "$W/tiny.yaml" --arch "$TA" --runner qemu \
+            --namespace fosterstack --signing-key "$W/spike.rsa" --keyring-append "$W/keys/wolfi-signing.rsa.pub" --keyring-append "$W/spike.rsa.pub" --repository-append "$W/repo" \
+            --build-date 2023-11-14T22:13:20Z --cache-dir "$W/cache-fo" --source-dir "$GITHUB_WORKSPACE" --out-dir "$W/out-fo" --workspace-dir "$W/ws-fo" --disk 2Gi --memory 1Gi --cpu 1 --timeout 2m > "$W/tiny-fo.log" 2>&1 &
+          fpid=$!; used=none
+          for i in $(seq 1 120); do
+            q=$(pgrep -f "host-tools/usr/bin/$HOSTPKG" | head -n 1 || true)
+            if [ -n "$q" ]; then used=$(tr '\0' ' ' < "/proc/$q/cmdline" | grep -o -- '-kernel [^ ]*' | head -n 1 || true); [ -n "$used" ] && break; fi
+            kill -0 "$fpid" 2>/dev/null || break
+            sleep 0.5
+          done
+          [ -n "${q:-}" ] && kill "$q" 2>/dev/null || true
+          kill "$fpid" 2>/dev/null || true; wait "$fpid" 2>/dev/null || true
+          case "${used:-none}" in
+            *"/nonexistent"*) R "KERNEL-FAILOPEN upstream: NOT reproduced; qemu was started with '$used'";;
+            none|"") R "KERNEL-FAILOPEN upstream: inconclusive; no qemu -kernel argument was seen";;
+            *) R "KERNEL-FAILOPEN upstream: CONFIRMED with QEMU_KERNEL_IMAGE=/nonexistent/vmlinuz melange started qemu with '$used' (the runner's own kernel)";;
+          esac
+          rm -f "$GITHUB_WORKSPACE/spike-canary-in-checkout.txt"
+      - name: "U5 and the timings (the real recipe)"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          cd "$GITHUB_WORKSPACE"
+          [ -f "$W/fetch.ok" ] && [ -f "$W/initramfs.sha" ] || { R "SKIP: real-recipe builds not run (an earlier step failed)"; exit 1; }
+          KIMG=$W/kernel-$TA/vmlinuz; KMOD=$W/kernel-$TA/modules; INIT=$W/initramfs-1.cpio
+          if ! { [ -f "$KIMG" ] && [ "$(sha256sum "$KIMG" | cut -d' ' -f1)" = "$(cat "$W/kernel.sha")" ] && [ "$(sha256sum "$INIT" | cut -d' ' -f1)" = "$(cat "$W/initramfs.sha")" ]; }; then
+            R "KERNEL-PRECHECK FAIL: the pinned kernel or initramfs is missing or its sha256 differs"; exit 1
+          fi
+          # the repository's own build inputs, pulled the way the Build job does
+          bash bin/install-scanner.sh go
+          bash bin/install-scanner.sh crane
+          bash bin/install-build-tools.sh melange
+          bash bin/archive-pull.sh --pointer build/archive.json --out archive
+          # a copy of bin/build-apk.sh that runs the same sealed call with the QEMU runner (the spike's only change to it), each pattern must be found exactly once
+          python3 -I - "$W/build-apk-vm.sh" "$KIMG" "$KMOD" "$INIT" "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$W/home" "$W/tmp" "$TA" <<'PYEOF'
+          import sys
+          dst, kimg, kmod, init, netns, uid, gid, home, tmp, ta = sys.argv[1:11]
+          s = open("bin/build-apk.sh").read()
+          def sub(old, new):
+              global s
+              assert s.count(old) == 1, "pattern not found exactly once: " + old[:70]
+              s = s.replace(old, new)
+          sub('--arch "$arch" --runner bubblewrap --namespace fosterstack', '--arch "$arch" --runner qemu --disk 8Gi --memory 6Gi --cpu 4 --timeout 30m --namespace fosterstack')
+          sub('call=("$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}")',
+              'qemu_env=(QEMU_KERNEL_IMAGE=%s QEMU_KERNEL_MODULES=%s QEMU_BASE_INITRAMFS=%s)\n'
+              'call=("$ENVBIN" -i "${sealed[@]}" "${qemu_env[@]}" "$UNSHARE" -n %s %s %s %s %s "$melange_bin" "${margs[@]}")' % (kimg, kmod, init, netns, uid, gid, home, tmp))
+          sub('bin/build-apk-helper.py sealed-call --sealed-env "$SEALED_ENV" "${call[@]}"', '-c pass')
+          if ta == "aarch64":
+              sub('check-args "$(uname -s)" "$(uname -m)" "$@"', 'check-args "$(uname -s)" aarch64 "$@"')
+          open(dst, "w").write(s)
+          PYEOF
+          bash -n "$W/build-apk-vm.sh"
+          diff <(cat bin/build-apk.sh) "$W/build-apk-vm.sh" | grep -c '^[<>]' | sed 's/^/BUILDSCRIPT changed lines (the spike copy vs bin\/build-apk.sh): /'
+          # one build set, as the snapshot Build stage does it: tag, source date, both variants
+          build_set() {   # build_set LABEL WORKDIR SCRIPT OUTDIR VARIANTS...
+            local label=$1 wd=$2 script=$3 out=$4; shift 4
+            ( cd "$wd"
+              for t in $(git tag --list 'v*' --points-at HEAD); do [ "$t" = v0.0.0-rc.1 ] || git tag -d "$t" > /dev/null; done
+              git tag --force v0.0.0-rc.1 HEAD
+              SOURCE_DATE_EPOCH="$(./bin/build-apk.sh --print-source-date-epoch --source-dir .)"; export SOURCE_DATE_EPOCH
+              for v in "$@"; do
+                s0=$(date +%s)
+                timeout "${BUILD_TIMEOUT:-1200}" bash "$script" --variant "$v" --arch "$TA" --version 0.0.0-rc.1 --source-dir . --repo archive \
+                  --keyring archive/keys/wolfi-signing.rsa.pub --go-archive archive/go --melange-lock build/locks/melange.lock --out "$out" || { R "BUILD FAIL $label $v (exit $?)"; return 1; }
+                echo "BUILD $label $v $(( $(date +%s) - s0 ))"
+              done )
+          }
+          list_apks() {   # list_apks LABEL DIR
+            local f
+            for f in "$2"/$TA/*.apk; do [ -e "$f" ] || continue
+              R "APK $1 $(basename "$f") sha256:$(sha256sum "$f" | cut -d' ' -f1) same-digest:$(python3 -I bin/apk-tool.py digest "$f")"
+            done
+            for f in "$2"/inputs-manifest*.json; do [ -e "$f" ] || continue; R "MANIFEST $1 $(basename "$f") sha256:$(sha256sum "$f" | cut -d' ' -f1)"; done
+          }
+          total() { awk -v l="$1" '$1=="BUILD" && $2==l {t+=$4} END {print t+0}' "$W/builds.log"; }
+          case "$KIND" in
+          x86)
+            # baseline: today's bubblewrap path on this very runner
+            python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
+            build_set bubblewrap "$GITHUB_WORKSPACE" bin/build-apk.sh out/bwrap standard fips 2>&1 | tee -a "$W/builds.log" || true
+            list_apks bubblewrap out/bwrap
+            # Build-style: this checkout, both variants, the QEMU runner
+            build_set vm-build "$GITHUB_WORKSPACE" "$W/build-apk-vm.sh" out/vm-a standard fips 2>&1 | tee -a "$W/builds.log" || true
+            list_apks vm-build out/vm-a
+            # Rebuild-style: a second fresh workspace (a clone of the same commit with its own archive copy), the same call
+            git clone -q --no-hardlinks "$GITHUB_WORKSPACE" "$W/ws-b"
+            cp -al archive "$W/ws-b/archive"
+            build_set vm-rebuild "$W/ws-b" "$W/build-apk-vm.sh" out/vm-b standard 2>&1 | tee -a "$W/builds.log" || true
+            list_apks vm-rebuild "$W/ws-b/out/vm-b"
+            # compare
+            # the Rebuild-style workspace builds the standard variant only (time); every apk it made is compared with the Build-style one
+            ok=yes; n=0
+            for b in "$W/ws-b/out/vm-b/$TA/"*.apk; do [ -e "$b" ] || continue; n=$((n + 1)); f="$GITHUB_WORKSPACE/out/vm-a/$TA/$(basename "$b")"
+              if [ -f "$f" ] && python3 -I bin/apk-tool.py same "$f" "$b" > /dev/null 2>&1; then :; else ok=no; fi; done
+            ma=$(sha256sum "$GITHUB_WORKSPACE/out/vm-a/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1); mb=$(sha256sum "$W/ws-b/out/vm-b/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1)
+            [ -n "$ma" ] && [ "$ma" = "$mb" ] || ok=no
+            if [ "$ok" = yes ] && [ "$n" -ge 1 ]; then R "U5 PASS: Build-style and Rebuild-style apks have the same digest ($n apk(s) compared, standard variant); inputs-manifest sha256:$ma == $mb"
+            else R "U5 FAIL: Build-style and Rebuild-style differ or are missing ($n apk(s) compared; inputs-manifest sha256:$ma vs $mb)"; fi
+            bw=$(total bubblewrap); vm=$(total vm-build)
+            R "U5 time: bubblewrap baseline ${bw}s for two calls (today's stage reports 55 s for them), VM Build-style ${vm}s for two calls, ratio $(awk -v a="$vm" -v b="$bw" 'BEGIN {if (b > 0) printf "%.2f", a / b; else print "n/a"}')"
+            if [ "$bw" -gt 0 ] && [ "$vm" -gt $((bw * 3)) ]; then R "U5 FAIL: the VM build takes more than 3x today's (Not do it case 4)"; fi
+            same=yes; for f in "$GITHUB_WORKSPACE"/out/bwrap/$TA/*.apk; do v="$GITHUB_WORKSPACE/out/vm-a/$TA/$(basename "$f")"; [ -f "$v" ] && python3 -I bin/apk-tool.py same "$f" "$v" > /dev/null 2>&1 || same=no; done
+            R "U5 note: VM apk digest vs bubblewrap apk digest: $([ "$same" = yes ] && echo equal || echo DIFFERENT, to be explained)"
+            ;;
+          x86-fresh)
+            build_set vm-fresh "$GITHUB_WORKSPACE" "$W/build-apk-vm.sh" out/vm-f standard fips 2>&1 | tee -a "$W/builds.log" || true
+            list_apks vm-fresh out/vm-f
+            R "U5 fresh runner: VM build two calls $(total vm-fresh)s; compare the APK and MANIFEST lines with the vm-x86 job"
+            ;;
+          arm64-tcg)
+            BUILD_TIMEOUT=1500 build_set arm64-tcg "$GITHUB_WORKSPACE" "$W/build-apk-vm.sh" out/vm-arm standard 2>&1 | tee -a "$W/builds.log" || true
+            list_apks arm64-tcg out/vm-arm
+            t=$(total arm64-tcg)
+            if [ "$t" -gt 0 ]; then R "ARM64-TCG: aarch64 melange build under -accel tcg,thread=multi on the x86 runner took ${t}s for one call (bound 540 s; x86 native in the vm-x86 job)"
+            else R "ARM64-TCG SKIP: no completed aarch64 build (see the BUILD lines and the step log for the reason)"; fi
+            ;;
+          esac
+      - name: "results"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/spike"; mkdir -p "$W"
+          R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
+          HOST_ARCH=x86_64
+          RUN_UID=$(id -u); RUN_GID=$(id -g)
+          TA=${TARGET_ARCH:-x86_64}
+          HOSTPKG=qemu-system-$TA
+          # run a command as the runner user inside a new network namespace with only loopback up (root creates the namespace only)
+          in_netns() { sudo -n /usr/bin/unshare -n /bin/bash "$W/src/netns-run.sh" "$RUN_UID" "$RUN_GID" "$HOME" "$W/tmp" "$@"; }
+          echo "==================== results of this job ($KIND, $TA) ===================="
+          cat "$W/results.txt" 2>/dev/null || echo "(no results file)"
+          { echo "## $KIND ($TA)"; echo '```'; cat "$W/results.txt" 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q 'FAIL' "$W/results.txt" 2>/dev/null; then echo "at least one FAIL line: the job is red on purpose (fail closed)"; exit 1; fi
