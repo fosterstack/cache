@@ -71,10 +71,11 @@ _SITES = {
     "auditor-notify.py": (1, "the finding file written earlier in the same run"),
     "auditor-recheck.py": (1, "the disposition file written earlier in the same run"),
     "auditor-manifest.py": (3, "the scanned image's files and a registry reply, validated by the manifest builder"),
-    "auditor-run.py": (3, "the known-defect log's own parse (after reviewed.present) and the gh issue list replies"),
+    "auditor-run.py": (6, "the known-defect log's own parse (after reviewed.present), the gh issue list replies, "
+                          "and the open Dependabot PR list (gh reply and its test shim)"),
     "auditor-poam.py": (2, "the package and the finding files written earlier in the same run"),
     "auditor-votes.py": (1, "the run's manifest"),
-    "auditor-panel.py": (9, "registry and scanner-database replies, image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
+    "auditor-panel.py": (10, "registry and scanner-database replies, the answers of gh issue list (the standing issue lookup, by exact title), image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
     "auditor-release-authz.py": (1, "the owner-issues list the run fetched with gh"),
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),

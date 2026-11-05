@@ -64,6 +64,8 @@ def run(cmd, **kw):
             return types.SimpleNamespace(returncode=0, stderr="", stdout=("c" * 40 + "\n") if "--jq" in cmd else json.dumps({"object": {"sha": "c" * 40}}))
     if cmd[:3] == ["gh", "pr", "view"]:
         return types.SimpleNamespace(returncode=0, stderr="", stdout=("b" * 40 + "\n") if "--jq" in cmd else json.dumps({"headRefOid": "b" * 40, "autoMergeRequest": None}))
+    if cmd[:3] == ["gh", "issue", "list"] and "--jq" not in cmd:       # the owner-issue lookup reads a JSON array of {number, title}; the daily-rescan lookup (--jq) finds none
+        return types.SimpleNamespace(returncode=0, stdout="[]", stderr="")
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
 os.environ["GITHUB_REPOSITORY"] = "o/r"; os.environ["GITHUB_SHA"] = "a" * 40

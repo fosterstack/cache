@@ -1042,6 +1042,7 @@ mappings:
   - ac: REQ-CHAIN-001-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-hostile-test.sh" }
+      - { type: shell-test, ref: "bin/build-sandbox-hostile-test.sh" }
   - ac: REQ-CHAIN-001-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }

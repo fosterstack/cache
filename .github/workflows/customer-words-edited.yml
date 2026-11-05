@@ -1,0 +1,23 @@
+# Re-checks a pull request's title and body when either is edited; ci.yml's lint job checks them on every push.
+name: customer-words-edited
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: read
+
+jobs:
+  customer-words-edited:
+    name: customer-words-edited
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: no shop words in the title or body
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 -I bin/check-customer-words.py < /dev/null

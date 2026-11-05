@@ -7,6 +7,7 @@ One item is "<kind>:<name>@<version>":
   gotool   module/path@version          `go install path@version` in a run step
   package  pypi/name@version            the hash-pinned requirements files
   image    name@sha256:digest           container:/services: images and docker:// actions (name:tag@sha256:digest is the SAME item: Docker ignores the tag)
+  apk      name@version                 a row of build/locks/vm-kernel.lock; the row's sha256 is the item's sum (a new apk under one version is a new item)
 NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go modules and the Go toolchain.
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
@@ -152,19 +153,32 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 
 def _wanted(n):
-    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
+    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$", n)
             or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
 
-def tree_key(root, rev):
-    """The identity of what tree_files would read at a revision: the (path, blob) pairs of the files it reads, without reading them. Two revisions with the same key give the same inventory."""
+_LISTINGS = {}  # (root, full sha) -> [(path, blob)] of the files the inventory reads: the one ls-tree a revision costs
+
+
+def _listing(root, rev):
+    if (root, rev) in _LISTINGS:
+        return _LISTINGS[(root, rev)]
     pairs = []
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if n and _wanted(n):
+            if n == KERNEL_LOCK and meta.split()[0] == "120000":
+                raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
             pairs.append((n, meta.split()[2]))
-    return tuple(pairs)
+    if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
+        _LISTINGS[(root, rev)] = pairs
+    return pairs
+
+
+def tree_key(root, rev):
+    """The identity of what tree_files would read at a revision: the (path, blob) pairs of the files it reads, without reading them. Two revisions with the same key give the same inventory."""
+    return tuple(_listing(root, rev))
 
 
 def tree_files(root, rev):
@@ -174,20 +188,20 @@ def tree_files(root, rev):
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
             if n and wanted(n):
+                if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
+                    raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
                 try:
                     out[n] = open(f"{root}/{n}").read()
                 except OSError as e:
                     if n == PERSONA_TOOLS:
                         raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
+                    if n == KERNEL_LOCK:
+                        raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its rows would go unaged")
                     continue
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
         return out
-    for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
-        meta, _, n = line.partition("\t")
-        if not n or not wanted(n):
-            continue
-        blob = meta.split()[2]
+    for n, blob in _listing(root, rev):
         if blob not in _BLOBS:
             _BLOBS[blob] = git(root, "cat-file", "blob", blob)
         if len(_BLOBS[blob]) > MAX_FILE:
@@ -204,6 +218,45 @@ def _strip_tag(name):
 
 PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
+KERNEL_LOCK = "build/locks/vm-kernel.lock"
+KERNEL_ROWS_MAX = 500
+
+
+_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*[a-wyz]?(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
+
+
+def is_pin(version):
+    """An exact version: a commit, a digest, or dotted numbers (an optional suffix such as -rc.1). Never a name (main, nightly, lts/*), a wildcard (1.*, 3.x), a range or an expression."""
+    return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
+_KERNEL_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._+\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+\-]*)?)=([A-Za-z0-9][A-Za-z0-9._+\-]*)[ \t]+sha256:([0-9a-f]{64})$")
+
+
+def _kernel_lock_items(path, text):
+    """The rows of the kernel lock file, one `apk` item each: `<name>=<version> sha256:<64 hex>`, the name may carry an `<arch>/` prefix; blank lines
+    and lines starting with # are ignored. The row's sha256 is the item's sum, so the same version with a different apk is a NEW item (its clock starts
+    again). No registry dates these rows: the pull request's own first run does. A row of any other shape is an error, never skipped: a row we cannot read
+    would go unaged."""
+    out, seen = [], set()
+    for n, raw in enumerate(text.split("\n"), 1):
+        row = raw.strip()
+        if not row or row.startswith("#"):
+            continue
+        m = _KERNEL_ROW.match(row)
+        if not m:
+            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+        if not is_pin(m.group(2)):
+            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its age cannot be judged")
+        if (m.group(1), m.group(2)) in seen:
+            raise RuntimeError(f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
+        seen.add((m.group(1), m.group(2)))
+        if len(seen) > KERNEL_ROWS_MAX:
+            raise RuntimeError(f"{path}:{n}: more than {KERNEL_ROWS_MAX} rows: refused")
+        it = Item("apk", m.group(1), m.group(2))
+        it.sums = [m.group(3)]
+        out.append(it)
+    if not out:
+        raise RuntimeError(f"{path}: the lock file holds no row: the control cannot cover nothing")
+    return out
 
 
 def _persona_tool_items(path, text):
@@ -571,11 +624,15 @@ MAX_ITEMS_PER_FILE = 5000
 MAX_LINES_PER_FILE = 20000
 
 
+def _too_many_items():
+    return RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
+
+
 def _step(node, out, labels):
     n0 = len(out)
     _step_items(node, out, labels)
     if len(out) - n0 > MAX_ITEMS_PER_STEP:
-        raise RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
+        raise _too_many_items()
     run = node.get("run")
     if isinstance(run, str):
         legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
@@ -597,6 +654,34 @@ def _step(node, out, labels):
                 it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart
             elif _NONPIN.search(it.version or "") and not it.step:
                 it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
+
+
+def _item_copy(it):
+    """A copy that shares nothing with the stored item (sums is a list): a change to what a caller gets back never reaches the memo."""
+    c = copy.copy(it)
+    c.sums = list(it.sums)
+    return c
+
+
+_STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
+
+
+def _step_line(node, out):
+    """_step for one line of a script. A script line is read in the neutral context, so its items are a function of the node and that context: remembered."""
+    if not _MEMO_ON[0]:
+        _step(node, out, {})
+        return
+    assert not _JOB_RUNS[0], "_JOB_RUNS is not in the memo key"
+    key = (json.dumps(node, sort_keys=True), _ENV_CTX[0], _INPUT_CTX[0], tuple(_JOB_SUMS[0]))
+    made = _STEP_MEMO.get(key)
+    if made is None:
+        n0 = len(out)
+        _step(node, out, {})
+        _STEP_MEMO[key] = [_item_copy(it) for it in out[n0:]]
+        return
+    if len(made) > MAX_ITEMS_PER_STEP:
+        raise _too_many_items()
+    out.extend(_item_copy(it) for it in made)
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -725,7 +810,7 @@ def _walk(node, out, labels, path="", in_step=False):
 
 
 _MEMO_ON = [True]
-_FILE_MEMO = {}     # (path, sha256 of the text) -> (the items _file_found made, the reads they rest on)
+_FILE_MEMO = {}     # (path, sha256 of the text) -> a list of (the items _file_found made, the reads they rest on), one per different set of reads
 _READS = []         # the other files the walk of the current file looked at: (name, is it a workflow of the tree, sha256 of its text), as _exempt_local_call saw them
 
 
@@ -800,7 +885,7 @@ def _file_found(path, text):
         sctx = _assign_context(sjoined, sraw)
         for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
             before = len(found)
-            _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
+            _step_line({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found)
             for it in found[before:]:
                 it.src = (path, lid)
                 if it.kind == "tool" and not it.sums and not it.name.startswith("source:"):
@@ -811,6 +896,8 @@ def _file_found(path, text):
                         it.step = "file:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # no sums found for a literal download (an arm label the text scan could not trust): fail closed, any edit of the script moves the item
     elif path == PERSONA_TOOLS:
         found = _persona_tool_items(path, text)
+    elif path == KERNEL_LOCK:
+        found = _kernel_lock_items(path, text)
     elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
         found = [Item("tool", "file:" + path, "(file)")]
         found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
@@ -835,7 +922,7 @@ def _file_found(path, text):
             node["_raw"] = rawln
             if actx:
                 node["_assign"] = actx
-            _step(node, found, {})
+            _step_line(node, found)
             for it in found[before:]:
                 it.src = (path, lid)
             if len(found) > MAX_ITEMS_PER_FILE:
@@ -896,13 +983,15 @@ def inventory(files):
     _FILES[0] = files
     for path, text in sorted(files.items()):
         mk = (path, hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()) if _MEMO_ON[0] else None
-        hit = _FILE_MEMO.get(mk) if mk is not None else None
-        if hit is not None and all(_read_of(r[0]) == r for r in hit[1]):      # the reads the walk made are re-asked of THIS tree: the same answers, the same items
-            found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
+        known = _FILE_MEMO.get(mk, []) if mk is not None else []
+        # the reads the walk made are re-asked of THIS tree: the same answers, the same items
+        hit = next((m for m in known if all(_read_of(r[0]) == r for r in m[1])), None)
+        if hit is not None:
+            found = [_item_copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
             found = _file_found(path, text)
-            if mk is not None:                              # a raise left nothing here: only a completed file is remembered
-                _FILE_MEMO[mk] = ([copy.copy(it) for it in found], tuple(_READS))
+            if mk is not None:                              # a raise left nothing here: only a completed file is remembered; each different set of reads is kept
+                _FILE_MEMO.setdefault(mk, []).append(([_item_copy(it) for it in found], tuple(_READS)))
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
@@ -1003,14 +1092,24 @@ def _line_ids(text):
     'unruled:' for a line bash reads differently from that flattening (REQ-SUP-001-AC16, AC20)."""
     mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
     tainted = mark in text
-    ids = []
-    for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
+    return [_line_id(tainted, line) for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n")]
+
+
+_LINE_ID_MEMO = {}      # (the file already held the mark, the line with its marks) -> the id
+
+
+def _line_id(tainted, line):
+    key = (tainted, line)
+    made = _LINE_ID_MEMO.get(key) if _MEMO_ON[0] else None
+    if made is None:
+        mark = "\ue000"
         bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
-        if not tainted:
-            line = line.replace(mark, "")
-        h = hashlib.sha256(" ".join(line.split()).encode("utf-8", "replace")).hexdigest()
-        ids.append(h if bashlike else "unruled:" + h)
-    return ids
+        flat = line if tainted else line.replace(mark, "")
+        h = hashlib.sha256(" ".join(flat.split()).encode("utf-8", "replace")).hexdigest()
+        made = h if bashlike else "unruled:" + h
+        if _MEMO_ON[0]:
+            _LINE_ID_MEMO[key] = made
+    return made
 
 
 # The top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001; owner exception 1 of Oct 15). That premise is held by a

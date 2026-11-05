@@ -783,7 +783,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "5fa2ab1c2d4cf32e29832d0a24f2fb910b752e812d108ba85449b4e219e5cb8f",
+      "sha256": "79c4dd3a911d3063721bf27d41bd7fc67253a22976df9d290144c4bc8ebf7898",
       "tools": [
         "env",
         "go",
@@ -1952,7 +1952,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
+      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
       "tools": [
         "at",
         "curl",
@@ -2150,6 +2150,31 @@
           "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
+    },
+    {
+      "path": "bin/chain-sandbox-probe.sh",
+      "tools": [
+        "bash",
+        "cat",
+        "cut",
+        "grep",
+        "mapfile",
+        "mkdir",
+        "mktemp",
+        "printf",
+        "rm",
+        "sed",
+        "trap",
+        "umask",
+        "uname"
+      ],
+      "runs": [
+        "bin/build-apk-helper.py",
+        "bin/net-probe.py"
+      ],
+      "signs": false,
+      "reason": "the sandbox wall probe of the dry run: six test-only recipes (build/probe) through the sealed melange call, judged by melange's exit status; signs, uploads and publishes nothing",
+      "sha256": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30"
     },
     {
       "path": "bin/net-probe.py",

@@ -1,0 +1,16 @@
+# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: read-keydir. Never published.
+# The probe renders it into a temporary folder (@BUSYBOX@, @RECORD@, @KEYDIR@ are replaced there) and runs it sealed.
+package:
+  name: probe-read-keydir
+  version: 0.0.1
+  epoch: 0
+  description: test-only recipe of the sandbox wall probe, wall read-keydir
+  copyright:
+    - license: MIT
+environment:
+  contents:
+    packages:
+      - @BUSYBOX@
+pipeline:
+  - runs: |
+      if cat @KEYDIR@/dummy > /dev/null; then exit 1; fi

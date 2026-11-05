@@ -182,6 +182,8 @@ def stage_text(family):
         if sp.get("check_rapk"):
             out += "      - name: check the rapk records against their jobs' outputs\n        if: %s\n        env:\n" % S.MODE_RELEASE_IF + "".join("          %s: %s\n" % kv for kv in S.RAPK_CHECK_ENV.items()) + "        run: %s\n" % S.RAPK_CHECK_RUN
         out += witness_block(sp)
+        if sp.get("probe"):
+            out += "      - name: sandbox wall probe (dry run only)\n        if: %s\n        run: %s\n" % (S.HOSTILE_IF, S.PROBE_RUN)
         if sp.get("expose_rapk"): out += "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.exposerapk(sp["runner"]))
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
         if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the stage output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
@@ -528,11 +530,24 @@ st s_hin_str  "AC2 the hostile input is a string (a null caller input must not r
 st s_hin_req  "AC2 the hostile input is required" "on: must be" '        description: dry run only\n        type: boolean\n        default: false\n' \
               '        description: dry run only\n        type: boolean\n        default: false\n        required: true\n'
 st s_hstep_none "AC2 the hostile step is missing (PR 1's contract: a step gated by inputs.hostile in the Build job)" "hostile" "$HOSTILE_STEP" ''
-st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' \
-    '        run: bash'
-st s_hstep_alw  "AC2 the hostile step runs always()" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' '        if: always()\n        run: bash'
+st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh' \
+    '        run: bash bin/chain-hostile-step.sh'
+st s_hstep_alw  "AC2 the hostile step runs always()" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh' \
+    '        if: always()\n        run: bash bin/chain-hostile-step.sh'
 st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "hostile" 'name: hostile-attempts' 'name: attempts'
 st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
+# the sandbox wall probe (sandboxed-build rules 3 and 5): a step of the apk job, after its Witness steps, only in a dry run
+PROBE_STEP='      - name: sandbox wall probe (dry run only)\n        if: ${{ inputs.hostile }}\n        run: bash bin/chain-sandbox-probe.sh\n'
+st s_probe_none "AC2 the sandbox wall probe step is missing from the apk job" "probe" "$PROBE_STEP" ''
+st s_probe_noif "AC2 the probe step has no if (it would run in every release)" "probe" \
+    '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-sandbox-probe.sh' '        run: bash bin/chain-sandbox-probe.sh'
+st s_probe_alw  "AC2 the probe step runs always()" "probe" \
+    '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-sandbox-probe.sh' '        if: always()\n        run: bash bin/chain-sandbox-probe.sh'
+st s_probe_run  "AC2 the probe step runs another script" "probe" 'run: bash bin/chain-sandbox-probe.sh' 'run: bash bin/chain-hostile-step.sh'
+st s_probe_env  "AC2 the probe step carries an env (the runner token must never reach it)" "probe" \
+    '        run: bash bin/chain-sandbox-probe.sh' '        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/chain-sandbox-probe.sh'
+st s_probe_ct   "AC2 the probe step continues on error (a held wall and an open wall would look alike)" "probe" \
+    '        run: bash bin/chain-sandbox-probe.sh' '        continue-on-error: true\n        run: bash bin/chain-sandbox-probe.sh'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
@@ -693,13 +708,17 @@ rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      co
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
-# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml, minus the two files PR 2 removes
-mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old"
+# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml and customer-words-edited.yml, minus the two files PR 2 removes
+mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
+cp "$work/wf-ok"/* "$work/wf-cw/"; : > "$work/wf-cw/customer-words-edited.yml"
+cp "$work/wf-cw"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/stage-extra.yml"
 expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a second new workflow file" "was added" workflows "$work/wf-new"
+expect ok     "AC1 customer-words-edited.yml is the one other file allowed (decision 98, Oct 3)" "" workflows "$work/wf-cw"
+expect caught "AC1 customer-words-edited.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
 # ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
@@ -2881,7 +2900,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/loopback-get.sh", "bin/rebuild-records-digests.sh")      # held whole with the Python files
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh")      # held whole with the Python files
 for p in sorted(set(seen) | set(SIX)):
     held = p.endswith(".py") or p in SIX
     print(p, file=(sys.stdout if held else sys.stderr))
@@ -2969,7 +2988,7 @@ json.dump(d, open(f, "w"), indent=2)
 PY
 expect caught "FZ3 nosource a runs entry that lists bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
   nosource "$work/nsm"
-# option 1: 21 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
+# option 1: 22 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
 # the stage lines run python3 -I
 while read -r f; do
   nsa "H-$f" "nosource a change to $f is a finding: the file is held whole by sha256" "NS_SHA" "$f" "# one more comment"
@@ -3008,7 +3027,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = {"bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
 py = {p for p in seen if p.endswith(".py")}
 held = py | SIX
 # the files the workflows run outside the stage scripts are in the closure
@@ -3019,7 +3038,7 @@ for p in sorted(held):
 for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
     assert p in py, p      # they reach the closure only through chain-verify.py's load_sibling literals
 PY
-then ok "nosource NS_SHA holds exactly the 15 Python closure files and the 6 workflow-run files with their \
+then ok "nosource NS_SHA holds exactly the 15 Python closure files and the 7 workflow-run files with their \
 committed sha256, and chain_common, chain_hostile and chain_items are found"
 else bad "nosource NS_SHA does not match the closure files"; fi
 # the bin/ scripts the run: lines of the two stage workflows start are exactly the roots of the closure
@@ -3607,7 +3626,7 @@ expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode 
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
-expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
+expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml and customer-words-edited.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
 python3 - "$root" <<'PY' && ok "the four chain stage files (build, reproducibility, verify, promote) pin download-artifact and upload-artifact each to one and the same digest, which .github/policy/allowed-actions.json lists" || bad "the chain stage files pin download-artifact to different digests, or to one the allowlist does not list"
@@ -3710,7 +3729,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1296
+EXPECT=1305
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
