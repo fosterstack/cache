@@ -642,7 +642,7 @@ jobs:
           [ -s /tmp/panel-out/issue.md ] || exit 0
           title="Daily scanner panel: findings on main"
           { cat /tmp/panel-out/issue.md; echo; echo "commit \`${GITHUB_SHA}\` — run ${RUN_URL}"; } > /tmp/panel-out/issue-body.md
-          n=$(python3 bin/rescan-statement.py find-issue --title "$title" --title "auditor: $title")   # every page of the open daily-rescan issues (the issue list command reads only 30)
+          n=$(python3 bin/rescan-statement.py find-issue --title "$title")   # every page of the open daily-rescan issues (the issue list command reads only 30)
           if [ -n "$n" ]; then gh issue comment "$n" --body-file /tmp/panel-out/issue-body.md
           else
             # `gh issue create --label X` fails when X does not exist, and a lost tracking issue is a lost finding: make sure both
