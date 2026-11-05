@@ -1007,6 +1007,7 @@ jobs:
       # found a CVE AND had an operational failure still files the issue —
       # while the operational error still fails the run below.
       - name: file/update a tracking issue on findings
+        id: issue
         if: steps.statement.outputs.has_findings == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -1021,8 +1022,13 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan', per_page: 100,
             });
             const match = existing.find(i => !i.pull_request && i.title === title);
+            core.info(`read ${existing.length} open daily-rescan issues; title match: ${match ? '#' + match.number : 'none'}`);
+            let number;
             if (match) {
-              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+              const comment = await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+              if (!comment.data.id) throw new Error(`the comment on #${match.number} came back without an id`);
+              number = match.number;
+              core.info(`commented on #${number}`);
             } else {
               // issues.create fails (422) when a label does not exist, and a lost tracking issue is a lost finding: make sure both
               // labels exist first. An existing label is left as it is (a 422 here is fine); any other failure shows up in the create below.
@@ -1030,13 +1036,19 @@ jobs:
               for (const [name, description, color] of [['daily-rescan', "The daily rescan's tracking issue", '0E8A16'], ['security', 'Security finding', 'D93F0B']]) {
                 try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ }
               }
-              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+              const created = await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+              number = created.data.number;
+              core.info(`created #${number}`);
             }
+            // a lost tracking issue is a lost finding: read it back, and fail the step when it is not there
+            const issue = await github.rest.issues.get({ owner: context.repo.owner, repo: context.repo.repo, issue_number: number });
+            if (issue.data.title !== title || issue.data.state !== 'open') throw new Error(`#${number} reads back as "${issue.data.title}" (${issue.data.state}), not the open tracking issue`);
+            core.setOutput('issue', String(number));
 
       - name: a findings verdict fails the run (visible red, same bar as the gate)
-        if: steps.statement.outputs.outcome == 'findings'
+        if: always() && steps.statement.outputs.outcome == 'findings'
         run: |
-          echo "::error::rescan found findings for ${TARGET_RELEASE} ${TARGET_VARIANT} (${TARGET_SCANNER}) — see the tracking issue" >&2
+          echo "::error::rescan found findings for ${TARGET_RELEASE} ${TARGET_VARIANT} (${TARGET_SCANNER}) — see tracking issue #${{ steps.issue.outputs.issue }}" >&2
           exit 1
 
       # An operational failure is NOT clean CVE evidence: fail the run with

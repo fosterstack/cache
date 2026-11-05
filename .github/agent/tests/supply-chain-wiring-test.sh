@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC4, REQ-SUP-001-AC6
+# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC4, REQ-SUP-001-AC6, REQ-SUP-001-AC36
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175): Dependabot waits 7 days on the github-actions and pip entries only (AC1);
 # the pull request check is a job that runs on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
@@ -10,7 +10,7 @@
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
-import copy, os, re, sys, yaml
+import copy, os, re, subprocess, sys, yaml
 
 CANON = {}   # job -> the exact normalised run text of its check step (filled below from the shipped workflow's ratified text)
 
@@ -287,25 +287,52 @@ def judge_wf(d, real=False):
             bad.append(f"{name} has an environment or secrets: none are allowed")
     return bad
 
-def judge_db(d):
+GOMOD_DIRS = None   # the directories of the go.mod files git tracks ("." is the root); None when git cannot say
+try:
+    _ls = subprocess.run(["git", "-C", root, "ls-files", "--", "go.mod", "*/go.mod"], capture_output=True, text=True, check=True).stdout.split()
+    GOMOD_DIRS = {os.path.dirname(f) or "." for f in _ls}
+except Exception:
+    pass
+
+def judge_db(d, gomod_dirs=GOMOD_DIRS):
     bad = []
-    ups = {u.get("package-ecosystem"): u for u in d.get("updates", []) if not (u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck")}
+    # entries are keyed by (ecosystem, directory): a second gomod entry must not hide the first; the govulncheck tool
+    # module (advisor Oct 12, ruling G) is judged apart from the product's gomod entries
+    seen, ups, gm, tool = set(), {}, {}, []
+    for u in d.get("updates", []):
+        k = (u.get("package-ecosystem"), u.get("directory"))
+        if k in seen:
+            bad.append(f"duplicate {k[0]} {k[1]} entry")
+        seen.add(k)
+        if k == ("gomod", "/tools/govulncheck"):
+            tool.append(u)
+        elif k[0] == "gomod":
+            gm.setdefault(k[1], u)
+        else:
+            ups.setdefault(k[0], u)
     for eco in ("github-actions", "pip"):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
-    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}}}  # the product's CVE-fix target: byte-for-byte unchanged
-    for eco, entry in want.items():
-        if eco in ups and ups[eco] != entry:
-            bad.append(f"the {eco} entry is not unchanged")
-    for eco in ("gomod",):
-        if eco not in ups:
-            bad.append(f"the {eco} entry is missing")
-        elif "cooldown" in ups[eco]:
-            bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+        # exactly weekly and no extra key (no day, time or timezone)
+        if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:
+            bad.append(f"the {eco} entry's schedule is not exactly interval: weekly")
+    # groups are judged below; the product's gomod entries stay unchanged apart from them
+    nog = lambda v: {a: b for a, b in v.items() if a != "groups"}
+    for gdir in ("/", "/tools/requirements"):  # both Go modules: the root and the nested tools/requirements module
+        if gdir not in gm:
+            bad.append(f"the gomod {gdir} entry is missing")
+            continue
+        if gdir == "/":
+            if nog(gm[gdir]) != {"package-ecosystem": "gomod", "directory": gdir, "schedule": {"interval": "weekly"}}:
+                bad.append(f"the gomod {gdir} entry is not unchanged")
+            if "cooldown" in gm[gdir]:
+                bad.append(f"the gomod {gdir} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+        # tools/requirements is a CI tool like tools/govulncheck: the same exact 7-day wait (its bumps change what validates the requirements)
+        elif nog(gm[gdir]) != {"package-ecosystem": "gomod", "directory": gdir, "schedule": {"interval": "weekly"}, "cooldown": {"default-days": "7"}}:
+            bad.append(f"the gomod {gdir} entry is not exactly weekly with a 7-day cooldown (default-days: 7) and nothing else")
     # the pinned Go source scanner (advisor Oct 12, ruling G): tools/govulncheck is its own module, bumped through the reviewed path with the same 7-day wait as the
     # actions and the pip pins (it is a tool, not a product dependency: the product's CVE-fix target above stays without a cooldown)
-    tool = [u for u in d.get("updates", []) if u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck"]
     if len(tool) != 1:
         bad.append(f"the govulncheck tool entry (gomod, /tools/govulncheck) is missing or repeated ({len(tool)})")
     elif tool[0] != {"package-ecosystem": "gomod", "directory": "/tools/govulncheck", "schedule": {"interval": "weekly"}, "cooldown": {"default-days": "7"}}:
@@ -313,6 +340,49 @@ def judge_db(d):
     # rule 61 (advisor Oct 12): no Dockerfile exists, so Dependabot's docker ecosystem watches nothing and has no entry
     if any(u.get("package-ecosystem") == "docker" for u in d.get("updates", [])):
         bad.append("a docker entry is back: no Dockerfile exists (rule 61)")
+    # coverage: every tracked go.mod has a gomod entry and every gomod entry has a go.mod
+    # exact strings, no normalising: an entry spelled any other way ("/tools/requirements/", "tools/requirements", "./")
+    # has no go.mod and is red
+    if gomod_dirs is None:
+        bad.append("cannot list the tracked go.mod files (git ls-files failed)")
+    else:
+        want_dirs = {("/" if g == "." else "/" + g): g for g in gomod_dirs}
+        have = set(gm) | ({"/tools/govulncheck"} if tool else set())
+        for w in sorted(set(want_dirs) - have):
+            bad.append(f"go.mod at {want_dirs[w]} has no gomod entry")
+        for g in sorted(have - set(want_dirs), key=repr):
+            bad.append(f"gomod entry {g} has no go.mod")
+    # groups (audit ruling Oct 31, widened to the rule 12 shape, cache#817): every github-actions, gomod and pip entry
+    # has its minor-patch group with update-types exactly minor and patch (a major never joins a group, except
+    # codeql-action, which is major-only and stays FIRST because Dependabot gives a dependency to the first group that
+    # matches). The govulncheck tool entry stays exactly as ruling G wrote it (no group).
+    # No group sets applies-to anywhere.
+    ag = (ups.get("github-actions") or {}).get("groups") or {}
+    if list(ag) != ["codeql-action", "actions-minor-patch"]:
+        bad.append("the github-actions groups are not exactly codeql-action then actions-minor-patch, in that order")
+    if ag.get("codeql-action") != {"patterns": ["github/codeql-action*"], "update-types": ["major"]}:
+        bad.append("the codeql-action group is not exactly github/codeql-action* with update-types major (major only)")
+    if ag.get("actions-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
+        bad.append("the actions-minor-patch group is not exactly patterns * with update-types minor and patch")
+    for gdir, gu in gm.items():
+        gg = gu.get("groups") or {}
+        if list(gg) != ["gomod-minor-patch"]:
+            bad.append(f"the gomod {gdir} groups are not exactly gomod-minor-patch")
+        if gg.get("gomod-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
+            bad.append(f"the gomod {gdir} gomod-minor-patch group is not exactly patterns * with update-types minor and patch")
+    for u in d.get("updates", []):
+        for gname, g in ((u.get("groups") or {}).items()):
+            if isinstance(g, dict) and "applies-to" in g:
+                bad.append(f"the {u.get('package-ecosystem')} group {gname} sets applies-to (none may: it would change which updates the group takes)")
+    pg = (ups.get("pip") or {}).get("groups") or {}
+    if list(pg) != ["pydantic", "pip-minor-patch"]:
+        bad.append("the pip groups are not exactly pydantic then pip-minor-patch, in that order")
+    if pg.get("pydantic") != {"patterns": ["pydantic", "pydantic-core"]}:
+        bad.append("the pip pydantic group is not exactly pydantic and pydantic-core")
+    # exclude-patterns ["pip"]: pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any
+    # other pin), so a bump of pip must not join a group
+    if pg.get("pip-minor-patch") != {"exclude-patterns": ["pip"], "update-types": ["minor", "patch"]}:
+        bad.append("the pip-minor-patch group is not exactly update-types minor and patch with exclude-patterns pip (a major never joins a group; no patterns)")
     return bad
 
 def judge_rest():
@@ -350,7 +420,7 @@ result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a par
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: 7-day cooldown on github-actions, pip and the govulncheck tool module, none on the product gomod, no docker entry" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on the root gomod entry, the tools/requirements and govulncheck tool entries weekly with their own 7-day cooldown, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -383,6 +453,7 @@ def mut_db(name, expect, fn):
 
 def J(d, n): return d["jobs"][n]
 def eco(d, e): return next(u for u in d["updates"] if u["package-ecosystem"] == e)
+def gmod(d, p): return next(u for u in d["updates"] if u["package-ecosystem"] == "gomod" and u["directory"] == p)
 
 # --- the workflow (AC4, AC6) ---
 mut_wf("pull_request gets a paths filter", "has a filter", lambda d: d["on"].update(pull_request={"paths": ["bin/**"]}))
@@ -574,11 +645,12 @@ mut_wf("image-signatures has a container", "has a job-level container",
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot (AC1) ---
 mut_db("github-actions cooldown gains a semver override", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"semver-major-days": "0"}))
-mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
-mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
+mut_db("gomod gains an ignore rule", "the gomod / entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
+mut_db("gomod's schedule changes", "the gomod / entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
 mut_db("a docker entry returns for /build/docker", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}))
 mut_db("a docker entry returns for the root", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/", "schedule": {"interval": "weekly"}}))
-mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
+mut_db("a docker entry returns with a cooldown", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}, "cooldown": {"default-days": "7"}}))
+mut_db("gomod is removed", "the gomod / entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
 TOOL = lambda d: next(u for u in d["updates"] if u.get("directory") == "/tools/govulncheck")
 mut_db("the govulncheck tool entry is removed", "govulncheck tool entry", lambda d: d["updates"].remove(TOOL(d)))
 mut_db("the govulncheck tool entry loses its cooldown", "govulncheck tool entry", lambda d: TOOL(d).pop("cooldown"))
@@ -591,8 +663,94 @@ mut_db("the govulncheck tool entry is repeated", "govulncheck tool entry", lambd
 mut_db("github-actions loses its cooldown", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions").pop("cooldown"))
 mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: eco(d, "pip").pop("cooldown"))
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))
-mut_db("gomod gets a cooldown", "gomod entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
-mut_db("a docker entry returns with a cooldown", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}, "cooldown": {"default-days": "7"}}))
+mut_db("gomod gets a cooldown", "the gomod / entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
+mut_db("github-actions loses its groups", "github-actions groups are not exactly codeql-action then actions-minor-patch", lambda d: eco(d, "github-actions").pop("groups"))
+mut_db("github-actions loses its actions-minor-patch group", "github-actions groups are not exactly codeql-action then actions-minor-patch", lambda d: eco(d, "github-actions")["groups"].pop("actions-minor-patch"))
+mut_db("the codeql-action group widens", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update(patterns=["github/*"]))
+mut_db("codeql-action loses major", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].pop("update-types"))
+mut_db("codeql-action takes minor too", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update({"update-types": ["major", "minor"]}))
+mut_db("actions-minor-patch drops update-types", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].pop("update-types"))
+mut_db("actions-minor-patch takes a major", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("actions-minor-patch takes patch only", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"update-types": ["patch"]}))
+mut_db("actions-minor-patch gets applies-to", "sets applies-to",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"applies-to": "security-updates"}))
+mut_db("codeql-action gets applies-to", "sets applies-to",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update({"applies-to": "version-updates"}))
+d = copy.deepcopy(real_db)    # dict equality ignores key order, so this one is judged directly too
+try:
+    eco(d, "github-actions")["groups"] = dict(reversed(list(eco(d, "github-actions")["groups"].items())))
+    found = judge_db(d)
+    ok = any("github-actions groups are not exactly codeql-action then actions-minor-patch" in x for x in found)
+except Exception as e:
+    found, ok = [f"{type(e).__name__}: {e}"], False
+result(ok, "caught: actions-minor-patch comes before codeql-action (reason: 'github-actions groups are not exactly codeql-action then actions-minor-patch')" + ("" if ok else f"; saw {found}"))
+mut_db("gomod loses its groups", "the gomod / groups are not exactly gomod-minor-patch", lambda d: eco(d, "gomod").pop("groups"))
+mut_db("gomod-minor-patch drops update-types", "the gomod / gomod-minor-patch group is not exactly",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].pop("update-types"))
+mut_db("gomod-minor-patch takes a major", "the gomod / gomod-minor-patch group is not exactly",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("gomod-minor-patch gets applies-to", "sets applies-to",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
+# the second Go module (rule 12): tools/requirements has its own gomod entry, judged apart from the root one
+mut_db("the tools/requirements entry is removed", "go.mod at tools/requirements has no gomod entry", lambda d: d["updates"].remove(gmod(d, "/tools/requirements")))
+mut_db("the tools/requirements entry is removed (named)", "the gomod /tools/requirements entry is missing", lambda d: d["updates"].remove(gmod(d, "/tools/requirements")))
+mut_db("the tools/requirements group is dropped", "the gomod /tools/requirements groups are not exactly gomod-minor-patch", lambda d: gmod(d, "/tools/requirements").pop("groups"))
+mut_db("the tools/requirements group takes a major", "the gomod /tools/requirements gomod-minor-patch group is not exactly",
+       lambda d: gmod(d, "/tools/requirements")["groups"]["gomod-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("the tools/requirements entry loses its cooldown", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements").pop("cooldown"))
+mut_db("the tools/requirements cooldown is 3 days", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements")["cooldown"].update({"default-days": "3"}))
+mut_db("the tools/requirements cooldown gains a semver override", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements")["cooldown"].update({"semver-patch-days": "0"}))
+mut_db("the tools/requirements schedule changes", "the gomod /tools/requirements entry is not exactly weekly with a 7-day cooldown", lambda d: gmod(d, "/tools/requirements")["schedule"].update(interval="daily"))
+mut_db("the tools/requirements group gets applies-to", "sets applies-to", lambda d: gmod(d, "/tools/requirements")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
+mut_db("the root gomod entry is duplicated", "duplicate gomod / entry", lambda d: d["updates"].append(copy.deepcopy(gmod(d, "/"))))
+mut_db("the root entry is broken while tools/requirements stays", "the gomod / entry is not unchanged", lambda d: gmod(d, "/")["schedule"].update(interval="monthly"))
+mut_db("the root entry loses its group while tools/requirements stays", "the gomod / groups are not exactly gomod-minor-patch", lambda d: gmod(d, "/").pop("groups"))
+mut_db("the tools/requirements directory becomes /tools", "go.mod at tools/requirements has no gomod entry", lambda d: gmod(d, "/tools/requirements").update(directory="/tools"))
+mut_db("the tools/requirements directory becomes /tools (named)", "gomod entry /tools has no go.mod", lambda d: gmod(d, "/tools/requirements").update(directory="/tools"))
+# a THIRD gomod entry, copied from tools/requirements, under another spelling of a tracked directory
+def third_gomod(dirv, sched, cd):
+    def fn(d):
+        e = copy.deepcopy(gmod(d, "/tools/requirements")); e["directory"] = dirv; e["schedule"]["interval"] = sched
+        if cd: e["cooldown"] = {"default-days": "7"}
+        d["updates"].append(e)
+    return fn
+mut_db("a third gomod entry /tools/requirements/ (trailing slash), monthly with a cooldown", "gomod entry /tools/requirements/ has no go.mod", third_gomod("/tools/requirements/", "monthly", True))
+mut_db("a third gomod entry tools/requirements (no leading slash), monthly with a cooldown", "gomod entry tools/requirements has no go.mod", third_gomod("tools/requirements", "monthly", True))
+mut_db("a third gomod entry ./ (the root spelled ./), monthly with a cooldown", "gomod entry ./ has no go.mod", third_gomod("./", "monthly", True))
+mut_db("a gomod entry written with directories: instead of directory:", "gomod entry None has no go.mod", lambda d: d["updates"].append({k: v for k, v in gmod(d, "/").items() if k != "directory"} | {"directories": ["/"]}))
+# the coverage check alone, with a go.mod the file does not name (a third module)
+found = judge_db(real_db, (GOMOD_DIRS or set()) | {"tools/other"})
+result(any("go.mod at tools/other has no gomod entry" in x for x in found), "caught: a tracked go.mod with no gomod entry (reason: 'go.mod at tools/other has no gomod entry')" + ("" if found else "; saw nothing"))
+result(GOMOD_DIRS == {".", "tools/govulncheck", "tools/requirements"}, f"git tracks exactly three go.mod files: the root, tools/govulncheck and tools/requirements (saw {sorted(GOMOD_DIRS or [])})")
+mut_db("github-actions schedule goes monthly", "github-actions entry's schedule is not exactly interval: weekly", lambda d: eco(d, "github-actions")["schedule"].update(interval="monthly"))
+mut_db("pip schedule goes monthly", "pip entry's schedule is not exactly interval: weekly", lambda d: eco(d, "pip")["schedule"].update(interval="monthly"))
+mut_db("github-actions schedule gains day monday", "github-actions entry's schedule is not exactly interval: weekly", lambda d: eco(d, "github-actions")["schedule"].update(day="monday"))
+mut_db("pip-minor-patch drops update-types", "pip-minor-patch group is not exactly update-types minor and patch", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("update-types"))
+mut_db("pip-minor-patch gets applies-to", "sets applies-to", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"applies-to": "version-updates"}))
+mut_db("pydantic gets update-types", "pip pydantic group is not exactly", lambda d: eco(d, "pip")["groups"]["pydantic"].update({"update-types": ["minor", "patch"]}))
+mut_db("pip loses the pip-minor-patch group", "pip groups are not exactly pydantic then pip-minor-patch", lambda d: eco(d, "pip")["groups"].pop("pip-minor-patch"))
+# dict equality ignores key order, so this one is judged directly instead of through mut_db
+d = copy.deepcopy(real_db)
+eco(d, "pip")["groups"] = dict(reversed(list(eco(d, "pip")["groups"].items())))
+found = judge_db(d)
+ok = list(eco(d, "pip")["groups"]) == ["pip-minor-patch", "pydantic"] and any("pip groups are not exactly pydantic then pip-minor-patch" in x for x in found)
+result(ok, "caught: pip-minor-patch comes before pydantic (reason: 'pip groups are not exactly pydantic then pip-minor-patch')" + ("" if ok else f"; saw {found}"))
+mut_db("pip-minor-patch takes a major", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("pip-minor-patch gets patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update(patterns=["*"]))
+mut_db("pip-minor-patch exclude-patterns changes", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"exclude-patterns": ["anthropic"]}))
+mut_db("pip-minor-patch loses its exclude-patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("exclude-patterns"))
+mut_db("the pydantic group changes", "pip pydantic group is not exactly pydantic and pydantic-core",
+       lambda d: eco(d, "pip")["groups"]["pydantic"].update(patterns=["pydantic"]))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

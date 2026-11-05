@@ -367,6 +367,63 @@ if [ $rc != 0 ]; then ok; else bad "find-issue: an unreadable reply must be an e
 # the panel step of the workflow uses it, and no longer reads a single default page
 WF=.github/workflows/main-candidate-rescan.yml
 if grep -q 'rescan-statement.py find-issue' "$WF" && ! grep -qE 'gh issue list' "$WF"; then ok; else bad "the panel step must look the tracking issue up with find-issue (every page), not 'gh issue list' (first 30 only)"; fi
+# ---- find-issue finds the tracking issue under its title or under the same title with the family prefix in front ----
+PLAIN="Daily scanner panel: findings on main"; PREF="auditor: $PLAIN"
+fi_run() { # issues-file title : run find-issue with this one --title; leaves rc and the output in $rc and $D/found.out
+  GH_ISSUES=$1 PATH="$D/bin:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$2" >"$D/found.out" 2>"$D/found.err" && rc=0 || rc=$?
+}
+fi_expect() { # message expected-output (empty for nothing): the last fi_run must exit 0 and print exactly this
+  if [ $rc = 0 ] && [ "$(cat "$D/found.out")" = "$2" ]; then ok; else bad "find-issue: $1 (rc=$rc, out='$(cat "$D/found.out")')"; fi
+}
+fi_err() { # message : the last fi_run must exit non-zero and print nothing
+  if [ $rc != 0 ] && [ ! -s "$D/found.out" ]; then ok; else bad "find-issue: $1 (rc=$rc, out='$(cat "$D/found.out")')"; fi
+}
+fi_issues() { # out-file index=title ... : 250 open issues, with the given titles at the given indexes; a title ending in |pr is a pull request
+  python3 - "$@" <<'P'
+import json, sys
+out, items = sys.argv[1], [{"number": 1000 - i, "title": "Daily rescan: findings in other %d" % i, "labels": [{"name": "daily-rescan"}]} for i in range(250)]
+for spec in sys.argv[2:]:
+    idx, _, title = spec.partition("=")
+    items[int(idx)]["title"] = title
+    if title.endswith("|pr"):
+        items[int(idx)]["title"], items[int(idx)]["pull_request"] = title[:-3], {"url": "x"}
+json.dump(items, open(out, "w"))
+P
+}
+fi_issues "$D/fi-plain.json" "230=$PLAIN"
+fi_issues "$D/fi-pref.json" "230=$PREF"
+fi_run "$D/fi-plain.json" "$PLAIN"; fi_expect "the issue under the given title is found on a late page" "$((1000-230))"
+fi_run "$D/fi-pref.json" "$PLAIN";  fi_expect "the issue under the given title with the family prefix in front is found on a late page" "$((1000-230))"
+# titles that only look like the two forms are not the tracking issue
+for near in "$PLAIN and more" "$(printf '%s' "$PLAIN" | tr 'A-Z' 'a-z')" "$(printf '%s' "$PREF" | tr 'A-Z' 'a-z')" "$PLAIN " "$PREF " " $PREF" \
+  "auditor:$PLAIN" "auditor: Daily rescan: findings in other 1" "auditor: $PREF" "x$PREF" "$PREF and more"; do
+  fi_issues "$D/fi-near.json" "10=$near"
+  fi_run "$D/fi-near.json" "$PLAIN"; fi_expect "the title '$near' was taken for the tracking issue" ""
+done
+# a pull request with either form is not the tracking issue
+fi_issues "$D/fi-pr.json" "5=$PREF|pr" "6=$PLAIN|pr" "230=$PREF"
+fi_run "$D/fi-pr.json" "$PLAIN";    fi_expect "a pull request carrying either form was taken for the tracking issue" "$((1000-230))"
+# two tracking issues, one under each form: the first one in the list is the one printed
+fi_issues "$D/fi-two-a.json" "10=$PREF" "40=$PLAIN"
+fi_run "$D/fi-two-a.json" "$PLAIN"; fi_expect "two tracking issues: the first in the list (prefixed form) must win" "$((1000-10))"
+fi_issues "$D/fi-two-b.json" "10=$PLAIN" "40=$PREF"
+fi_run "$D/fi-two-b.json" "$PLAIN"; fi_expect "two tracking issues: the first in the list (plain form) must win" "$((1000-10))"
+# neither form on any page: nothing printed, exit 0
+fi_issues "$D/fi-none.json" "10=$PLAIN (old)"
+fi_run "$D/fi-none.json" "$PLAIN";  fi_expect "no issue under either form prints nothing" ""
+# every way the list cannot be read is still an error, never "no issue"
+GH_FAIL=1 fi_run "$D/fi-pref.json" "$PLAIN"; fi_err "a gh failure must be an error for the prefixed form too"
+fi_run "$D/garbage-issues.json" "$PLAIN";    fi_err "an unreadable reply must be an error for the prefixed form too"
+mkdir -p "$D/bin-empty"; printf '#!/bin/bash\nexit 0\n' >"$D/bin-empty/gh"; chmod +x "$D/bin-empty/gh"
+GH_ISSUES=$D/fi-pref.json PATH="$D/bin-empty:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$PLAIN" >"$D/found.out" 2>/dev/null && rc=0 || rc=$?
+fi_err "an empty reply must be an error"
+# the panel step of the workflow passes the one plain title (the prefix is the script's own; test_panel_io.py pins it to the policy);
+# the word "audit" must stay out of that job (the rescan's panel job tallies and cannot audit: panel-wiring-test.sh)
+FIND_LINE=$(grep 'rescan-statement.py find-issue' "$WF" | head -1)
+if [ "$(printf '%s' "$FIND_LINE" | grep -o -- '--title' | wc -l)" = 1 ] && printf '%s' "$FIND_LINE" | grep -qF -- 'find-issue --title "$title")'; then ok; else bad "the panel step must call find-issue with exactly one --title \"\$title\" (got: $FIND_LINE)"; fi
+if ! printf '%s' "$FIND_LINE" | grep -qi 'audit'; then ok; else bad "the panel step's find-issue line must not contain the word audit (panel-wiring-test.sh rule 9)"; fi
+# the step creates the one plain title when nothing is found
+if [ "$(grep -c 'gh issue create --title' "$WF")" = 1 ] && grep -qF 'gh issue create --title "$title" --label daily-rescan' "$WF"; then ok; else bad "the panel step must create exactly one issue, titled \"\$title\", when none is found"; fi
 # the per-target github-script step: run the REAL script text against a fake github that serves 30 issues per page
 python3 - "$WF" "$D/script.js" <<'P'
 import re, sys
@@ -383,18 +440,34 @@ cat >"$D/run-script.js" <<'JS'
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const [, , scriptFile, issuesFile] = process.argv;
+const mode = JSON.parse(process.env.CASE || '{}');
 const all = JSON.parse(fs.readFileSync(issuesFile, 'utf8'));
-const calls = { comment: [], create: [], pages: [] };
+const calls = { comment: [], create: [], pages: [], createFull: [], labels: [], gets: [], info: [], outputs: {} };
+const written = {};
 const listForRepo = async (p) => { const per = p.per_page || 30, page = p.page || 1; calls.pages.push(page); return { data: all.slice((page - 1) * per, page * per) }; };
+const notFound = () => Object.assign(new Error('Not Found'), { status: 404 });
 const github = {
   paginate: async (fn, params) => { let out = [], page = 1; for (;;) { const r = await fn({ ...params, page }); out = out.concat(r.data); if (r.data.length < (params.per_page || 30)) break; page++; } return out; },
   rest: { issues: { listForRepo,
-    createComment: async (p) => { calls.comment.push(p.issue_number); }, createLabel: async () => {}, create: async (p) => { calls.create.push(p.title); } } },
+    createComment: async (p) => { calls.comment.push(p.issue_number); return { data: mode.noCommentId ? {} : { id: 9001 } }; },
+    createLabel: async (p) => { calls.labels.push(p.name); },
+    create: async (p) => { calls.create.push(p.title); calls.createFull.push(p); written[4242] = { number: 4242, title: p.title, state: 'open' }; return { data: { number: 4242 } }; },
+    get: async (p) => {
+      calls.gets.push(p.issue_number);
+      if (mode.get === '404') throw notFound();
+      const seen = written[p.issue_number] || all.find(i => i.number === p.issue_number);
+      if (!seen) throw notFound();
+      const found = { state: 'open', ...seen };
+      if (mode.get === 'wrongtitle') return { data: { ...found, title: 'other' } };
+      if (mode.get === 'closed') return { data: { ...found, state: 'closed' } };
+      return { data: found };
+    } } },
 };
+const core = { info: (m) => calls.info.push(String(m)), setOutput: (k, v) => { calls.outputs[k] = String(v); } };
 const context = { repo: { owner: 'fosterstack', repo: 'cache' }, serverUrl: 'https://github.com', runId: 1 };
 const t = { release: 'v0.3.0', variant: 'production', digest: 'sha256:abcdef0123456789abcdef', scanner: 'osv-scanner' };
 const script = fs.readFileSync(scriptFile, 'utf8').replace(/\$\{\{ toJSON\(matrix\.target\) \}\}/, JSON.stringify(t));
-new AsyncFunction('github', 'context', script)(github, context).then(() => { console.log(JSON.stringify(calls)); }, (e) => { console.error(e.stack); process.exit(1); });
+new AsyncFunction('github', 'context', 'core', script)(github, context, core).then(() => { console.log(JSON.stringify(calls)); }, (e) => { console.error(e.stack); process.exit(1); });
 JS
 issues "$D/issues-js.json" 230 "Daily rescan: findings in v0.3.0 production @abcdef012345 (osv-scanner)"
 command -v node >/dev/null || { bad "node is required for the github-script pagination test"; }
@@ -409,6 +482,49 @@ items = json.load(open(sys.argv[1])); items[3]["title"] = "Daily rescan: finding
 P
 node "$D/run-script.js" "$D/script.js" "$D/issues-js-pr.json" >"$D/js.out" 2>"$D/js.err" || true
 if [ "$(jq -c '.comment' "$D/js.out")" = "[]" ] && [ "$(jq '.create | length' "$D/js.out")" = "1" ]; then ok; else bad "the tracking-issue step took a pull request for the tracking issue ($(cat "$D/js.out"))"; fi
+
+TITLE_JS="Daily rescan: findings in v0.3.0 production @abcdef012345 (osv-scanner)"
+node_case() { # case-json issues-file : the step's calls on stdout, its exit code in $rc
+  CASE="$1" node "$D/run-script.js" "$D/script.js" "$2" >"$D/js.out" 2>"$D/js.err" && rc=0 || rc=$?
+}
+issues "$D/issues-none.json" -1 x
+node_case '{}' "$D/issues-none.json"
+if [ "$rc" = 0 ] && [ "$(jq -c '[.createFull[] | [.title, .labels]]' "$D/js.out")" = "[[\"$TITLE_JS\",[\"daily-rescan\",\"security\"]]]" ] \
+  && [ "$(jq -c '.labels' "$D/js.out")" = '["daily-rescan","security"]' ] \
+  && jq -e '(.create | length) == 1 and .comment == []' "$D/js.out" >/dev/null; then ok; else bad "no open issue: the step must create exactly one issue with the title and both labels, after trying both labels ($(cat "$D/js.out" "$D/js.err"))"; fi
+if jq -e '.info == ["read 250 open daily-rescan issues; title match: none", "created #4242"]' "$D/js.out" >/dev/null; then ok; else bad "after a create the step must log exactly the read line with the count and 'none', then 'created #<number>' ($(cat "$D/js.out"))"; fi
+if jq -e '.gets == [4242] and .outputs.issue == "4242"' "$D/js.out" >/dev/null; then ok; else bad "after a create the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
+for mode_msg in '{"get":"404"}|Not Found' '{"get":"wrongtitle"}|#4242 reads back as "other" (open)' '{"get":"closed"}|(closed), not the open tracking issue'; do
+  node_case "${mode_msg%%|*}" "$D/issues-none.json"
+  if [ "$rc" != 0 ] && grep -qF "${mode_msg#*|}" "$D/js.err"; then ok; else bad "after a create the step must fail with '${mode_msg#*|}' when the read-back is ${mode_msg%%|*} ($(cat "$D/js.out" "$D/js.err"))"; fi
+done
+node_case '{}' "$D/issues-js.json"
+if [ "$rc" = 0 ] && jq -e '.info == ["read 250 open daily-rescan issues; title match: #770", "commented on #770"]' "$D/js.out" >/dev/null; then ok; else bad "after a comment the step must log exactly the read line with the count and '#<number>', then 'commented on #<number>' ($(cat "$D/js.out" "$D/js.err"))"; fi
+if jq -e '.gets == [770] and .outputs.issue == "770" and .comment == [770] and .create == []' "$D/js.out" >/dev/null; then ok; else bad "after a comment the step must GET the issue by number and set the output issue ($(cat "$D/js.out"))"; fi
+node_case '{"noCommentId":true}' "$D/issues-js.json"
+if [ "$rc" != 0 ] && grep -qF "the comment on #770 came back without an id" "$D/js.err"; then ok; else bad "the step must fail with 'the comment on #770 came back without an id' when the comment answer has no id ($(cat "$D/js.out" "$D/js.err"))"; fi
+for mode_msg in '{"get":"404"}|Not Found' '{"get":"wrongtitle"}|#770 reads back as "other" (open)' '{"get":"closed"}|(closed), not the open tracking issue'; do
+  node_case "${mode_msg%%|*}" "$D/issues-js.json"
+  if [ "$rc" != 0 ] && grep -qF "${mode_msg#*|}" "$D/js.err"; then ok; else bad "after a comment the step must fail with '${mode_msg#*|}' when the read-back is ${mode_msg%%|*} ($(cat "$D/js.out" "$D/js.err"))"; fi
+done
+if python3 - "$WF" <<'P'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index("name: file/update a tracking issue on findings")
+v = t.index("name: a findings verdict fails the run")
+ok_id = "id: issue" in t[i:t.index("script: |", i)]
+ok_msg = "steps.issue.outputs.issue" in t[v:t.index("exit 1", v)]
+sys.exit(0 if ok_id and ok_msg else 1)
+P
+then ok; else bad "the issue step needs 'id: issue' and the findings verdict line must name steps.issue.outputs.issue"; fi
+if python3 - "$WF" <<'P'
+import sys
+t = open(sys.argv[1]).read()
+v = t.index("name: a findings verdict fails the run")
+cond = [l for l in t[v:].split("\n")[1:3] if l.strip().startswith("if:")]
+sys.exit(0 if cond and "always()" in cond[0] and "steps.statement.outputs.outcome == 'findings'" in cond[0] else 1)
+P
+then ok; else bad "the findings verdict step must run when the issue step fails: its if: needs always() with the findings outcome"; fi
 
 # ---- round 1 of the review of #268: fail-closed matching (closed rules, not residuals) ----------------------------------------------------------------------------
 CAND_REPO="ghcr.io/fosterstack/cache-candidates"
