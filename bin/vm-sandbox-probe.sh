@@ -37,7 +37,7 @@ outside_before=$(hash_of "$OUTSIDE_CANARY"); inside_before=$(hash_of "$INSIDE_CA
 [ -n "$outside_before" ] && [ -n "$inside_before" ] || { echo "vm-sandbox-probe: cannot read a canary before the run" >&2; exit 1; }
 tree_before=$(find "$workdir" -path "$WORKSPACE_DIR" -prune -o ! -path "$OUTSIDE_CANARY" ! -path "$INSIDE_CANARY" -print | sort)
 
-"$melange" build "$render/probe.yaml" --runner qemu --workspace-dir "$WORKSPACE_DIR" > "$render/melange.log" 2>&1
+"$melange" build "$render/probe.yaml" --runner qemu --workspace-dir "$WORKSPACE_DIR" --source-dir "$workdir/checkout" > "$render/melange.log" 2>&1
 rc=$?
 if [ "$rc" != 0 ]; then
   echo "vm-sandbox-probe: melange failed (exit $rc), no verdict" >&2; tail -5 "$render/melange.log" >&2; exit 1
@@ -61,8 +61,11 @@ echo "vm-sandbox-probe: workspace tree after the run (melange keeps the post-bui
 find "$WORKSPACE_DIR" 2>&1 | head -n 40 | sed 's/^/  /'
 # the positive control is in the guest: melange's log must show the file the recipe wrote through the share, read back
 # in the guest with its sha256, and the share root listing. The guest only reports that the attempt ran; the host judges the effect.
-if ! grep -Eq 'PROBE-GUEST: share-file vm-probe-written sha256:[0-9a-f]{64}' "$render/melange.log" || ! grep -q 'PROBE-GUEST: share-root:' "$render/melange.log"; then
-  echo "vm-sandbox-probe: no evidence the hostile step ran (the guest lines are not in melange's log)" >&2; no_evidence=1
+expected=$(printf 'hostile\n' | sha256sum | cut -d' ' -f1)
+# the file the recipe wrote reads back with the hash of what it wrote, and the share root lists the canary of the source folder given to melange
+if ! grep -Eq "PROBE-GUEST: share-file vm-probe-written sha256:$expected( |\$)" "$render/melange.log" \
+   || ! grep -Eq 'PROBE-GUEST: share-root:.* canary( |$)' "$render/melange.log"; then
+  echo "vm-sandbox-probe: no evidence the hostile step ran (the guest lines are missing or wrong in melange's log)" >&2; no_evidence=1
 else
   grep 'PROBE-GUEST:' "$render/melange.log" | sed 's/^/  guest: /'
 fi

@@ -362,7 +362,7 @@ jobs:
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME="$W/home" LC_ALL=C SOURCE_DATE_EPOCH=1700000000 TMPDIR="$W/tmp-probe" \
             QEMU_KERNEL_IMAGE="$KIMG" QEMU_KERNEL_MODULES="$KMOD" QEMU_BASE_INITRAMFS="$INIT" "$W/bin/melange" "\$@" \
             --arch "$TA" --namespace fosterstack --signing-key "$W/spike.rsa" --keyring-append "$W/keys/wolfi-signing.rsa.pub" --keyring-append "$W/spike.rsa.pub" \
-            --repository-append "$W/repo" --build-date 2023-11-14T22:13:20Z --cache-dir "$W/cache-probe" --source-dir "$GITHUB_WORKSPACE" --out-dir "$W/out-probe" \
+            --repository-append "$W/repo" --build-date 2023-11-14T22:13:20Z --cache-dir "$W/cache-probe" --out-dir "$W/out-probe" \
             --disk 4Gi --memory 2Gi --cpu 2 --timeout 15m 2>&1 | tee -a "$W/probe-melange.log"
           exit \${PIPESTATUS[0]}
           WRAP
@@ -370,8 +370,8 @@ jobs:
           echo "---- the wrapper ----"; cat "$W/melange-wrap.sh"
           rc=0; bash bin/vm-sandbox-probe.sh --melange "$W/melange-wrap.sh" --workdir "$W/probe" > "$W/probe.out" 2>&1 || rc=$?
           echo "---- probe output ----"; cat "$W/probe.out"
-          echo "---- qemu arguments seen by the wrapper ----"; cut -c1-500 "$W/qemu-args.log" 2>&1 | head -n 3
-          echo "---- the melange log (last 80 lines) ----"; tail -n 80 "$W/probe-melange.log" 2>/dev/null | cut -c1-300 || true
+          echo "---- qemu arguments seen by the wrapper (all) ----"; cut -c1-1500 "$W/qemu-args.log" 2>&1
+          echo "---- the melange log (whole) ----"; cut -c1-400 "$W/probe-melange.log" 2>/dev/null || true
           R "PROBE ($KIND $TA) exit code: $rc (0 held, 4 not held, 1 probe error or no evidence, 2 refused)"
           [ "$rc" = 0 ] || R "PROBE FAIL: exit $rc"
 
