@@ -1917,15 +1917,11 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertIn("--verdict \"${RUNNER_TEMP}/panel/verdict.json\"", self.steps[judges[0]]["run"])
         self.assertIn("always()", self.steps[judges[0]]["if"])               # not skipped when the CVE audit fails
 
-    def test_the_rescan_step_finds_the_tracking_issue_under_the_panels_title_too(self):
-        path = os.path.join(REPO, ".github", "workflows", "main-candidate-rescan.yml")
-        jobs = yaml.safe_load(open(path))["jobs"].values()
-        runs = [st.get("run") or "" for job in jobs for st in job.get("steps", [])]
-        run = next(r for r in runs if "rescan-statement.py find-issue" in r)
-        title = re.search(r'^\s*title="([^"]*)"', run, re.M).group(1)
-        call = re.search(r'find-issue((?: --title "[^"]*")+)', run).group(1)
-        titles = [t.replace("$title", title) for t in re.findall(r'--title "([^"]*)"', call)]
-        self.assertEqual(titles, [P.ISSUE_TITLE, P.policy.subject(P.ISSUE_TITLE)])
+    def test_the_rescan_lookup_prefix_is_the_panels_title_prefix(self):
+        spec = importlib.util.spec_from_file_location("rescan_statement", os.path.join(REPO, "bin", "rescan-statement.py"))
+        lookup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lookup)
+        self.assertEqual(P.policy.subject(P.ISSUE_TITLE), lookup.FAMILY_PREFIX + P.ISSUE_TITLE)
 
     def test_both_seats_are_keyless_and_named_only_by_secrets(self):        # REQ-SCAN-008-AC3
         j = self.steps[self.step("auditor-panel.py judge")]
