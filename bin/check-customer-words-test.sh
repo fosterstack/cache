@@ -160,6 +160,21 @@ mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin; git 
 check 0 "T6b a deleted binary file passes"
 mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin
 check 0 "T6b a binary file outside the customer paths passes"
+# T10 the workflow files are read like a page: a person reads their comments, job and step names, error text and issue text
+for w in "# the owner decides" "# the lane guard" "echo '::error::see rule 9'" "- name: step (advisor 0084)" "# ops#794"; do
+  add .github/workflows/ci.yml "$w" 1 "T10 added '$w' to a workflow fails"
+done
+add .github/workflows/x.yaml "# the lane" 1 "T10 a .yaml workflow fails"
+add .github/workflows/ci.yml "# REQ-REL-001 and a plain comment" 0 "T10 a clean workflow line passes"
+add .github/workflows/ci.yml "uses: actions/checkout@v4  # a pinned action" 0 "T10 an action reference passes"
+add .github/other/x.yml "# the owner" 0 "T10 a .yml outside .github/workflows passes"
+add .github/workflows/sub/x.yml "# the owner" 0 "T10 a nested file under .github/workflows passes"
+# T11 the real workflow files, added whole on an empty base, are clean (the exact-line allowlist excuses the GitHub field names)
+rm -rf "$work/r"; mkdir -p "$work/r/.github/workflows" "$work/r/.github/policy"; cd "$work/r" || exit 2; git init -q
+printf '# header\n' > .github/policy/customer-words-allow.txt; git add -A && git commit -qm base
+cp "$ROOT"/.github/workflows/*.yml .github/workflows/; cp "$ROOT/.github/policy/customer-words-allow.txt" .github/policy/; git add -A && git commit -qm pr
+ALLOW=.github/policy/customer-words-allow.txt check 0 "T11 every real workflow file is clean when added whole"
+cd "$ROOT" || exit 2
 # T7 allowlist: exact path|line
 mk - "" README.md $'Fix the file owner or mode\n'
 printf '# header\nREADME.md|Fix the file owner or mode\n' > .github/policy/customer-words-allow.txt
