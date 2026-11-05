@@ -244,13 +244,23 @@ def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
-        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
-                           capture_output=True, text=True, env=ienv)
+        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--limit", "100", "--json",
+                            "number,title"], capture_output=True, text=True, env=ienv)
         if r.returncode != 0:
             # a FAILED discovery must NOT fall through to a duplicate create that abandons the
             # existing acceptance pointer (R1 outer round-3 #2): abort as a failure.
             print("owner-issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
-        found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
+        try:
+            rows = json.loads(r.stdout)
+        except ValueError:
+            rows = None
+        # an empty or unreadable answer is a failed discovery, never "no issue found": a create could duplicate one
+        if not isinstance(rows, list) or not all(
+                isinstance(i, dict) and isinstance(i.get("number"), int) and not isinstance(i["number"], bool)
+                and i["number"] > 0 and isinstance(i.get("title"), str) for i in rows):
+            print("owner-issue discovery FAILED: the issue list answer is not a list of number and title objects")
+            return False, None
+        found = [i for i in rows if i["title"] == title]
         if found:
             num = found[0]["number"]
             c = subprocess.run(["gh", "issue", "comment", str(num), "--body", body], capture_output=True, text=True, env=ienv)
