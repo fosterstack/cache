@@ -2151,6 +2151,18 @@ requirements:
         then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-REL-012-AC7
+        given: "a release tag that reaches source admission and is not a patch tag (a vX.Y.0 tag or a release candidate), whose signature the earlier admission step verified"
+        when: "the whole-release audit step of stage-admission.yml runs main's copy of the judge and of the writers policy over it"
+        then: "admission continues only if the tagged commit has the same passed-audit record as a pull request into main (the branch audit/<tagged sha>) AND the owner's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC8
+        given: "a dispatch of the record job with the word release as the pull request and a commit sha"
+        when: "the writer's prepare script runs"
+        then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
