@@ -5723,6 +5723,23 @@ hl_case line-twice 1 $F "$HLK"$'\n'"$HLK" "$V" = "$HLK"
 hl_case line-whitespace-twin 1 $F "$HLK"$'\n'"${HLK/ -q / -q	}" "$V" = "$HLK"
 hl_case line-with-cr 1 $F "$HLK"$'\r' "$V" = "$HLK"
 hl_case file-is-a-symlink 1 $F "$HLK" "$V" = "$HLK" "$HLP" "" link
+# round 1 rulings F1-F4 (cache#845): the file must hold the canonical RAW line byte for byte (the scan collapses whitespace, so every variant below keeps the row bound),
+# the whole command must match with token boundaries and balanced quotes, the quoted URL is compared literally, and /usr/bin/curl is the only spelling
+hl_case raw-trailing-space 1 $F "$HLK " "$V" = "$HLK"
+hl_case raw-trailing-tab 1 $F "$HLK"$'\t' "$V" = "$HLK"
+hl_case raw-extra-space-in-flags 1 $F "${HLK/ -q -fsSL/ -q  -fsSL}" "$V" = "$HLK"
+hl_case raw-extra-space-before-tail 1 $F "${HLK/ || die/  || die}" "$V" = "$HLK"
+hl_case raw-tab-between-flags 1 $F "${HLK/ -q -fsSL/ -q	-fsSL}" "$V" = "$HLK"
+hl_case raw-indent-changed 1 $F "${HLK#    }" "$V" = "$HLK"
+hl_case raw-no-space-before-tail 1 $F "$HLKA \"$HLUR\"$HLKB" "$V" = "$HLK"
+ln="$HLKA\"$HLUR\" $HLKB"; hl_case operand-glued-to-output-operand 1 $F "$ln" "$V" = "$ln"
+ln="${HLKA%\"} \"$HLUR\" $HLKB"; hl_case output-operand-quote-unbalanced 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \" $HLUR\" $HLKB"; hl_case url-leading-space 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR \" $HLKB"; hl_case url-trailing-space 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR?\" $HLKB"; hl_case url-empty-query 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR#\" $HLKB"; hl_case url-empty-fragment 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/\/usr\/bin\/curl/curl}"; hl_case curl-bare 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/\/usr\/bin\/curl//bin/curl}"; hl_case curl-bin-curl 1 $F "$ln" "$V" = "$ln"
 # the lock: missing, removed at the head, a link, empty, 501 rows, a malformed row, a repeated row
 hl_case lock-missing 1 $F "$HLK" - = "$HLK"
 hl_case lock-removed-at-head 1 $F "$HLK" "$V" - "$HLK"
