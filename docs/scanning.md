@@ -48,6 +48,16 @@ scan can both look like "exit 0" or both look like "exit 1" depending on
 flags, and conflating them ships a green gate that checks nothing. This
 failure mode has been observed in the field.
 
+## There is no debug image from v0.3.0 <!-- pinned: historical -->
+
+Releases before v0.3.0 also shipped a `:debug` tag with a busybox shell; it <!-- pinned: historical -->
+showed more in a scan than the production image because busybox itself
+carries a package surface. From v0.3.0 the release carries two images, <!-- pinned: historical -->
+production and `-fips`, and neither contains busybox, so there is no
+debug variant to scan or to exclude from a gate. To troubleshoot a running
+container use a separate helper container instead; see [troubleshooting
+without a shell](docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
+
 ## Reproducing our own gate
 
 Our release pipeline's scan step is public:
@@ -55,9 +65,16 @@ Our release pipeline's scan step is public:
 ([`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml)),
 is the gate itself. The scanners are the ones in
 [the scanner list](../.github/policy/scanners.json): Grype and OSV-Scanner.
+Both scan the exact built images by digest (Grype also scans the four Linux
+archives, OSV-Scanner the Go modules). The same Check stage also runs
+`govulncheck` once on the tagged source, a separate Go source scan with its own
+policy that the rest of this section does not describe. Pull requests are
+scanned by [`scan.yml`](../.github/workflows/scan.yml) on the candidate images,
+with Grype and Amazon Inspector.
 
-The gate's policy is every severity, with the published VEX applied, and the
-example below uses the same policy. It is a simplified reproduction, not the exact
+The gate's policy is every severity, with the published VEX applied (a finding
+of unknown severity fails it too), and the example below uses the same policy.
+It is a simplified reproduction, not the exact
 invocation: the gate also runs Grype with an empty configuration file and refuses
 `GRYPE_*` and `OSV_SCANNER_*` variables (so a local setting cannot hide a finding),
 scans each platform of the index separately, and checks that every finding
@@ -75,9 +92,16 @@ grype ghcr.io/fosterstack/cache:X.Y.Z \
 jq -e '(.matches | type) == "array" and (.matches | length) == 0' result.json
 ```
 
+The example does not run OSV-Scanner, and it uses whatever vulnerability
+database your Grype has, where the gate refuses a database built more than 48 hours
+before the scan, so a result can differ from ours on a different day. Scanners
+outside the release gate, such as Trivy, are useful cross-checks.
+
 Run without `--vex` to see raw findings including the ones we have
-publicly dispositioned — the difference between the two runs is exactly
-the set of published VEX statements, which is how you audit them.
+publicly dispositioned. Run both scans against the same image and the same
+vulnerability database snapshot (do not update the database between them):
+the difference is then the set of findings suppressed by the published VEX
+statements that apply, which is how you audit them.
 
 ## Marketing claim, with the receipt
 
