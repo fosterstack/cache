@@ -7,6 +7,7 @@ One item is "<kind>:<name>@<version>":
   gotool   module/path@version          `go install path@version` in a run step
   package  pypi/name@version            the hash-pinned requirements files
   image    name@sha256:digest           container:/services: images and docker:// actions (name:tag@sha256:digest is the SAME item: Docker ignores the tag)
+  apk      name@version                 a row of build/locks/vm-kernel.lock; the row's sha256 is the item's sum (a new apk under one version is a new item)
 NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go modules and the Go toolchain.
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
@@ -152,7 +153,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 
 def _wanted(n):
-    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
+    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$", n)
             or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
@@ -167,6 +168,8 @@ def _listing(root, rev):
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if n and _wanted(n):
+            if n == KERNEL_LOCK and meta.split()[0] == "120000":
+                raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
             pairs.append((n, meta.split()[2]))
     if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
         _LISTINGS[(root, rev)] = pairs
@@ -185,11 +188,15 @@ def tree_files(root, rev):
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
             if n and wanted(n):
+                if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
+                    raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
                 try:
                     out[n] = open(f"{root}/{n}").read()
                 except OSError as e:
                     if n == PERSONA_TOOLS:
                         raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
+                    if n == KERNEL_LOCK:
+                        raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its rows would go unaged")
                     continue
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
@@ -211,6 +218,45 @@ def _strip_tag(name):
 
 PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
+KERNEL_LOCK = "build/locks/vm-kernel.lock"
+KERNEL_ROWS_MAX = 500
+
+
+_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*[a-wyz]?(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
+
+
+def is_pin(version):
+    """An exact version: a commit, a digest, or dotted numbers (an optional suffix such as -rc.1). Never a name (main, nightly, lts/*), a wildcard (1.*, 3.x), a range or an expression."""
+    return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
+_KERNEL_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._+\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+\-]*)?)=([A-Za-z0-9][A-Za-z0-9._+\-]*)[ \t]+sha256:([0-9a-f]{64})$")
+
+
+def _kernel_lock_items(path, text):
+    """The rows of the kernel lock file, one `apk` item each: `<name>=<version> sha256:<64 hex>`, the name may carry an `<arch>/` prefix; blank lines
+    and lines starting with # are ignored. The row's sha256 is the item's sum, so the same version with a different apk is a NEW item (its clock starts
+    again). No registry dates these rows: the pull request's own first run does. A row of any other shape is an error, never skipped: a row we cannot read
+    would go unaged."""
+    out, seen = [], set()
+    for n, raw in enumerate(text.split("\n"), 1):
+        row = raw.strip()
+        if not row or row.startswith("#"):
+            continue
+        m = _KERNEL_ROW.match(row)
+        if not m:
+            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+        if not is_pin(m.group(2)):
+            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its age cannot be judged")
+        if (m.group(1), m.group(2)) in seen:
+            raise RuntimeError(f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
+        seen.add((m.group(1), m.group(2)))
+        if len(seen) > KERNEL_ROWS_MAX:
+            raise RuntimeError(f"{path}:{n}: more than {KERNEL_ROWS_MAX} rows: refused")
+        it = Item("apk", m.group(1), m.group(2))
+        it.sums = [m.group(3)]
+        out.append(it)
+    if not out:
+        raise RuntimeError(f"{path}: the lock file holds no row: the control cannot cover nothing")
+    return out
 
 
 def _persona_tool_items(path, text):
@@ -850,6 +896,8 @@ def _file_found(path, text):
                         it.step = "file:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # no sums found for a literal download (an arm label the text scan could not trust): fail closed, any edit of the script moves the item
     elif path == PERSONA_TOOLS:
         found = _persona_tool_items(path, text)
+    elif path == KERNEL_LOCK:
+        found = _kernel_lock_items(path, text)
     elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
         found = [Item("tool", "file:" + path, "(file)")]
         found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)

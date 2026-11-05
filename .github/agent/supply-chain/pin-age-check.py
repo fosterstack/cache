@@ -66,12 +66,8 @@ def parse_time(s, clock=False):
     return d
 
 
-_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
-
-
-def is_pin(version):
-    """An exact version: a commit, a digest, or dotted numbers (an optional suffix such as -rc.1). Never a name (main, nightly, lts/*), a wildcard (1.*, 3.x), a range or an expression."""
-    return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
+_PIN = inv._PIN          # the one predicate lives in pin-inventory.py (its kernel-lock reader needs it); the names stay here for every caller and test
+is_pin = inv.is_pin
 
 
 FILE_PIN_SOURCE = "file-pin-ruling"
