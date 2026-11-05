@@ -11,9 +11,7 @@ permissions:
 env:
   ALPINE_BRANCH: v3.24
   ALPINE_KERNEL_VERSION: 6.18.60-r0
-  ALPINE_KEY_NAME: alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
-  ALPINE_KEY_URL_1: https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
-  ALPINE_KEY_URL_2: https://gitlab.alpinelinux.org/alpine/aports/-/raw/3150f5e6f1fc3f871a89ec8cb82ed183c05c6185/main/alpine-keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+  APORTS_SHA: 3150f5e6f1fc3f871a89ec8cb82ed183c05c6185
 
 defaults:
   run:
@@ -78,12 +76,24 @@ jobs:
           pin=$(awk '$1=="wolfi-signing.rsa.pub" {sub("sha256:", "", $2); print $2}' build/locks/archive-keys.sha256)
           got=$(sha256sum "$W/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)
           if [ -n "$pin" ] && [ "$pin" = "$got" ]; then R "KEY wolfi-signing.rsa.pub sha256:$got equals the repository pin"; else R "FETCH FAIL key mismatch: wolfi-signing.rsa.pub sha256:$got, pin '$pin'"; exit 1; fi
-          # the Alpine key: from two places, both must give the same bytes
-          curl -sfL --max-time 60 -o "$W/keys/alpine-1.pub" "$ALPINE_KEY_URL_1"
-          curl -sfL --max-time 60 -o "$W/keys/alpine-2.pub" "$ALPINE_KEY_URL_2"
-          if cmp -s "$W/keys/alpine-1.pub" "$W/keys/alpine-2.pub"; then
-            R "KEY $ALPINE_KEY_NAME sha256:$(sha256sum "$W/keys/alpine-1.pub" | cut -d' ' -f1) from $ALPINE_KEY_URL_1 and $ALPINE_KEY_URL_2 (equal)"
-          else R "FETCH FAIL key mismatch: the two Alpine key URLs give different bytes"; exit 1; fi
+          # the Alpine key (a different one signs each architecture's index): from independent sources at one aports commit; at least two must answer with the same bytes
+          case "$TA" in
+            x86_64) AKEY=alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub;;
+            aarch64) AKEY=alpine-devel@lists.alpinelinux.org-616ae350.rsa.pub;;
+          esac
+          n=0; first=""; ok=yes
+          for u in "https://alpinelinux.org/keys/$AKEY" \
+                   "https://gitlab.alpinelinux.org/alpine/aports/-/raw/$APORTS_SHA/main/alpine-keys/$AKEY" \
+                   "https://git.alpinelinux.org/aports/plain/main/alpine-keys/$AKEY?id=$APORTS_SHA"; do
+            code=$(curl -s -L -o "$W/keys/alp.tmp" -w '%{http_code}' --max-time 60 "$u" || echo curl-failed)
+            sum=$(sha256sum "$W/keys/alp.tmp" | cut -d' ' -f1)
+            if [ "$code" = 200 ] && grep -q 'BEGIN PUBLIC KEY' "$W/keys/alp.tmp"; then
+              n=$((n + 1)); R "KEY source http=$code sha256:$sum $u"
+              if [ -z "$first" ]; then first=$sum; cp "$W/keys/alp.tmp" "$W/keys/alpine-1.pub"; elif [ "$first" != "$sum" ]; then ok=no; fi
+            else R "KEY source http=$code (not used) $u"; fi
+          done
+          if [ "$ok" = yes ] && [ "$n" -ge 2 ]; then R "KEY $AKEY sha256:$first from $n independent sources, all equal"
+          else R "FETCH FAIL key mismatch: $AKEY answered by $n sources, equal=$ok"; fi
       - name: "helper programs"
         if: ${{ !cancelled() }}
         run: |
@@ -357,13 +367,24 @@ jobs:
             done
             if [ -n "$mpid" ] && [ -n "$qpid" ]; then
               TR_MUID=$(awk '/^Uid:/ {print $2}' "/proc/$mpid/status" 2>/dev/null || echo "?"); TR_QUID=$(awk '/^Uid:/ {print $2}' "/proc/$qpid/status" 2>/dev/null || echo "?")
-              TR_IFACES=$(sudo -n /usr/bin/nsenter -t "$qpid" -n /usr/sbin/ip -o link 2>/dev/null | awk -F': ' '{print $2}' | tr '\n' ',' | sed 's/,$//')
+              TR_IFACES=$(sudo -n /usr/bin/nsenter -t "$qpid" -n /usr/sbin/ip -o link 2>/dev/null | awk -F': ' '{print $2}' | tr '\n' ',' | sed 's/,$//' || true)
+              [ -n "$TR_IFACES" ] || TR_IFACES="-"
+              echo "OBSERVE $label: melange pid $mpid uid $TR_MUID, qemu pid $qpid uid $TR_QUID, qemu command line: $(tr '\0' ' ' < "/proc/$qpid/cmdline" | cut -c1-600)"
             fi
             TR_RC=0; wait "$pid" || TR_RC=$?
             TR_SECS=$(( $(date +%s) - start ))
             grep 'SPIKE-GUEST' "$W/tiny-$label.log" | sed 's/^[0-9\/]* [0-9:]* INFO //' || true
+            if [ "$TR_RC" != 0 ]; then echo "---- melange exit $TR_RC after ${TR_SECS}s; tail of its log ($label) ----"; tail -n 45 "$W/tiny-$label.log" | cut -c1-300; fi
           }
           guest_rc() { sed -n "s/.*SPIKE-GUEST: $2 rc=\([0-9]*\).*/\1/p" "$W/tiny-$1.log" | head -n 1; }
+          # --- a bare boot of the pinned kernel and initramfs under KVM, before melange is involved
+          if kernel_ok "$KIMG"; then
+            timeout 25 "/usr/local/bin/$HOSTPKG" -accel kvm -cpu host -M microvm -m 512 -nographic -display none -no-reboot -kernel "$KIMG" -initrd "$INIT" \
+              -append "console=ttyS0 panic=-1 audit=0" > "$W/kvm-smoke.log" 2>&1 || true
+            if grep -q 'Linux version' "$W/kvm-smoke.log"; then R "KVM-SMOKE PASS: the pinned kernel $(grep -o 'Linux version [^ ]*' "$W/kvm-smoke.log" | head -n 1) and initramfs booted under -accel kvm as $(id -un) (first 25 s)"
+            else R "KVM-SMOKE FAIL: no kernel boot message under -accel kvm"; fi
+            echo "---- kvm smoke log (first 12 lines) ----"; head -n 12 "$W/kvm-smoke.log" | cut -c1-200
+          fi
           # --- control: no network cut. The egress probe must be able to succeed, or a failure in the cut run means nothing
           if kernel_ok "$KIMG"; then
             tiny_run control no "$KIMG"
@@ -383,7 +404,7 @@ jobs:
           else R "U2 FAIL: melange uid='$TR_MUID' qemu uid='$TR_QUID' out apk owner='$oapk' (runner uid $RUN_UID)"; fi
           # --- U6: the guest wrote through the rw 9p share; nothing outside the workspace changed
           now_out=$(sha256sum /tmp/spike-canary-outside | cut -d' ' -f1); now_co=$(sha256sum "$GITHUB_WORKSPACE/spike-canary-in-checkout.txt" | cut -d' ' -f1)
-          inws=$(ls "$W/ws-cut" 2>/dev/null | grep -E 'spike-guest-file|spike-escape-link' | tr '\n' ' ')
+          inws=$(ls "$W/ws-cut" 2>/dev/null | grep -E 'spike-guest-file|spike-escape-link' | tr '\n' ' ' || true)
           if [ "$now_out" = "$OUT_SHA" ] && [ "$now_co" = "$CO_SHA" ]; then R "U6 PASS: both canaries unchanged (outside the workspace sha256:$now_out; in the checkout sha256:$now_co); the guest's writes landed only in the workspace: [${inws:-nothing found}]"
           else R "U6 FAIL: a canary changed (outside $OUT_SHA -> $now_out; checkout $CO_SHA -> $now_co)"; fi
           R "U5 tiny: control ${TR_SECS}s last / cut-run melange call ${TR_SECS}s (tiny recipe, the real recipe is timed below)"
@@ -451,7 +472,7 @@ jobs:
           open(dst, "w").write(s)
           PYEOF
           bash -n "$W/build-apk-vm.sh"
-          diff <(cat bin/build-apk.sh) "$W/build-apk-vm.sh" | grep -c '^[<>]' | sed 's/^/BUILDSCRIPT changed lines (the spike copy vs bin\/build-apk.sh): /'
+          { diff bin/build-apk.sh "$W/build-apk-vm.sh" || true; } | { grep -c '^[<>]' || true; } | sed 's/^/BUILDSCRIPT changed lines (the spike copy vs bin\/build-apk.sh): /'
           # one build set, as the snapshot Build stage does it: tag, source date, both variants
           build_set() {   # build_set LABEL WORKDIR SCRIPT OUTDIR VARIANTS...
             local label=$1 wd=$2 script=$3 out=$4; shift 4
@@ -493,7 +514,7 @@ jobs:
             ok=yes; n=0
             for b in "$W/ws-b/out/vm-b/$TA/"*.apk; do [ -e "$b" ] || continue; n=$((n + 1)); f="$GITHUB_WORKSPACE/out/vm-a/$TA/$(basename "$b")"
               if [ -f "$f" ] && python3 -I bin/apk-tool.py same "$f" "$b" > /dev/null 2>&1; then :; else ok=no; fi; done
-            ma=$(sha256sum "$GITHUB_WORKSPACE/out/vm-a/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1); mb=$(sha256sum "$W/ws-b/out/vm-b/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1)
+            ma=$(sha256sum "$GITHUB_WORKSPACE/out/vm-a/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true); mb=$(sha256sum "$W/ws-b/out/vm-b/inputs-manifest.json" 2>/dev/null | cut -d' ' -f1 || true)
             [ -n "$ma" ] && [ "$ma" = "$mb" ] || ok=no
             if [ "$ok" = yes ] && [ "$n" -ge 1 ]; then R "U5 PASS: Build-style and Rebuild-style apks have the same digest ($n apk(s) compared, standard variant); inputs-manifest sha256:$ma == $mb"
             else R "U5 FAIL: Build-style and Rebuild-style differ or are missing ($n apk(s) compared; inputs-manifest sha256:$ma vs $mb)"; fi
