@@ -125,8 +125,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 213 allow patterns: chain-v030's 207, plus the customer-word check's three patterns, plus the VM build inputs' three
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 213, 6
+# 214 allow patterns: chain-v030's 207, plus the customer-word check's three patterns, plus the VM build inputs' four
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 214, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0

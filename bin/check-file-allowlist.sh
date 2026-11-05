@@ -287,6 +287,7 @@ ALLOW_PATTERNS=(
   # the kernel lock and the kernel package key.
   '^build/vm-(host|guest)\.yaml$'
   '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/locks/vm-keys\.sha256$'
   '^build/vm-keys/alpine-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'

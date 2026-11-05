@@ -335,53 +335,21 @@ refresh)
   [ -x /usr/bin/openssl ] || die "openssl is required to verify the package index signature and was not found (/usr/bin/openssl)"
   [ -s "$archived_key" ] || die "the archive has no Wolfi signing key at keys/wolfi-signing.rsa.pub"
 
-  # rules 32 and 46: every run, before anything else, compare the live key to the archived one
-  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
-  # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
-  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
-import hashlib, re, sys
-repo, live = sys.argv[1:3]
-def stop(msg):
-    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
-try:
-    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
-except (OSError, UnicodeError):
-    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
-mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
-if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
-    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
-if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
-    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
-PY
-  if ! /usr/bin/cmp -s "$tmp/live-key.pub" "$archived_key"; then
-    echo "$SELF: the live Wolfi signing key differs from the archived one; stopping, no pull request, a human must decide whether to trust the new key" >&2
-    exit 3
-  fi
-
+  # REQ-REFRESH-001-AC39 to AC42: the lists, locks and the kernel row are read whole
+  # before the first network call of the run
   for f in build/apko.yaml build/apko-fips.yaml build/melange.yaml build/melange-fips.yaml build/locks/apko.base.lock.json \
            build/locks/apko-fips.base.lock.json build/locks/melange.lock build/melange.yaml.tmpl build/locks/fips-module.txt build/host-tools.yaml build/locks/host-tools.lock; do
     [ -f "$repo/$f" ] || die "missing $f in $repo"
   done
   for f in build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock \
-           build/locks/vm-kernel.lock build/vm-keys/alpine-6165ee59.rsa.pub; do
+           build/locks/vm-kernel.lock build/locks/vm-keys.sha256 build/vm-keys/alpine-6165ee59.rsa.pub; do
     [ -f "$repo/$f" ] || die "missing $f in $repo"
   done
 
-  # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange" "$tmp/host" "$tmp/vm-host" "$tmp/vm-guest"
-  /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
-import hashlib, re, sys, yaml
+  /bin/mkdir -p "$tmp/host" "$tmp/vm-host" "$tmp/vm-guest"
+  /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY' || exit $?
+import hashlib, os, re, sys, yaml
 repo, tmp = sys.argv[1:3]
-for src, out in (("apko.yaml", "production/apko.yaml"), ("apko-fips.yaml", "fips/apko-fips.yaml")):
-    d = yaml.safe_load(open("%s/build/%s" % (repo, src)))
-    c = d.setdefault("contents", {})
-    c["repositories"] = []; c["keyring"] = []
-    c["packages"] = [p for p in c.get("packages", []) if not str(p).startswith("fscache")]
-    yaml.safe_dump(d, open("%s/%s" % (tmp, out), "w"))
-m = yaml.safe_load(open(repo + "/build/melange.yaml"))
-names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
-yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
-               open(tmp + "/melange/melange-env.yaml", "w"))
 # REQ-REFRESH-001-AC35 and AC39: the lists of packages that run on the runner itself (bubblewrap) or for the VM build
 # (the emulator, the guest), resolved like melange's build tools
 def refuse(msg):
@@ -434,29 +402,71 @@ for vm in ("vm-host", "vm-guest"):
     vnames = read_list("build/%s.yaml" % vm, "build/locks/%s.lock" % vm)
     yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": vnames}, "archs": ["x86_64"]},
                    open("%s/%s/%s-env.yaml" % (tmp, vm, vm), "w"))
-# REQ-REFRESH-001-AC40: the kernel lock is read whole before any lock is made or anything is fetched
+# REQ-REFRESH-001-AC40: the kernel lock is read whole, before the first network call of the run
 KEY_NAME = "alpine-6165ee59.rsa.pub"
 k_text = open(repo + "/build/locks/vm-kernel.lock", newline="").read()
-if not k_text.endswith("\n"):
-    refuse("build/locks/vm-kernel.lock must end with a line end and hold at least one row")
-k_rows = []
-for row in k_text.split("\n")[:-1]:
-    m = re.fullmatch(r"(%s)=(%s) sha256:([0-9a-f]{64})" % (NAME.pattern, VERSION.pattern), row)
-    if not m or ".." in m.group(1) or ".." in m.group(2):
-        refuse("build/locks/vm-kernel.lock has a row that is not 'name=version sha256:<64 lower-case hex>': %r" % row)
-    k_rows.append(m.groups())
-if [r[0] for r in k_rows] != sorted({r[0] for r in k_rows}):
-    refuse("build/locks/vm-kernel.lock rows must be sorted by name with no name twice")
-open(tmp + "/vm-kernel.rows", "w").write("".join("%s %s %s\n" % r for r in k_rows))
+k_rows = k_text.split("\n")[:-1] if k_text.endswith("\n") else []
+m = re.fullmatch(r"(linux-virt)=(%s) sha256:([0-9a-f]{64})" % VERSION.pattern, k_rows[0]) if len(k_rows) == 1 else None
+if not m or ".." in m.group(2):
+    refuse("build/locks/vm-kernel.lock must end with a line end and hold exactly one row, "
+           "'linux-virt=<version> sha256:<64 lower-case hex>': %r" % k_text[:200])
+open(tmp + "/vm-kernel.rows", "w").write("%s %s %s\n" % m.groups())
 # REQ-REFRESH-001-AC41: the committed kernel package key is the pinned one before anything is checked with it
-pin_lines = open(repo + "/build/locks/archive-keys.sha256", encoding="utf-8").read().split("\n")
-pins = [l for l in pin_lines if l.startswith(KEY_NAME + " ")]
-if len(pins) != 1 or not re.fullmatch(r"%s sha256:[0-9a-f]{64}" % re.escape(KEY_NAME), pins[0]):
-    print("refresh-inputs.sh: build/locks/archive-keys.sha256 must hold exactly one line '%s sha256:<64 hex>' "
+pin_text = open(repo + "/build/locks/vm-keys.sha256", encoding="utf-8").read()
+if not re.fullmatch(r"%s sha256:[0-9a-f]{64}\n" % re.escape(KEY_NAME), pin_text):
+    print("refresh-inputs.sh: build/locks/vm-keys.sha256 must hold exactly one line '%s sha256:<64 hex>' "
           "(the kernel package key); stopping, a human must look" % KEY_NAME, file=sys.stderr); sys.exit(3)
-if hashlib.sha256(open(repo + "/build/vm-keys/" + KEY_NAME, "rb").read()).hexdigest() != pins[0].split("sha256:")[1]:
-    print("refresh-inputs.sh: build/vm-keys/%s is not the key pinned in build/locks/archive-keys.sha256; "
+key_sha = hashlib.sha256(open(repo + "/build/vm-keys/" + KEY_NAME, "rb").read()).hexdigest()
+if key_sha != pin_text.split("sha256:")[1].strip():
+    print("refresh-inputs.sh: build/vm-keys/%s is not the key pinned in build/locks/vm-keys.sha256; "
           "stopping, a human must look" % KEY_NAME, file=sys.stderr); sys.exit(3)
+# REQ-REFRESH-001-AC42: every VM lock is written inside the repository (the file and its temporary sibling's directory)
+root = os.path.realpath(repo)
+for vm in ("vm-host", "vm-guest"):
+    lock_path = "%s/build/locks/%s.lock" % (repo, vm)
+    for real in (os.path.realpath(os.path.dirname(lock_path)), os.path.realpath(lock_path)):
+        if os.path.commonpath([root, real]) != root:
+            refuse("%s resolves to %s, outside the repository; nothing was written" % (lock_path, real))
+PY
+
+  # rules 32 and 46: every run, before anything else, compare the live key to the archived one
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live = sys.argv[1:3]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+PY
+  if ! /usr/bin/cmp -s "$tmp/live-key.pub" "$archived_key"; then
+    echo "$SELF: the live Wolfi signing key differs from the archived one; stopping, no pull request, a human must decide whether to trust the new key" >&2
+    exit 3
+  fi
+
+  # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
+  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
+  /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
+import re, sys, yaml
+repo, tmp = sys.argv[1:3]
+for src, out in (("apko.yaml", "production/apko.yaml"), ("apko-fips.yaml", "fips/apko-fips.yaml")):
+    d = yaml.safe_load(open("%s/build/%s" % (repo, src)))
+    c = d.setdefault("contents", {})
+    c["repositories"] = []; c["keyring"] = []
+    c["packages"] = [p for p in c.get("packages", []) if not str(p).startswith("fscache")]
+    yaml.safe_dump(d, open("%s/%s" % (tmp, out), "w"))
+m = yaml.safe_load(open(repo + "/build/melange.yaml"))
+names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
+yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
+               open(tmp + "/melange/melange-env.yaml", "w"))
 PY
   lock() { /usr/local/bin/apko lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
   lock "$tmp/production/apko.yaml" "$tmp/production.lock.json"
@@ -741,6 +751,8 @@ def verify_kernel(path, name, ver, want_sha):
     names the lock's package, and its datahash is the sha256 of its data segment. Alpine's package format is not
     read by bin/apk-tool.py, so this is its own step."""
     what = "%s-%s.apk" % (name, ver)
+    if os.path.islink(path) or not os.path.isfile(path):
+        fail("%s (%s) is a symlink or not a regular file; delete it and run again" % (what, path))
     raw = open(path, "rb").read()
     if hashlib.sha256(raw).hexdigest() != want_sha:
         fail("checksum mismatch: %s does not have the sha256 build/locks/vm-kernel.lock records (hash mismatch)" % what)
@@ -776,7 +788,11 @@ def verify_kernel(path, name, ver, want_sha):
     r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
         fail("the signature of %s does not verify against the committed kernel key %s; refused" % (what, KEY_NAME))
-    info = dict(l.split(" = ", 1) for l in pkginfo.splitlines() if " = " in l)
+    lines = pkginfo.splitlines()
+    for field in ("pkgname", "pkgver", "datahash"):
+        if sum(1 for l in lines if l.startswith(field + " = ")) != 1:
+            fail("%s: its control segment must hold exactly one %s line" % (what, field))
+    info = dict(l.split(" = ", 1) for l in lines if " = " in l)
     if info.get("pkgname") != name or info.get("pkgver") != ver:
         fail("%s: its control segment names %s-%s, the lock row is %s-%s"
              % (what, info.get("pkgname"), info.get("pkgver"), name, ver))
@@ -986,8 +1002,21 @@ for f_, sha_ in sorted(go_pin.items()):
             fail("go/%s is in the archive but does not have the sha256 its recipe pins (%s): delete that file and run again, or find out how it got damaged" % (f_, sha_), 1)
     else:
         go_missing.append(f_)
+# REQ-REFRESH-001-AC41: an archived kernel package is checked on every run, also while a refresh pull request waits
+kernel_missing = []   # (name, version, sha256) of the kernel packages the archive does not hold yet
+for _row in open(tmp + "/vm-kernel.rows").read().splitlines():
+    k_name, k_ver, k_sha = _row.split(" ")
+    k_dest = "%s/x86_64/%s-%s.apk" % (archive, k_name, k_ver)
+    if os.path.lexists(k_dest):
+        HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again)" % k_dest
+        verify_kernel(k_dest, k_name, k_ver, k_sha)
+        HINT = ""
+        print("checked the archived kernel package %s-%s.apk (sha256, signature, datahash)" % (k_name, k_ver))
+    else:
+        kernel_missing.append((k_name, k_ver, k_sha))
 # only now, before any download: a waiting refresh PR means "wait" (a missing package is fetched by that PR's own run), so a flaky download can never turn a wait into a red run
-if ahead or go_missing or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh):
+pkg_missing = any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh)
+if ahead or go_missing or kernel_missing or pkg_missing:
     open_prs_guard("refresh")
 
 
@@ -1052,18 +1081,10 @@ for (name, ver, arch) in sorted(set(ff_mel) | set(ff_host) | set(ff_vm)):
 if want_pk:
     open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
     sys.exit(75)
-# REQ-REFRESH-001-AC41: the kernel packages vm-kernel.lock names are checked on every run; a missing one is fetched
-want_kn = []
-for _row in open(tmp + "/vm-kernel.rows").read().splitlines():
-    k_name, k_ver, k_sha = _row.split(" ")
+# REQ-REFRESH-001-AC41: a kernel package the archive lacks is fetched, checked and kept
+want_kn, kernel_added = [], []
+for k_name, k_ver, k_sha in kernel_missing:
     k_file = "%s-%s.apk" % (k_name, k_ver)
-    k_dest = "%s/x86_64/%s" % (archive, k_file)
-    if os.path.lexists(k_dest):
-        HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again)" % k_dest
-        verify_kernel(k_dest, k_name, k_ver, k_sha)
-        HINT = ""
-        print("checked the archived kernel package %s (sha256, signature, datahash)" % k_file)
-        continue
     k_part = "%s/x86_64/%s" % (stage, k_file)
     os.makedirs(os.path.dirname(k_part), exist_ok=True)
     if not os.path.exists(k_part):
@@ -1071,7 +1092,8 @@ for _row in open(tmp + "/vm-kernel.rows").read().splitlines():
         continue
     verify_kernel(k_part, k_name, k_ver, k_sha)
     print("checked the downloaded kernel package %s (sha256, signature, datahash)" % k_file)
-    keep.append((k_part, k_dest, k_name, k_ver, "x86_64"))
+    keep.append((k_part, "%s/x86_64/%s" % (archive, k_file), k_name, k_ver, "x86_64"))
+    kernel_added.append(k_file)
 if want_kn:
     open(tmp + "/want-kernel", "w").write("".join(f + "\n" for f in want_kn))
     sys.exit(75)
@@ -1177,14 +1199,21 @@ for rf in ("melange.yaml", "melange-fips.yaml"):
 
 for n in notes:
     print("note: " + n)
+gains = []
 if go_missing:
     notes.append("the archive gains the Go toolchain tarball(s) the recipes pin: %s" % ", ".join(go_missing))
+    gains.append("Go tarballs")
+if kernel_added:
+    notes.append("the archive gains the kernel package(s) the VM build boots: %s" % ", ".join(kernel_added))
+    gains.append("the kernel package")
+if gains:
     _ptr = repo + "/build/archive.json"
     if os.path.exists(_ptr):
         if _ptr not in changed:
             changed.append(_ptr)      # the pointer is rewritten by open-pr once the archive is stored; the pull request exists because the archive gained files
-    elif not changed:
-        fail("the archive gains Go tarballs but there is no pointer and nothing else changes, so no pull request could carry it; a human must look", 1)
+    elif not changed and go_missing:   # a kernel package alone, with no pointer yet, is just put into the archive
+        fail("the archive gains Go tarballs but there is no pointer and nothing else changes, so no pull request could carry it; "
+             "a human must look", 1)
 record_path = repo + "/build/locks/archive-index.sha256"
 if not changed and os.path.exists(record_path) and not ahead:
     if keep:
