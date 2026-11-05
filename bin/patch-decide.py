@@ -12,8 +12,8 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   next_patch              rule 1: vX.Y.Z -> vX.Y.(Z+1); CI never makes a minor or major.
   daily_cut               rule 2: at most one daily patch (a critical/high fix may cut at once, outside this rule).
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
-                          no-behavior-change line, or (advisor 0130) the behavior changes listed in
-                          docs/next-release-notes.md, each citing the handoff that judged it; no vendor or model names.
+                          no-behavior-change line, or the behavior changes listed in
+                          docs/next-release-notes.md, each ending with the date it was decided; no vendor or model names.
                           Its sources are refused, never rewritten, when a line holds a form Markdown could hide text in
                           (REQ-REL-009-AC14, advisor step 5): file:line, exit 2, nothing written.
   removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
@@ -24,7 +24,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           prints them: the "base input changed" signal).
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, html, json, os, re, subprocess, sys, unicodedata
+import argparse, datetime, html, json, os, re, subprocess, sys, unicodedata
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 # data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15); every other path under .vex/ and .auditor/ stays fix-class
 NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
@@ -569,7 +569,8 @@ def _lit(v, before_colon=False):
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
-CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
+CITED = re.compile(r"\(decided ([0-9]{4}-[0-9]{2}-[0-9]{2})\)\.?\Z")
+INTERNAL_REF = re.compile(r"(?i)(?<![^\W_])(?:advisor|handoff)s?[\W_]*\d")
 
 
 def _entries(text):
@@ -599,9 +600,10 @@ def _source_entries(text, name):
 
 
 def behavior_entries(text, name="docs/next-release-notes.md", located=False):
-    """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change the owner or the advisor judged
-    unable to affect supported clients, so each must end by citing that handoff, "(... advisor NNNN)"; an entry without
-    one is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
+    """The entries of docs/next-release-notes.md. An entry is only a change judged unable to affect supported clients, so
+    each must end with the date it was decided, "(decided YYYY-MM-DD)" (nothing else inside the parentheses, an optional
+    final "."); an entry without one, or one that holds an internal reference ("advisor NNNN", "handoff NNNN") anywhere,
+    is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
     entries publishing the same line are refused, naming name:line. located: each entry with its location 'name:line:'."""
     ents = _source_entries(text, name)
     for e, n in ents:
@@ -613,10 +615,20 @@ def behavior_entries(text, name="docs/next-release-notes.md", located=False):
 
 
 def _check_entry(e):
-    """An entry cites the handoff that judged it (advisor 0130), and no vendor or model name hides in it split by a
-    space or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
-    if not CITED.search(e):
-        raise ValueError("next-release-notes entry cites no handoff: %r" % e)
+    """An entry ends with the date it was decided, a real calendar date (ASCII digits, the end of the string right after
+    the parenthesis or its dot), holds no internal reference (the word advisor or handoff, then only non-letter non-digit
+    characters, then a digit; a word + number in prose is refused on purpose), and no vendor or model name hides in it split by a space
+    or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
+    m = CITED.search(e)
+    if m:
+        try:
+            datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            m = None
+    if not m:
+        raise ValueError("next-release-notes entry cites no decision date: %r" % e)
+    if INTERNAL_REF.search(e):
+        raise ValueError("next-release-notes entry holds an internal reference: %r" % e)
     # any run of up to ten adjacent words that spells a name (the longest has nine letters): "Goo gle", "G o o g l e"
     # (Sonnet #158 r2b); a run starting with a word that is already a name is _clean's, which redacts it
     words = re.findall(r"[A-Za-z0-9]+", e)
@@ -1111,7 +1123,7 @@ def tag_notes(raw):
 
 
 def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHANGELOG.md", "docs/next-release-notes.md")):
-    """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
+    """AC8: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
     entries these notes published — an entry added since stays). The three inputs are notes sources (REQ-REL-009-AC14):
     a line holding a refused form (any line, a VEX line too), or two entries publishing the same line (in
     next-release-notes, or two bullets of one release block of the notes or the history), is
