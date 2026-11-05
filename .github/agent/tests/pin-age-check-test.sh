@@ -5223,7 +5223,6 @@ ac.load_file_pins = lambda *x, **k: {}
 ac.FilePinSource = lambda *x: None
 ac.Live = lambda *x: None
 ac.check = lambda *x: [{"item": ITEM, "label": "", "ok": False, "proof": None, "reason": REASON}]
-ac.load_ruled_text = lambda *x, **k: {("scripts/run.sh", "a thing", LINE.split(":", 1)[0], "h1"): ("ruled", 1)}
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
     rc = ac._run(a, [item("moved")], None, 0)
