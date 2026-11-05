@@ -2082,6 +2082,18 @@ assert walks == [], walks      # then every file of every tree is answered by th
 PY
 
 bg_collect
+# --- the kernel lock file is followed by the history scan like the persona tools file (REQ-SUP-001-AC2): a version that was in the file and is gone from the tip still counts ---
+CASE="G7 the history scan of pin-audit.py follows inv.KERNEL_LOCK as it follows inv.PERSONA_TOOLS"
+check python3 - "$aud" <<'PY'
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "history_items")
+lists = [n.value for n in ast.walk(fn) if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "paths" for t in n.targets) and isinstance(n.value, ast.List)]
+assert lists, "history_items has no paths list"
+src = [ast.unparse(e) for e in lists[0].elts]
+assert "inv.PERSONA_TOOLS" in src, src
+assert "inv.KERNEL_LOCK" in src, src
+PY
 CASE="background checks: the three long cases were each started once and each reported once"
 check test "$BG_N" -eq 3
 echo "pin-audit: $pass passed, $failn failed"

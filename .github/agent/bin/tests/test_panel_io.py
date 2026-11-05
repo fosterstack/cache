@@ -765,6 +765,8 @@ class Deliver(Tmp):
         def run(cmd, **kw):
             calls.append((cmd, kw.get("env", {}).get("GH_TOKEN")))
             out = (outputs or {}).get(tuple(cmd[:3]), "")
+            if callable(out):                                                  # an answer that depends on the whole command
+                out = out(cmd)
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = "success"
             elif cmd[:3] == ["gh", "pr", "view"] and "headRefOid" in cmd:
@@ -860,7 +862,8 @@ class Deliver(Tmp):
                        "impact_statement": "Audited from the image: Version: 2"}],
                  profiles=[{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"},
                             "behavior": "unexplained", "finding": "f", "evidence": "e", "unexplained": True}])
-        calls, run = self.fake()
+        # both issue lookups read a JSON array and find no issue
+        calls, run = self.fake({("gh", "issue", "list"): lambda cmd: "[]"})
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_ISSUES_TOKEN": "issues-token", "GH_TOKEN": "app-token",
                "GITHUB_SHA": SHA40}
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
@@ -945,7 +948,11 @@ class Deliver(Tmp):
             open(vpath, "w"))
         self.day(issue="miss", owner=["an audit miss"],
                  vex=[dict(mine, status="affected", impact_statement="another scanner reported it")])
-        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n", ("gh", "pr", "view"): "true\n",
+        def issue_42(cmd):          # the tracking search and the owner search each find issue 42
+            title = P.policy.subject(P.ISSUE_TITLE) if "daily-rescan" in cmd else P.OWNER_TITLE
+            return json.dumps([{"number": 42, "title": title}])
+        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): issue_42,
+                                ("gh", "pr", "view"): "true\n",
                                 ("gh", "pr", "diff"): ".github/policy/scanner-profiles.json\n.auditor/panel-state.json\n"})
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": "on"}), \
                 mock.patch("sys.stdout", new=io.StringIO()):
@@ -995,6 +1002,91 @@ class Deliver(Tmp):
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1"}), self.assertRaises(RuntimeError) as e:
             P.cmd_deliver(self.a(), run=run)
         self.assertNotIn("openai", str(e.exception))
+
+    # the daily-rescan tracking issue lookup: one search of 100 issues, read through _issue_rows, an exact title
+    def rescan(self, answer):
+        """A real delivery with a tracking text; `answer` is what the tracking issue search returns."""
+        self.day(issue="tracking text")
+        calls, run = self.fake({("gh", "issue", "list"): lambda cmd: answer})
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}
+        error = None
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
+            try:
+                P.cmd_deliver(self.a(), run=run)
+            except RuntimeError as e:
+                error = str(e)
+        cmds = [c for c, _ in calls]
+        return cmds, [c for c in cmds if c[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], error
+
+    def test_the_rescan_issue_search_asks_for_100_issues_with_number_and_title(self):
+        cmds, _, _ = self.rescan("[]")
+        search = next(c for c in cmds if c[:3] == ["gh", "issue", "list"])
+        self.assertGreaterEqual(int(search[search.index("--limit") + 1]), 100)
+        self.assertEqual(search[search.index("--json") + 1], "number,title")
+        self.assertNotIn("--jq", search)
+
+    def test_an_unreadable_rescan_issue_list_stops_delivery_before_any_issue_write(self):
+        for answer in ("", "{}", '""', "null", "5", "true", '"x"', "not json"):
+            with self.subTest(answer=answer):
+                _, writes, error = self.rescan(answer)
+                self.assertIn("not a list of positive-integer number and title objects", error or "")
+                self.assertEqual(writes, [])
+
+    def test_a_rescan_issue_row_that_is_not_a_numbered_titled_issue_stops_delivery(self):
+        title = P.policy.subject(P.ISSUE_TITLE)
+        rows = [{"number": n, "title": title} for n in (None, False, True, "", "7", 0, -3, 1.5, [], {})]
+        rows += [{"number": 7, "title": t} for t in (None, 5, ["t"], {})]
+        rows += [{"title": title}, {"number": 7}, 7, "a", None, []]
+        for row in rows:
+            with self.subTest(row=row):
+                _, writes, error = self.rescan(json.dumps([row]))
+                self.assertIn("not a list of positive-integer number and title objects", error or "")
+                self.assertEqual(writes, [])
+
+    def test_one_bad_rescan_issue_row_stops_delivery_beside_the_issue_looked_for(self):
+        good, bad = {"number": 7, "title": P.policy.subject(P.ISSUE_TITLE)}, {"number": "8", "title": "x"}
+        for rows in ([good, bad], [bad, good]):
+            with self.subTest(rows=rows):
+                _, writes, error = self.rescan(json.dumps(rows))
+                self.assertIn("not a list of positive-integer number and title objects", error or "")
+                self.assertEqual(writes, [])
+
+    def test_the_rescan_issue_is_found_by_its_exact_title_only(self):
+        for number, title in ((7, P.policy.subject(P.ISSUE_TITLE)), (8, P.ISSUE_TITLE)):
+            with self.subTest(title=title):
+                _, writes, error = self.rescan(json.dumps([{"number": number, "title": title}]))
+                self.assertEqual((error, [w[:4] for w in writes]), (None, [["gh", "issue", "comment", str(number)]]))
+        wrong = ["auditor:", "auditor: " + P.ISSUE_TITLE.lower(), P.policy.subject(P.ISSUE_TITLE) + " (2)",
+                 " " + P.ISSUE_TITLE, P.ISSUE_TITLE[:-1], "Daily scanner panel", ""]
+        for title in wrong:
+            with self.subTest(title=title):
+                _, writes, error = self.rescan(json.dumps([{"number": 9, "title": title}]))
+                self.assertEqual([w[:3] for w in writes], [["gh", "issue", "create"]])
+
+    def test_a_right_rescan_issue_below_wrong_ones_is_the_one_commented(self):
+        rows = [{"number": 5, "title": "auditor: other"}, {"number": 6, "title": P.policy.subject(P.ISSUE_TITLE)},
+                {"number": 7, "title": P.policy.subject(P.ISSUE_TITLE)}]
+        _, writes, error = self.rescan(json.dumps(rows))
+        self.assertEqual((error, [w[:4] for w in writes]), (None, [["gh", "issue", "comment", "6"]]))
+
+    def test_a_valid_empty_rescan_issue_list_creates_the_tracking_issue_after_the_search(self):
+        cmds, writes, error = self.rescan("[]")
+        self.assertIsNone(error)
+        self.assertEqual(len(writes), 1)
+        create = writes[0]
+        self.assertEqual(create[create.index("--title") + 1], P.policy.subject(P.ISSUE_TITLE))
+        self.assertLess(cmds.index(next(c for c in cmds if c[:3] == ["gh", "issue", "list"])), cmds.index(create))
+
+    def test_a_dry_run_plans_the_rescan_issue_without_asking_github(self):
+        self.day(issue="tracking text")
+        calls, run = self.fake()
+        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1"}), mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_deliver(self.a(dry=True), run=run), 0)
+        self.assertEqual(calls, [])
+        planned = json.load(open(os.path.join(self.out, "plan.json")))["commands"]
+        create = next(c for c in planned if c[:3] == ["gh", "issue", "create"])
+        self.assertEqual(create[create.index("--title") + 1], P.policy.subject(P.ISSUE_TITLE))
+        self.assertFalse([c for c in planned if c[:3] == ["gh", "issue", "comment"]])
 
 
 class RebuildReal(Tmp):

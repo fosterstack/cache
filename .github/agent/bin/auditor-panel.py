@@ -1052,7 +1052,8 @@ STATE = ".auditor/panel-state.json"
 PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
 ISSUE_TITLE = "Daily scanner panel: findings on main"           # shared with the rescan's two-or-more issue
-OWNER_TITLE = policy.subject("owner-decision: scanner panel")   # one standing owner issue, updated, never duplicated
+OWNER_TITLE = policy.subject("needs a decision: scanner panel")   # one standing issue, updated, never duplicated
+OLD_OWNER_TITLE = policy.subject("owner-decision: scanner panel")   # OLD_OWNER_TITLE only finds an issue opened before this change; nothing is created with it
 
 
 def automerge_allowed(changed, env=os.environ):
@@ -1379,6 +1380,23 @@ def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
             raise RuntimeError("%s failed: %s" % (cmd[0:3], public(r.stderr)[-400:]))
         return r.stdout
     return ""
+
+
+def _issue_rows(out, real):
+    """The rows of a `gh issue list --json number,title` answer. With real delivery the answer must be a JSON array of
+    objects that each carry a number and a title: an empty or unreadable answer stops the delivery here, so it can never read
+    as "no issue found" and lead to a create. Plan mode runs nothing, so its empty answer is no rows."""
+    if not real:
+        return []
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get("number"), int)
+                                                     and not isinstance(r["number"], bool) and r["number"] > 0
+                                                     and isinstance(r.get("title"), str) for r in rows):
+        raise RuntimeError("gh issue list answered something that is not a list of positive-integer number and title objects: %r" % public(str(out))[:200])
+    return rows
 
 
 GUARD_CHECK = "only-the-app-pushes-auditor-lane"
@@ -1729,10 +1747,12 @@ def cmd_deliver(a, run=subprocess.run):
                 _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)    # a failure stops delivery
     ienv = dict(os.environ, GH_TOKEN=os.environ.get("AUDITOR_ISSUES_TOKEN", os.environ.get("GH_TOKEN", "")))
     if day["issue"]:
-        n = _sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan", "--search", ISSUE_TITLE,
-                 "--json", "number", "--jq", ".[0].number"], plan, real, run, env=ienv).strip()
-        if n:                   # the rescan's tracking issue, when it is open
-            _sh(["gh", "issue", "comment", n, "--body", day["issue"]], plan, real, run, env=ienv)
+        rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan",
+                                "--search", ISSUE_TITLE, "--limit", "100", "--json", "number,title"],
+                               plan, real, run, env=ienv), real)
+        hit = [r["number"] for r in rows if r.get("title") in (policy.subject(ISSUE_TITLE), ISSUE_TITLE)]
+        if hit:                 # the rescan's tracking issue, when it is open
+            _sh(["gh", "issue", "comment", str(hit[0]), "--body", day["issue"]], plan, real, run, env=ienv)
         else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
             for lab in ("daily-rescan", "security"):    # a missing label would lose the issue: create it first (not forced)
                 _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
@@ -1740,8 +1760,13 @@ def cmd_deliver(a, run=subprocess.run):
                  "--label", "security", "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
         body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
-        n = _sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", OWNER_TITLE,
-                 "--json", "number", "--jq", ".[0].number"], plan, real, run, env=ienv).strip()
+        n = ""
+        for t in (OWNER_TITLE, OLD_OWNER_TITLE):    # one search per title, new then old; the label is also on the per-finding issues, so the title must match exactly
+            rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", t,
+                                    "--limit", "100", "--json", "number,title"], plan, real, run, env=ienv), real)
+            hit = [r["number"] for r in rows if r.get("title") == t]
+            if hit:
+                n = str(hit[0]); break
         if n:
             _sh(["gh", "issue", "comment", n, "--body", body], plan, real, run, env=ienv)
         else:
