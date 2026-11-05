@@ -95,7 +95,7 @@ bin/check-no-outbound.py bin/check-no-outbound-test.sh
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
 build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock build/locks/vm-kernel.lock
-build/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+build/vm-keys/alpine-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
@@ -124,8 +124,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 210 allow patterns: chain-v030's 207, plus the customer-word check's three patterns
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 210, 6
+# 213 allow patterns: chain-v030's 207, plus the customer-word check's three patterns, plus the VM build inputs' three
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 213, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0

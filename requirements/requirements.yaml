@@ -4662,7 +4662,7 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC41
-        given: "a valid build/locks/vm-kernel.lock (AC40), the Alpine package signing key committed as build/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub with its sha256 in build/locks/archive-keys.sha256, and the archive"
+        given: "a valid build/locks/vm-kernel.lock (AC40), the Alpine package signing key committed as build/vm-keys/alpine-6165ee59.rsa.pub with its sha256 in build/locks/archive-keys.sha256, and the archive"
         when: "bin/refresh-inputs.sh refresh runs"
         then: "in its own step (not bin/apk-tool.py, which refuses Alpine's package format), the job reads the named package from the archive, or downloads it over HTTPS from the one pinned Alpine address when the archive lacks it, and keeps it only when all three hold: the sha256 of the whole file equals the lock's hash, the signature header names the committed key and verifies over the control segment with that key, and the sha256 of the data segment equals the datahash the control segment records; the committed key's sha256 must equal its line in build/locks/archive-keys.sha256 before it is used; any failure exits non-zero naming the package and the check, keeps nothing new in the archive, changes no lock and opens no pull request"
         verification: { method: unit, release_blocking: false }

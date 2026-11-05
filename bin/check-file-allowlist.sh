@@ -283,6 +283,11 @@ ALLOW_PATTERNS=(
   # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
   '^build/host-tools\.yaml$'
   '^build/locks/host-tools\.lock$'
+  # The VM build inputs (REQ-REFRESH-001-AC39 to AC41): the two package lists, their locks,
+  # the kernel lock and the kernel package key.
+  '^build/vm-(host|guest)\.yaml$'
+  '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/vm-keys/alpine-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
