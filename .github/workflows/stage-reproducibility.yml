@@ -1,5 +1,5 @@
-# The Rebuild stage of the v0.3.0 release chain (rules 54, 62, 64; REQ-CHAIN-005). Called only from release.yml, after Build, and, in snapshot mode, from scan.yml
-# (the PR gate keeps rule 31's two-assembly reproducibility check). `rapk` rebuilds the apks on fresh runners, `rebuild` rebuilds the images and archives and
+# The Rebuild stage of the v0.3.0 release chain (REQ-CHAIN-005). Called only from release.yml, after Build, and, in snapshot mode, from scan.yml
+#. `rapk` rebuilds the apks on fresh runners, `rebuild` rebuilds the images and archives and
 # compares EVERY item with Build's items.json. The only output is the verdict (witness-rebuild/verdict.json, or snapshot-verdict.json in snapshot mode, a product
 # of Rebuild's own record); nothing is published. `mode` works as in stage-build.yml (REQ-CHAIN-005-AC7).
 # The shape of this file is judged by bin/chain-build-wiring-test.sh (an exact grammar).

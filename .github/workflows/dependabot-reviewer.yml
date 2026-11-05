@@ -1,7 +1,7 @@
 name: Dependabot reviewer
 
-# Register row 75: three dependency lanes. The auditor (cron) opens CVE bumps; Dependabot opens
-# "latest" bumps; THIS workflow judges Dependabot MAJORS (and updates FLAGGED by their release notes) so the owner never reads a major again.
+# Three dependency paths. The auditor (cron) opens CVE bumps; Dependabot opens
+# "latest" bumps; THIS workflow judges Dependabot MAJORS (and updates FLAGGED by their release notes) so a maintainer never reads a major again.
 # Patch and minor bumps are untouched (dependabot-auto-merge.yml arms them on green).
 #
 # Why hourly-from-main and never on a PR event: GitHub gives a Dependabot-triggered run no
@@ -43,7 +43,7 @@ name: Dependabot reviewer
 
 on:
   schedule:
-    - cron: '23 * * * *'   # hourly (owner: not every ten minutes)
+    - cron: '23 * * * *'   # hourly
   workflow_dispatch:
     inputs:
       pr:
@@ -129,7 +129,7 @@ jobs:
           while read -r pr; do
             n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
             [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
-            # held out of auto-merge, handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): the pinned tool module (go.mod and go.sum under
+            # held out of auto-merge, handled as a normal PR: the pinned tool module (go.mod and go.sum under
             # tools/govulncheck/, whose version ci.yml repeats by hand, so a Dependabot bump alone cannot be right), and any PR whose file list is at the API's cap of
             # 100 (it may be cut, so it cannot be judged). Never reviewed or armed here, an arm made earlier is turned off; a lookup or a disarm that fails skips it and fails the step
             if [ "$(jq '[.files[]?.path | select(startswith("tools/govulncheck/"))] | length' <<<"$pr")" != 0 ] || [ "$(jq '(.files | length) >= 100' <<<"$pr")" = true ]; then
@@ -139,7 +139,7 @@ jobs:
               if [ "$armed" != false ] && ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
                 echo "::error::PR #$n: held out of auto-merge and could not be disarmed — skipped this hour"; lookup_failed=1; continue
               fi
-              echo "PR #$n: touches tools/govulncheck/ or lists 100+ files — held out of auto-merge (a normal lane PR), never reviewed or armed here"; continue
+              echo "PR #$n: touches tools/govulncheck/ or lists 100+ files — held out of auto-merge (a normal PR), never reviewed or armed here"; continue
             fi
             jq -r '.body // ""' <<<"$pr" > "$RUNNER_TEMP/work/body-$n.txt"
             if ! python3 bin/dependabot-reviewer.py updates --title "$(jq -r .title <<<"$pr")" \
@@ -147,7 +147,7 @@ jobs:
               echo "::error::PR #$n: could not read its updates"; lookup_failed=1; continue
             fi
             majors=$(jq '[.[]|select(.major or .flagged)]|length' "$RUNNER_TEMP/work/updates-$n.json") || { lookup_failed=1; continue; }
-            [ "$majors" != "0" ] || { echo "PR #$n: no major and no breaking/deprecated release notes — the patch/minor lane's"; continue; }
+            [ "$majors" != "0" ] || { echo "PR #$n: no major and no breaking/deprecated release notes — the patch/minor path's"; continue; }
             # Inside this file "major" means "judged as a major": the act step below (its text is hash-pinned in the pin
             # checker, so it stays as it is) names a hold by `.major`. A flagged update keeps `.flagged` so the bundle says FLAGGED.
             jq 'map(if .flagged then .major = true else . end)' "$RUNNER_TEMP/work/updates-$n.json" > "$RUNNER_TEMP/work/updates-$n.tmp" \
@@ -159,8 +159,8 @@ jobs:
             if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
               echo "PR #$n ${sha:0:7}: verdict already $prior"
               if [ "$prior" = success ]; then
-                # The auto-merge lane turns an arm off when a head has no verdict (REQ-DEP-003-AC2); the reviewer arms and THEN publishes
-                # success, so the lane can cut in between and leave an approved head unarmed. GitHub records who turned auto-merge on or off:
+                # The auto-merge path turns an arm off when a head has no verdict (REQ-DEP-003-AC2); the reviewer arms and THEN publishes
+                # success, so that path can cut in between and leave an approved head unarmed. GitHub records who turned auto-merge on or off:
                 # a success verdict, no arm, and the LAST auto-merge event being a disable by the workflow token (github-actions) means exactly
                 # that (a person's disarm, or any later enable, is not). Put the arm back for this head, after the same required-check
                 # guard as every other arm; the enable event that follows ends it. Nothing here reads a comment.
@@ -179,7 +179,7 @@ jobs:
                            | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
                          && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then
                         if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
-                          echo "PR #$n ${sha:0:7}: the lane turned the approved arm off meanwhile — put back"
+                          echo "PR #$n ${sha:0:7}: the auto-merge path turned the approved arm off meanwhile — put back"
                         else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
                       else echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the approved arm stays off this hour"; lookup_failed=1; fi ;;
                   esac
@@ -252,7 +252,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
-          # no inline interpreter code (handoff 0094): the import check is a heredoc, the pin checker's documented boundary
+          # no inline interpreter code: the import check is a heredoc, the pin checker's documented boundary
           python3 - <<'PY'
           from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
           print("sdk ready")
@@ -342,7 +342,7 @@ jobs:
             fi
           }
           # main's list and main's ruleset must agree before a major is armed: the same guard as the
-          # patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
+          # patch/minor path (bin/required-check-guard.sh). If main enforced no checks,
           # --auto would merge at once; the guard fails closed.
           if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
                | base64 -d > "$W/main-required-checks.json" \
@@ -377,7 +377,7 @@ jobs:
               merge)
                 # ledger: armed but not yet published — the cancellation cleanup step disarms these
                 echo "$n $sha" >> "$W/armed-unpublished.txt"
-                # bound to the head that was reviewed: a later push voids the verdict (owner, Oct 1)
+                # bound to the head that was reviewed: a later push voids the verdict (Oct 1)
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n"; then
                   if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
                     merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed, check published)"
@@ -388,7 +388,7 @@ jobs:
                 title="major bump held: $names"
                 {
                   echo "Dependabot PR #$n (\`${sha:0:7}\`) is a major bump that a reader says breaks a line of ours."
-                  echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
+                  echo "This is not for the maintainers: fix our side, then re-run the reviewer with force=true."
                   echo; echo "Run: $RUN_URL"; echo
                   echo "## breaks-us findings"; echo
                   jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
@@ -484,7 +484,7 @@ jobs:
           if [ -n "$existing" ]; then gh issue comment "$existing" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null
           else gh issue create --title "$title" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null; fi
 
-      # Owner, Oct 1: no identifier reaches the uploaded evidence, the bundle included. The readers
+      # No identifier reaches the uploaded evidence, the bundle included. The readers
       # receive the bundle unmasked (it is not uploaded as is); everything is masked in place here.
       # The upload runs only if this succeeded, and a failure here never fails the run (AC6).
       - name: mask the evidence before it is uploaded

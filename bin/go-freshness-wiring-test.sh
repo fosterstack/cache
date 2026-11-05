@@ -154,7 +154,7 @@ rmint = [s for s in rsteps if str(s.get("uses", "")).startswith("actions/create-
 if len(rmint) != 1 or rmint[0].get("with") != want or rmint[0].get("id") != "app-token":
     bad.append("AC28: the refresh job does not mint the App token exactly as the check job does: %s" % [s.get("with") for s in rmint])
 rusers = [s.get("name") for s in rsteps if "steps.app-token.outputs.token" in str(s)]
-if rusers != ["refresh the inputs (stage the pull request)", "check for a newer certified crypto module", "open the pull requests"]:
+if rusers != ["refresh the inputs (stage the pull request)", "check for a newer FIPS module version", "open the pull requests"]:
     bad.append("AC28: the App token reaches steps other than the three refresh steps: %s" % rusers)
 KEYCHK = "check the live Wolfi key against the pinned one"
 ARCHKEY = "check the live Wolfi key against the pulled archive"
@@ -174,7 +174,7 @@ if len(rnames) < 2 or rnames[1] != KEYCHK if rnames else True:
 elif "./bin/refresh-inputs.sh key-check " not in "".join(str(x.get("run", "")) for x in rsteps if x.get("name") == KEYCHK) or any(x.get("if") for x in rsteps if x.get("name") == KEYCHK):
     bad.append("AC26/AC30: the key check step does not call refresh-inputs.sh key-check, or carries an if")
 ORDER = ["pull the archive by its recorded digest", "refresh the inputs (stage the pull request)",
-         "check for a newer certified crypto module", "store the archive when something changed", "open the pull requests"]
+         "check for a newer FIPS module version", "store the archive when something changed", "open the pull requests"]
 BOOT = "bootstrap the archive from the pined Wolfi key".replace("pined", "pinned")
 pos = [rnames.index(n) if n in rnames else -1 for n in ORDER]
 if -1 in pos or pos != sorted(pos):
@@ -273,9 +273,9 @@ case_ store-if-inverted      bad "[s.__setitem__('run', s['run'].replace('if [ \
 case_ archive-keycheck-removed bad "$R['steps'] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pulled archive']"
 case_ archive-keycheck-if      bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pulled archive']"
 case_ archive-keycheck-late    bad "$R['steps'].append($R['steps'].pop([k for k, s in enumerate($R['steps']) if s.get('name') == 'check the live Wolfi key against the pulled archive'][0]))"
-case_ later-step-always        bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
-case_ later-step-failure-space bad "[s.__setitem__('if', '\${{ failure () }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
-case_ later-step-always-upper  bad "[s.__setitem__('if', '\${{ ALWAYS() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ later-step-always        bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
+case_ later-step-failure-space bad "[s.__setitem__('if', '\${{ failure () }}') for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
+case_ later-step-always-upper  bad "[s.__setitem__('if', '\${{ ALWAYS() }}') for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
 case_ refresh-no-concurrency  bad "$R.pop('concurrency', None)"
 case_ refresh-cancel-in-prog  bad "$R['concurrency'] = {'group': 'refresh-inputs', 'cancel-in-progress': True}"
 case_ refresh-other-group     bad "$R['concurrency'] = {'group': 'refresh-inputs-' + '\${{ github.run_id }}', 'cancel-in-progress': False}"
@@ -335,11 +335,11 @@ case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in 
 case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
 case_ refresh-bootstrap-always bad "[s.pop('if', None) for s in $R['steps'] if s.get('name') == 'bootstrap the archive from the pinned Wolfi key']"
 case_ refresh-keycheck-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pinned one']"
-case_ refresh-go-root-floating bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '\$(go env GOROOT)')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-go-root-floating bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '\$(go env GOROOT)')) for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
 case_ refresh-pinned-go-or-true bad "[s.__setitem__('run', s['run'].rstrip() + ' || true\\n') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
-case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '/usr/local/bin/fscache-go2')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '/usr/local/bin/fscache-go2')) for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
 case_ refresh-pinned-go-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'install the pinned Go toolchain']"
-case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer certified crypto module') + 1, a.pop(n.index('install the pinned Go toolchain')))"
+case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer FIPS module version') + 1, a.pop(n.index('install the pinned Go toolchain')))"
 case_ refresh-setup-go-back bad "$R['steps'].insert(2, {'uses': 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'with': {'go-version': '1.27'}})"
 case_ refresh-pinned-go-unlisted-install bad "[s.__setitem__('run', 'tar -xzf \"\$RUNNER_TEMP/go.tgz\" -C /usr/local/bin') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
 case_ refresh-keycheck-late bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('check the live Wolfi key against the pinned one'); a.insert(n.index('pull the archive by its recorded digest'), a.pop(i))"

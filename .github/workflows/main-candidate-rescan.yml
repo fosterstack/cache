@@ -3,11 +3,11 @@ name: Daily main-candidate rescan
 # The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
 # published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
-# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
+# 1-9, REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
 # images (production and fips, each on both architectures), Google Artifact Analysis on the two variants on linux/amd64, tallied together by bin/panel.py —
 # package counts and quorum, the published VEX as the only exception, "seen by N of M", a tracking issue for
 # findings seen by two or more scanners; unique findings are listed for the daily auditor, whose run audits them
-# right after this one (REQ-REL-004-AC3, amended Oct 2; rule 9, owner Oct 3). Trivy and Snyk are no longer run by the panel, and the auditor reads the panel's verdict instead of scanning (handoff 0600).
+# right after this one (REQ-REL-004-AC3, amended Oct 2). Trivy and Snyk are no longer run by the panel, and the auditor reads the panel's verdict instead of scanning.
 on:
   schedule:
     - cron: '41 7 * * *' # offset from the hour; the published-release rescan runs in this same run
@@ -38,7 +38,7 @@ jobs:
       mode: snapshot
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Our OpenVEX as the attestation children of each candidate's index (REQ-REL-010 on the rescan; handoff 0521, owner Oct 20: "this is
+  # Our OpenVEX as the attestation children of each candidate's index (REQ-REL-010 on the rescan; "this is
   # the preferred path - it gets us knowing our auditor works for a while before launch"). Docker Scout has applied our statements
   # only this way (probe 0221, run 37555367665: by tag and by exact index digest); every local-file and daemon-loaded form failed.
   # An attestation survives only in a registry, so the attested candidates go to the SCRATCH package ghcr.io/fosterstack/cache-scout-probe
@@ -119,7 +119,7 @@ jobs:
             mv /tmp/attach/next.json /tmp/attach/digests.json
             echo "${v}: final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
-      # The Scout self-check fixtures (rule 4): the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
+      # The Scout self-check fixtures: the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
       # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (every statement Scout applied in the Oct 23 root-cause round
       # named the package as a subcomponent of the product; the self-check statement named none and the self-check failed). Two tags, pruned like the rest.
       - name: build the Scout self-check fixtures and push them
@@ -157,11 +157,11 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------------------------------------
-  # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
+  # The scanner panel (REQ-SCAN-001..009). Four scanner jobs, each
   # leaving its raw output per image for the tally; the set of images is written here, never computed:
   # Grype, Docker Scout and Amazon Inspector scan all four images (production and fips on both architectures); Google scans the two variants on
-  # linux/amd64 only. Trivy and Snyk are not in the panel (rule 1). A scanner job that fails leaves fewer
-  # outputs, which the tally counts as "did not run" (rule 3) — never as clean.
+  # linux/amd64 only. Trivy and Snyk are not in the panel. A scanner job that fails leaves fewer
+  # outputs, which the tally counts as "did not run" — never as clean.
   panel-grype:
     name: panel — Grype (four images)
     needs: [build]
@@ -180,11 +180,11 @@ jobs:
           path: /tmp/oci/
       - name: install grype (pinned by checksum)
         run: ./bin/install-scanner.sh grype
-      - name: Grype every image, given our VEX (rule 4)
+      - name: Grype every image, given our VEX
         run: |
           set -uo pipefail
           ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
-          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
+          # Only the VEX file may hide a finding: grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
           # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
           bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
           if [ -n "${bad_env}" ]; then
@@ -218,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
-    environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
+    environment: agent   # the read-only Docker Hub token for Scout lives here (Oct 2)
     permissions:
       contents: read
       packages: read   # the attested candidates in the scratch package, read only
@@ -247,9 +247,9 @@ jobs:
       # Scout applies a statement only when its author matches --vex-author (default Docker's own) AND only through the index's
       # attestation (every local form failed, Oct 3-6). The self-check scans the pinned debian fixture twice by exact index digest,
       # plain and with our attestation covering only CVE-2023-4911 (built by the vex-attach job in the registry); bin/scout-selfcheck.py
-      # passes only when exactly that CVE drops and every other finding stays (rule 4, REQ-SCAN-004-AC2), and refuses an empty or
+      # passes only when exactly that CVE drops and every other finding stays (REQ-SCAN-004-AC2), and refuses an empty or
       # malformed report. A red self-check keeps the rescan red (fail closed): Scout never scans the candidates behind it.
-      - name: Scout applies our attestation to a fixture index (rule 4 self-check)
+      - name: Scout applies our attestation to a fixture index
         run: |
           set -euo pipefail
           before=$(jq -er '."fixture-before"' "$RUNNER_TEMP/attach/digests.json")
@@ -258,7 +258,7 @@ jobs:
           docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${before}" > "$RUNNER_TEMP/selfcheck/before.json"
           docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${after}" > "$RUNNER_TEMP/selfcheck/after.json"
           python3 bin/scout-selfcheck.py "$RUNNER_TEMP/selfcheck/before.json" "$RUNNER_TEMP/selfcheck/after.json" CVE-2023-4911
-      - name: Docker Scout every image, given our VEX as the index's attestation (rule 4)
+      - name: Docker Scout every image, given our VEX as the index's attestation
         run: |
           set -uo pipefail
           for v in production fips; do
@@ -270,7 +270,7 @@ jobs:
                 || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
-      # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
+      # What the first runs must tell us (5a and 5b): does Scout honor the attestation per platform of an index
       # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job. It runs after a failed self-check too (!cancelled(), not always(): a cancelled run does not start five more scans): that is when its data is needed.
       - name: Scout attestation diagnostics (REQ-REL-010-AC6; printed, never decides)
         if: ${{ !cancelled() }}
@@ -310,13 +310,13 @@ jobs:
           path: /tmp/panel/
           if-no-files-found: warn
 
-  # The Docker Scout root-cause round (advisor 0120/0121/0122), dispatch only: the attestation path on a scratch package
+  # The Docker Scout root-cause round, dispatch only: the attestation path on a scratch package
   # (never the release package; the digests before and after are recorded), then Docker's documented control, one field
   # changed at a time, and our forms, on Scout 1.26.0 and the two previous minors. Results in the job summary.
   scout-root-cause:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
+    environment: agent   # the read-only Docker Hub token for Scout lives here (Oct 2)
     permissions:
       contents: read
       # packages: write reaches every package linked to this repository (the token cannot be narrower); the job runs only
@@ -373,13 +373,13 @@ jobs:
           path: ${{ runner.temp }}/rc/
           retention-days: 30
 
-  # The Docker Scout older-versions sweep (advisor 0520), dispatch only and read-only: does any older Scout apply a LOCAL VEX file
+  # The Docker Scout older-versions sweep, dispatch only and read-only: does any older Scout apply a LOCAL VEX file
   # (--vex-location)? 1.24.0 to 1.26.0 do not (docker/scout-cli#207). Each minor's newest patch is installed by the pinned
   # installer (checksum per version) and run against Docker's documented example and our statement. Nothing is published.
   scout-older-versions:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
+    environment: agent   # the read-only Docker Hub token for Scout lives here (Oct 2)
     permissions:
       contents: read
     steps:
@@ -473,7 +473,7 @@ jobs:
           path: /tmp/inspector-cache
           key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}-miss
           restore-keys: inspector-${{ steps.insp-date.outputs.date }}-
-      - name: Amazon Inspector every image (our pipeline applies the VEX, rule 4)
+      - name: Amazon Inspector every image (our pipeline applies the VEX)
         id: insp-scan
         run: |
           set -uo pipefail
@@ -539,7 +539,7 @@ jobs:
     environment: agent
     permissions:
       contents: read
-      id-token: write   # the workload identity (rule 2): no keys
+      id-token: write   # the workload identity: no keys
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -548,7 +548,7 @@ jobs:
         with:
           name: images
           path: /tmp/oci/
-      - name: federated identity (rule 2; the identifiers are repository variables)
+      - name: federated identity (the identifiers are repository variables)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.CACHE_SCANNER_PROVIDER }}
@@ -559,7 +559,7 @@ jobs:
         with:
           version: '587.0.0'
           install_components: local-extract
-      - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
+      - name: Google on-demand scan of the two variants, linux/amd64 only (our pipeline applies the VEX)
         run: |
           set -uo pipefail
           mkdir -p /tmp/arc
@@ -585,13 +585,13 @@ jobs:
           if-no-files-found: warn
 
   panel:
-    name: panel — tally the day (rules 3-6)
+    name: panel — tally the day
     needs: [panel-grype, panel-scout, panel-inspector, panel-google]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write      # the tracking issue (rule 5)
+      issues: write      # the tracking issue
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -624,7 +624,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.panel-google.outputs.artifact-id }}
           path: /tmp/panel/panel-google
-      - name: tally the day's findings — counts, quorum, seen by N of M (rules 3-6; unique findings go to the auditor)
+      - name: tally the day's findings — counts, quorum, seen by N of M (unique findings go to the auditor)
         id: judge
         run: |
           set +e
@@ -632,7 +632,7 @@ jobs:
           echo "rc=$?" >> "$GITHUB_OUTPUT"
           cat /tmp/panel-out/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null
           exit 0
-      - name: open or update the tracking issue (seen by two or more scanners; rule 5)
+      - name: open or update the tracking issue (seen by two or more scanners)
         if: ${{ always() && steps.judge.outcome == 'success' && github.ref == 'refs/heads/main' }}   # only main's rescan files the issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -659,15 +659,15 @@ jobs:
           name: panel-evidence
           path: /tmp/panel-out/
           if-no-files-found: warn
-      - name: fail the run unless every image counted and nothing is to report (rule 3; never reported clean)
+      - name: fail the run unless every image counted and nothing is to report (never reported clean)
         if: ${{ steps.judge.outputs.rc != '0' }}
         run: |
           echo "::error::scanner panel: rc ${{ steps.judge.outputs.rc }} (1 = findings to report, 2 = a scanner did not run, an image did not count, or the tally could not run)" >&2
           exit 1
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Merged from daily-rescan.yml (workflow consolidation 3 of 4, owner RATIFIED Oct 2): the daily rescan of the CURRENT
-  # PUBLISHED release's digests (current release only, owner Oct 9) (release-chain-design.md §3) — enumerate the current release's manifest (or legacy inventory entry),
+  # Merged from daily-rescan.yml (workflow consolidation 3 of 4): the daily rescan of the CURRENT
+  # PUBLISHED release's digests (current release only) (release-chain-design.md §3) — enumerate the current release's manifest (or legacy inventory entry),
   # then scan each (release, variant, scanner) digest at the release gate's policy, VEX the only exception. It runs under
   # this file's ONE schedule, so the auditor never selects a rescan run that lacks the candidate.
   manifests:
@@ -691,7 +691,7 @@ jobs:
           w="${RUNNER_TEMP:-/tmp}"
           : > "$w/targets.jsonl"
 
-          # The daily rescan covers the CURRENT release only (owner, Oct 9 2026; scanner-panel rules, "the daily rescan
+          # The daily rescan covers the CURRENT release only ("the daily rescan
           # covers the current release only", REQ-REL-004-AC5): the latest published release by SEMANTIC VERSION, not by
           # date. A draft, a prerelease and a tag that is not exactly vMAJOR.MINOR.PATCH are never current. A release that
           # stops being current is no longer scanned, so no issue is opened or reopened for it.
@@ -851,7 +851,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config (never the repository's), and a GRYPE_* variable stops the step,
+          # Only the VEX file may hide a finding: grype reads an EMPTY config (never the repository's), and a GRYPE_* variable stops the step,
           # as in bin/grype-scan.sh and bin/check-scan.sh (names only are printed). Zero packages = did not run (row 53): the inventory is written too.
           bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
           if [ -n "${bad_env}" ]; then

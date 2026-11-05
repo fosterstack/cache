@@ -14,7 +14,7 @@ REFS = r"docs/ratify|(?<![A-Za-z])handoffs?/|(?<![A-Za-z])audits/|/srv/|lane-out
 RULES = B + r"rules?\s+[0-9]+"
 IDS = B + r"(SB|HS|CR|MC)-[0-9]+"
 BANNED = re.compile("|".join("(?:%s)" % p for p in (WORDS, REFS, RULES, IDS)), re.I)
-CUSTOMER_FILE = re.compile(r"^(README|SECURITY|CONTRIBUTING|RELEASING)\.md$|^docs/|^\.vex/.*\.md$|^\.github/PULL_REQUEST_TEMPLATE\.md$")
+CUSTOMER_FILE = re.compile(r"^(README|SECURITY|CONTRIBUTING|RELEASING)\.md$|^docs/|^\.vex/.*\.md$|^\.github/PULL_REQUEST_TEMPLATE\.md$|^\.github/workflows/[^/]+\.ya?ml$")
 
 
 def fail(msg):

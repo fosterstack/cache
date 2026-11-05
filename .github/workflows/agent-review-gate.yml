@@ -105,7 +105,7 @@ jobs:
           # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
           # of the PR's own CI that overwrites the guard on disk changes nothing
           PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
-          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+          # REQ-REL-012: a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
           # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
           bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
@@ -153,9 +153,9 @@ jobs:
             -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
             -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null
 
-  # REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
+  # REQ-REL-012: the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
   # nothing else from the pull request. Main's copy of bin/audit-record-write.sh re-reads the pull request (open, into main, this head) and makes ONE signed commit on audit/<head sha>,
-  # through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
+  # through the App's token scoped to contents write and pull-requests read. It holds no PR data other than the two inputs and runs nothing of the PR.
   record:
     name: agent review gate — passed-audit record writer
     if: github.event_name == 'workflow_dispatch' && inputs.audit_head != ''
