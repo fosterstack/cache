@@ -142,7 +142,7 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
 
 ## Release
 
-- **Signed images.** Every image is signed keylessly by the promotion workflow, in
+- **Signed images.** Every image is signed with the release key by the promotion workflow, in
   both registries ([verify-images.md](verify-images.md)).
 - **Signed provenance.** Archives, SBOMs and the checksums file carry build
   provenance naming the CI run that made them ([verify-images.md](verify-images.md)).
