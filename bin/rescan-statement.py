@@ -99,7 +99,8 @@ def cmd_classify(args):
 
 
 def cmd_find_issue(args):
-    """The number of the open issue (a pull request is not one) of this repository that carries the label and has exactly this title or the same title with the prefix in front, or nothing. EVERY page is read
+    """The number of the open issue (a pull request is not one) of this repository that carries the label and has
+    exactly this title or the same title with the prefix in front, or nothing. EVERY page is read
     (`gh api --paginate`, 100 per page): a single default page of 30 would miss a tracking issue on a later page and open a duplicate every day. Any failure to
     read the list is an error (exit 1), never "no issue"."""
     import subprocess
