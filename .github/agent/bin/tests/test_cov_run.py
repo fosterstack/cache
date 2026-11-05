@@ -2435,5 +2435,89 @@ class DefectLogLoading(unittest.TestCase):
         closed.assert_called_once_with()
 
 
+class OwnerIssueSearch(Base):
+    """The standing issue is looked up by exact title: the search reads up to 100 issues, and an answer that is not a
+    list of numbered, titled issues stops delivery before any comment or create."""
+    T = OwnerIssue.T
+    GOOD = {"number": 12, "title": T}
+
+    def search(self, reply, rc=0):
+        """The issue emitter with real delivery on and a fake gh answering `reply`: (result, output, fake)."""
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", AUDITOR_ISSUES_TOKEN="issues-tok")
+        fr = FakeRun({("gh", "issue", "list"): (rc, reply, "boom" if rc else ""),
+                      ("gh", "issue", "create"): (0, "https://x/issues/15\n", ""),
+                      ("gh", "issue", "comment"): (0, "", "")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            res, out = self.quiet(R._emit_owner_issue, self.T, "body", False, [])
+        return res, out, fr
+
+    def writes(self, fr):
+        return [a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])]
+
+    def assert_stops(self, reply):
+        with self.subTest(reply=reply):
+            res, out, fr = self.search(reply)
+            self.assertEqual(res, (False, None))
+            self.assertIn("owner-issue discovery FAILED", out)
+            self.assertEqual(self.writes(fr), [])
+
+    def test_the_standing_issue_search_asks_for_at_least_100_issues(self):
+        res, _out, fr = self.search("[]")
+        lists = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "list"]]
+        self.assertEqual(len(lists), 1)
+        self.assertIn("--limit", lists[0])
+        self.assertGreaterEqual(int(lists[0][lists[0].index("--limit") + 1]), 100)
+
+    def test_an_empty_or_unreadable_standing_issue_list_stops_delivery_before_any_write(self):
+        for reply in ("", "{}", '""', "null", "5", "true", '"x"', "not json", '{"number": 12, "title": "t"}'):
+            self.assert_stops(reply)
+
+    def test_a_standing_issue_list_row_that_is_not_a_numbered_titled_issue_stops_delivery(self):
+        for number in (None, False, True, "", "7", 0, -3, 1.5, [], {}):
+            self.assert_stops(json.dumps([{"number": number, "title": self.T}]))
+        for title in (None, 5, ["t"], {}):
+            self.assert_stops(json.dumps([{"number": 12, "title": title}]))
+        for row in ({"title": self.T}, {"number": 12}, 7, "a", None, []):
+            self.assert_stops(json.dumps([row]))
+
+    def test_one_bad_row_stops_delivery_even_beside_the_issue_that_was_looked_for(self):
+        self.assert_stops(json.dumps([self.GOOD, {"number": "7", "title": "other"}]))
+        self.assert_stops(json.dumps([{"number": 0, "title": "other"}, self.GOOD]))
+
+    def test_a_readable_standing_issue_list_comments_the_exact_title_or_creates(self):
+        near = {"number": 3, "title": self.T + " (v2)"}
+        res, _out, fr = self.search(json.dumps([near, self.GOOD]))
+        self.assertEqual(res, (True, 12))
+        self.assertIn(["gh", "issue", "comment", "12", "--body", "body"], fr.argvs())
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]])
+        res, _out, fr = self.search(json.dumps([near]))
+        self.assertEqual(res, (True, 15))
+        self.assertEqual(len([a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]), 1)
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "comment"]])
+        res, _out, fr = self.search("[]")
+        self.assertEqual(res, (True, 15))
+
+    def test_a_standing_issue_lookup_that_cannot_run_gh_stops_delivery_and_says_so(self):
+        missing = FileNotFoundError(2, "No such file or directory: 'gh'")
+        denied = PermissionError(13, "Permission denied: 'gh'")
+        for exc in (missing, denied):
+            os.environ.update(AUDITOR_ALLOW_REAL_GH="1", AUDITOR_ISSUES_TOKEN="issues-tok")
+            fr = FakeRun({("gh", "issue", "list"): exc})
+            with mock.patch.object(R.subprocess, "run", fr):
+                res, out = self.quiet(R._emit_owner_issue, self.T, "body", False, [])
+            self.assertEqual(res, (False, None), exc)
+            self.assertIn("owner-issue open/update failed: %s" % exc, out)
+            self.assertEqual(self.writes(fr), [], exc)
+
+    def test_with_real_delivery_off_the_standing_issue_is_planned_and_gh_is_not_asked(self):
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"
+        fr = FakeRun({})
+        with mock.patch.object(R.subprocess, "run", fr):
+            res, out = self.quiet(R._emit_owner_issue, self.T, "body", False, [])
+        self.assertEqual(res, (True, "skipped"))
+        self.assertIn("would open/update owner issue (real gh disabled): " + self.T, out)
+        self.assertEqual(fr.argvs(), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
