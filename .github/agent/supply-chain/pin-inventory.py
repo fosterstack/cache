@@ -152,7 +152,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 
 def _wanted(n):
-    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
+    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$", n)
             or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
@@ -211,6 +211,27 @@ def _strip_tag(name):
 
 PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
+KERNEL_LOCK = "build/locks/vm-kernel.lock"
+_KERNEL_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._+\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+\-]*)?)=([A-Za-z0-9][A-Za-z0-9._+\-]*)[ \t]+sha256:([0-9a-f]{64})$")
+
+
+def _kernel_lock_items(path, text):
+    """The rows of the kernel lock file, one `apk` item each: `<name>=<version> sha256:<64 hex>`, the name may carry an `<arch>/` prefix; blank lines
+    and lines starting with # are ignored. The row's sha256 is the item's sum, so the same version with a different apk is a NEW item (its clock starts
+    again). No registry dates these rows: the pull request's own first run does. A row of any other shape is an error, never skipped: a row we cannot read
+    would go unaged."""
+    out = []
+    for n, raw in enumerate(text.split("\n"), 1):
+        row = raw.strip()
+        if not row or row.startswith("#"):
+            continue
+        m = _KERNEL_ROW.match(row)
+        if not m:
+            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+        it = Item("apk", m.group(1), m.group(2))
+        it.sums = [m.group(3)]
+        out.append(it)
+    return out
 
 
 def _persona_tool_items(path, text):
@@ -850,6 +871,8 @@ def _file_found(path, text):
                         it.step = "file:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # no sums found for a literal download (an arm label the text scan could not trust): fail closed, any edit of the script moves the item
     elif path == PERSONA_TOOLS:
         found = _persona_tool_items(path, text)
+    elif path == KERNEL_LOCK:
+        found = _kernel_lock_items(path, text)
     elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
         found = [Item("tool", "file:" + path, "(file)")]
         found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
