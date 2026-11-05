@@ -54,6 +54,13 @@ for c in outside inside; do
   elif [ "${!a}" != "${!b}" ]; then echo "vm-sandbox-probe: the $c canary changed" >&2; not_held=1; fi
 done
 tree_after=$(find "$workdir" -path "$WORKSPACE_DIR" -prune -o ! -path "$OUTSIDE_CANARY" ! -path "$INSIDE_CANARY" -print 2>/dev/null | sort)
+echo "vm-sandbox-probe: outside canary sha256:$outside_before -> sha256:${outside_after:-unreadable}"
+echo "vm-sandbox-probe: inside canary sha256:$inside_before -> sha256:${inside_after:-unreadable}"
+echo "vm-sandbox-probe: workspace listing: $(ls -A "$WORKSPACE_DIR" 2>&1 | tr '\n' ' ')"
+# the positive control: the hostile step must have left its file in the workspace, or the wall was never tested
+if [ -z "$(find "$WORKSPACE_DIR" -name vm-probe-written 2>/dev/null | head -n 1)" ]; then
+  echo "vm-sandbox-probe: no evidence the hostile step ran (vm-probe-written is not in the workspace)" >&2; no_evidence=1
+fi
 if [ "$tree_before" != "$tree_after" ]; then
   echo "vm-sandbox-probe: something appeared or went beside the workspace folder" >&2; not_held=1
 fi

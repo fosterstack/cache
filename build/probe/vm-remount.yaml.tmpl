@@ -22,12 +22,19 @@ pipeline:
       done
       if [ -z "$LD" ]; then echo "probe: no loader under $P"; exit 0; fi
       M="$LD --library-path $P/usr/lib:$P/lib $P/usr/bin/mount"
-      mkdir -p /tmp/share
+      mkdir -p /tmp/share "$(dirname @CANARY_OUTSIDE@)"
+      # files of the guest at the link targets, so that the writes through the links below really run
+      echo guest > @CANARY_OUTSIDE@
+      echo guest > /tmp/outside-canary
       rc=0; $M -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 defaultshare /tmp/share || rc=$?
       if [ "$rc" = 0 ]; then
         echo hostile > /tmp/share/vm-probe-written || true
         ln -s @CANARY_OUTSIDE@ /tmp/share/vm-probe-link || true
         echo hostile >> /tmp/share/vm-probe-link || true
+        ln -s ../outside-canary /tmp/share/vm-probe-link-rel || true
+        echo hostile >> /tmp/share/vm-probe-link-rel || true
+        ln -s ../../../../../../../..@CANARY_OUTSIDE@ /tmp/share/vm-probe-link-deep || true
+        echo hostile >> /tmp/share/vm-probe-link-deep || true
         echo hostile > /tmp/share/vm-probe-canary-copy || true
       fi
       echo "probe: remount rc=$rc done"

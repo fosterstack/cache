@@ -20,7 +20,7 @@ defaults:
 jobs:
   vm:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -28,11 +28,18 @@ jobs:
         include:
           - name: vm-x86
             kind: x86
+            runner: ubuntu-24.04
             arch: x86_64
             timeout: 30
+          - name: vm-arm
+            kind: arm
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+            timeout: 40
     env:
       KIND: ${{ matrix.kind }}
       TARGET_ARCH: ${{ matrix.arch }}
+      MATRIX_HOST: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,6 +53,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           W="$RUNNER_TEMP/spike"; mkdir -p "$W"
           if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then echo "KVM PASS: /dev/kvm present, mode $(stat -c %a /dev/kvm), readable and writable by $(id -un)" | tee -a "$W/results.txt"
+          elif [ "$KIND" = arm ]; then echo "KVM NOTE: no usable /dev/kvm on this arm runner ($(ls -l /dev/kvm 2>&1 | head -n 1))" | tee -a "$W/results.txt"
           else echo "KVM FAIL: /dev/kvm missing or not accessible to $(id -un)" | tee -a "$W/results.txt"; exit 1; fi
       - name: "tools and keys"
         if: ${{ !cancelled() }}
@@ -53,7 +61,7 @@ jobs:
           set -euo pipefail
           W="$RUNNER_TEMP/spike"; mkdir -p "$W"
           R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
-          HOST_ARCH=x86_64
+          HOST_ARCH=$MATRIX_HOST
           RUN_UID=$(id -u); RUN_GID=$(id -g)
           TA=${TARGET_ARCH:-x86_64}
           HOSTPKG=qemu-system-$TA
@@ -92,7 +100,7 @@ jobs:
           set -euo pipefail
           W="$RUNNER_TEMP/spike"; mkdir -p "$W"
           R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
-          HOST_ARCH=x86_64
+          HOST_ARCH=$MATRIX_HOST
           RUN_UID=$(id -u); RUN_GID=$(id -g)
           TA=${TARGET_ARCH:-x86_64}
           HOSTPKG=qemu-system-$TA
@@ -201,7 +209,7 @@ jobs:
           set -euo pipefail
           W="$RUNNER_TEMP/spike"; mkdir -p "$W"
           R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
-          HOST_ARCH=x86_64
+          HOST_ARCH=$MATRIX_HOST
           RUN_UID=$(id -u); RUN_GID=$(id -g)
           TA=${TARGET_ARCH:-x86_64}
           HOSTPKG=qemu-system-$TA
@@ -224,12 +232,12 @@ jobs:
             packages:
               - $HOSTPKG
           archs:
-            - x86_64
+            - $HOST_ARCH
           YEOF
           "$W/bin/apko" lock "$W/cfg/host.yaml" --output "$W/lock/host.lock.json" >/dev/null
           n=$(lock_to_want "$W/lock/host.lock.json" "$W/lock/host.want.json")
           python3 -I "$W/src/fetch.py" "$W/lock/host.want.json" "$W/dl-host" "$W/keys/wolfi-signing.rsa.pub" "$W/src/install-host-bwrap.py" \
-            https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz https://packages.wolfi.dev/os/ | tee "$W/fetch-host.log"
+            https://packages.wolfi.dev/os/$HOST_ARCH/APKINDEX.tar.gz https://packages.wolfi.dev/os/ | tee "$W/fetch-host.log"
           R "FETCH host closure ($HOSTPKG): $n packages, $(grep -c '^FETCH FAIL' "$W/fetch-host.log" || true) failed"
           # 2. the packages that run in the guest: the init and a shell, for the TARGET architecture
           cat > "$W/cfg/guest.yaml" <<YEOF
@@ -268,7 +276,7 @@ jobs:
           set -euo pipefail
           W="$RUNNER_TEMP/spike"; mkdir -p "$W"
           R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
-          HOST_ARCH=x86_64
+          HOST_ARCH=$MATRIX_HOST
           RUN_UID=$(id -u); RUN_GID=$(id -g)
           TA=${TARGET_ARCH:-x86_64}
           HOSTPKG=qemu-system-$TA
@@ -291,8 +299,8 @@ jobs:
             else R "U3 note: without wolfi-baselayout the strict installer still refuses: $(grep -v 'skipped absolute link' "$W/strict2.out" | tail -1 | cut -c1-220)"; fi
           fi
           # the spike's own lenient unpack (tar filter, no link or device tricks): the closure goes into host-tools
-          python3 -I "$W/src/unpack.py" "$W/lock/host.rows" "$W/dl-host" "$W/host-tools" "$W/src/install-host-bwrap.py" x86_64 | tail -1
-          ld=$(ls "$W"/host-tools/usr/lib/ld-linux-x86-64.so.2)
+          python3 -I "$W/src/unpack.py" "$W/lock/host.rows" "$W/dl-host" "$W/host-tools" "$W/src/install-host-bwrap.py" "$HOST_ARCH" | tail -1
+          ld=$(ls "$W"/host-tools/usr/lib/ld-linux-*.so.*)
           cat > "$W/qemu-wrapper" <<WEOF
           #!/bin/sh
           R=$W/host-tools
@@ -302,9 +310,9 @@ jobs:
           sudo install -m 0755 "$W/qemu-wrapper" "/usr/local/bin/$HOSTPKG"
           # melange only looks for the qemu of the machine it runs on (qemu-system-x86_64 here: exec.LookPath, qemu_runner.go) even when it builds another architecture;
           # a stub that exits at once satisfies the lookup, nothing ever runs it as a VM
-          if [ "$HOSTPKG" != qemu-system-x86_64 ]; then
+          if [ "$HOSTPKG" != "qemu-system-$HOST_ARCH" ]; then
             printf '#!/bin/sh\necho "spike stub: only present so melange finds a qemu for the host architecture" >&2\nexit 1\n' > "$W/qemu-stub-x86"
-            sudo install -m 0755 "$W/qemu-stub-x86" /usr/local/bin/qemu-system-x86_64
+            sudo install -m 0755 "$W/qemu-stub-x86" /usr/local/bin/qemu-system-$HOST_ARCH
             R "U3 note: melange's usability check looks for qemu-system-x86_64 on PATH when it builds $TA; a stub is installed for that lookup"
           fi
           ver=$("/usr/local/bin/$HOSTPKG" --version | head -n 1)
@@ -351,8 +359,9 @@ jobs:
           echo "---- the wrapper ----"; cat "$W/melange-wrap.sh"
           rc=0; bash bin/vm-sandbox-probe.sh --melange "$W/melange-wrap.sh" --workdir "$W/probe" > "$W/probe.out" 2>&1 || rc=$?
           echo "---- probe output ----"; cat "$W/probe.out"
+          echo "---- workspace folder (ls -la) ----"; ls -la "$W/probe/workspace" 2>&1 | head -n 30
           echo "---- the melange log (last 80 lines) ----"; tail -n 80 "$W/probe-melange.log" 2>/dev/null | cut -c1-300 || true
-          R "PROBE exit code: $rc (0 held, 4 not held, 1 probe error or no evidence, 2 refused)"
+          R "PROBE ($KIND $TA) exit code: $rc (0 held, 4 not held, 1 probe error or no evidence, 2 refused)"
           [ "$rc" = 0 ] || R "PROBE FAIL: exit $rc"
 
       - name: "results"
@@ -361,7 +370,7 @@ jobs:
           set -euo pipefail
           W="$RUNNER_TEMP/spike"; mkdir -p "$W"
           R() { printf '%s\n' "$*" | tee -a "$W/results.txt"; }
-          HOST_ARCH=x86_64
+          HOST_ARCH=$MATRIX_HOST
           RUN_UID=$(id -u); RUN_GID=$(id -g)
           TA=${TARGET_ARCH:-x86_64}
           HOSTPKG=qemu-system-$TA
