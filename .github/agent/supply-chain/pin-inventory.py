@@ -7,6 +7,7 @@ One item is "<kind>:<name>@<version>":
   gotool   module/path@version          `go install path@version` in a run step
   package  pypi/name@version            the hash-pinned requirements files
   image    name@sha256:digest           container:/services: images and docker:// actions (name:tag@sha256:digest is the SAME item: Docker ignores the tag)
+  apk      name@version                 a row of build/locks/vm-kernel.lock; the row's sha256 is the item's sum (a new apk under one version is a new item)
 NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go modules and the Go toolchain.
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
@@ -167,6 +168,8 @@ def _listing(root, rev):
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if n and _wanted(n):
+            if n == KERNEL_LOCK and meta.split()[0] == "120000":
+                raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
             pairs.append((n, meta.split()[2]))
     if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
         _LISTINGS[(root, rev)] = pairs
@@ -185,11 +188,15 @@ def tree_files(root, rev):
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
             if n and wanted(n):
+                if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
+                    raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
                 try:
                     out[n] = open(f"{root}/{n}").read()
                 except OSError as e:
                     if n == PERSONA_TOOLS:
                         raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
+                    if n == KERNEL_LOCK:
+                        raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its rows would go unaged")
                     continue
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
@@ -212,6 +219,7 @@ def _strip_tag(name):
 PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
 KERNEL_LOCK = "build/locks/vm-kernel.lock"
+KERNEL_ROWS_MAX = 500
 _KERNEL_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._+\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+\-]*)?)=([A-Za-z0-9][A-Za-z0-9._+\-]*)[ \t]+sha256:([0-9a-f]{64})$")
 
 
@@ -220,7 +228,7 @@ def _kernel_lock_items(path, text):
     and lines starting with # are ignored. The row's sha256 is the item's sum, so the same version with a different apk is a NEW item (its clock starts
     again). No registry dates these rows: the pull request's own first run does. A row of any other shape is an error, never skipped: a row we cannot read
     would go unaged."""
-    out = []
+    out, seen = [], set()
     for n, raw in enumerate(text.split("\n"), 1):
         row = raw.strip()
         if not row or row.startswith("#"):
@@ -228,9 +236,16 @@ def _kernel_lock_items(path, text):
         m = _KERNEL_ROW.match(row)
         if not m:
             raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+        if (m.group(1), m.group(2)) in seen:
+            raise RuntimeError(f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
+        seen.add((m.group(1), m.group(2)))
+        if len(seen) > KERNEL_ROWS_MAX:
+            raise RuntimeError(f"{path}:{n}: more than {KERNEL_ROWS_MAX} rows: refused")
         it = Item("apk", m.group(1), m.group(2))
         it.sums = [m.group(3)]
         out.append(it)
+    if not out:
+        raise RuntimeError(f"{path}: the lock file holds no row: the control cannot cover nothing")
     return out
 
 

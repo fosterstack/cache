@@ -66,7 +66,7 @@ def parse_time(s, clock=False):
     return d
 
 
-_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
+_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*[a-wyz]?(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
 
 
 def is_pin(version):
