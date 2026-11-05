@@ -116,7 +116,7 @@ def cmd_find_issue(args):
             return 1
         pages += 1
         for it in page:
-            if isinstance(it, dict) and "pull_request" not in it and it.get("title") == args.title and found is None:
+            if isinstance(it, dict) and "pull_request" not in it and it.get("title") in args.title and found is None:
                 if not isinstance(it.get("number"), int) or isinstance(it.get("number"), bool):
                     err("find-issue: the matching issue has no integer number; refusing to guess")
                     return 1
@@ -756,7 +756,7 @@ def main(argv):
     ps.set_defaults(func=cmd_statement)
 
     pf = sub.add_parser("find-issue", help="print the number of the open tracking issue with this title (every page), or nothing")
-    pf.add_argument("--title", required=True)
+    pf.add_argument("--title", required=True, action="append", help="an exact title to look for; give it more than once to accept several")
     pf.add_argument("--label", default="daily-rescan")
     pf.add_argument("--repo")
     pf.set_defaults(func=cmd_find_issue)
