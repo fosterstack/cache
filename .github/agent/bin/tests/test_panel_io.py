@@ -765,6 +765,8 @@ class Deliver(Tmp):
         def run(cmd, **kw):
             calls.append((cmd, kw.get("env", {}).get("GH_TOKEN")))
             out = (outputs or {}).get(tuple(cmd[:3]), "")
+            if callable(out):                                                  # an answer that depends on the whole command
+                out = out(cmd)
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = "success"
             elif cmd[:3] == ["gh", "pr", "view"] and "headRefOid" in cmd:
@@ -860,7 +862,7 @@ class Deliver(Tmp):
                        "impact_statement": "Audited from the image: Version: 2"}],
                  profiles=[{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"},
                             "behavior": "unexplained", "finding": "f", "evidence": "e", "unexplained": True}])
-        calls, run = self.fake()
+        calls, run = self.fake({("gh", "issue", "list"): lambda cmd: "[]" if "--jq" not in cmd else ""})   # the owner lookup reads a JSON array; the daily-rescan lookup (--jq) finds none
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_ISSUES_TOKEN": "issues-token", "GH_TOKEN": "app-token",
                "GITHUB_SHA": SHA40}
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
@@ -945,7 +947,8 @@ class Deliver(Tmp):
             open(vpath, "w"))
         self.day(issue="miss", owner=["an audit miss"],
                  vex=[dict(mine, status="affected", impact_statement="another scanner reported it")])
-        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n", ("gh", "pr", "view"): "true\n",
+        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): (lambda cmd: "42\n" if "--jq" in cmd else json.dumps([{"number": 42, "title": "auditor: needs a decision: scanner panel"}])),
+                                ("gh", "pr", "view"): "true\n",
                                 ("gh", "pr", "diff"): ".github/policy/scanner-profiles.json\n.auditor/panel-state.json\n"})
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": "on"}), \
                 mock.patch("sys.stdout", new=io.StringIO()):
