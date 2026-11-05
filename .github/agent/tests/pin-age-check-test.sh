@@ -5613,7 +5613,8 @@ fi
 #   HL:file      the file is not bin/refresh-inputs.sh            HL:host      the operand host is not dl-cdn.alpinelinux.org
 #   HL:path      the operand path is not /alpine/v3.24/main/x86_64/$f   HL:operands  there is not exactly one operand
 #   HL:flags     the flags are not the fixed list in the fixed order, or -g/-q/--proto =https/--tlsv1.2 is missing
-#   HL:lock      the lock file read from the head tree is missing, a link, empty, over 500 rows, or has a row that is not name=version sha256:<64 lowercase hex>
+#   HL:lock      the lock file read from the head tree is missing or not a regular file (a malformed lock is refused by the inventory parser before the gate runs)
+#   HL:verifier  the verifier line (the physical line of the fetch script that checks a download's sha256 against the lock) is not in the file exactly once, as a whole line with no whitespace twin, or its sha256 is not the row's verifier-line-sha256
 # and ONE line `<indent>rev = head  # HL:head` (the revision the lock file is read from).
 HLP='hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): '
 HLUR='https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f'
@@ -5621,6 +5622,7 @@ HLKA='        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 
 HLKB='|| die "could not download the kernel package from the Alpine mirror" 1'
 HLK="$HLKA \"$HLUR\" $HLKB"
 HLOTHER='curl -fsSL https://example.com/x -o /tmp/x'
+HLVL='    if hashlib.sha256(raw).hexdigest() != want_sha:'  # the verifier: bin/refresh-inputs.sh verify_kernel at cache#840 2120c27:754; every body below gets it appended once unless HLNV=1
 HLROW='linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e'
 echo '{"times": {}}' >"$work/hl-none.fx.json"
 hl_row() { # OUT FILE LINE PREFIX: the row for the download segment of LINE, bound to LINE, as the scan flattens it (the same as mkrowpf)
@@ -5662,7 +5664,8 @@ PY
 HLN=(); declare -A HLW
 hl_case() { # NAME WANT FILE BODY LOCKBASE LOCKHEAD ROWLINE [PREFIX] [ROWFILE] [link]: WANT is the exit code (0 = ruled by the new kind)
   HLN+=("$1"); HLW[$1]=$2
-  hl_repo "hl-$1" "$3" "$4" "$5" "$6" "${10:-}"
+  local body=$4; [ -n "${HLNV:-}" ] || body=$4$'\n'$HLVL
+  hl_repo "hl-$1" "$3" "$body" "$5" "$6" "${10:-}"
   hl_row "$work/hl-$1.json" "${9:-$3}" "$7" "${8:-$HLP}"
 }
 hl_exec() { # CHECKER [stop]: HLBAD = the names of the cases that do not give the wanted exit code
@@ -5746,6 +5749,17 @@ ln="${HLK/--max-time 900/--max-time 9000}"; hl_case flag-max-time-changed 1 $F "
 ln="${HLK/\$tmp\/dl\/x86_64\/\$f/\$tmp\/dl\/x86_64\/other}"; hl_case output-path-changed 1 $F "$ln" "$V" = "$ln"
 ln="${HLK/\/usr\/bin\/curl/curl}"; hl_case curl-bare 1 $F "$ln" "$V" = "$ln"
 ln="${HLK/\/usr\/bin\/curl//bin/curl}"; hl_case curl-bin-curl 1 $F "$ln" "$V" = "$ln"
+# round 1 seat D ruling D1: the verifier line must be in the file exactly once, whole and unchanged; a lock that merely exists passes nothing (the cases above carry it once)
+HLNV=1 hl_case verifier-missing 1 $F "$HLK" "$V" = "$HLK"
+HLNV=1 hl_case verifier-commented-out 1 $F "$HLK"$'\n'"# $HLVL" "$V" = "$HLK"
+HLNV=1 hl_case verifier-indent-3 1 $F "$HLK"$'\n'"${HLVL# }" "$V" = "$HLK"
+HLNV=1 hl_case verifier-indent-5 1 $F "$HLK"$'\n'" $HLVL" "$V" = "$HLK"
+HLNV=1 hl_case verifier-tab-indent 1 $F "$HLK"$'\n'$'\t'"${HLVL#    }" "$V" = "$HLK"
+HLNV=1 hl_case verifier-trailing-space 1 $F "$HLK"$'\n'"$HLVL " "$V" = "$HLK"
+HLNV=1 hl_case verifier-with-cr 1 $F "$HLK"$'\n'"$HLVL"$'\r' "$V" = "$HLK"
+HLNV=1 hl_case verifier-other-operator 1 $F "$HLK"$'\n'"${HLVL/!=/==}" "$V" = "$HLK"
+hl_case verifier-twice 1 $F "$HLK"$'\n'"$HLVL" "$V" = "$HLK"
+hl_case verifier-whitespace-twin 1 $F "$HLK"$'\n'"${HLVL/if hashlib/if  hashlib}" "$V" = "$HLK"
 # the lock: missing, removed at the head, a link, empty, 501 rows, a malformed row, a repeated row
 hl_case lock-missing 1 $F "$HLK" - = "$HLK"
 hl_case lock-removed-at-head 1 $F "$HLK" "$V" - "$HLK"
@@ -5793,6 +5807,7 @@ else
   hl_mutant second-operand-accepted tag operands
   hl_mutant flags-check-dropped tag flags
   hl_mutant lock-check-dropped tag lock
+  hl_mutant verifier-check-dropped tag verifier
   hl_mutant lock-read-from-the-base head head
   hl_mutant prefix-not-accepted prefix prefix
 fi
