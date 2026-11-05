@@ -421,15 +421,9 @@ fi_run "$D/garbage-issues.json" "$PLAIN" "$PREF";    fi_err "an unreadable reply
 mkdir -p "$D/bin-empty"; printf '#!/bin/bash\nexit 0\n' >"$D/bin-empty/gh"; chmod +x "$D/bin-empty/gh"
 GH_ISSUES=$D/fi-pref.json PATH="$D/bin-empty:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$PLAIN" --title "$PREF" >"$D/found.out" 2>/dev/null && rc=0 || rc=$?
 fi_err "an empty reply with two titles must be an error"
-# the panel step of the workflow looks the issue up under BOTH titles (the panel opens the prefixed one), and the prefix is the policy's
+# the panel step looks the issue up under BOTH titles (the panel opens the prefixed one; test_panel_io.py pins it)
 FIND_LINE=$(grep 'rescan-statement.py find-issue' "$WF" | head -1)
 if printf '%s' "$FIND_LINE" | grep -qF -- '--title "$title"' && printf '%s' "$FIND_LINE" | grep -qF -- '--title "auditor: $title"'; then ok; else bad "the panel step must call find-issue with --title \"\$title\" and --title \"auditor: \$title\" (got: $FIND_LINE)"; fi
-POLICY_PREFIX=$(python3 -I - <<'P'
-import re
-print(re.search(r'^AUDITOR_PREFIX = "([^"]*)"', open(".github/agent/bin/auditorlib/policy.py").read(), re.M).group(1))
-P
-)
-if [ "$POLICY_PREFIX" = "auditor:" ] && printf '%s' "$FIND_LINE" | grep -qF -- "\"$POLICY_PREFIX \$title\""; then ok; else bad "the workflow's title prefix must be the policy's AUDITOR_PREFIX ('$POLICY_PREFIX') and a space"; fi
 # the step still creates the one plain title when nothing is found (the panel's own issue is the prefixed one)
 if [ "$(grep -c 'gh issue create --title' "$WF")" = 1 ] && grep -qF 'gh issue create --title "$title" --label daily-rescan' "$WF"; then ok; else bad "the panel step must create exactly one issue, titled \"\$title\", when none is found"; fi
 # the per-target github-script step: run the REAL script text against a fake github that serves 30 issues per page
