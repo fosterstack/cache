@@ -367,6 +367,63 @@ if [ $rc != 0 ]; then ok; else bad "find-issue: an unreadable reply must be an e
 # the panel step of the workflow uses it, and no longer reads a single default page
 WF=.github/workflows/main-candidate-rescan.yml
 if grep -q 'rescan-statement.py find-issue' "$WF" && ! grep -qE 'gh issue list' "$WF"; then ok; else bad "the panel step must look the tracking issue up with find-issue (every page), not 'gh issue list' (first 30 only)"; fi
+# ---- find-issue finds the tracking issue under its title or under the same title with the family prefix in front ----
+PLAIN="Daily scanner panel: findings on main"; PREF="auditor: $PLAIN"
+fi_run() { # issues-file title : run find-issue with this one --title; leaves rc and the output in $rc and $D/found.out
+  GH_ISSUES=$1 PATH="$D/bin:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$2" >"$D/found.out" 2>"$D/found.err" && rc=0 || rc=$?
+}
+fi_expect() { # message expected-output (empty for nothing): the last fi_run must exit 0 and print exactly this
+  if [ $rc = 0 ] && [ "$(cat "$D/found.out")" = "$2" ]; then ok; else bad "find-issue: $1 (rc=$rc, out='$(cat "$D/found.out")')"; fi
+}
+fi_err() { # message : the last fi_run must exit non-zero and print nothing
+  if [ $rc != 0 ] && [ ! -s "$D/found.out" ]; then ok; else bad "find-issue: $1 (rc=$rc, out='$(cat "$D/found.out")')"; fi
+}
+fi_issues() { # out-file index=title ... : 250 open issues, with the given titles at the given indexes; a title ending in |pr is a pull request
+  python3 - "$@" <<'P'
+import json, sys
+out, items = sys.argv[1], [{"number": 1000 - i, "title": "Daily rescan: findings in other %d" % i, "labels": [{"name": "daily-rescan"}]} for i in range(250)]
+for spec in sys.argv[2:]:
+    idx, _, title = spec.partition("=")
+    items[int(idx)]["title"] = title
+    if title.endswith("|pr"):
+        items[int(idx)]["title"], items[int(idx)]["pull_request"] = title[:-3], {"url": "x"}
+json.dump(items, open(out, "w"))
+P
+}
+fi_issues "$D/fi-plain.json" "230=$PLAIN"
+fi_issues "$D/fi-pref.json" "230=$PREF"
+fi_run "$D/fi-plain.json" "$PLAIN"; fi_expect "the issue under the given title is found on a late page" "$((1000-230))"
+fi_run "$D/fi-pref.json" "$PLAIN";  fi_expect "the issue under the given title with the family prefix in front is found on a late page" "$((1000-230))"
+# titles that only look like the two forms are not the tracking issue
+for near in "$PLAIN and more" "$(printf '%s' "$PLAIN" | tr 'A-Z' 'a-z')" "$(printf '%s' "$PREF" | tr 'A-Z' 'a-z')" "$PLAIN " "$PREF " " $PREF" \
+  "auditor:$PLAIN" "auditor: Daily rescan: findings in other 1" "auditor: $PREF" "x$PREF" "$PREF and more"; do
+  fi_issues "$D/fi-near.json" "10=$near"
+  fi_run "$D/fi-near.json" "$PLAIN"; fi_expect "the title '$near' was taken for the tracking issue" ""
+done
+# a pull request with either form is not the tracking issue
+fi_issues "$D/fi-pr.json" "5=$PREF|pr" "6=$PLAIN|pr" "230=$PREF"
+fi_run "$D/fi-pr.json" "$PLAIN";    fi_expect "a pull request carrying either form was taken for the tracking issue" "$((1000-230))"
+# two tracking issues, one under each form: the first one in the list is the one printed
+fi_issues "$D/fi-two-a.json" "10=$PREF" "40=$PLAIN"
+fi_run "$D/fi-two-a.json" "$PLAIN"; fi_expect "two tracking issues: the first in the list (prefixed form) must win" "$((1000-10))"
+fi_issues "$D/fi-two-b.json" "10=$PLAIN" "40=$PREF"
+fi_run "$D/fi-two-b.json" "$PLAIN"; fi_expect "two tracking issues: the first in the list (plain form) must win" "$((1000-10))"
+# neither form on any page: nothing printed, exit 0
+fi_issues "$D/fi-none.json" "10=$PLAIN (old)"
+fi_run "$D/fi-none.json" "$PLAIN";  fi_expect "no issue under either form prints nothing" ""
+# every way the list cannot be read is still an error, never "no issue"
+GH_FAIL=1 fi_run "$D/fi-pref.json" "$PLAIN"; fi_err "a gh failure must be an error for the prefixed form too"
+fi_run "$D/garbage-issues.json" "$PLAIN";    fi_err "an unreadable reply must be an error for the prefixed form too"
+mkdir -p "$D/bin-empty"; printf '#!/bin/bash\nexit 0\n' >"$D/bin-empty/gh"; chmod +x "$D/bin-empty/gh"
+GH_ISSUES=$D/fi-pref.json PATH="$D/bin-empty:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$PLAIN" >"$D/found.out" 2>/dev/null && rc=0 || rc=$?
+fi_err "an empty reply must be an error"
+# the panel step of the workflow passes the one plain title (the prefix is the script's own; test_panel_io.py pins it to the policy);
+# the word "audit" must stay out of that job (the rescan's panel job tallies and cannot audit: panel-wiring-test.sh)
+FIND_LINE=$(grep 'rescan-statement.py find-issue' "$WF" | head -1)
+if [ "$(printf '%s' "$FIND_LINE" | grep -o -- '--title' | wc -l)" = 1 ] && printf '%s' "$FIND_LINE" | grep -qF -- 'find-issue --title "$title")'; then ok; else bad "the panel step must call find-issue with exactly one --title \"\$title\" (got: $FIND_LINE)"; fi
+if ! printf '%s' "$FIND_LINE" | grep -qi 'audit'; then ok; else bad "the panel step's find-issue line must not contain the word audit (panel-wiring-test.sh rule 9)"; fi
+# the step creates the one plain title when nothing is found
+if [ "$(grep -c 'gh issue create --title' "$WF")" = 1 ] && grep -qF 'gh issue create --title "$title" --label daily-rescan' "$WF"; then ok; else bad "the panel step must create exactly one issue, titled \"\$title\", when none is found"; fi
 # the per-target github-script step: run the REAL script text against a fake github that serves 30 issues per page
 python3 - "$WF" "$D/script.js" <<'P'
 import re, sys
