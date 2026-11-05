@@ -700,7 +700,7 @@ class PanelOwnerIssue(Tmp):
         calls, err = self.deliver({})
         self.assertIsNone(err)
         wanted = lambda t: ["gh", "issue", "list", "--state", "open", "--label", "owner-decision", "--search", t,
-                            "--json", "number,title"]
+                            "--limit", "100", "--json", "number,title"]
         self.assertEqual(self.owner_lists(calls), [wanted(self.NEW), wanted(self.OLD)])
         creates = [c for c in calls if c[:3] == ["gh", "issue", "create"]]
         self.assertEqual(len(creates), 1)

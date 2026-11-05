@@ -862,7 +862,7 @@ class Deliver(Tmp):
                        "impact_statement": "Audited from the image: Version: 2"}],
                  profiles=[{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"},
                             "behavior": "unexplained", "finding": "f", "evidence": "e", "unexplained": True}])
-        calls, run = self.fake()
+        calls, run = self.fake({("gh", "issue", "list"): lambda cmd: "[]" if "--jq" not in cmd else ""})   # the owner lookup reads a JSON array; the daily-rescan lookup (--jq) finds none
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_ISSUES_TOKEN": "issues-token", "GH_TOKEN": "app-token",
                "GITHUB_SHA": SHA40}
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
