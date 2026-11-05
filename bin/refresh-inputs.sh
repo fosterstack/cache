@@ -342,7 +342,7 @@ refresh)
     [ -f "$repo/$f" ] || die "missing $f in $repo"
   done
   for f in build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock \
-           build/locks/vm-kernel.lock build/locks/vm-keys.sha256 build/vm-keys/alpine-6165ee59.rsa.pub; do
+           build/locks/vm-kernel.lock build/vm-keys/kernel-key-6165ee59.rsa.pub; do
     [ -f "$repo/$f" ] || die "missing $f in $repo"
   done
 
@@ -403,7 +403,8 @@ for vm in ("vm-host", "vm-guest"):
     yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": vnames}, "archs": ["x86_64"]},
                    open("%s/%s/%s-env.yaml" % (tmp, vm, vm), "w"))
 # REQ-REFRESH-001-AC40: the kernel lock is read whole, before the first network call of the run
-KEY_NAME = "alpine-6165ee59.rsa.pub"
+KEY_FILE = "kernel-key-6165ee59.rsa.pub"
+KEY_SHA256 = "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
 k_text = open(repo + "/build/locks/vm-kernel.lock", newline="").read()
 k_rows = k_text.split("\n")[:-1] if k_text.endswith("\n") else []
 m = re.fullmatch(r"(linux-virt)=(%s) sha256:([0-9a-f]{64})" % VERSION.pattern, k_rows[0]) if len(k_rows) == 1 else None
@@ -412,14 +413,9 @@ if not m or ".." in m.group(2):
            "'linux-virt=<version> sha256:<64 lower-case hex>': %r" % k_text[:200])
 open(tmp + "/vm-kernel.rows", "w").write("%s %s %s\n" % m.groups())
 # REQ-REFRESH-001-AC41: the committed kernel package key is the pinned one before anything is checked with it
-pin_text = open(repo + "/build/locks/vm-keys.sha256", encoding="utf-8").read()
-if not re.fullmatch(r"%s sha256:[0-9a-f]{64}\n" % re.escape(KEY_NAME), pin_text):
-    print("refresh-inputs.sh: build/locks/vm-keys.sha256 must hold exactly one line '%s sha256:<64 hex>' "
-          "(the kernel package key); stopping, a human must look" % KEY_NAME, file=sys.stderr); sys.exit(3)
-key_sha = hashlib.sha256(open(repo + "/build/vm-keys/" + KEY_NAME, "rb").read()).hexdigest()
-if key_sha != pin_text.split("sha256:")[1].strip():
-    print("refresh-inputs.sh: build/vm-keys/%s is not the key pinned in build/locks/vm-keys.sha256; "
-          "stopping, a human must look" % KEY_NAME, file=sys.stderr); sys.exit(3)
+if hashlib.sha256(open(repo + "/build/vm-keys/" + KEY_FILE, "rb").read()).hexdigest() != KEY_SHA256:
+    print("refresh-inputs.sh: build/vm-keys/%s is not the key whose sha256 this script states (%s); "
+          "stopping, a human must look" % (KEY_FILE, KEY_SHA256), file=sys.stderr); sys.exit(3)
 # REQ-REFRESH-001-AC42: every VM lock is written inside the repository (the file and its temporary sibling's directory)
 root = os.path.realpath(repo)
 for vm in ("vm-host", "vm-guest"):
@@ -740,8 +736,9 @@ def verify_integrity(path, what):
         fail("checksum mismatch: %s is damaged, truncated or not an apk (%s)%s" % (what, str(ex)[:120], HINT))
 
 
-KEY_NAME = "alpine-6165ee59.rsa.pub"
-# the key name Alpine writes in a package's signature header
+KEY_FILE = "kernel-key-6165ee59.rsa.pub"
+KEY_SHA256 = "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
+# the key name written in a package's signature header
 HEADER_KEY = "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
 
 
@@ -783,11 +780,13 @@ def verify_kernel(path, name, ver, want_sha):
     open(sp, "wb").write(sig)
     open(cp, "wb").write(parts[1][0])
     alg = "-sha256" if m.group(1) else "-sha1"
-    key_path = "%s/build/vm-keys/%s" % (repo, KEY_NAME)
+    key_path = "%s/build/vm-keys/%s" % (repo, KEY_FILE)
+    if hashlib.sha256(open(key_path, "rb").read()).hexdigest() != KEY_SHA256:
+        fail("the committed kernel key %s is not the key whose sha256 this script states; refused" % KEY_FILE)
     cmd = ["/usr/bin/openssl", "dgst", alg, "-verify", key_path, "-signature", sp, cp]
     r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
-        fail("the signature of %s does not verify against the committed kernel key %s; refused" % (what, KEY_NAME))
+        fail("the signature of %s does not verify against the committed kernel key %s; refused" % (what, KEY_FILE))
     lines = pkginfo.splitlines()
     for field in ("pkgname", "pkgver", "datahash"):
         if sum(1 for l in lines if l.startswith(field + " = ")) != 1:

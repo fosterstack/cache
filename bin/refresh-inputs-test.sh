@@ -150,12 +150,17 @@ P
 printf 'packages:\n  - busybox\n' >"$fx/repo/build/vm-host.yaml"
 printf 'packages:\n  - ca-certificates-bundle\n' >"$fx/repo/build/vm-guest.yaml"
 cp "$fx/vm.lock" "$fx/repo/build/locks/vm-host.lock"; cp "$fx/vm.lock" "$fx/repo/build/locks/vm-guest.lock"
-KNAME=alpine-6165ee59.rsa.pub   # the committed key file and its pin line
+KNAME=kernel-key-6165ee59.rsa.pub   # the committed key file and its pin line
 KSHA=$(shasum -a 256 "$fx/kernel/good.apk" | cut -d' ' -f1)
 mkdir -p "$fx/repo/build/vm-keys"; cp "$fx/alpinekey.pub" "$fx/repo/build/vm-keys/$KNAME"
 printf 'linux-virt=6.18.60-r0 sha256:%s\n' "$KSHA" >"$fx/repo/build/locks/vm-kernel.lock"
 KKEY=$(shasum -a 256 "$fx/alpinekey.pub" | cut -d' ' -f1)
-printf '%s sha256:%s\n' "$KNAME" "$KKEY" >"$fx/repo/build/locks/vm-keys.sha256"   # a pin file of its own
+# the script states the key's sha256 in one constant: the suite's copies state the fixture's, rfcopy-realkey keeps it
+cp -R "$rfd/rfcopy" "$rfd/rfcopy-realkey"
+for c_ in rfcopy rfcopy-nossl; do
+  sed -i -E "s/^( *KEY_SHA256 = \")(sha256:)?[0-9a-f]{64}\"/\\1\\2$KKEY\"/" "$rfd/$c_/bin/refresh-inputs.sh"
+done
+RFK="$rfd/rfcopy-realkey/bin/refresh-inputs.sh"
 cp "$fx/kernel/good.apk" "$fx/archive/x86_64/linux-virt-6.18.60-r0.apk"
 mkdir -p "$fx/live/x86_64"; cp "$fx/kernel/good.apk" "$fx/live/x86_64/linux-virt-6.18.60-r0.apk"   # the Alpine mirror
 mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/"; rm -rf "$work/ar"; cp -R "$fx/archive" "$work/ar"; for a in x86_64 aarch64; do cp -n "$fx/envrepo/$a/"*.apk "$work/ar/$a/"; done   # melange's build tools are archived too
@@ -685,6 +690,9 @@ t "AC23" "refresh-inputs.sh has no test hook: no REFRESH_OPENSSL and no FSCACHE_
 t "AC23" "the test copy of refresh-inputs.sh differs from the production file ONLY in occurrences of the ten fixed paths, each replaced one for one by the dispatcher of that tool (any other byte difference fails)" python3 - "$RF_PROD" "$RF" "$rfd/tools" <<'P'
 import os, re, sys
 a = open(sys.argv[1]).read(); b = open(sys.argv[2]).read(); tools = sys.argv[3]
+# the one other line the copy may state differently
+kl = re.compile(r'^( *KEY_SHA256 = ")(?:sha256:)?[0-9a-f]{64}"', re.M)
+a = kl.sub(r'\1X"', a); b = kl.sub(r'\1X"', b)
 paths = {"python3": "/usr/bin/python3", os.environ["FETCH"]: "/usr/bin/" + os.environ["FETCH"], "git": "/usr/bin/git", "gh": "/usr/bin/gh", "apko": "/usr/local/bin/apko",
          "openssl": "/usr/bin/openssl", "cmp": "/usr/bin/cmp", "mktemp": "/usr/bin/mktemp", "rm": "/bin/rm", "mkdir": "/bin/mkdir"}
 pa = re.compile(r"(?<![\w./-])(%s)(?![\w.-])" % "|".join(re.escape(p) for p in sorted(paths.values(), key=len, reverse=True)))
@@ -1958,13 +1966,32 @@ kfail "bytes that are not a package" 'linux-virt' notapk.apk
 kfail "two datahash lines, the right one first" linux-virt dupdh-rw.apk
 kfail "two datahash lines, the right one last" linux-virt dupdh-wr.apk
 kfail "two pkgname lines" linux-virt dupname.apk
+t "AC41" "the script states the kernel key's sha256 in a KEY_SHA256 constant; the test copy states the fixture's" \
+  bash -c "grep -Eq '^ *KEY_SHA256 = \"(sha256:)?[0-9a-f]{64}\"' '$RF_PROD' &&
+  grep -Eq '^ *KEY_SHA256 = \"(sha256:)?$KKEY\"' '$RF'"
+t "AC41" "the committed build/vm-keys/kernel-key-6165ee59.rsa.pub has the sha256 that bin/refresh-inputs.sh states" \
+  python3 -I - "$root" <<'P'
+import hashlib, re, sys
+root = sys.argv[1]
+m = re.search(r'^ *KEY_SHA256 = "(?:sha256:)?([0-9a-f]{64})"', open(root + "/bin/refresh-inputs.sh").read(), re.M)
+assert m, "no KEY_SHA256 constant"
+assert hashlib.sha256(open(root + "/build/vm-keys/kernel-key-6165ee59.rsa.pub", "rb").read()).hexdigest() == m.group(1)
+P
+# ===== round 3 (cache#840 seat findings): key layout, waiting-PR kernel check, containment, VM-only packages =====
+rcnz() { [ "$(cat "$work/rc")" != 0 ] && [ "$(cat "$work/rc")" != 127 ]; }
+rcis() { [ "$(cat "$work/rc")" = "$1" ]; }
+nopr() { ! grep -q '^gh pr create' "$CALLS"; }
+inlog() { grep -q -- "$1" "$work/log"; }
+mkrepo; run_s2 "${rfe[@]}" "$RFK" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC41" "refresh: with the unmodified constant the fixture key is refused (exit 3, names the key and sha256)" \
+  bash -c "$(declare -f rcis inlog nopr); CALLS='$CALLS'; work='$work'
+  rcis 3 && inlog kernel-key-6165ee59 && inlog sha256 && nopr"
 mkrepo; printf 'bad\n' >"$work/rp/build/vm-keys/$KNAME"; RR
-t "AC41" "refresh: a committed kernel key that is not the pinned one is refused (names vm-keys.sha256)" \
-  bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'vm-keys.sha256' '$work/log' &&
-  ! grep -q '^gh pr create' '$CALLS'"
-mkrepo; : >"$work/rp/build/locks/vm-keys.sha256"; RR
-t "AC41" "refresh: a kernel key with no line in vm-keys.sha256 is refused (names the key)" \
-  bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q '6165ee59' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+t "AC41" "refresh: a committed kernel key whose bytes differ from the constant is refused (exit 3, names it)" \
+  bash -c "$(declare -f rcis inlog nopr); CALLS='$CALLS'; work='$work'; rcis 3 && inlog kernel-key-6165ee59 && nopr"
+mkrepo; rm -f "$work/rp/build/vm-keys/$KNAME"; RR
+t "AC41" "refresh: a missing kernel key file is refused (non-zero, names the key file)" \
+  bash -c "$(declare -f rcnz inlog nopr); CALLS='$CALLS'; work='$work'; rcnz && inlog kernel-key-6165ee59 && nopr"
 # the archive lacks the package: it is downloaded from the one pinned Alpine address and kept only when it passes
 KURL=https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.60-r0.apk
 mkrepo; rm -f "$work/ar/$KAPK"; mkdir -p "$work/kdl/x86_64"; cp "$fx/kernel/good.apk" "$work/kdl/$KAPK"
@@ -1975,12 +2002,7 @@ mkrepo; rm -f "$work/ar/$KAPK"; cp "$fx/kernel/othersig.apk" "$work/kdl/$KAPK"; 
 t "AC41" "refresh: a downloaded kernel package that fails its check is refused and not kept (no pull request)" \
   bash -c "test \"\$(cat '$work/rc')\" != 0 && test \"\$(cat '$work/rc')\" != 127 &&
   ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/$KAPK'"
-# ===== round 3 (cache#840 seat findings): key layout, waiting-PR kernel check, containment, VM-only packages =====
-rcnz() { [ "$(cat "$work/rc")" != 0 ] && [ "$(cat "$work/rc")" != 127 ]; }
-rcis() { [ "$(cat "$work/rc")" = "$1" ]; }
-nopr() { ! grep -q '^gh pr create' "$CALLS"; }
-inlog() { grep -q -- "$1" "$work/log"; }
-# F1: the image assembler's key check keeps passing: the Alpine pin lives in build/locks/vm-keys.sha256 alone
+# F1: the image assembler's key check keeps passing: archive-keys.sha256 is unchanged, no new pin file exists
 t "AC41" "the committed archive-keys.sha256 holds only the Wolfi and assembly lines and passes the assembler's check" \
   python3 -I - "$root" "$work" <<'P'
 import hashlib, os, re, shutil, subprocess, sys
@@ -1988,6 +2010,8 @@ root, work = sys.argv[1:3]
 rec = open(root + "/build/locks/archive-keys.sha256", newline="").read()
 names = sorted(l.split(" ")[0] for l in rec.splitlines() if l)
 assert names == ["assembly.rsa.pub", "wolfi-signing.rsa.pub"], names
+assert rec == ("wolfi-signing.rsa.pub sha256:f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5b7d2cc\n"
+               "assembly.rsa.pub sha256:87fbcae7d56920b718980d702c0fefa8a4959a018955088df6f38b886e24deb5\n"), rec
 kd = work + "/f1-keys"
 shutil.rmtree(kd, ignore_errors=True); os.makedirs(kd)
 open(kd + "/wolfi-signing.rsa.pub", "wb").write(b"stand-in")
@@ -2000,18 +2024,12 @@ r = subprocess.run(["python3", "-I", "-B", root + "/bin/oci-digest.py", "check-k
                    capture_output=True, text=True)
 assert r.returncode == 0, r.stderr
 P
-t "AC41" "build/locks/vm-keys.sha256 holds exactly one line: the committed kernel key file and its sha256" \
-  python3 -I - "$root" <<'P'
-import hashlib, sys
-root = sys.argv[1]
-key = open(root + "/build/vm-keys/alpine-6165ee59.rsa.pub", "rb").read()
-want = "alpine-6165ee59.rsa.pub sha256:" + hashlib.sha256(key).hexdigest() + "\n"
-assert open(root + "/build/locks/vm-keys.sha256").read() == want
-P
+t "AC41" "no file build/locks/vm-keys.sha256 exists (a new checksum-record file is refused by the age check)" \
+  test ! -e "$root/build/locks/vm-keys.sha256"
 # F4: an open refresh pull request must not hide a damaged archived kernel package
-waitrun() {
-  run_s4 env GH_STUB_OPEN="refresh/00000000" "${rfn[@]:1}" "$RF" refresh --pr-author app/bot \
-    --repo-dir "$work/rp" --archive "$work/ar"
+waitrun() {   # waitrun [CURL-DIR]: a changed live resolution and an open refresh pull request
+  run_s4 env GH_STUB_OPEN="refresh/00000000" "${rfn[@]:1}" ${1:+STUB_CURL_DIR="$1"} "$RF" refresh \
+    --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 }
 mkrepo; waitrun
 t "AC41" "refresh: a waiting refresh pull request and a good archived kernel: exit 0, no new pull request" \
@@ -2047,10 +2065,18 @@ ln -s /nonexistent/lock "$work/rp/build/locks/vm-kernel.lock"
 dangle "build/locks/vm-kernel.lock" vm-kernel.lock
 mkrepo; rm -f "$work/rp/build/vm-keys/$KNAME"
 ln -s /nonexistent/key "$work/rp/build/vm-keys/$KNAME"
-dangle "the committed kernel key" alpine-6165ee59
+dangle "the committed kernel key" kernel-key-6165ee59
 mkrepo; rm -f "$work/rp/build/locks/vm-host.lock"
 ln -s /nonexistent/lock "$work/rp/build/locks/vm-host.lock"
 dangle "build/locks/vm-host.lock" vm-host.lock
+# F4 (b): no archived kernel and a waiting refresh pull request: no download, the run stops for the waiting pull request
+mkrepo; rm -f "$work/ar/$KAPK"; before=$(treehash "$work/ar"); waitrun
+t "AC41" "refresh: a waiting pull request and no archived kernel: exit 0 as for any missing package, no new PR" \
+  bash -c "$(declare -f rcis nopr); CALLS='$CALLS'; work='$work'; rcis 0 && grep -qi earlier '$work/log' && nopr"
+t "AC41" "refresh: ...a waiting pull request and no archived kernel: no download from the kernel address" \
+  bash -c "! grep -q 'dl-cdn' '$CALLS'"
+t "AC41" "refresh: ...a waiting pull request and no archived kernel: nothing is written to the archive" \
+  test "$(treehash "$work/ar")" = "$before"
 # F6 (AC42): every write destination of the VM locks, and each temp sibling's parent, resolves inside the repository
 outside_case() {   # outside_case LABEL: the caller has moved part of $work/rp to $work/out
   RRE STUB_LOCK="$work/ln.json"

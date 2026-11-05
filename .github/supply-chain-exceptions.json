@@ -1471,20 +1471,6 @@
       "ruling": "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): the Go toolchain tarball download (one per missing tarball) in bin/refresh-inputs.sh; one curl with fixed flags and the single operand https://go.dev/dl/ plus one variable; the file name passed a closed Go-tarball grammar and the fetched bytes are stored only after their sha256 equals the expected-sha256 pinned by the committed recipes"
     },
     {
-      "file": "bin/refresh-inputs.sh",
-      "form": "a download",
-      "key": "cd1c3e0964ee70b70e9b569741379984ea7ac611543d8ef394c03b04fabdbbbc",
-      "line": "9310457c56e7e5e1864240fa7efed5e764a80fd04f2622d755771b0b0b8f5cfe",
-      "ruling": "orchestrator ruling 2026-11-05 (audits/reviews/cache-840-kernel-fetch.md), under the advisor's 23:21Z read-back approval of the VM build route (kernel row in PR 1): pinned kernel fetch: the Alpine linux-virt package, one curl with fixed flags and one https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/ operand; the whole-file sha256 is pinned in build/locks/vm-kernel.lock and the package is verified against the committed Alpine key and its datahash before it is kept"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "a094ecd2a9f8e6892dbb3c7b0f27c15ff008e81f706ee9027fd0f1b88afd6804",
-      "line": "a094ecd2a9f8e6892dbb3c7b0f27c15ff008e81f706ee9027fd0f1b88afd6804",
-      "ruling": "text, not a command: a Python string in the refresh test's fetch-line grammar check (the head of the fixed flags the check requires, inside a heredoc of data); it runs nothing; proposed by the lane for the reviewer's read, REQ-SUP-001-AC16"
-    },
-    {
       "file": "bin/chain-build-wiring-test.sh",
       "form": "a download",
       "key": "90a39ff8541a167a4092c81e297431bacb5be373245ccc2b2b21e948665370f5",
