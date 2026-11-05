@@ -1,0 +1,33 @@
+# Test-only recipe of the VM wall probe (bin/vm-sandbox-probe.sh), wall: remount-write. Never published.
+# The probe renders it into a temporary folder (@BUSYBOX@ is replaced there) and runs it in the build VM. The guest is root
+# in its own chroot; this recipe goes round it through pid 1's root, mounts the host workspace share again, and writes through
+# the share and through a symlink aimed at a host file. The recipe cannot tell whether the host file changed: the HOST judges.
+package:
+  name: probe-vm-remount
+  version: 0.0.1
+  epoch: 0
+  description: test-only recipe of the VM wall probe, wall remount-write
+  copyright:
+    - license: MIT
+environment:
+  contents:
+    packages:
+      - @BUSYBOX@
+pipeline:
+  - runs: |
+      P=/proc/1/root
+      LD=
+      for f in $P/usr/lib/ld-linux-*.so.* $P/lib/ld-linux-*.so.*; do
+        if [ -e "$f" ]; then LD=$f; break; fi
+      done
+      if [ -z "$LD" ]; then echo "probe: no loader under $P"; exit 0; fi
+      M="$LD --library-path $P/usr/lib:$P/lib $P/usr/bin/mount"
+      mkdir -p /tmp/share
+      rc=0; $M -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 defaultshare /tmp/share || rc=$?
+      if [ "$rc" = 0 ]; then
+        echo hostile > /tmp/share/vm-probe-written || true
+        ln -s @CANARY_OUTSIDE@ /tmp/share/vm-probe-link || true
+        echo hostile >> /tmp/share/vm-probe-link || true
+        echo hostile > /tmp/share/vm-probe-canary-copy || true
+      fi
+      echo "probe: remount rc=$rc done"
