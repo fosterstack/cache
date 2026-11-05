@@ -1884,11 +1884,12 @@ def _head_file(root, rev, f):
         return None
 
 
-def _hash_locked_line_ok(root, head, f, flat):
+def _hash_locked_line_ok(root, head, f, flat, ver):
     """REQ-SUP-001-AC35: True only for the one kernel fetch line of bin/refresh-inputs.sh: the fixed curl flags in the fixed order, one double-quoted operand
     https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f compared as written, then `|| die "plain text" 1`; the file holds that line once, as the whole raw line
     (eight spaces of indent, single spaces, nothing after it; no whitespace twin, no carriage return);
-    and the head tree holds the kernel lock file as a regular file (the inventory refuses a malformed one first), whose sha256 the refresh job checks before it keeps a package."""
+    and the head tree holds the kernel lock file as a regular file (the inventory refuses a malformed one first); the row's verifier (file, line) names the line of that
+    file that checks a download's sha256 against the lock: it is held once as a whole line with no whitespace twin, and its sha256 is the row's verifier-line-sha256."""
     if f != HL_FILE:  # HL:file
         return False
     left, _, right = flat.partition("||")
@@ -1908,6 +1909,11 @@ def _hash_locked_line_ok(root, head, f, flat):
         return False
     raw = _head_file(root, head, f)
     if raw is None or b"\r" in raw or sum(" ".join(ln.split()) == flat for ln in raw.decode("utf-8", "replace").split("\n")) != 1 or (HL_INDENT + flat).encode() not in raw.split(b"\n"):
+        return False
+    rows = raw.decode("utf-8", "replace").split("\n")
+    if not ver or ver[0] != HL_FILE or rows.count(ver[1]) != 1 or sum(" ".join(ln.split()) == " ".join(ver[1].split()) for ln in rows) != 1:  # HL:verifier
+        return False
+    if hashlib.sha256(ver[1].encode()).hexdigest() != ver[2]:  # HL:verifier-sha
         return False
     rev = head  # HL:head
     if _head_file(root, rev, HL_LOCK) is None:  # HL:lock
@@ -1942,7 +1948,7 @@ def _loopback_line_ok(root, head):
 
 def _context_proved(root, head, path, line_hash, row):
     """A row without a context is as it always was; a row with one rules its line only when the context is proved from the head file."""
-    ruling, count, context, proof = row
+    ruling, count, context, proof = row[:4]
     if context is None:
         return True
     if not path.endswith(".sh"):
@@ -1980,7 +1986,7 @@ def _no_constant(name):
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count, context or None, proof)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
+    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count, context or None, proof, verifier (file, line, sha256) or None)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -1997,8 +2003,8 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "context", "proof"} or not set(_RULED_FIELDS) <= set(r):
-            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, context and proof)")
+        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "context", "proof", "verifier", "verifier-line-sha256"} or not set(_RULED_FIELDS) <= set(r):
+            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, context, proof, and for a hash-locked fetch row verifier and verifier-line-sha256)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{64}", r["key"]):
@@ -2014,10 +2020,16 @@ def load_ruled_text(path, required=False):
             raise bad("has a context that is not one of " + ", ".join(CONTEXTS))
         if "proof" in r and ("context" not in r or type(r["proof"]) is not str or not r["proof"].strip()):
             raise bad("has a proof that is empty, not text, or has no context to go with")
+        v = r.get("verifier")
+        if ("verifier" in r) != ("verifier-line-sha256" in r) or ("verifier" in r and not r["ruling"].strip().startswith(HASH_LOCKED_RULING)):
+            raise bad("has a verifier without its verifier-line-sha256, or the reverse, or is not a hash-locked fetch row")
+        if "verifier" in r and (not isinstance(v, dict) or set(v) != {"file", "line"} or not all(isinstance(x, str) and x.strip() for x in v.values())
+                                or not isinstance(r["verifier-line-sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", r["verifier-line-sha256"])):
+            raise bad("has a verifier that is not {file, line} of non-empty text, or a verifier-line-sha256 that is not 64 lowercase hex")
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
-        out[k] = (r["ruling"].strip(), count, r.get("context"), r.get("proof", "").strip())
+        out[k] = (r["ruling"].strip(), count, r.get("context"), r.get("proof", "").strip(), (v["file"], v["line"], r["verifier-line-sha256"]) if v else None)
     return out
 
 
@@ -2279,7 +2291,7 @@ def _run(a, moved, fx, now):
             rs = [None]                                  # the loopback ruling on any line but the helper's one pinned line rules nothing (AC25)
         if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # the pinned-fetch ruling on any line but one of the nineteen pinned lines of its own file rules nothing (AC26)
-        if any(r and r[0].startswith(HASH_LOCKED_RULING) and not _hash_locked_line_ok(a.root, a.head, k[0], _LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):  # HL:gate
+        if any(r and r[0].startswith(HASH_LOCKED_RULING) and not _hash_locked_line_ok(a.root, a.head, k[0], _LINE_TEXT.get(lh, ""), r[4]) for r, lh in zip(rs, lines[k])):  # HL:gate
             rs = [None]                                  # the hash-locked ruling on any line but the kernel fetch line, with its lock at the head, rules nothing (AC35)
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
