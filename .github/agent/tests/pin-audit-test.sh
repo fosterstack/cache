@@ -2331,7 +2331,13 @@ kill -- "-$grp" 2>/dev/null || true; sleep 1
 CASE="markers: a daily run with --observations-out whose history read passes --deadline exits 2 and its stderr says still in history"
 check test "$rc" -eq 2 -a "$(grep -cx 'audit: could not finish: still in history after 2 s' "$work/phstall.err")" -eq 1
 CASE="markers: no stalled git child of that run is left running"
-check sh -c '! kill -0 -- "-$1" 2>/dev/null' _ "$grp"
+gone='! kill -0 -- "-$1" 2>/dev/null'
+check bash -c "$gone" _ "$grp"
+# the same check must fail while a group is alive (it ran under dash once, where kill rejects "--" and the check could not fail)
+setsid sleep 30 & live=$!; sleep 0.5   # the group exists once setsid has run
+CASE="markers: the no-child check fails while its process group is still alive"
+check bash -c '! bash -c "$0" _ "$1"' "$gone" "$live"
+kill -- "-$live" 2>/dev/null || true
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
