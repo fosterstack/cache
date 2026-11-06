@@ -35,12 +35,12 @@ permissions:
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
   # Automatic patch releases (REQ-REL-009).
-  # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag, rule 1; at once for
-  # a removed critical/high finding on push, else at most once a day, rule 2), checks the ACs baseline and the tagged
+  # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag; at once for
+  # a removed critical/high finding on push, else at most once a day), checks the ACs baseline and the tagged
   # commit's required checks, and writes
   # the notes. It cuts NO tag: until the release KMS Sign job signs a patch tag (maintainer question O4) there is no signer
   # here, and an unsigned tag is never
-  # cut (handoff 0713 P8). The step `cut` records that.
+  # cut. The step `cut` records that.
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
@@ -167,7 +167,7 @@ jobs:
       # REQ-REL-009-AC13: a CI patch uses the latest maintainer-approved ACs baseline of its line, only
       # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources
       # (maintainer-signed
-      # tags) and cuts no tag at all since handoff 0713 P8 (no signer exists yet); admission accepts an maintainer-signed
+      # tags) and cuts no tag at all (no signer exists yet); admission accepts an maintainer-signed
       # patch
       # tag on the maintainers' baseline. Otherwise no cut: it waits for a maintainer.
       - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
@@ -255,7 +255,7 @@ jobs:
             --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: no tag is cut until the release KMS Sign job signs it (owner question O4)
+      - name: no tag is cut until the release KMS Sign job signs it
         id: cut
         env:
           VERSION: ${{ steps.decide.outputs.version }}

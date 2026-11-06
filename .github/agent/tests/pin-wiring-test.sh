@@ -221,11 +221,11 @@ CHAIN_STEPS = {
     "the suite guard's own regressions (REQ-CI-005, a counting step)": "bash bin/suite-guard-test.sh",
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
-    "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)": "bash bin/chain-rekor-key-test.sh",
-    "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)": "bash bin/chain-trust-files-test.sh",
-    "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)": "bash bin/chain-manifest-test.sh",
+    "the release chain's Rekor check in key form: entries, retries, the pinned log key": "bash bin/chain-rekor-key-test.sh",
+    "the release chain's trust files: exactly what the key and Rekor path reads": "bash bin/chain-trust-files-test.sh",
+    "the release key manifest: the root key's signature, the window, the revocation": "bash bin/chain-manifest-test.sh",
     "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup": "bash bin/witness-kms-test.sh",
-    "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)": "bash bin/chain-no-keyless-tag-test.sh",
+    "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow": "bash bin/chain-no-keyless-tag-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)": "bash bin/build-sandbox-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
@@ -478,21 +478,23 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
   },
   {
-   "name": "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)",
+   "name": "the release chain's Rekor check in key form: entries, retries, the pinned log key",
    "run": "bash bin/chain-rekor-key-test.sh"
   },
   {
-   "name": "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)",
+   "name": "the release chain's trust files: exactly what the key and Rekor path reads",
    "run": "bash bin/chain-trust-files-test.sh"
   },
   {
-   "name": "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)",
+   "name": "the release key manifest: the root key's signature, the window, the revocation",
    "run": "bash bin/chain-manifest-test.sh"
   },
   {
    "name": "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup",
    "run": "bash bin/witness-kms-test.sh"
-   "name": "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)",
+  },
+  {
+   "name": "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow",
    "run": "bash bin/chain-no-keyless-tag-test.sh"
   },
   {
@@ -691,11 +693,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/queue-gate-judge-test.sh"
   },
   {
-   "name": "admission's tag signer \u2014 the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)",
+   "name": "admission's tag signer \u2014 the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
   {
-   "name": "release.yml's automatic patch wiring \u2014 decide on main only, no tag signed or cut, failures open an issue (handoff 0713 P8)",
+   "name": "release.yml's automatic patch wiring \u2014 decide on main only, no tag signed or cut, failures open an issue",
    "run": "bash bin/release-patch-wiring-test.sh"
   },
   {

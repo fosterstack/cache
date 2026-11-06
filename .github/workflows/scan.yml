@@ -24,8 +24,8 @@ name: scan
 #
 # Inspector needs no stored secret: the inspector job alone requests
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
-# (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
-# ratified Sep 29, decision row 73; the role's trust names those subjects).
+# (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as agreed
+# on Sep 29; the role's trust names those subjects).
 # In the merge queue the subject is ref:refs/heads/gh-readonly-queue/main/...: the role's trust must admit it (a maintainer
 # step, before the queue is turned on) or the inspector job fails, and with it `scan`, for every merge group.
 #
