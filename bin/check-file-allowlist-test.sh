@@ -100,7 +100,7 @@ build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks
 build/host-tools.yaml build/locks/host-tools.lock
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
-bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh
+bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh bin/with-aws-token.sh
 bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
@@ -119,7 +119,7 @@ bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signator
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 88: errs.append("declared list is not 88 paths: %d" % len(DECLARED))
+if len(DECLARED) != 89: errs.append("declared list is not 89 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -132,7 +132,7 @@ ALLOWED_MENTIONS = {
 # 207 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
 # plus the two outbound-check patterns (0710), the recorded publisher signatures (REQ-SUP-001), the kept Fulcio chain, the real-record
 # fixtures and the one P2 file, the three base-layout patterns, the two of the base-layout builder, and the recipe template and members list (0710)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 225, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 226, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -778,6 +778,7 @@ runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
   ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
+passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
 passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"

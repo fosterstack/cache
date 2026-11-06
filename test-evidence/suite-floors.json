@@ -29,7 +29,7 @@
  "chain-verify-test.sh": 797,
  "check-action-pins-test.sh": 1321,
  "check-customer-words-test.sh": 109,
- "check-file-allowlist-test.sh": 1054,
+ "check-file-allowlist-test.sh": 1061,
  "check-no-outbound-test.sh": 135,
  "dependabot-reviewer-gather-test.sh": 20,
  "dependabot-reviewer-test.sh": 106,

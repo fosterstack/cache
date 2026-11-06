@@ -311,6 +311,8 @@ ALLOW_PATTERNS=(
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/build-freeze\.sh$'
+  # The wrapper that hands the release role and its token file to a release step as AWS variables.
+  '^bin/with-aws-token\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
