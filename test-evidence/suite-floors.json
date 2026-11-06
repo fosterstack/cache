@@ -21,7 +21,7 @@
  "chain-records-test.sh": 113,
  "chain-rekor-key-test.sh": 157,
  "chain-release-metadata-test.sh": 111,
- "chain-release-scripts-test.sh": 490,
+ "chain-release-scripts-test.sh": 497,
  "chain-release-wiring-test.sh": 339,
  "chain-sign-wiring-test.sh": 2136,
  "chain-snapshot-test.sh": 160,

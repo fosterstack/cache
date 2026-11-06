@@ -462,8 +462,8 @@ PY
 }
 d=$(realmut realnoatt '/^ *cosign attest /d')
 expect_named "mutant on the real release-sign.sh: both cosign attest lines dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
-d=$(realmut realnosig '/^ *cosign sign --yes /d')
-expect_named "mutant on the real release-sign.sh: the cosign sign line dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
+d=$(realmut realnosig '/^ *cosign sign\(-blob\)\{0,1\} --yes /d')
+expect_named "mutant on the real release-sign.sh: the cosign sign and sign-blob lines dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
 EXPECT=125
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi

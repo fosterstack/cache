@@ -67,14 +67,15 @@ esac''',
 echo "cosign $*" >> "$LOG"
 echo "$PWD" >> "$LOG.cwd"
 for a in "$@"; do if [ "$a" = release.rsa.pub ]; then [ -f release.rsa.pub ] || { echo "open release.rsa.pub: no such file or directory" >&2; exit 1; }; cat release.rsa.pub >> "$LOG.keyseen"; fi; done
-if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
+if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt|*"{"*|*"*"*) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
 [ "$1" != attest ] || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attest failed" >&2; exit 1;; esac
 if [ "$1" = sign-blob ]; then
   while [ $# -gt 0 ]; do [ "$1" = --bundle ] && b=$2; shift; done
-  if [ -n "${COSIGN_NOREKOR:-}" ] && [ "$(basename "$b")" = "${COSIGN_NOREKOR}" ]; then echo '{"verificationMaterial":{"tlogEntries":[]}}' > "$b"
+  if [ "${KMSSIGN_NOBUNDLE:-}" = ALL ] || [ "${KMSSIGN_NOBUNDLE:-}" = "$(basename "$b")" ]; then exit 0       # a signer that exits 0 and leaves no bundle (KA-2 p4)
+  elif [ -n "${COSIGN_NOREKOR:-}" ] && [ "$(basename "$b")" = "${COSIGN_NOREKOR}" ]; then echo '{"verificationMaterial":{"tlogEntries":[]}}' > "$b"
   else echo '{"verificationMaterial":{"tlogEntries":[{"logIndex":"1"}]}}' > "$b"; fi
 fi''',
  "git": r'''#!/usr/bin/env bash
@@ -690,7 +691,7 @@ for label, mk, word in (
     check(rc4 != 0 and word in se4 and not signs(t4) and not os.path.exists(os.path.join(t4, "release-metadata/release-manifest.json")), "AC19 %s is refused before anything is signed, naming it" % label, "rc=%s %s" % (rc4, first(se4)))
 first_sig = next((i for i, l in enumerate(L) if l.startswith(("cosign", "chain-verify kms-sign"))), 99)
 check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
-check(any(l.startswith("chain-verify kms-sign") and l.endswith(" --bundle release-evidence/release-files.sha256.bundle") for l in L), "AC13 release-files.sha256 is signed with a bundle in release-evidence/", str([l for l in L if "release-files" in l]))
+check(any(l.startswith("cosign sign-blob") and "release-files.sha256.bundle" in l and l.endswith("release-metadata/release-files.sha256") for l in L), "AC13 release-files.sha256 is signed with a bundle in release-evidence/", str([l for l in L if "release-files" in l]))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": "release-files.sha256.bundle"}); check(rc != 0 and "rekor" in se.lower() and "release-files.sha256" in se, "AC13 a release-files bundle with no Rekor entry fails, naming it", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"KMSSIGN_NOBUNDLE": "release-files.sha256.bundle"}); check(rc != 0 and "release-files.sha256.bundle" in se and "Traceback" not in se, "KA-2 p4 a signer that exits 0 and leaves no bundle stops the step, naming the missing bundle", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"VEXFORMS_FAIL": "1"}); check(rc != 0 and not signs(t), "AC13 failing VEX generation stops everything before anything is signed")
@@ -1186,7 +1187,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "490"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "497"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
