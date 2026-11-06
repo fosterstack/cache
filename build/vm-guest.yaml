@@ -1,0 +1,9 @@
+# The packages the VM build runs INSIDE the guest: the init, a shell and the
+# network tools the build steps use. bin/refresh-inputs.sh resolves this list
+# against live Wolfi (apko lock, with the dependency closure), archives every
+# package by digest and writes build/locks/vm-guest.lock. x86_64 only.
+packages:
+  - microvm-init
+  - busybox
+  - wget
+  - ca-certificates-bundle

@@ -16,6 +16,8 @@ section (.PKGINFO, .melange.yaml) and the data section (the files).
                                           exit 1 if unsigned, the signature does not verify, or its algorithm is not RSA/RSA256; 2 unreadable
   apk-tool.py cat APK MEMBER              writes the bytes of MEMBER from the data section to standard output
                                           (exit 2 if it is not there)
+  apk-tool.py members APK                 one line per entry of the data section, in archive order: <d|f> <mode in octal> <name>
+                                          (the same checks as cat run first: a link is refused)
   apk-tool.py binary-check APK FILE       rule 14: exit 0 if FILE equals usr/bin/fscache in APK, 1 if not (prints both
                                           sha256 digests), 2 if APK has no usr/bin/fscache
   apk-tool.py inputs-manifest --apk APK --melange-lock FILE --out FILE
@@ -322,6 +324,14 @@ def cmd_cat(a):
     sys.stdout.buffer.write(b)
 
 
+def cmd_members(a):
+    data = sections(a[0])[2][1]
+    members(data)   # the same checks as cat: a link, a doubled name or a tar the readers disagree on is refused first
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+        for m in t.getmembers():
+            print("%s %04o %s" % ("d" if m.isdir() else "f", m.mode, norm(m.name).rstrip("/")))
+
+
 def cmd_binary_check(a):
     b = member(a[0], "usr/bin/fscache")
     if b is None:
@@ -365,13 +375,13 @@ def cmd_inputs_manifest(a):
         f.write("\n")
 
 
-CMDS = {"digest": (cmd_digest, 1), "same": (cmd_same, 2), "signer": (cmd_signer, 1), "verify": (cmd_verify, 2), "cat": (cmd_cat, 2),
+CMDS = {"digest": (cmd_digest, 1), "same": (cmd_same, 2), "signer": (cmd_signer, 1), "verify": (cmd_verify, 2), "cat": (cmd_cat, 2), "members": (cmd_members, 1),
         "binary-check": (cmd_binary_check, 2), "inputs-manifest": (cmd_inputs_manifest, None)}
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:
-        refuse("usage: apk-tool.py digest|same|signer|verify|cat|binary-check|inputs-manifest ...")
+        refuse("usage: apk-tool.py digest|same|signer|verify|cat|members|binary-check|inputs-manifest ...")
     fn, n = CMDS[sys.argv[1]]
     args = sys.argv[2:]
     if n is not None and len(args) != n:

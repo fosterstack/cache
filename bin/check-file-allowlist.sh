@@ -275,6 +275,14 @@ ALLOW_PATTERNS=(
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
+  # the base-layout package (0710): its recipe, its test and the files its recipe copies into our own base-layout apk
+  '^build/melange-baselayout\.yaml$'
+  '^build/melange-baselayout\.yaml\.tmpl$'
+  '^build/baselayout/members\.txt$'
+  '^build/baselayout/etc/(group|hosts|nsswitch\.conf|os-release|passwd|protocols|services)$'
+  '^bin/baselayout-test\.sh$'
+  '^bin/build-baselayout-apk\.sh$'
+  '^bin/build-baselayout-apk-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
@@ -287,6 +295,11 @@ ALLOW_PATTERNS=(
   # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
   '^build/host-tools\.yaml$'
   '^build/locks/host-tools\.lock$'
+  # The VM build inputs (REQ-REFRESH-001-AC39 to AC41): the two package lists, their locks,
+  # the kernel lock and the kernel package key.
+  '^build/vm-(host|guest)\.yaml$'
+  '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/vm-keys/kernel-key-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'

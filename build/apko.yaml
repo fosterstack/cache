@@ -1,7 +1,7 @@
 # The FosterStack Cache image (apko config); the FIPS image uses the same file with a different apk name.
 #
 # Modelled on: apko's file reference (docs/apko_file.md: contents, accounts, paths, entrypoint, work-dir, archs)
-# and the usual layout of a distroless static image (baselayout, ca-certificates-bundle, tzdata and the program).
+# and the usual layout of a distroless static image (our own base layout, tzdata and the program; no CA bundle, 0710).
 #
 # Rules (v0.3.0): 25 no base image and no extra variants: only the packages named here; 26 packages come only
 # from the archive (/work/archive) and the local package folder melange writes (/work/melange-repo), never a live
@@ -18,8 +18,7 @@ contents:
     - /work/keyring/wolfi-signing.rsa.pub
     - /work/keyring/assembly.rsa.pub
   packages:
-    - wolfi-baselayout
-    - ca-certificates-bundle
+    - fscache-baselayout=@FSCACHE_VERSION@-r0
     - tzdata
     - fscache=@FSCACHE_VERSION@-r0
 accounts:
