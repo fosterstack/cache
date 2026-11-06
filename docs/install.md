@@ -47,6 +47,10 @@ pipeline.
 Silicon and Graviton. See
 [docker-deploy.md](docker-deploy.md#platforms-and-multi-arch-images).
 
+**The container images carry no CA certificate bundle.** The server makes no
+outbound connection and verifies no certificate; for HTTPS it uses the
+certificate and key you give it ([docker-deploy.md](docker-deploy.md)).
+
 **macOS and Windows are not built.** On a Mac, run the container image
 (Docker Desktop pulls `linux/arm64` on Apple Silicon). **Windows is not
 planned.** This is a server-side cache that
@@ -93,6 +97,8 @@ and to anyone auditing the host, rather than being recoverable only from logs.
 Then point your build tool at it: [Gradle setup](gradle.md) ·
 [Maven setup](maven.md).
 
+To move to another version later, see [upgrading and pinning](upgrading.md).
+
 ## Verify what you downloaded
 
 Do this before you install it, not after. Every release ships a
@@ -130,7 +136,8 @@ Description=FosterStack Cache
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/fscache          # fscache-fips for the FIPS build — must match what you installed
+# fscache-fips for the FIPS build: must match what you installed
+ExecStart=/usr/local/bin/fscache
 Environment=FSCACHE_ADDR=:8080
 Environment=FSCACHE_DATA_DIR=/var/lib/fscache
 Environment=FSCACHE_MAX_BYTES=53687091200
@@ -162,10 +169,8 @@ Set `FSCACHE_MAX_BYTES` to your eviction cap and size the disk above it; see
 
 ## Configuration
 
-All configuration is environment variables — the full table is in the
-[README](../README.md#build-and-run-from-source): `FSCACHE_ADDR`,
-`FSCACHE_DATA_DIR`, `FSCACHE_MAX_BYTES`, `FSCACHE_USERNAME` /
-`FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
+All configuration is environment variables. The full table, with defaults, is in the
+[README](../README.md#build-and-run-from-source).
 
 ## Build from source
 

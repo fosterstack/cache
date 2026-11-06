@@ -1,187 +1,67 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4, REQ-CHAIN-007-AC16, REQ-CHAIN-001-AC6 — 001-AC3 here is the key-material and token-sentinel part
+# proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4, REQ-CHAIN-007-AC16, REQ-CHAIN-001-AC6
 # proves: REQ-CHAIN-005-AC4 — apk-compare: the comparison job's result file is accepted only as a pass for Build's attested apk digests
-# RED until bin/chain-verify.py exists (tests before implementation, step 4 of the nine-step process).
 #
-# Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67).
+# Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67), after the move to ONE
+# KMS-backed release key (handoff 0713, owner's ruling of Oct 28: no keyless signing, no certificate, no timestamp authority; ratify B of Oct 29 keeps Rekor: every signature keeps its Rekor entry).
 # Needs: bash, OpenSSL 3 (macOS: brew install openssl@3, found automatically), python3 with PyYAML (apt: python3-yaml).
-# Offline: a synthetic Fulcio-shaped chain (root -> intermediate -> leaf with a SAN URI and the Fulcio OIDC-issuer
-# extension), a synthetic timestamp authority (root -> leaf), and a synthetic Rekor key are made at test time; no Sigstore,
-# no key is committed. Every verify case runs with the network genuinely cut (macOS sandbox-exec, Linux unshare -rn or
-# sudo unshare -n) and a control proves the cut; if no way exists the run says so loudly (CHAIN_TEST_REQUIRE_NETCUT=1
-# makes that a failure; the CI wiring added by the implementation PR MUST set CHAIN_TEST_REQUIRE_NETCUT=1, and on ubuntu-24.04
-# unprivileged user namespaces are AppArmor-restricted, so the `sudo -n unshare -n` fallback runs the verifier as root: files it
-# leaves in the work dir are removed by the exit trap with sudo). Every refusal case is judged by exit code 1 (0 accepted; anything else, such
-# as a missing script or a Python traceback, is an ERROR and fails the case) AND by words the message must contain.
+# Offline: an offline root key, a release key, a throwaway ed25519 key and every record are made at test time with openssl; no key is
+# committed. Every verify case runs with the network genuinely cut (macOS sandbox-exec, Linux unshare -rn or sudo unshare -n) and a control
+# demonstrates the cut; if no way exists the run says so loudly (CHAIN_TEST_REQUIRE_NETCUT=1 makes that a failure; the CI wiring MUST set it, and on
+# ubuntu-24.04 the `sudo -n unshare -n` fallback runs the verifier as root: files it leaves in the work dir are removed by the exit trap with
+# sudo). Every refusal case is judged by exit code 1 (0 accepted; anything else, such as a missing script or a Python traceback, is an ERROR and
+# fails the case) AND by words the message must contain. The key manifest itself is tested in bin/chain-manifest-test.sh.
 #
-# Certificate extensions: Witness's verify checks only the Fulcio extensions it has flags for (issuer, build trigger, source
-# repository digest/ref/identifier, run invocation URI: in-toto-witness options/verify.go:80-99, passed on at cmd/verify.go:215)
-# and its certConstraint matches only commonname/dns/email/org/uri (harness spike (b) line 8). It has NO check for the Build
-# Config URI (Fulcio OID 1.3.6.1.4.1.57264.1.18, the calling top-level workflow). So bin/chain-verify.py must check, itself,
-# on every Sign record: SAN == stage-sign.yml@tag AND 1.18 == release.yml@the same tag AND issuer (1.8) == the policy issuer;
-# a missing extension is a refusal. OID check: Fulcio's oid-info (cited in options/verify.go:81) numbers .1.8 issuer v2,
-# .1.9 Build Signer URI (= the SAN), .1.18 Build Config URI; this agrees with the spike-b dump (.1.9 = SAN, .1.18 = caller).
-# MISMATCH TO CONFIRM IN THE DRY RUN: the spike dumps list the issuer as .1.1 (the deprecated v1 extension) and do not show
-# .1.8; Fulcio docs say both are issued. These fixtures carry .1.8 only; if a real cert lacks it the implementer must decide
-# (read .1.1 as a fallback) and the advisor should rule, since a fallback changes the refusal case "no issuer extension".
+# What a record is now: a DSSE envelope with exactly one signature {keyid, sig} (keyid optional, a string; Witness 0.12.0 writes the KMS
+# reference there and the verifier never looks a key up by it) made by the release key over the DSSE PAE (ECDSA P-256, SHA-256, DER). The
+# envelope has no certificate, intermediates or timestamps field: a record that still carries one is an old-form record and is refused.
+# A record is bound to its stage by its TYPE and its collection name, never by who signed it (S2: step name, digest chain, and the AWS role's
+# trust on the workflow file); the signing key is the same for every stage.
 #
 # Real formats this models (Modelled on, read-only clones):
 #   Witness collection: predicateType https://witness.testifysec.com/attestation-collection/v0.1 inside a Statement
-#     _type https://in-toto.io/Statement/v0.1 (in-toto-witness docs/tutorials/artifact-policy.md:60-70; the ops spike
-#     2026-10-09-ccode-ops-witness-spike.md:36). Statement v1 is accepted too.
-#   Signed policy: a DSSE envelope whose payloadType is https://witness.testifysec.com/policy/v0.1 and whose payload is
-#     the policy JSON, not a Statement (in-toto-witness options/sign.go:36; test/fulcio-policy-presigned.json:
-#     payload/payloadType/signatures).
-#   Envelope signature fields: sig, certificate (base64 of PEM), intermediates (list of base64 PEM, leaf's issuers
-#     with the root last), timestamps [{"type":"tsp","data":b64 RFC 3161 token}] (harness spike 2026-10-09-harness-
-#     witness-spikes-a-c.md:31-32). Policy shape roots/timestampauthorities {id:{certificate,intermediates}}
-#     (same spike :54-64; in-toto-witness cmd/verify.go:116-163,211).
-#   SLSA provenance: https://slsa.dev/provenance/v1, Statement v1 (in-toto-attestation spec/predicates/provenance.md:3).
-#     Only v1 is allowed: v0.2, a trailing slash, other case and other hosts are refused.
+#     _type https://in-toto.io/Statement/v0.1 (in-toto-witness docs/tutorials/artifact-policy.md:60-70). Statement v1 is accepted too.
+#   Signed policy (stage release): payloadType https://witness.testifysec.com/policy/v0.1, the payload is the policy JSON, not a Statement.
+#   SLSA provenance: https://slsa.dev/provenance/v1, Statement v1 (in-toto-attestation spec/predicates/provenance.md:3). Only v1 is allowed.
 #
 # THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
-#   chain-verify.py policy make --template T.json --tag vX.Y.Z --trust TRUST.json --fulcio-chain F.pem --tsa-chain S.pem
-#                               --rekor-key K.pem --out POLICY.json
-#       T.json  {"repository":"owner/repo","oidc_issuer":"https://...","stages":{"<stage>":{"workflow":".github/workflows/<file>.yml"}}}
-#       TRUST.json {"fulcio_root_sha256","tsa_root_sha256","rekor_sha256"}: hex of the DER of the FIRST cert of F.pem and
-#       S.pem (the roots; the rest are their intermediates / the TSA leaf) and of the DER public key K.pem.
-#       exit 1 ("trust") when any hash differs from TRUST.json.
-#       POLICY.json {"tag","repository","oidc_issuer","roots":{id:{"certificate":b64 PEM,"intermediates":[b64 PEM]}},
-#                    "timestampauthorities":{id:{...same...}},"rekor_public_key":PEM,
-#                    "stages":{"<stage>":{"identity":"https://github.com/<repo>/<workflow>@refs/tags/<tag>"}}}
-#       DEFAULTS (round 7, Opus B-NEW a): --trust, --fulcio-chain, --tsa-chain and --rekor-key are OPTIONAL. When absent they default to
-#       sigstore-trust.json, fulcio-chain.pem, tsa-chain.pem and rekor.pub NEXT TO THE TEMPLATE (the committed .github/policy/ files), and the
-#       trust-hash check applies to the defaults exactly as to explicit files ("trust" on a drifted default). The dry run's pinned
-#       `policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json` and Release's
-#       `--tag` line pass no file flags, so this is what makes them work.
-#       chain-verify.py policy make ... --ref REF   (instead of --tag; round 5) makes the policy for a run's own ref: REF
-#       refs/tags/vX.Y.Z (exactly) == --tag vX.Y.Z; a BRANCH ref (the dry run's refs/heads/..., e.g. refs/heads/hostile-proof/x)
-#       makes a policy with "dry_run": true whose identities end @REF; refs/tags/v0.3.0-rc1, refs/tags/x and anything else
-#       exits 1 "tag". A dry-run policy is NEVER what Release uses (Release's is made with --tag), so a Sign record whose SAN ref
-#       is a branch is refused by Release's tag-pinned policy (cases below).
-#   DRY RUN vs PRODUCTION for `sign --check` in template mode (decided in round 5; the Sign job's command line is the same in both):
-#       GITHUB_REF == refs/tags/vX.Y.Z (exactly)                         -> production (policy for that tag)
-#       GITHUB_EVENT_NAME == workflow_dispatch and GITHUB_REF a branch   -> DRY RUN: policy for that ref, the written provenance
-#           predicate carries "dryRun": true and DIR/DRY-RUN exists beside it; Release can never accept such a record
-#       anything else (-rc1 tag, refs/tags/x, a branch on push, workflow_dispatch on a tag that is not vX.Y.Z, no ref) -> exit 1 "tag"
-#       No flag or environment variable can switch either mode on: the run's own GITHUB_REF / GITHUB_EVENT_NAME decide.
-#   TOKEN SENTINEL: every run passes ACTIONS_ID_TOKEN_REQUEST_TOKEN / _URL and COSIGN_IDENTITY_TOKEN set to SENTINEL values; they
-#       must appear in no stdout, stderr, output folder or cosign argv (the verifier and signer never print, store or forward them).
-#   DRY-RUN POLICIES ARE SIGN-ONLY (round 6, fail closed): a policy with "dry_run": true is accepted by `verify` for --stage sign
-#       ONLY (that is how the dry run's hostile-verify judges Sign's record: its positive control and its attempts); `verify` for any
-#       other stage, and EVERY `stage-start` (what Build's successors and Release run), refuse a dry_run policy ("dry"). A Sign
-#       record whose predicate carries "dryRun": true is refused under a non-dry policy even when its SAN ref is a tag ("dry"), and
-#       Release's policy step is `policy make --tag` (bin/chain-hostile-test.sh pins it), so no branch edit can make Release accept one.
-#   chain-verify.py verify --policy POLICY.json --stage NAME --record REC.json [--now ISO8601Z] [--rekor-stub STUB.json]
-#       --now is OPTIONAL and defaults to the current UTC time, exactly like `sign --check`'s (round 6: the dry run's pinned verify
-#       lines pass none, so no job env or step has to feed it)
-#       REC.json is a DSSE envelope signed over the DSSE PAE. Checks, any failure exit 1 with the cause on stderr:
-#       the chain from certificate+intermediates to a policy root; leaf SAN URI EXACTLY == stages[NAME].identity (the
-#       message names the identity found); the Fulcio OIDC-issuer extension 1.3.6.1.4.1.57264.1.8 == policy oidc_issuer
-#       ("issuer"); the signature ("signature"); a TSA stamp over sha256(sig bytes) from a policy authority whose time
-#       lies inside the leaf's validity ("timestamp"/"validity"); the record type: Witness collection only for stages
-#       build/rebuild/check, SLSA provenance v1 only for stage sign ("provenance"), the Witness policy payloadType
-#       only for stage release, nothing else ("predicate"). KIND IS DERIVED FROM THE TYPE, there is no --kind flag:
-#       every type except the Witness collection needs a Rekor entry ("rekor") in the file given as --rekor-stub
-#       {"entries":[<tlogEntry>...]}: the bundle's tlogEntries untouched, in the REAL protobuf-JSON shape of a Rekor v1 `dsse` 0.0.1
-#       entry (what `cosign attest-blob` writes by default): {"logIndex":"N","logId":{"keyId":b64(sha256 of the log key DER)},
-#        "kindVersion":{"kind":"dsse","version":"0.0.1"},"integratedTime":"T","inclusionPromise":{"signedEntryTimestamp":b64(ECDSA-
-#        SHA256 over json.dumps({"body":canonicalizedBody,"integratedTime":T,"logID":hex(keyId),"logIndex":N},sort_keys=True,
-#        separators=(",",":")))},"canonicalizedBody":b64(JSON {"apiVersion":"0.0.1","kind":"dsse","spec":{"envelopeHash",
-#        "payloadHash":{"algorithm":"sha256","value":<sha256 hex of the DECODED payload>},"signatures":[{"signature":<b64 sig of THIS
-#        record>,"verifier":<b64 of THIS record's leaf PEM>}]}})}. Checked against the policy rekor_public_key: the entry must
-#        bind THIS record's payload hash, signature AND certificate, name the policy's log (logID = sha256 of its key), carry a valid
-#        signed entry timestamp, and have an integrated time inside the certificate's validity. Any other entry kind (a hashedrekord)
-#        is refused. Modelled on sigstore-go v1.2.2 pkg/tlog/entry.go (VerifySET, Signature, PublicKey, GetDssePayloadHash),
-#        pkg/verify/tlog.go (the dsse payload-hash and certificate comparisons) and protobuf-specs v0.5.1 sigstore_rekor.proto. NO
-#        Rekor clone exists under reference/ and the entry here is synthetic: the first real dry run captures a genuine bundle to
-#        replace it (Rekor v1 is pinned by the committed cosign-signing-config.json; the log key is the v1 key only).
-#        TIMESTAMPS: a record's signatures[0].timestamps[] entry is {"type":"tsp","data":<bare token>} (Witness) or
-#        {"type":"rfc3161-response","data":<DER TimeStampResponse>} (a Sigstore bundle); an unknown type is "timestamp ... malformed".
-#        EVERY record must be a DSSE envelope with NO duplicate JSON key and EXACTLY ONE signature ("signature").
-#        ONE CERTIFICATE, ONE DER (step-8 round 2, NB-1): the certificate field of a record (and the verifier of a Rekor entry's body) is
-#        EXACTLY ONE certificate PEM block with nothing but whitespace around it, whose base64 is valid and whose DER is exactly its outer
-#        SEQUENCE; anything else ("certificate ... malformed": text or base64 before the block, a second block, bytes after the SEQUENCE) is
-#        refused. The identity is read from that DER and openssl verifies a PEM re-made from that same DER, so the two cannot read different bytes.
-#        JSON READERS are UTF-8 only: a record, a Rekor entries file, a digest file or a policy written in UTF-16/32 is refused, not guessed.
-#        TRUST STORE: the certificate chain is checked against the policy's root ONLY; the system trust store (SSL_CERT_FILE,
-#        SSL_CERT_DIR, the OpenSSL default directory) is never consulted ("root").
-#        ONE SPELLING (Codex security r1 S3): every base64 field is CANONICAL standard base64 (re-encoding the bytes gives the same text, so
-#        YR== for YQ== is refused) and every JSON reader refuses NaN, Infinity and -Infinity, which are not JSON.
-#        REKOR FILE SHAPE (S2): `entries` must be a list of objects; anything else is "refused at <stage>: rekor ... list", never a traceback.
-#        CODEX ROUND 2: (1) both chains are checked AT the stamp's authenticated genTime (openssl -attime, never -no_check_time): an
-#        intermediate or a TSA signer expired or not yet valid then is refused ("validity" for the Fulcio chain, "timestamp" for the TSA);
-#        (2) genTime keeps its fraction (12:00:00.5 is after a certificate ending 12:00:00); (3) a Rekor entry's logIndex and integratedTime
-#        are canonical decimal strings (^(0|[1-9][0-9]*)$), never a JSON number, float, sign, space or leading zero; (4) stage-start checks
-#        the digest list's format exactly like Sign ("format"); (5) a subject whose name is not a string or whose digest is not an object of
-#        strings is "refused ... subject", never a traceback; (6) sign with no cosign on PATH is "refused at sign: cosign not found".
-#   PyYAML (S4): only the `actions` subcommand needs it (imported there; missing, it is `error: ... PyYAML` exit 2); every other
-#       subcommand, `--help` included, runs on the bare standard library (the Sign job installs only cosign).
-#   DRY-RUN POLICY AND sign --check (round 7, Opus B-NEW b): `sign --check --policy <a made dry_run policy>` is accepted ONLY to
-#       verify Build's record (the hostile hand_sign_code attempt runs exactly that, with the dry policy from `policy make --ref`); the
-#       refusal causes it can give are digest and format, never "dry". It is not the sign-only rule of `verify` that refuses dry
-#       policies for other stages: sign --check checks Build's record under the dry policy's build identity. N-c: the dry run's own
-#       positive control (Sign's dry output, the dry policy, no --now) is covered here only by the synthetic sign_br record; the end to end
-#       run is the GitHub dry run itself.
-#   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json (--template TEMPLATE.json | --policy POLICY.json)
-#                   --now ISO8601Z --out DIR [--trust TRUST.json --fulcio-chain F.pem --tsa-chain S.pem --rekor-key K.pem]
-#       exactly ONE of --template (the committed template .github/policy/release-policy.template.json, which is what the Sign job passes:
-#       its command line is pinned in bin/chain-sign-wiring-test.sh) and --policy (a finished POLICY.json, the dry run's); both or neither is
-#       a usage error (exit 2) and a template given as --policy is refused ("policy"). Given --template, sign --check makes the
-#       per-tag policy itself (rule 57: from the template, the committed .github/policy/sigstore-trust.json and the PEMs committed next to
-#       it, fulcio-chain.pem / tsa-chain.pem / rekor.pub, each overridable by the four flags) with the tag taken from the env var
-#       GITHUB_REF, which must be refs/tags/vX.Y.Z (a branch ref or an empty value exits 1 "tag"); a trust hash that differs exits 1 "trust".
-#       --now defaults to the current UTC time when absent (the Sign job does not pass it).
-#       D.json is the digest list FILE {"<name>":"sha256:<64 lower-case hex>"}. REC.json is Build's Witness collection, verified
-#       as stage build FIRST (every verify cause: chain, SAN, Build Config URI, issuer, signature, timestamp, type, tag; any
-#       failure exits 1 naming "build" and the cause). Build's command writes digests.json as a PRODUCT, so the collection holds
-#       the REAL Witness product subject https://witness.dev/attestations/product/v0.1/file:digests.json with digest
-#       {sha256, gitoid:sha1, gitoid:sha256} (in-toto-witness docs/tutorials/artifact-policy.md:58-70), next to a git
-#       commit subject; the check requires that subject's sha256 == sha256(the bytes of D.json) (exit 1 "digest" otherwise),
-#       THEN checks D.json's CONTENT on its own (exit 1 "format"): JSON object, no duplicate key, every name matching
-#       [a-z0-9-]+ (no upper case, slash, dot or code), every value a string sha256:<64 lower-case hex> (no sha512:, 63 hex,
-#       upper case, null, number or path). Only after both does it sign, and the ONLY signer is --signer cosign (no test-only signer exists in production code):
-#       it writes the unsigned in-toto Statement v1 (SLSA provenance v1, subjects = the digests, names and values as in D.json) to a
-#       temp file and runs EXACTLY `cosign attest-blob --yes --signing-config <policy dir>/cosign-signing-config.json --statement STATEMENT.json --bundle DIR/provenance.bundle.json`
-#       (no --key, no --identity-token, no flag that carries key material: cosign requests the OIDC token inside its own process),
-#       then writes (a) DIR/provenance.json = the verify-shape DSSE envelope: payloadType, payload and signatures[0] {sig, certificate =
-#       base64 of the PEM of the bundle's leaf, intermediates = the policy's chain, timestamps = [{"type":"rfc3161-response","data":<the bundle's
-#       signedTimestamp, a DER TimeStampResponse>}]}; and (b) DIR/provenance.rekor.json = {"entries":[the bundle's tlogEntries, untouched]}.
-#       (Witness records carry {"type":"tsp","data":<bare token>}: go-witness timestamp/tsp.go; the verifier reads each form by its type.) Both come from the
-#       bundle, so Sign's own output goes straight into `verify` (a case below does it). AFTER cosign (S1): a bundle with no or an empty
-#       timestamp list ("timestamp") or no or an empty tlogEntries list ("rekor") is refused naming each missing one, and Sign runs `verify
-#       --stage sign` over the two files it wrote before it prints ok; any refusal there removes DIR (no provenance is left behind). The Statement's predicate is a real SLSA v1
-#       one: buildDefinition present and runDetails.builder.id = the Sign workflow identity URI (.../stage-sign.yml@refs/tags/vX.Y.Z).
-#       The tests put a fake `cosign` first on PATH that implements just that call and signs with a local key; bin/install-scanner.sh
-#       must gain a checksum-pinned cosign for the Sign job. A failed check writes NOTHING to DIR. DIR never holds private key material.
-#       The statement Sign signs also names the source and the run (SLSA v1): buildDefinition.resolvedDependencies[0].digest.gitCommit =
-#       $GITHUB_SHA, runDetails.metadata.invocationId = $GITHUB_SERVER_URL/<repository>/actions/runs/$GITHUB_RUN_ID, externalParameters.workflow =
-#       the calling workflow (release.yml at the ref). A pushed refs/tags/vX.Y.Z is the only production ref: a workflow_dispatch on a tag is refused.
-#   chain-verify.py check-build-record --digests D.json --build-record REC.json (--template T.json | --policy POLICY.json) [--now ..] [--trust ..]
-#       exactly the checks Sign makes BEFORE it signs (Build's record genuine under the build identity, D.json is the file the record attests
-#       by its sha256, D.json passes the format check) and nothing after: it prints ok, calls no tool and writes no file. The dry run's hostile
-#       verify job uses it for the hand-code attempt, so that job holds no signing subcommand at all.
+#   chain-verify.py policy make --template T.json (--tag vX.Y.Z | --ref REF) --out POLICY.json
+#       T.json {"repository":"owner/repo","stages":["build","sign","rebuild","check","release"]}. The key manifest in D (default: the template's
+#       directory) is checked FIRST, with the root key in D (see bin/chain-manifest-test.sh): `refused at manifest: ...` on any failure.
+#       POLICY.json {"tag","ref","repository","release_key":{"key_id","public_key"},"stages":[...]} and "dry_run": true for a branch ref.
+#       --tag vX.Y.Z[-rcN] and --ref refs/tags/vX.Y.Z[-rcN] make the same policy; a branch ref (the dry run's) makes a dry_run policy;
+#       refs/tags/x, refs/pull/N/merge and the snapshot version v0.0.0 exit 1 ("tag" / "snapshot").
+#   chain-verify.py verify --policy POLICY.json --stage NAME --record REC.json
+#       Checks, any failure exit 1 with the cause on stderr as `refused at <stage>: <reason>`: the envelope (one signature, no certificate
+#       field, canonical base64, strict JSON, UTF-8 only: "envelope"), the signature by the policy's release key ("signature"; a record signed
+#       by another key, by the building job's throwaway key, or unsigned all end here), the record type bound to the stage ("predicate":
+#       Witness collection only for build/rebuild/check, SLSA provenance v1 only for sign, the Witness policy payloadType only for release),
+#       for provenance the ref inside it (buildDefinition.externalParameters.ref) equal to the policy's ref ("ref"), and no token in a
+#       Witness collection's environment. Provenance whose predicate says dryRun true is refused under a non-dry policy ("dry"). Dry-run
+#       policies are accepted for stage sign only.
 #   chain-verify.py stage-start --stage NAME --previous PREV --record REC.json --digests D.json --policy POLICY.json
-#                               --now ISO8601Z [--rekor-stub STUB.json]
 #       STAGE PAIRS (rule 58): rebuild<-build, check<-build, sign<-build, release<-{build, sign, rebuild, check}; any other pair is refused
-#       ("stage"), so nothing starts from the release policy. A statement whose subject list holds anything but objects is refused by name.
-#       runs the SAME verification as verify for stage PREV, then compares digests exactly: for a SLSA provenance record the
-#       subjects equal D.json's entries; for a Witness collection the product subject file:digests.json has sha256 == the
-#       sha256 of D.json's bytes (equal, not subset or superset); exit 1 with PREV and the cause
-#       (digest/identity/signature/missing/timestamp/rekor/issuer/build config) in the message.
-#   chain-verify.py actions WORKFLOW.yml --allowed ALLOWED.json [--root DIR]
-#       ALLOWED.json {"actions":["owner/repo[/sub/path]@<40 lower-case hex>"],"images":["<image>@sha256:<64 hex>"],"local":["<path>"]}
-#       reads steps AND job-level `uses:`, container (string or {image:}), services images, docker:// references,
-#       composite action.yml `runs.steps` (and, for a local `uses: ./path` named in "local", the action.yml found under --root,
-#       recursively); exit 1 naming the reference for anything not exactly listed by full digest,
-#       for an expression (${{ }}) in a reference, a short or upper-case sha, a tag or branch; a repository-local
-#       reusable call (`uses: ./path`) passes only if its path is in "local". A mapping key repeated in one mapping (compared trimmed and
-#       case-folded: uses/"uses"/"uses ", run/Run) is refused naming the key, the file and the line (S5): a YAML reader keeps only one of them.
-#   chain-verify.py hostile-verdict|hostile-row|hostile-collect|hostile-material   (tested in bin/chain-hostile-test.sh)
+#       ("stage"). Runs the SAME verification as verify for stage PREV, then compares digests exactly: for a SLSA provenance record the
+#       subjects equal D.json's entries; for a Witness collection the product subject file:digests.json has sha256 == the sha256 of D.json's
+#       bytes (equal, not subset or superset); exit 1 with PREV and the cause in the message.
+#   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json (--template T.json | --policy POLICY.json)
+#                   --out DIR
+#       exactly ONE of --template (the committed template; the per-tag policy is made here from GITHUB_REF, which must be refs/tags/vX.Y.Z[-rcN]
+#       on a push, or a branch on workflow_dispatch = a dry run) and --policy (a finished policy). Build's record is verified as stage build
+#       FIRST, D.json must be the file its product subject attests by sha256 ("digest") and must pass the format check ("format"); only then
+#       it writes the unsigned in-toto Statement v1 (SLSA provenance v1) to a temp file and runs EXACTLY
+#       `cosign attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config <template dir>/cosign-signing-config.json
+#        --statement STATEMENT.json --bundle DIR/provenance.bundle.json` (the signing config names one Rekor, v1, and no certificate authority, sign-in service or timestamp authority; the key
+#       is named by its alias, never by an ARN, a token or a file), then writes DIR/provenance.json (the bundle's DSSE envelope) and checks it
+#       with `verify` under the same policy before it prints ok; any refusal removes DIR. A bundle that carries a certificate is refused.
+#   chain-verify.py check-build-record, bind-items, bind-check, check-list, sign-records, rc-proof, apk-compare, actions, record-env,
+#       hostile-*: as before, with --keys-dir in place of the four trust flags where a policy is made, and no --rekor-stub and no --now where a
+#       finished policy is given.
+
 set -euo pipefail
 # the runner's own GITHUB_REF / GITHUB_EVENT_NAME (refs/pull/N/merge, pull_request ...) must never leak into a case: every case that
 # needs them sets both itself (Opus r5 N-b, Sonnet r5 finding 4)
-unset GITHUB_REF GITHUB_EVENT_NAME
+unset GITHUB_REF GITHUB_EVENT_NAME GITHUB_WORKFLOW_REF
 root=$(cd "$(dirname "$0")/.." && pwd)
 cv="$root/bin/chain-verify.py"
 work=$(mktemp -d); trap 'rm -rf "$work" 2> /dev/null || sudo -n rm -rf "$work"' EXIT
@@ -241,130 +121,111 @@ fi
 
 # ---- fixtures ---------------------------------------------------------------------------------------------------
 cat > "$work/fx.py" <<'PY'
-import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys, textwrap
+import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys
 W = sys.argv[1]
 SSL = os.environ["OPENSSL"]
-def sh(*a, inp=None):
+def sh(*a):
     a = (SSL,) + a[1:] if a[0] == "openssl" else a
-    r = subprocess.run(a, input=inp, capture_output=True)
+    r = subprocess.run(a, capture_output=True)
     if r.returncode: sys.stderr.write("%s\n%s\n" % (" ".join(a), r.stderr.decode())); sys.exit(1)
     return r.stdout
 def p(n): return os.path.join(W, n)
-def fmt(t): return t.strftime("%Y%m%d%H%M%SZ")
 def b64(b): return base64.b64encode(b).decode()
-now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-def cfg(name):
-    d = p(name + ".db"); os.makedirs(d, exist_ok=True)
-    open(d + "/index.txt", "w").close(); open(d + "/serial", "w").write("01\n")
-    c = p(name + ".cnf")
-    open(c, "w").write(textwrap.dedent("""\
-        [ca]
-        default_ca = c
-        [c]
-        dir = %s
-        database = $dir/index.txt
-        new_certs_dir = $dir
-        serial = $dir/serial
-        default_md = sha256
-        policy = pol
-        unique_subject = no
-        [pol]
-        commonName = optional
-        [req]
-        distinguished_name = dn
-        prompt = no
-        [dn]
-        CN = x
-        [v3_ca]
-        basicConstraints = critical,CA:TRUE
-        keyUsage = critical,keyCertSign,cRLSign
-        """ % d))
-    return c
-def mkca(name):
-    sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", p(name + ".key"),
-       "-out", p(name + ".pem"), "-days", "2", "-subj", "/CN=" + name, "-config", cfg(name), "-extensions", "v3_ca")
-def issue(ca, name, ext, start, end):
-    sh("openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", p(name + ".key"),
-       "-out", p(name + ".csr"), "-subj", "/CN=" + name)
-    open(p(name + ".ext"), "w").write(ext + "\n")
-    sh("openssl", "ca", "-batch", "-config", p(ca + ".cnf"), "-cert", p(ca + ".pem"), "-keyfile", p(ca + ".key"),
-       "-in", p(name + ".csr"), "-out", p(name + ".pem"), "-notext", "-startdate", fmt(start), "-enddate", fmt(end), "-extfile", p(name + ".ext"))
-# Fulcio-shaped chain: root -> intermediate -> leaf (the real envelope lists intermediates then the root, spike :31)
-mkca("root"); mkca("otherroot"); mkca("tsaroot"); mkca("othertsaroot")
-issue("root", "interm", "basicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign", now - dt.timedelta(hours=1), now + dt.timedelta(hours=20))
-cfg("interm")
-# Codex security r2 (002-AC1): intermediates and TSA signers that are expired, or not yet valid, at the stamp time
-issue("root", "intold", "basicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign", now - dt.timedelta(hours=3), now - dt.timedelta(hours=2))
-issue("root", "intnew", "basicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign", now + dt.timedelta(hours=1), now + dt.timedelta(hours=2))
-cfg("intold"); cfg("intnew")
-TSA_WINDOW = {"tsa": (-1, 20), "othertsa": (-1, 20), "tsaold": (-3, -2), "tsanew": (1, 2)}   # hours from now
-for t in TSA_WINDOW:
-    ca = "othertsaroot" if t == "othertsa" else "tsaroot"
-    issue(ca, t, "extendedKeyUsage = critical,timeStamping", now + dt.timedelta(hours=TSA_WINDOW[t][0]), now + dt.timedelta(hours=TSA_WINDOW[t][1]))
-    open(p(t + ".cnf"), "w").write(textwrap.dedent("""\
-        [tsa]
-        default_tsa = t
-        [t]
-        serial = %s
-        signer_digest = sha256
-        default_policy = 1.2.3.4
-        other_policies = 1.2.3.4
-        digests = sha256
-        accuracy = secs:1
-        ordering = no
-        tsa_name = no
-        ess_cert_id_chain = no
-        ess_cert_id_alg = sha256
-        """ % p(t + ".serial")))
-    open(p(t + ".serial"), "w").write("0A\n")
-    open(p(t + ".frac.cnf"), "w").write(open(p(t + ".cnf")).read() + "clock_precision_digits = 3\n")   # the same TSA, genTime with milliseconds
-def stamp(sigbytes, tsa, response=False, frac=False):
-    # Witness stores the bare token (go-witness timestamp/tsp.go returns RawToken); a Sigstore bundle stores the whole DER
-    # TimeStampResponse (protobuf-specs sigstore_common.proto RFC3161SignedTimestamp): response=True makes the second form
-    q = sh("openssl", "ts", "-query", "-digest", hashlib.sha256(sigbytes).hexdigest(), "-sha256", "-cert", "-no_nonce")
-    open(p("q.tsq"), "wb").write(q)
-    ca = "othertsaroot" if tsa == "othertsa" else "tsaroot"
-    sh("openssl", "ts", "-reply", "-queryfile", p("q.tsq"), "-signer", p(tsa + ".pem"), "-inkey", p(tsa + ".key"),
-       "-chain", p(ca + ".pem"), "-config", p(tsa + (".frac.cnf" if frac else ".cnf")), "-section", "t", *([] if response else ["-token_out"]), "-out", p("r.tst"))
-    return b64(open(p("r.tst"), "rb").read())
 def gitoid(data, algo): return hashlib.new(algo, b"blob %d\0" % len(data) + data).hexdigest()
-def pae(t, b): return b"DSSEv1 %d %s %d %s" % (len(t), t.encode(), len(b), b)
+def pae(t, b): return b"DSSEv1 %d %s %d %s" % (len(t.encode()), t.encode(), len(b), b)
 REPO = "fosterstack/cache"
-ISSUER = "https://token.actions.githubusercontent.com"
-def uri(wf, ref, repo=REPO): return "https://github.com/%s/.github/workflows/%s@%s" % (repo, wf, ref)
-_n = [0]
+T, T2, TRC, DRYREF = "refs/tags/v0.3.0", "refs/tags/v0.3.1", "refs/tags/v0.3.0-rc1", "refs/heads/hostile-proof/x"
 STMT = {"v0.1": "https://in-toto.io/Statement/v0.1", "v1": "https://in-toto.io/Statement/v1"}
 DSSE = "application/vnd.in-toto+json"
 PROV_URI = "https://slsa.dev/provenance/v1"
+# ---- the keys: the offline root key signs the manifest of the release key; the release key signs every record (handoff 0713 P1) ----
+def genkey(name, *opts):
+    sh("openssl", "genpkey", *opts, "-out", p(name + ".key"))
+    sh("openssl", "pkey", "-in", p(name + ".key"), "-pubout", "-out", p(name + ".pub"))
+EC = ("-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+for _k in ("root", "otherroot", "rel", "other"): genkey(_k, *EC)      # root / otherroot sign manifests, rel is the release key, other is a key the manifest does not name
+genkey("rekor", *EC)                                                   # the Rekor log's key for this run (ratify B); rekor.pub sits next to template.json with its sigstore-trust.json pin
+def der_sha_early(name): return hashlib.sha256(sh("openssl", "pkey", "-pubin", "-in", p(name + ".pub"), "-outform", "DER")).hexdigest()
+json.dump({"_note": "throwaway trust file for this test run", "rekor_sha256": der_sha_early("rekor")}, open(p("sigstore-trust.json"), "w"))
+# a log tree of five leaves (the entry is the third) with its checkpoint, signed by the log key: the inclusion proof Rekor sends with every entry
+def _mh(l, r): return hashlib.sha256(b"\x01" + l + r).digest()
+def _mroot(ls):
+    if len(ls) == 1: return ls[0]
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mh(_mroot(ls[:k]), _mroot(ls[k:]))
+def _mpath(m, ls):
+    if len(ls) == 1: return []
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mpath(m, ls[:k]) + [_mroot(ls[k:])] if m < k else _mpath(m - k, ls[k:]) + [_mroot(ls[:k])]
+def add_proof(e, sign, log_der, pos=2, n=5):
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(e["canonicalizedBody"])).digest()
+    ls = [hashlib.sha256(b"\x00" + bytes([i]) * 8).digest() for i in range(n)]
+    ls[pos] = leaf
+    root = _mroot(ls)
+    note = "rekor.sigstore.dev - 1193050959916656506\n%d\n%s\n" % (n, base64.b64encode(root).decode())
+    sg = hashlib.sha256(log_der).digest()[:4] + sign(note.encode())
+    e["inclusionProof"] = {"logIndex": str(pos), "rootHash": base64.b64encode(root).decode(), "treeSize": str(n),
+                           "hashes": [base64.b64encode(h).decode() for h in _mpath(pos, ls)],
+                           "checkpoint": {"envelope": note + "\n\u2014 rekor.sigstore.dev " + base64.b64encode(sg).decode() + "\n"}}
+    return e
+
+def rekor_entry(payload, sig, keyname="rel", index="7", body_mut=None, cb_mut=None):
+    """A Rekor v1 dsse entry for this payload and signature, whose verifier is the public key of `keyname`, signed by this run's Rekor key."""
+    body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
+            "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()},
+            "signatures": [{"signature": b64(sig), "verifier": b64(open(p(keyname + ".pub")).read().encode())}]}}
+    if body_mut: body_mut(body)
+    cb = b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    if cb_mut: cb = cb_mut(cb)
+    log_id = der_sha_early("rekor")
+    canon = json.dumps({"body": cb, "integratedTime": 1761800000, "logID": log_id, "logIndex": int(index)}, sort_keys=True, separators=(",", ":")).encode()
+    set_sig = sh("openssl", "dgst", "-sha256", "-sign", p("rekor.key"), p("rekor.set.in")) if open(p("rekor.set.in"), "wb").write(canon) else b""
+    e = {"logIndex": index, "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
+            "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(set_sig)}}
+    def _sg(note): open(p("rekor.note.in"), "wb").write(note); return sh("openssl", "dgst", "-sha256", "-sign", p("rekor.key"), p("rekor.note.in"))
+    return add_proof(e, _sg, sh("openssl", "pkey", "-pubin", "-in", p("rekor.pub"), "-outform", "DER"))
+genkey("throwaway", "-algorithm", "ED25519")                           # the building job's own key (Witness 0.12.0 with a file key): its records are refused
+def der_sha(name): return hashlib.sha256(sh("openssl", "pkey", "-pubin", "-in", p(name + ".pub"), "-outform", "DER")).hexdigest()
+def sign_file(key, path):
+    if key == "throwaway": return sh("openssl", "pkeyutl", "-sign", "-rawin", "-inkey", p("throwaway.key"), "-in", path)
+    return sh("openssl", "dgst", "-sha256", "-sign", p(key + ".key"), path)
+MANIFEST = {"public_key": open(p("rel.pub")).read(), "key_id": der_sha("rel"), "valid_from": "2020-01-01T00:00:00Z"}
+open(p("release-key-root.pub"), "w").write(open(p("root.pub")).read())
+open(p("release-key-manifest.json"), "wb").write(json.dumps(MANIFEST, sort_keys=True, indent=1).encode() + b"\n")
+open(p("release-key-manifest.sig"), "w").write(b64(sign_file("root", p("release-key-manifest.json"))) + "\n")
+# the same keys directory with a manifest signed by another root (a policy that must refuse every record of the real chain)
+os.makedirs(p("keys-otherroot"), exist_ok=True)
+for _f in ("release-key-root.pub", "release-key-manifest.json"): shutil.copy(p(_f), p("keys-otherroot/" + _f))
+open(p("keys-otherroot/release-key-manifest.sig"), "w").write(b64(sign_file("otherroot", p("release-key-manifest.json"))) + "\n")
+KEYID = "awskms:///alias/fosterstack-release-signing"      # what Witness 0.12.0 writes as the keyid of a KMS signature (go-witness signer/kms/aws/signer.go)
+STAGE_LIST = ["build", "sign", "rebuild", "check", "release"]
+json.dump({"repository": REPO, "stages": STAGE_LIST}, open(p("template.json"), "w"))
+def full_dir(d):      # an alternate key directory is a whole policy directory: the template and the pins sit beside the manifest
+    os.makedirs(p(d), exist_ok=True)
+    for _f in ("template.json", "sigstore-trust.json", "rekor.pub"): shutil.copy(p(_f), p(d + "/" + _f))
+full_dir("keys-otherroot")
 # A minimal VALID SLSA v1 provenance predicate (Codex #249 r4 B4): every provenance fixture carries it, so a record is refused only for
 # what its case names; a case's own predicate fields are laid over it, and raw_predicate=True signs the predicate exactly as given.
-SLSA_OK = {"buildDefinition": {"buildType": "https://github.com/fosterstack/cache/release-chain/v0.3.0",
-                               "externalParameters": {"ref": "refs/tags/v0.3.0", "workflow": "https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0"},
-                               "internalParameters": {}, "resolvedDependencies": [{"uri": "git+https://github.com/fosterstack/cache@refs/tags/v0.3.0", "digest": {"gitCommit": "f" * 40}}]},
-           "runDetails": {"builder": {"id": "https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"},
-                          "metadata": {"invocationId": "https://github.com/fosterstack/cache/actions/runs/1"}}}
-def prov_predicate(ptype, predicate, raw=False):
+def slsa_ok(ref):
+    site = "https://github.com/fosterstack/cache"
+    return {"buildDefinition": {"buildType": site + "/release-chain/v0.3.0",
+                                "externalParameters": {"ref": ref, "workflow": site + "/.github/workflows/release.yml@" + ref},
+                                "internalParameters": {}, "resolvedDependencies": [{"uri": "git+" + site + "@" + ref, "digest": {"gitCommit": "f" * 40}}]},
+            "runDetails": {"builder": {"id": site + "/.github/workflows/stage-sign.yml@" + ref},
+                           "metadata": {"invocationId": site + "/actions/runs/1"}}}
+SLSA_OK = slsa_ok(T)
+def prov_predicate(ptype, predicate, raw=False, ref=T):
     if raw: return predicate                                   # exactly as given, null included
     if ptype != PROV_URI: return predicate if predicate is not None else {}
-    return dict(json.loads(json.dumps(SLSA_OK)), **(predicate or {}))
+    return dict(slsa_ok(ref), **(predicate or {}))
 # A Witness collection is named for the step that made it, and the verifier refuses a name that is not a release name of the stage that reads it
 # (REQ-CHAIN-004-AC13, closed names: build/apk for Build, rebuild/rapk for Rebuild). Every fixture is named for its stage; the Check fixtures keep
-# build, the one name that tests the identity refusals of a record presented to the wrong stage (the name check does not apply to the Check stage).
-COLLECTION_NAME = {"stage-reproducibility.yml": "rebuild"}
-
-
-def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
-           stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, config_repo=None, no_config=False, no_issuer=False,
-           coll_file=None, coll_variant=None, coll_name=None, predicate=None, san_der=None, issuer_der=None, config_der=None, raw_predicate=False):
-    _n[0] += 1; leaf = "leaf%d" % _n[0]
-    ext = "subjectAltName = critical," + ("DER:" + san_der if san_der else "URI:" + uri(wf, ref, repo))
-    if issuer_der: ext += "\n1.3.6.1.4.1.57264.1.8 = DER:" + issuer_der          # the extension's raw bytes, for the DER-shape cases
-    elif not no_issuer: ext += "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + issuer
-    # Build Config URI (Fulcio 1.3.6.1.4.1.57264.1.18) = the TOP-LEVEL workflow that called the stage (workflow_ref); the SAN
-    # (Build Signer URI, .1.9) is the called file. Harness spike (b): a second workflow that calls stage-sign.yml gets Sign's SAN.
-    if config_der: ext += "\n1.3.6.1.4.1.57264.1.18 = DER:" + config_der
-    elif not no_config: ext += "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri(config_wf, config_ref or ref, config_repo or repo)
-    issue(ca, leaf, ext, start or now - dt.timedelta(minutes=5), end or now + dt.timedelta(minutes=10))
+# build, the one name that tests the refusals of a record presented to the wrong stage (the name check does not apply to the Check stage).
+def record(name, ptype, subjects, key="rel", signed=True, stmt="v1", dsse=DSSE, payload=None, coll_file=None, coll_variant=None, coll_name=None,
+           predicate=None, raw_predicate=False, ref=T, coll_ref=None, coll_env=None):
+    """A DSSE envelope with one signature by `key` over the PAE and no certificate, intermediates or timestamps: the form Witness and cosign write for a KMS key."""
     if payload is None and coll_file:
         # REAL Witness collection shape (in-toto-witness docs/tutorials/artifact-policy.md:58-70): the product attestor names the
         # file `https://witness.dev/attestations/product/v0.1/file:<name>` with sha256 + gitoid:sha1 + gitoid:sha256 digests, the git
@@ -389,28 +250,33 @@ def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, ts
                     "material": [wrong, nm(P + "material/v0.1/file:digests.json"), subj[1]],
                     # the right file name but its digest set has only a gitoid, no sha256 key
                     "gitoidonly": [dict(subj[0], digest={k: v for k, v in subj[0]["digest"].items() if k != "sha256"}), subj[1]]}[coll_variant]
+        # the environment attestor records GITHUB_REF (witnessed-local.sh runs it); the verifier binds the collection to the policy's ref by it
+        env_att = coll_env if coll_env is not None else [{"os": "linux", "variables": {"GITHUB_REF": coll_ref or ref}}]
         if not coll_variant:
             idata = open(p("items.json"), "rb").read()
             subj.append({"name": "https://witness.dev/attestations/product/v0.1/file:items.json",
                          "digest": {"sha256": hashlib.sha256(idata).hexdigest(), "gitoid:sha1": "gitoid:blob:sha1:" + gitoid(idata, "sha1"), "gitoid:sha256": "gitoid:blob:sha256:" + gitoid(idata, "sha256")}})
-        att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("environment", "git", "product", "command-run")]
-        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": coll_name or COLLECTION_NAME.get(wf, "build"), "attestations": att}, "subject": subj}).encode()
+        att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("git", "product", "command-run")]
+        att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": e} for e in env_att] + att
+        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": coll_name or "build", "attestations": att}, "subject": subj}).encode()
     if payload is None:
-        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": prov_predicate(ptype, predicate, raw_predicate),
+        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": prov_predicate(ptype, predicate, raw_predicate, ref),
                               "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1] if v.startswith("sha256:") else v}} for k, v in subjects.items()]}).encode()
     open(p("pae.bin"), "wb").write(pae(dsse, payload))
-    sh("openssl", "dgst", "-sha256", "-sign", p(leaf + ".key"), "-out", p("sig.bin"), p("pae.bin"))
-    sig = open(p("sig.bin"), "rb").read()
-    chain = [b64(open(p(c + ".pem"), "rb").read()) for c in (("interm", "root") if ca == "interm" else (ca,))]
-    s = {"keyid": "", "sig": b64(sig), "certificate": b64(open(p(leaf + ".pem"), "rb").read()), "intermediates": chain}
-    if tsa: s["timestamps"] = [{"type": "rfc3161-response" if ptype == PROV_URI else "tsp", "data": stamp(sig, tsa, response=ptype == PROV_URI)}]
-    env = {"payloadType": dsse, "payload": b64(payload), "signatures": [s] if signed else []}
+    sig = sign_file(key, p("pae.bin"))
+    env = {"payloadType": dsse, "payload": b64(payload), "signatures": [{"keyid": KEYID, "sig": b64(sig)}] if signed else []}
     json.dump(env, open(p(name + ".json"), "w"))
+    if signed and (ptype == PROV_URI or dsse == "https://witness.testifysec.com/policy/v0.1"):      # a provenance and the release policy carry a Rekor entry beside them
+        json.dump({"entries": [rekor_entry(payload, sig, key if key in ("rel", "other") else "rel")]}, open(p(name + ".rekor.json"), "w"))
     return hashlib.sha256(payload).hexdigest()
+PAY = {}
+def add(n, *a, **k): PAY[n] = record(n, *a, **k)
+
 PROV = "https://slsa.dev/provenance/v1"
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
 POLT = "https://witness.testifysec.com/policy/v0.1"
 D = {"image-production": "sha256:" + "a" * 64, "image-fips": "sha256:" + "b" * 64, "apk": "sha256:" + "c" * 64}
+ENVATT = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": T}}}]
 def dj(name, d): json.dump(d, open(p(name), "w"))
 # items.json (a product of Build's record next to digests.json): the bind-items fixtures and, since 0707 fix 4, every normal Build record and Sign's byproducts use this one file
 ITEMS = {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "1" * 64,
@@ -424,7 +290,7 @@ dj("digests-subset.json", {k: v for k, v in D.items() if k != "apk"})
 dj("digests-swapped.json", dict(D, **{"image-production": D["image-fips"], "image-fips": D["image-production"]}))
 # FORMAT files: each is attested by its OWN collection (below), so the file hash AGREES with the record and only the content
 # can be refused (cause "format"). The mutation each one catches is a validator that is looser than the stated format.
-FMT = {"sha512": dict(D, apk="sha512:" + "c" * 128), "63": dict(D, apk="sha256:" + "c" * 63), "upper": dict(D, apk="sha256:" + "C" * 64),
+FMT = {"foobar": {"foo": "bar"}, "sha512": dict(D, apk="sha512:" + "c" * 128), "63": dict(D, apk="sha256:" + "c" * 63), "upper": dict(D, apk="sha256:" + "C" * 64),
        "null": dict(D, apk=None), "number": dict(D, apk=7), "path": dict(D, apk="./dist/run.sh"), "code": dict(D, apk="sha256:$(id)"),
        "badval": dict(D, apk="sha256:./dist/run.sh"), "codename": {"image-production;id": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
        "uppername": {"Image-Production": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
@@ -442,76 +308,88 @@ for k, v in FMT.items(): dj("digests-%s.json" % k, v)
 open(p("digests-dupkey.json"), "w").write('{"image-production":"sha256:%s","image-fips":"sha256:%s","apk":"sha256:%s","apk":"sha256:%s"}' % ("a" * 64, "b" * 64, "d" * 64, "c" * 64))
 open(p("digests-notobject.json"), "w").write('["sha256:%s"]' % ("a" * 64))
 FMT["dupkey"] = FMT["notobject"] = None
-# The Witness move (owner Oct 22): Build and Rebuild record under a throwaway key inside their jobs and Sign re-signs the records keyless, so a Build, Rebuild or Check record
-# is accepted only under stage-sign.yml's identity (the same file as Sign's provenance: the record TYPE and the collection name tell the stages apart). The old
-# identities (stage-build.yml, stage-reproducibility.yml) are refused for every stage; OLD_BUILD / OLD_REBUILD name them for those cases.
-OLD_BUILD, OLD_REBUILD, OLD_CHECK = "stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml"
-STAGES = {"build": "stage-sign.yml", "sign": "stage-sign.yml", "rebuild": "stage-sign.yml", "check": "stage-sign.yml", "release": "stage-promote.yml"}
-json.dump({"repository": REPO, "oidc_issuer": ISSUER, "caller_workflow": ".github/workflows/release.yml", "stages": {k: {"workflow": ".github/workflows/" + v} for k, v in STAGES.items()}}, open(p("template.json"), "w"))
-sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("rekor.key"))
-sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("rekor2.key"))
-sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("signstub.key"))   # the stub signer's key: test-only, lives in the temp dir
-for k in ("rekor", "rekor2"): sh("openssl", "pkey", "-in", p(k + ".key"), "-pubout", "-out", p(k + ".pub"))
-def der_sha(pem, pub=False):
-    a = ["openssl", "pkey", "-pubin", "-in", pem, "-outform", "DER"] if pub else ["openssl", "x509", "-in", pem, "-outform", "DER"]
-    return hashlib.sha256(sh(*a)).hexdigest()
-def cat(out, *names): open(p(out), "w").write("".join(open(p(n + ".pem")).read() for n in names))
-cat("fulcio-chain.pem", "root", "interm"); cat("tsa-chain.pem", "tsaroot", "tsa")
-good = {"fulcio_root_sha256": der_sha(p("root.pem")), "tsa_root_sha256": der_sha(p("tsaroot.pem")), "rekor_sha256": der_sha(p("rekor.pub"), True)}
-dj("trust.json", good)
-dj("trust-badroot.json", dict(good, fulcio_root_sha256=der_sha(p("otherroot.pem"))))
-dj("trust-badtsa.json", dict(good, tsa_root_sha256=der_sha(p("othertsaroot.pem"))))
-dj("trust-badrekor.json", dict(good, rekor_sha256=der_sha(p("rekor2.pub"), True)))
-T, T2 = "refs/tags/v0.3.0", "refs/tags/v0.3.1"
-# the leaf the fake cosign signs with: SAN stage-sign.yml@T, Build Config URI release.yml@T, the GitHub issuer; valid like the others
-issue("interm", "fakeleaf", "subjectAltName = critical,URI:" + uri("stage-sign.yml", T) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + ISSUER
-      + "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri("release.yml", T), now - dt.timedelta(minutes=30), now + dt.timedelta(minutes=180))
-# the leaf a dry run's Sign gets from Fulcio: the same files at the dry-run branch (Codex security r1 S1: Sign now verifies what it wrote,
-# so the fake cosign must sign a dry run with the branch identity, as Fulcio would)
-DRYREF = "refs/heads/hostile-proof/x"
-issue("interm", "fakeleafbr", "subjectAltName = critical,URI:" + uri("stage-sign.yml", DRYREF) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + ISSUER
-      + "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri("release.yml", DRYREF), now - dt.timedelta(minutes=30), now + dt.timedelta(minutes=180))
-PAY = {}
-def add(n, *a, **k): PAY[n] = record(n, *a, **k)
-# ---- Sign's provenance and its identity variants (001-AC4, 002-AC2)
-add("sign_prov", STAGES["sign"], T, PROV, D)
-add("sign_prov_v0.2", STAGES["sign"], T, "https://slsa.dev/provenance/v0.2", D)
-for s in ("build", "rebuild", "check", "release"): add(s + "_as_sign", STAGES[s], T, PROV, D)
-add("oldbuild_as_sign", OLD_BUILD, T, PROV, D); add("oldrebuild_as_sign", OLD_REBUILD, T, PROV, D); add("oldcheck_as_sign", OLD_CHECK, T, PROV, D)      # the former Build and Rebuild identities presented as Sign's
-add("sibling_as_sign", "other.yml", T, PROV, D)
-add("evilext_as_sign", "stage-sign.yml.evil", T, PROV, D)
-add("xprefix_as_sign", "xstage-sign.yml", T, PROV, D)
-add("sign_rc", STAGES["sign"], "refs/tags/v0.3.0-rc1", PROV, D)
-add("sign_othertag", STAGES["sign"], T2, PROV, D)
-add("sign_branch", STAGES["sign"], "refs/heads/main", PROV, D)
-add("sign_br", STAGES["sign"], DRYREF, PROV, D, predicate={"dryRun": True})            # what a dry run's Sign writes (SAN ref = the branch, dryRun true)
-add("sign_flag_tag", STAGES["sign"], T, PROV, D, predicate={"dryRun": True})         # dryRun true even though the SAN ref IS the tag: Release must still refuse
+
+# ---- Sign's provenance and its variants (001-AC4, 002-AC2). The record carries no workflow identity: the key signs it, the type binds it to Sign's stage,
+# and the ref inside the provenance (the whole ref, never its last segment) must be the policy's ref.
+add("sign_prov", PROV, D)
+# the Rekor entry of Sign's provenance, damaged one way per variant (the CLI refuses each; the entries file sits beside the record)
+def _rv(name, fn):
+    shutil.copy(p("sign_prov.json"), p("sign_prov_rk_%s.json" % name))
+    env = json.load(open(p("sign_prov.json"))); payload, sig = base64.b64decode(env["payload"]), base64.b64decode(env["signatures"][0]["sig"])
+    data = fn(payload, sig)
+    if data is not None: open(p("sign_prov_rk_%s.rekor.json" % name), "wb").write(data if isinstance(data, bytes) else json.dumps({"entries": [data]}).encode())
+def _mut(f):
+    def go(payload, sig):
+        e = rekor_entry(payload, sig); f(e); return e
+    return go
+def _edit(path, val):
+    def f(e):
+        d = e
+        for k in path[:-1]: d = d[k]
+        d[path[-1]] = val(d[path[-1]]) if callable(val) else val
+    return f
+RK_ENTRY = {   # name: (what is wrong, builder)
+    "idx_edit": ("a log index edited after the log signed it", _mut(_edit(["logIndex"], "8"))),
+    "it_edit": ("an integrated time edited after the log signed it", _mut(_edit(["integratedTime"], "1761800001"))),
+    "set_garbage": ("a signed entry timestamp that is garbage", _mut(_edit(["inclusionPromise", "signedEntryTimestamp"], b64(b"garbage")))),
+    "set_star": ("a '*' inside the signed entry timestamp", _mut(_edit(["inclusionPromise", "signedEntryTimestamp"], lambda v: v[:4] + "*" + v[4:]))),
+    "keyid_nl": ("a line break inside logId.keyId", _mut(_edit(["logId", "keyId"], lambda v: v[:8] + "\n" + v[8:]))),
+    "body_nl": ("a line break inside the canonical body, signed by the log as it is", lambda pl, sg: rekor_entry(pl, sg, cb_mut=lambda cb: cb[:10] + "\n" + cb[10:])),
+    "verifier_junk": ("a verifier that is a genuine PEM plus junk", lambda pl, sg: rekor_entry(pl, sg, body_mut=lambda b: b["spec"]["signatures"][0].update(verifier=b64(open(p("rel.pub")).read().encode() + b"junk")))),
+    "verifier_nl": ("a line break inside the verifier's base64, signed by the log as it is", lambda pl, sg: rekor_entry(pl, sg, body_mut=lambda b: b["spec"]["signatures"][0].update(verifier=b64(open(p("rel.pub")).read().encode())[:12] + "\n" + b64(open(p("rel.pub")).read().encode())[12:]))),
+    "hashedrekord": ("an entry of another kind (hashedrekord) although the log signed it", _mut(_edit(["kindVersion", "kind"], "hashedrekord"))),
+    "other_payload": ("an entry for another record's payload", lambda pl, sg: rekor_entry(b"another payload", sg)),
+    "other_sig": ("an entry for another signature", lambda pl, sg: rekor_entry(pl, b"another signature")),
+    "other_key": ("an entry whose verifier is another key", lambda pl, sg: rekor_entry(pl, sg, "other")),
+    "no_proof": ("an entry with no inclusion proof", _mut(lambda e: e.pop("inclusionProof"))),
+    "bad_checkpoint": ("a checkpoint that names another tree size", _mut(_edit(["inclusionProof", "checkpoint", "envelope"], lambda v: v.replace("\n5\n", "\n6\n", 1)))),
+    "idxnum": ("a log index spelled as a number", _mut(_edit(["logIndex"], 7))), "idxplus": ("a log index spelled +7", _mut(_edit(["logIndex"], "+7"))),
+    "idxspace": ("a log index spelled with a space", _mut(_edit(["logIndex"], " 7"))), "idxzero": ("a log index spelled 07", _mut(_edit(["logIndex"], "07"))),
+    "itnum": ("an integrated time spelled as a number", _mut(_edit(["integratedTime"], 1761800000))), "itfloat": ("an integrated time spelled as a float", _mut(_edit(["integratedTime"], 1761800000.0))),
+    "itplus": ("an integrated time spelled with a plus", _mut(_edit(["integratedTime"], "+1761800000"))), "itzero": ("an integrated time with a leading zero", _mut(_edit(["integratedTime"], "01761800000"))),
+}
+RK_FILE = {    # the entries file itself
+    "utf16": ("an entries file in UTF-16", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)]}).encode("utf-16")),
+    "nan": ("an entries file holding NaN", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": NaN').encode()),
+    "inf": ("an entries file holding -Infinity", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": -Infinity').encode()),
+    "big": ("an entries file holding 1e400", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": 1e400').encode()),
+    "nbig": ("an entries file holding -1e400", lambda pl, sg: json.dumps({"entries": [rekor_entry(pl, sg)], "x": 0}).replace('"x": 0', '"x": -1e400').encode()),
+    "ent_int": ("an entries file whose entries is an int", lambda pl, sg: b'{"entries": 7}'), "ent_str": ("an entries file whose entries is a string", lambda pl, sg: b'{"entries": "x"}'),
+    "ent_null": ("an entries file whose entries is null", lambda pl, sg: b'{"entries": null}'), "ent_dict": ("an entries file whose entries is an object", lambda pl, sg: b'{"entries": {"a": 1}}'),
+    "ent_nondict": ("an entries file whose entries holds a non-object", lambda pl, sg: b'{"entries": [1]}'), "ent_empty": ("an entries file with an empty list", lambda pl, sg: b'{"entries": []}'),
+    "none": ("no entries file at all", lambda pl, sg: None),
+}
+for _n, (_d, _f) in list(RK_ENTRY.items()) + list(RK_FILE.items()): _rv(_n, _f)
+add("sign_prov_v0.2", "https://slsa.dev/provenance/v0.2", D)
+for s in ("build", "rebuild", "check", "release"): add(s + "_as_sign", PROV, D)
+add("sign_rc", PROV, D, ref=TRC)
+add("sign_othertag", PROV, D, ref=T2)
+add("sign_branch", PROV, D, ref="refs/heads/main")
+add("sign_br", PROV, D, ref=DRYREF, predicate={"dryRun": True})            # what a dry run's Sign writes (ref = the branch, dryRun true)
+add("sign_flag_tag", PROV, D, predicate={"dryRun": True})                # dryRun true even though the ref IS the tag: Release must still refuse
 # branches NAMED like the tag (round 5 Opus B2a): a "last path segment" ref comparison accepts these
-add("sign_brtag", STAGES["sign"], "refs/heads/v0.3.0", PROV, D)
-add("sign_brrel", STAGES["sign"], "refs/heads/release/v0.3.0", PROV, D)
-add("sign_cfg_brtag", STAGES["sign"], T, PROV, D, config_ref="refs/heads/v0.3.0")
-add("build_coll_br", STAGES["build"], DRYREF, COLL, None, stmt="v0.1", coll_file="digests.json")
-add("build_coll_rc", STAGES["build"], "refs/tags/v0.3.0-rc1", COLL, None, stmt="v0.1", coll_file="digests.json")
-add("build_coll_tagx", STAGES["build"], "refs/tags/x", COLL, None, stmt="v0.1", coll_file="digests.json")
-add("build_coll_branchx", STAGES["build"], "refs/heads/x", COLL, None, stmt="v0.1", coll_file="digests.json")
-add("sign_wrongrepo", STAGES["sign"], T, PROV, D, repo="attacker/cache")
-add("sign_badissuer", STAGES["sign"], T, PROV, D, issuer="https://accounts.google.com")
-add("sign_noissuer", STAGES["sign"], T, PROV, D, no_issuer=True)
-# advisor reading 1 (0334): Sign's identity = SAN stage-sign.yml@tag + Build Config URI release.yml@same tag + the GitHub issuer
-add("sign_othercaller", STAGES["sign"], T, PROV, D, config_wf="other-caller.yml")        # a second workflow that CALLS stage-sign.yml
-add("sign_callertag", STAGES["sign"], T, PROV, D, config_ref=T2)                          # right SAN, caller at another tag
-add("sign_callerbranch", STAGES["sign"], T, PROV, D, config_ref="refs/heads/main")        # right SAN, caller on a branch
-add("sign_noconfig", STAGES["sign"], T, PROV, D, no_config=True)                          # Build Config URI extension absent
-add("sign_wrongroot", STAGES["sign"], T, PROV, D, ca="otherroot")
-add("sibling_wrongroot", "other.yml", T, PROV, D, ca="otherroot")   # rc-2 R8: wrong in both ways, a sibling file's identity under an attacker root
-add("sign_otherdigests", STAGES["sign"], T, PROV, dict(D, apk="sha256:" + "d" * 64))
-add("sign_coll", STAGES["sign"], T, COLL, D, stmt="v0.1")
-# ---- timestamps (002-AC1). Stamps are taken at generation time (real wall clock = "now"); each case isolates its cause.
-add("sign_nostamp", STAGES["sign"], T, PROV, D, tsa=None)
-add("sign_othertsa", STAGES["sign"], T, PROV, D, tsa="othertsa")
-add("sign_stampbefore", STAGES["sign"], T, PROV, D, start=now + dt.timedelta(minutes=60), end=now + dt.timedelta(minutes=120))
-add("sign_stampafter", STAGES["sign"], T, PROV, D, start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
-add("sign_unsigned", STAGES["sign"], T, PROV, D, signed=False)
+add("sign_brtag", PROV, D, ref="refs/heads/v0.3.0")
+_cfg = slsa_ok(T)       # Q2b: the run's ref is the tag, the calling workflow's ref is the branch named like the tag
+_cfg["buildDefinition"]["externalParameters"]["workflow"] = "https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/v0.3.0"
+add("sign_cfg_brtag", PROV, D, predicate=_cfg, raw_predicate=True)
+# the calling workflow must be exactly <repo>/.github/workflows/release.yml@<ref> (re-aimed from the certificate-identity cases)
+WF_BAD = {"evil": "https://github.com/fosterstack/cache-evil/.github/workflows/release.yml@" + T, "cachex": "https://github.com/fosterstack/cachex/.github/workflows/release.yml@" + T,
+          "prerelease": "https://github.com/fosterstack/cache/.github/workflows/prerelease.yml@" + T, "xrelease": "https://github.com/fosterstack/cache/.github/workflows/xrelease.yml@" + T,
+          "otherref": "https://github.com/fosterstack/cache/.github/workflows/release.yml@" + T2, "nosite": "fosterstack/cache/.github/workflows/release.yml@" + T}
+for _k, _w in WF_BAD.items():
+    _c = slsa_ok(T); _c["buildDefinition"]["externalParameters"]["workflow"] = _w
+    add("sign_wf_" + _k, PROV, D, predicate=_c, raw_predicate=True)
+_nowf = slsa_ok(T); del _nowf["buildDefinition"]["externalParameters"]["workflow"]
+add("sign_nowf", PROV, D, predicate=_nowf, raw_predicate=True)
+_noref = slsa_ok(T); del _noref["buildDefinition"]["externalParameters"]["ref"]
+add("sign_noref", PROV, D, predicate=_noref, raw_predicate=True)
+add("sign_brrel", PROV, D, ref="refs/heads/release/v0.3.0")
+add("sign_otherdigests", PROV, dict(D, apk="sha256:" + "d" * 64))
+add("sign_coll", COLL, D, stmt="v0.1")
+# the key: a record is accepted only when the manifest's key signed it
+add("sign_otherkey", PROV, D, key="other")
+add("sign_throwaway", PROV, D, key="throwaway")
+add("sign_unsigned", PROV, D, signed=False)
 _g = json.load(open(p("sign_prov.json")))
 def variant(name, edit):
     t = json.loads(json.dumps(_g)); edit(t); json.dump(t, open(p(name + ".json"), "w"))
@@ -519,58 +397,49 @@ def _payload(t):
     st = json.loads(base64.b64decode(t["payload"])); st["subject"][0]["digest"]["sha256"] = "e" * 64; t["payload"] = b64(json.dumps(st).encode())
 def _sig(t):
     sg = bytearray(base64.b64decode(t["signatures"][0]["sig"])); sg[-1] ^= 1; t["signatures"][0]["sig"] = b64(bytes(sg))
-def _stamp(t): t["signatures"][0]["timestamps"] = json.load(open(p("sign_othertag.json")))["signatures"][0]["timestamps"]
-variant("sign_tamper_payload", _payload); variant("sign_tamper_sig", _sig); variant("sign_tamper_stamp", _stamp)
+variant("sign_tamper_payload", _payload); variant("sign_tamper_sig", _sig)
+# old-form envelopes: a certificate, intermediates or timestamps field is refused, so an old record can never be read as a new one
+def _with(field, value): return lambda t: t["signatures"][0].__setitem__(field, value)
+variant("sign_old_cert", _with("certificate", b64(b"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n")))
+variant("sign_old_inter", _with("intermediates", []))
+variant("sign_old_stamps", _with("timestamps", [{"type": "tsp", "data": "AA=="}]))
+variant("sign_keyid_num", _with("keyid", 5))
+variant("sign_extra_field", _with("note", "x"))
 # ---- Witness collections (real type, Statement v0.1 as Witness writes it; one in v1 form) and the signed policy
-add("build_coll", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json")
-# step-8 round 1 (Opus N-1, N-5, Sonnet SF3): a record with a repeated JSON key, one with two signatures, one whose SAN is not valid UTF-8,
-# and a collection whose subject list holds things that are not subjects
+add("build_coll", COLL, None, stmt="v0.1", coll_file="digests.json")
+# step-8 round 1 (Opus N-1, N-5, Sonnet SF3): a record with a repeated JSON key, one with two signatures, and a collection whose subject list holds things that are not subjects
 _t = open(p("sign_prov.json")).read(); open(p("sign_dupkey.json"), "w").write(_t.replace('"payloadType"', '"payloadType": "x", "payloadType"', 1))
 _j = json.load(open(p("sign_prov.json"))); _j["signatures"] = _j["signatures"] * 2; json.dump(_j, open(p("sign_2sig.json"), "w"))
-add("sign_utf8", STAGES["sign"], T, PROV, D, san_der="30048602ff41")
-add("build_badsubj", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": ["x", 5]}).encode())
-add("build_coll_v1", STAGES["build"], T, COLL, None, stmt="v1", coll_file="digests.json")
-add("build_coll_scan", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml")   # stage-build.yml called from scan.yml, not release.yml
-add("build_coll_nostamp", STAGES["build"], T, COLL, None, tsa=None, stmt="v0.1", coll_file="digests.json")
-add("build_coll_plus", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-extra.json")
-for v in ("wrongname", "dup", "dup2", "bak", "xname", "evilhost", "material", "gitoidonly"): add("build_coll_" + v, STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_variant=v)
-add("build_coll_swapped", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-swapped.json")
-for k in FMT: add("build_coll_" + k, STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-%s.json" % k)
-add("build_coll_br_badval", STAGES["build"], DRYREF, COLL, None, stmt="v0.1", coll_file="digests-badval.json")   # a dry-run Build record over a malformed digests file
-# through sign --check, every cause verify knows must be named for Build's record too
-add("build_coll_badissuer", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com")
-add("build_coll_wrongroot", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
-add("build_coll_wrongrepo", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", repo="attacker/cache")
-add("build_coll_noconfig", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", no_config=True)
-add("check_coll", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
-add("check_coll_old", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
-add("check_coll_oldb", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json")      # the same former identity under a Build collection name (offered as Build's; Check's former identity, since the Check stage holds no token after the Witness move)
-add("rebuild_coll", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
-add("rebuild_coll_other", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
-add("build_coll_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", coll_file="digests.json")
-# near misses of the Build Config URI (the calling top-level workflow) and of the repository, for the Sign stage (001-AC4/002-AC2)
-add("sign_cfg_wrongrepo", STAGES["sign"], T, PROV, D, config_repo="attacker/cache")
-add("sign_cfg_repoevil", STAGES["sign"], T, PROV, D, config_repo="fosterstack/cache-evil")
-add("sign_cfg_repox", STAGES["sign"], T, PROV, D, config_repo="fosterstack/cachex")
-add("sign_cfg_prerelease", STAGES["sign"], T, PROV, D, config_wf="prerelease.yml")
-add("sign_cfg_xrelease", STAGES["sign"], T, PROV, D, config_wf="xrelease.yml")
-add("sign_cfg_rc", STAGES["sign"], T, PROV, D, config_ref="refs/tags/v0.3.0-rc1")
-add("sign_san_repoevil", STAGES["sign"], T, PROV, D, repo="fosterstack/cache-evil", config_repo="fosterstack/cache")
-# the extension checks are not Sign-only: Rebuild, Check and Release must each refuse a wrong top-level workflow and a wrong issuer
-for s in ("rebuild", "check"):
-    add(s + "_cfg", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml", coll_name={"rebuild": "rebuild", "check": "scanners"}.get(s))
-    add(s + "_issuer", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com", coll_name={"rebuild": "rebuild", "check": "scanners"}.get(s))
+add("build_badsubj", COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": ["x", 5]}).encode())
+add("build_coll_v1", COLL, None, stmt="v1", coll_file="digests.json")
+add("build_coll_plus", COLL, None, stmt="v0.1", coll_file="digests-extra.json")
+for v in ("wrongname", "dup", "dup2", "bak", "xname", "evilhost", "material", "gitoidonly"): add("build_coll_" + v, COLL, None, stmt="v0.1", coll_file="digests.json", coll_variant=v)
+add("build_coll_dry", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref=DRYREF)           # a dry run's Build ran on the branch
+add("build_coll_badval_dry", COLL, None, stmt="v0.1", coll_file="digests-badval.json", coll_ref=DRYREF)
+add("build_coll_swapped", COLL, None, stmt="v0.1", coll_file="digests-swapped.json")
+# tag binding (the environment attestor's GITHUB_REF is compared with the policy's ref): rc tag, other tag, branch, no variable, no attestor, two attestors
+add("build_coll_rcref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref=TRC)
+add("build_coll_otherref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref=T2)
+add("build_coll_branchref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_ref="refs/heads/v0.3.0")
+add("build_coll_novar", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": {"GITHUB_SHA": "f" * 40}}])
+add("build_coll_noenv", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[])
+add("build_coll_twoenv", COLL, None, stmt="v0.1", coll_file="digests.json",
+    coll_env=[{"os": "linux", "variables": {"GITHUB_REF": T}}, {"os": "linux", "variables": {"GITHUB_REF": T2}}])
+add("build_coll_refnotstr", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": {"GITHUB_REF": [T]}}])
+add("build_coll_varlist", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": ["GITHUB_REF=" + T]}])
+add("build_coll_varstr", COLL, None, stmt="v0.1", coll_file="digests.json", coll_env=[{"os": "linux", "variables": "GITHUB_REF=" + T}])
+for k in FMT: add("build_coll_" + k, COLL, None, stmt="v0.1", coll_file="digests-%s.json" % k)
+add("check_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
+add("rebuild_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
+add("rebuild_coll_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
+# the key binds a Witness collection too: signed by another key, by the building job's throwaway key, and unsigned
+for _s, _name in (("build", "build"), ("rebuild", "rebuild"), ("check", "scanners")):
+    add(_s + "_coll_otherkey", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_name, key="other")
+    add(_s + "_coll_throwaway", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_name, key="throwaway")
 _c = json.load(open(p("build_coll.json")))
 t = json.loads(json.dumps(_c)); st = json.loads(base64.b64decode(t["payload"])); st["subject"][0]["digest"]["sha256"] = "e" * 64
 t["payload"] = b64(json.dumps(st).encode()); json.dump(t, open(p("build_coll_tampered.json"), "w"))
 t = json.loads(json.dumps(_c)); t["signatures"] = []; json.dump(t, open(p("build_coll_unsigned.json"), "w"))
-# The Witness move: the building job's own record, signed with a throwaway key: Witness 0.12.0 with a file key writes signatures [{keyid, sig}] and NO certificate
-# (pipeline-cc's probe); the payload is the same collection. Verifiers must refuse it with a plain reason.
-add("build_coll_old", OLD_BUILD, T, COLL, None, stmt="v0.1", coll_file="digests.json")                        # Build's FORMER identity
-add("rebuild_coll_old", OLD_REBUILD, T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")  # Rebuild's FORMER identity
-for _src, _dst in (("build_coll", "build_coll_throwaway"), ("rebuild_coll", "rebuild_coll_throwaway"), ("build_coll", "check_coll_throwaway")):
-    t = json.loads(json.dumps(json.load(open(p(_src + ".json"))))); t["signatures"] = [{"keyid": "ab" * 32, "sig": b64(b"x" * 64)}]; json.dump(t, open(p(_dst + ".json"), "w"))
-t = json.loads(json.dumps(_c)); t["signatures"][0]["keyid"] = "ab" * 32; json.dump(t, open(p("build_coll_keyid_and_cert.json"), "w"))     # a keyid ALONGSIDE a real certificate is not the throwaway form
 for n, ty in (("build_madeup", "https://example.com/made-up/v1"), ("build_ours", "https://fosterstack.com/attestations/build/v1"),
               ("build_ours_style", "https://fosterstack.com/attestation-collection/v0.1"),
               ("build_v02", "https://witness.testifysec.com/attestation-collection/v0.2"),
@@ -578,169 +447,30 @@ for n, ty in (("build_madeup", "https://example.com/made-up/v1"), ("build_ours",
               ("build_oldhost", "https://witness.dev/attestation-collections/v0.1"),
               ("build_slash", COLL + "/"), ("build_upper", COLL.replace("collection", "Collection")),
               ("build_prefix", COLL + "-extra"), ("build_slsa_slash", PROV + "/")):
-    add(n, STAGES["build"], T, ty, None, stmt="v0.1", coll_file="digests.json")
-polbody = json.dumps({"expires": "2031-01-01T00:00:00Z", "steps": {}, "roots": {}, "timestampauthorities": {}}).encode()
-add("release_policy", STAGES["release"], T, None, None, dsse=POLT, payload=polbody)
-add("build_policy", STAGES["build"], T, None, None, dsse=POLT, payload=polbody)
-add("release_policy_cfg", STAGES["release"], T, None, None, dsse=POLT, payload=polbody, config_wf="scan.yml")
-add("release_policy_issuer", STAGES["release"], T, None, None, dsse=POLT, payload=polbody, issuer="https://accounts.google.com")
+    add(n, ty, None, stmt="v0.1", coll_file="digests.json")
+polbody = json.dumps({"expires": "2031-01-01T00:00:00Z", "steps": {}}).encode()
+add("release_policy", None, None, dsse=POLT, payload=polbody)
+add("build_policy", None, None, dsse=POLT, payload=polbody)
 # illustrative: https://in-toto.io/attestation/release/v0.1 is the in-toto *registry release* predicate (in-toto-attestation
 # spec/predicates/release.md:74), used here only as a NEGATIVE fixture: it is not the signed policy and must be refused
-add("release_stmt_policy", STAGES["release"], T, "https://in-toto.io/attestation/release/v0.1", D)
-# step-8 round 2 NB-1 (Opus): the identity must be read from the SAME bytes openssl verifies. A certificate field that holds anything but
-# exactly one PEM block is refused: junk base64 or text before a genuine block, a second appended block, bytes after the outer SEQUENCE.
-# ATTACK shape: the field = a self-made certificate with the RIGHT identity (issued by an attacker root) followed by a GENUINE certificate of
-# ANY identity (chains to the policy root, and its key signed the payload); a reader that takes the first DER for the identity and openssl
-# that skips to the genuine block both say yes. ATK is that self-made certificate; each record below is a genuine record or the attack.
-add("atk_cert", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot", coll_name="scanners")
-add("check_as_build", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")   # genuine chain and key, BUILD's identity
-def cert_text(name): return base64.b64decode(json.load(open(p(name + ".json")))["signatures"][0]["certificate"]).decode()
-def pem_der(text): return base64.b64decode("".join(l for l in text.splitlines() if not l.startswith("-----")))
-def to_pem(der): b = base64.b64encode(der).decode(); return "-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i + 64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n"
-def reshape(src, name, fn):
-    r = json.load(open(p(src + ".json"))); r["signatures"][0]["certificate"] = b64(fn(cert_text(src)).encode()); json.dump(r, open(p(name + ".json"), "w"))
-ATK = cert_text("atk_cert")
-# the attacker pads his DER with zero bytes to a multiple of 3 so its base64 has no '=' and survives being concatenated with the genuine block
-# (a reader that ignores bytes after the outer SEQUENCE still reads his identity from it)
-_ad = pem_der(ATK); ATK_PAD_DER = _ad + b"\x00" * (-len(_ad) % 3); ATK_PAD_PEM = to_pem(ATK_PAD_DER)
-CERT_VARIANTS = {
-    "junkb64": lambda g: base64.b64encode(ATK_PAD_DER).decode() + "\n" + g,       # base64 of a self-made DER, then the genuine PEM
-    "second": lambda g: g + "\n" + ATK,                                              # a second block appended
-    "trailing": lambda g: to_pem(pem_der(g) + b"\x00\x00"),                          # bytes after the outer SEQUENCE
-    "leadtext": lambda g: "hello\n" + g,                                              # leading garbage text
-    "trailtext": lambda g: g + "junk",                                               # garbage after the block
-    "attack": lambda g: ATK_PAD_PEM + "\n" + g,                                               # the attack itself: right identity first, genuine block second
-}
-for src in ("build_coll", "rebuild_coll", "check_coll", "sign_prov"):
-    for v, fn in CERT_VARIANTS.items(): reshape(src, src + "_c" + v, fn)
-reshape("check_as_build", "check_attack", lambda g: ATK_PAD_PEM + "\n" + g)
-reshape("check_as_build", "check_attack_b64", lambda g: base64.b64encode(ATK_PAD_DER).decode() + "\n" + g)   # the coordinator's exact shape: bare base64 then the genuine PEM   # signed by a genuine key of the WRONG identity, field says check
-# ---- step-8 round 3: the TIME of a stamp is read from the TSA-signed token, never from the unsigned status section of a response ----
-def tlv(tag, c): n = len(c); l = bytes([n]) if n < 128 else (bytes([0x80 | len(n.to_bytes((n.bit_length() + 7) // 8, "big"))]) + n.to_bytes((n.bit_length() + 7) // 8, "big")); return bytes([tag]) + l + c
-def rd(b, i):
-    ln = b[i + 1]
-    if ln < 0x80: return b[i], i + 2, i + 2 + ln
-    k = ln & 0x7F; n = int.from_bytes(b[i + 2:i + 2 + k], "big"); return b[i], i + 2 + k, i + 2 + k + n
-def inject_status(resp, text):
-    """A TimeStampResp whose PKIStatusInfo got a statusString: it sits OUTSIDE the TSA's signature, so the response still verifies."""
-    _, s, e = rd(resp, 0); _, ss, se = rd(resp, s)
-    status = resp[ss:se] + tlv(0x30, tlv(0x0C, text.encode()))
-    return tlv(0x30, tlv(0x30, status) + resp[se:e])
-def gmt(x): return "%s %2d %s %d GMT" % (x.strftime("%b"), x.day, x.strftime("%H:%M:%S"), x.year)
-def restamp(src, name, kind, inject=None, frac=False, label=None, tsa="tsa"):
-    r = json.load(open(p(src + ".json"))); sg = r["signatures"][0]; sigb = base64.b64decode(sg["sig"])
-    der = base64.b64decode(stamp(sigb, tsa, response=(kind == "rfc3161-response"), frac=frac))
-    if inject: der = inject_status(der, inject)
-    sg["timestamps"] = [{"type": label or kind, "data": b64(der)}]; json.dump(r, open(p(name + ".json"), "w"))
-WINDOW_MID = gmt(now - dt.timedelta(minutes=90))   # inside the certificate window of the *_sa fixtures (it ended an hour ago)
-INJ = "x\nTime stamp: " + WINDOW_MID
-add("build_sa", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
-add("rebuild_sa", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
-add("check_sa", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60), coll_name="scanners")
-restamp("sign_stampafter", "sign_sa_inj", "rfc3161-response", inject=INJ)          # a genuine post-expiry stamp with a backdated TEXT in its status string
-for s in ("build", "rebuild", "check"):
-    restamp(s + "_sa", s + "_sa_inj", "rfc3161-response", inject=INJ)                 # the same injection on a Witness record that (wrongly) carries a response
-    restamp(s + "_coll", s + "_coll_resp", "rfc3161-response")                       # a Witness record carrying a whole response (no injection)
-restamp("sign_prov", "sign_prov_tok", "tsp")                                          # a provenance carrying a bare token
-restamp("sign_prov", "sign_prov_toklabel", "tsp", label="rfc3161-response")          # token bytes labelled as a response
-restamp("sign_prov", "sign_prov_frac", "rfc3161-response", frac=True)                # genTime with milliseconds, genuinely inside the window
-# a repeated extension in the certificate (the DER reader used to let the last one win, so a second SAN could replace the first)
-OID_SAN, OID_CFG = bytes.fromhex("551d11"), bytes.fromhex("2b06010401" + "83bf30" + "0112")
-def dup_ext(der, oid, resign=False):
-    _, s, e = rd(der, 0); _, ts, te = rd(der, s)
-    kids = []; i = ts
-    while i < te: tg, cs, ce = rd(der, i); kids.append((tg, cs, ce, der[i:ce])); i = ce
-    out = []
-    for tg, cs, ce, raw in kids:
-        if tg == 0xA3:
-            _, ls, le = rd(der, cs); exts = []; j = ls
-            while j < le: _tg, xs, xe = rd(der, j); exts.append(der[j:xe]); j = xe
-            more = [x for x in exts if oid in x[:16]]
-            assert more, "extension not found"
-            raw = tlv(0xA3, tlv(0x30, b"".join(exts) + more[0]))
-        out.append(raw)
-    tbs = tlv(0x30, b"".join(out))
-    if not resign: return tlv(0x30, tbs + der[te:e])      # the signature is NOT redone: the certificate no longer chains (a broken signature)
-    # rc-2 R8: re-signed by the test intermediate (the leaf's issuer), so the certificate CHAINS and the reader meets the repeated extension on verified bytes
-    algid = der[te:e][:rd(der[te:e], 0)[2]]                # the signatureAlgorithm SEQUENCE, copied as it is
-    open(p("dup.tbs"), "wb").write(tbs)
-    sig = sh("openssl", "dgst", "-sha256", "-sign", p("interm.key"), p("dup.tbs"))
-    return tlv(0x30, tbs + algid + tlv(0x03, b"\x00" + sig))
-for nm, oid, rs in (("dupsan", OID_SAN, True), ("dupcfg", OID_CFG, True), ("dupsanbadsig", OID_SAN, False)):
-    reshape("build_coll", "build_" + nm, lambda g, oid=oid, rs=rs: to_pem(dup_ext(pem_der(g), oid, rs)))
+add("release_stmt_policy", "https://in-toto.io/attestation/release/v0.1", D)
+# UTF-16 spellings of the same JSON (json.loads on bytes would guess the encoding from the first bytes)
+for src in ("build_coll", "sign_prov"):
+    open(p(src + "_u16.json"), "wb").write(open(p(src + ".json"), "rb").read().decode().encode("utf-16"))
+open(p("digests-u16.json"), "wb").write(open(p("digests.json"), "rb").read().decode().encode("utf-16"))
 # step-8 round 4 (S-2): base64 is standard base64 and nothing else. Junk inside a field, and the URL-safe alphabet, are refused, not dropped/accepted.
 def mutate_field(src, name, fn):
     r = json.load(open(p(src + ".json"))); fn(r); json.dump(r, open(p(name + ".json"), "w"))
 def ins(s, ch, at=6): return s[:at] + ch + s[at:]
 mutate_field("sign_prov", "sign_prov_junkpay", lambda r: r.__setitem__("payload", ins(r["payload"], "!!-_ \n")))
 mutate_field("sign_prov", "sign_prov_junksig", lambda r: r["signatures"][0].__setitem__("sig", ins(r["signatures"][0]["sig"], "*", 4)))
-mutate_field("sign_prov", "sign_prov_junkcert", lambda r: r["signatures"][0].__setitem__("certificate", ins(r["signatures"][0]["certificate"], "*", 10)))
-mutate_field("sign_prov", "sign_prov_junkinter", lambda r: r["signatures"][0]["intermediates"].__setitem__(0, ins(r["signatures"][0]["intermediates"][0], "*", 10)))
-mutate_field("sign_prov", "sign_prov_junkstamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", ins(r["signatures"][0]["timestamps"][0]["data"], "*", 10)))
 def urlsafe(s): return s.replace("+", "-").replace("/", "_")
-for src in ("sign_prov", "sign_prov_frac", "sign_stampafter", "sign_stampbefore", "sign_othertsa"):   # all at the tag identity: a branch-identity source (sign_br) was refused for its identity first (a 1-in-~40 stress flake)
-    r = json.load(open(p(src + ".json")))
-    if ("+" in r["signatures"][0]["sig"] or "/" in r["signatures"][0]["sig"]) and ("+" in r["signatures"][0]["timestamps"][0]["data"] or "/" in r["signatures"][0]["timestamps"][0]["data"]):
-        URLSRC = src; break
-else: raise SystemExit("no fixture with + or / in both its signature and its stamp: regenerate")
-mutate_field(URLSRC, "sign_us_sig", lambda r: r["signatures"][0].__setitem__("sig", urlsafe(r["signatures"][0]["sig"])))
-mutate_field(URLSRC, "sign_us_stamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", urlsafe(r["signatures"][0]["timestamps"][0]["data"])))
-open(p("urlsrc.txt"), "w").write(URLSRC)
-# UTF-16 spellings of the same JSON (json.loads on bytes would guess the encoding from the first bytes)
-for src in ("build_coll", "sign_prov"):
-    open(p(src + "_u16.json"), "wb").write(open(p(src + ".json"), "rb").read().decode().encode("utf-16"))
-# ---- Rekor, in the shape a Sigstore bundle carries it (REAL fields; the first dry run replaces this synthetic entry by a genuine one).
-# Modelled on protobuf-specs v0.5.1 sigstore_rekor.proto TransparencyLogEntry (protobuf-JSON: int64 as strings, bytes as base64) and
-# sigstore-go v1.2.2 pkg/tlog/entry.go (VerifySET: the log signs the canonical {body, integratedTime, logID, logIndex}; for a DSSE
-# entry Signature() and PublicKey() read the body's signatures[0].signature and .verifier, GetDssePayloadHash() its payloadHash).
-# The body is a Rekor `dsse` 0.0.1 entry, the kind `cosign attest-blob` writes by default (cosign v3.1.3 options.go rekorEntryTypes).
-def tlog_entry(body_obj, idx, key="rekor", logkey="rekor", itime=None, kind="dsse", version="0.0.1", junk=False):
-    body = b64(json.dumps(body_obj, sort_keys=True, separators=(",", ":")).encode())
-    if junk: body = body[:8] + "\n" + body[8:]   # a character outside the base64 alphabet that a lenient decoder drops; the log signs the string as it is
-    logid = der_sha(p(logkey + ".pub"), True)
-    itime = int(now.timestamp()) if itime is None else itime
-    open(p("set.bin"), "wb").write(json.dumps({"body": body, "integratedTime": itime, "logID": logid, "logIndex": idx}, sort_keys=True, separators=(",", ":")).encode())
-    sh("openssl", "dgst", "-sha256", "-sign", p(key + ".key"), "-out", p("set.sig"), p("set.bin"))
-    return {"logIndex": str(idx), "logId": {"keyId": b64(bytes.fromhex(logid))}, "kindVersion": {"kind": kind, "version": version},
-            "integratedTime": str(itime), "inclusionPromise": {"signedEntryTimestamp": b64(open(p("set.sig"), "rb").read())}, "canonicalizedBody": body}
-def dsse_body(rec_name, body_from=None, cert_from=None, sig_from=None):
-    src = json.load(open(p((sig_from or body_from or rec_name) + ".json")))["signatures"][0]
-    cert = json.load(open(p((cert_from or body_from or rec_name) + ".json")))["signatures"][0]["certificate"]
-    return {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
-            "payloadHash": {"algorithm": "sha256", "value": PAY[body_from or rec_name]}, "signatures": [{"signature": src["sig"], "verifier": cert}]}}
-def entry(rec_name, idx, key="rekor", body_from=None, logkey="rekor", cert_from=None, itime=None):
-    return tlog_entry(dsse_body(rec_name, body_from, cert_from), idx, key, logkey, itime)
-dj("rekor.json", {"entries": [entry("sign_prov", 7), entry("release_policy", 8)]})
-dj("rekor-empty.json", {"entries": []})
-# a Rekor entry whose body names a verifier that is a genuine PEM followed by junk (validly signed by the log): the comparison is by the one DER
-_vb = dsse_body("sign_prov"); _vb["spec"]["signatures"][0]["verifier"] = b64(base64.b64decode(_vb["spec"]["signatures"][0]["verifier"]) + b"junk")
-dj("rekor-verifierjunk.json", {"entries": [tlog_entry(_vb, 7)]})
-dj("rekor-bodyjunk.json", {"entries": [tlog_entry(dsse_body("sign_prov"), 7, junk=True)]})
-_ks = tlog_entry(dsse_body("sign_prov"), 7); _ks["inclusionPromise"]["signedEntryTimestamp"] = _ks["inclusionPromise"]["signedEntryTimestamp"][:6] + "*" + _ks["inclusionPromise"]["signedEntryTimestamp"][6:]
-dj("rekor-setjunk.json", {"entries": [_ks]})
-open(p("rekor-u16.json"), "wb").write(open(p("rekor.json"), "rb").read().decode().encode("utf-16"))
-open(p("digests-u16.json"), "wb").write(open(p("digests.json"), "rb").read().decode().encode("utf-16"))
-dj("rekor-br.json", {"entries": [entry("sign_br", 11)]})
-dj("rekor-flag.json", {"entries": [entry("sign_flag_tag", 12)]})
-dj("rekor-brtag.json", {"entries": [entry("sign_brtag", 13), entry("sign_brrel", 14), entry("sign_cfg_brtag", 15)]})
-dj("rekor-other.json", {"entries": [entry("sign_otherdigests", 9)]})
-e = entry("sign_prov", 7); e["inclusionPromise"]["signedEntryTimestamp"] = b64(b"\x30\x06\x02\x01\x01\x02\x01\x01"); dj("rekor-badset.json", {"entries": [e]})
-dj("rekor-wrongkey.json", {"entries": [entry("sign_prov", 7, "rekor2")]})
-e = entry("sign_prov", 7); e["logIndex"] = "99"; dj("rekor-editedidx.json", {"entries": [e]})
-e = entry("sign_prov", 7); e["integratedTime"] = str(int(e["integratedTime"]) + 3600); dj("rekor-editedtime.json", {"entries": [e]})
-# validly signed by the log, but the integrated time is long after the certificate expired: refused on its own
-dj("rekor-latetime.json", {"entries": [entry("sign_prov", 7, itime=int(now.timestamp()) + 3600)]})
-# an entry whose body is for another record's SIGNATURE and CERTIFICATE but the right payload hash (validly SET-signed by the log)
-dj("rekor-bodysig.json", {"entries": [tlog_entry(dsse_body("sign_prov", cert_from="sign_cfg_rc", sig_from="sign_cfg_rc"), 7)]})
-dj("rekor-wronglogid.json", {"entries": [entry("sign_prov", 7, logkey="rekor2")]})          # validly SET-signed, but names another log
-dj("rekor-bodycert.json", {"entries": [entry("sign_prov", 7, cert_from="sign_cfg_rc")]})     # right payload hash and signature, ANOTHER record's certificate
-# a hashedrekord entry (the kind a MESSAGE signature gets) is not what an attestation gets: refused although validly signed
-_hb = {"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": {"data": {"hash": {"algorithm": "sha256", "value": PAY["sign_prov"]}},
-       "signature": {"content": json.load(open(p("sign_prov.json")))["signatures"][0]["sig"], "publicKey": {"content": json.load(open(p("sign_prov.json")))["signatures"][0]["certificate"]}}}}
-dj("rekor-hashedrekord.json", {"entries": [tlog_entry(_hb, 7, kind="hashedrekord")]})
-# ---- Codex security round 1 (S2): a Rekor entries file whose `entries` is not a list of entry objects ----
-for _k, _v in (("int", 1), ("str", "x"), ("null", None), ("dict", {"a": 1}), ("nondict", [1, "x", None])): dj("rekor-shape-%s.json" % _k, {"entries": _v})
-# ---- Codex security round 1 (S3): base64 must be CANONICAL (padding bits zero) and JSON must hold no NaN/Infinity ----
+for _try in range(80):
+    add("sign_urlsrc", PROV, D, predicate={"pad": "x" * _try})
+    if any(c in json.load(open(p("sign_urlsrc.json")))["signatures"][0]["sig"] for c in "+/"): break
+else: raise SystemExit("no fixture with + or / in its signature: regenerate")
+mutate_field("sign_urlsrc", "sign_us_sig", lambda r: r["signatures"][0].__setitem__("sig", urlsafe(r["signatures"][0]["sig"])))
+# one byte string, one spelling: a non-canonical base64 (unused padding bits set, YR== for YQ==) is refused in every field
 A64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 def noncanon(s):
     """The same bytes spelled another way: set an unused padding bit of the last data character (YQ== -> YR==)."""
@@ -748,22 +478,25 @@ def noncanon(s):
     out = body[:-1] + A64[A64.index(body[-1]) | 1] + "=" * pad
     assert out != s and base64.b64decode(out) == base64.b64decode(s), s
     return out
-# a Sign record whose payload, signature, certificate and stamp all end in padding (so each has a non-canonical spelling)
 for _try in range(60):
-    add("sign_pad", STAGES["sign"], T, PROV, D, predicate={"pad": "x" * (_try % 3)})
+    add("sign_pad", PROV, D, predicate={"pad": "x" * (_try % 3)})
     _r = json.load(open(p("sign_pad.json"))); _e = _r["signatures"][0]
-    if all(x.endswith("=") for x in (_r["payload"], _e["sig"], _e["certificate"], _e["timestamps"][0]["data"])): break
+    if all(x.endswith("=") for x in (_r["payload"], _e["sig"])): break
 else: raise SystemExit("no sign_pad fixture with padding in every field after 60 tries: regenerate")
-dj("rekor-pad.json", {"entries": [entry("sign_pad", 21)]})
 mutate_field("sign_pad", "sign_nc_payload", lambda r: r.__setitem__("payload", noncanon(r["payload"])))
 mutate_field("sign_pad", "sign_nc_sig", lambda r: r["signatures"][0].__setitem__("sig", noncanon(r["signatures"][0]["sig"])))
-mutate_field("sign_pad", "sign_nc_cert", lambda r: r["signatures"][0].__setitem__("certificate", noncanon(r["signatures"][0]["certificate"])))
-mutate_field("sign_pad", "sign_nc_stamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", noncanon(r["signatures"][0]["timestamps"][0]["data"])))
-e = entry("sign_prov", 7); e["logId"]["keyId"] = noncanon(e["logId"]["keyId"]); dj("rekor-nc-keyid.json", {"entries": [e]})   # a 32-byte key id always pads
-_vb = dsse_body("sign_pad"); _vb["spec"]["signatures"][0]["verifier"] = noncanon(_vb["spec"]["signatures"][0]["verifier"])
-dj("rekor-nc-verifier.json", {"entries": [tlog_entry(_vb, 21)]})                  # the log signs the body as it is
-add("sign_nan", STAGES["sign"], T, PROV, D, predicate={"x": float("nan")})       # json.dumps writes NaN: a signed payload that is not JSON
-dj("rekor-nan.json", {"entries": [entry("sign_nan", 22)]})
+add("sign_nan", PROV, D, predicate={"x": float("nan")})       # json.dumps writes NaN: a signed payload that is not JSON
+open(p("sign_envinf.json"), "w").write(open(p("sign_prov.json")).read().replace('"payloadType"', '"x": Infinity, "payloadType"', 1))
+variant("sign_prov_keyid_other", _with("keyid", "awskms:///arn:aws:kms:us-east-1:111122223333:key/other"))
+shutil.copy(p("sign_prov.rekor.json"), p("sign_prov_keyid_other.rekor.json"))      # only the keyid differs, so the same signature and the same Rekor entry
+# a keys directory whose manifest names the OTHER key (signed by the real root): a policy made from it must refuse records of the real release key
+os.makedirs(p("keys-other"), exist_ok=True)
+shutil.copy(p("release-key-root.pub"), p("keys-other/release-key-root.pub"))
+open(p("keys-other/release-key-manifest.json"), "wb").write(json.dumps({"public_key": open(p("other.pub")).read(), "key_id": der_sha("other"),
+                                                                      "valid_from": "2020-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n")
+open(p("keys-other/release-key-manifest.sig"), "w").write(b64(sign_file("root", p("keys-other/release-key-manifest.json"))) + "\n")
+full_dir("keys-other")
+
 # (Codex #249 r4 B4, 001-AC4) a signed, logged provenance statement whose predicate is not a standard SLSA v1 record
 def _drop(path):
     *head, last = path
@@ -806,7 +539,7 @@ for _k, _v in (("str", "x"), ("dict", {}), ("item_str", ["x"]), ("item_num", [5]
     SLSA_BAD["slsa_byp_" + _k] = _set(["runDetails", "byproducts"], _v)
 for _k, _v in (("null", None), ("bool", True), ("str", "x"), ("num", 5)):
     SLSA_BAD["slsa_pred_" + _k] = _v
-# the smallest valid SLSA v1 record (control): buildType, externalParameters {}, builder.id, nothing else
+# the smallest valid SLSA v1 record (control): buildType, externalParameters {ref}, builder.id, nothing else
 # (Codex #249 r7 B6, 001-AC4) every signed statement's subject list is checked at record-type time, provenance AND collection: a non-empty
 # list of objects, each with a non-empty string name and a non-empty digest object of lowercase algorithm names and string values; sha1, sha256
 # and sha512 values are lowercase hex of their length. Signed and logged, so only the subject check can refuse them.
@@ -823,106 +556,46 @@ def _subj_payload(pt, subj, st="v1", pred=None):
     if subj is not None: o["subject"] = None if subj == "NULL" else subj
     return json.dumps(o).encode()
 for _k, _v in SUBJ_BAD.items():
-    add("sign_subj_" + _k, STAGES["sign"], T, PROV, None, payload=_subj_payload(PROV, _v))
-    add("build_subj_" + _k, STAGES["build"], T, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, _v, "v0.1", {"name": "build", "attestations": []}))
-add("sign_subj_ok", STAGES["sign"], T, PROV, None, payload=_subj_payload(PROV, [_G, {"name": "b", "digest": {"sha512": "b" * 128, "sha1": "c" * 40}}]))
-add("build_subj_ok", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, [{"name": "f", "digest": {"sha256": "a" * 64, "gitoid:sha1": "gitoid:blob:sha1:" + "b" * 40}}], "v0.1", {"name": "build", "attestations": []}))
-add("sign_type_v02", STAGES["sign"], T, PROV, None, payload=json.dumps({"_type": "https://in-toto.io/Statement/v0.2", "predicateType": PROV, "predicate": SLSA_OK, "subject": [_G]}).encode())
-add("sign_ptype_num", STAGES["sign"], T, PROV, None, payload=json.dumps({"_type": STMT["v1"], "predicateType": 5, "predicate": SLSA_OK, "subject": [_G]}).encode())
-dj("rekor-subj.json", {"entries": [entry(n, 400 + i) for i, n in enumerate(["sign_subj_" + k for k in sorted(SUBJ_BAD)] + ["sign_subj_ok", "sign_type_v02", "sign_ptype_num"])]})
+    add("sign_subj_" + _k, PROV, None, payload=_subj_payload(PROV, _v))
+    add("build_subj_" + _k, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, _v, "v0.1", {"name": "build", "attestations": ENVATT}))
+add("sign_subj_ok", PROV, None, payload=_subj_payload(PROV, [_G, {"name": "b", "digest": {"sha512": "b" * 128, "sha1": "c" * 40}}]))
+add("build_subj_ok", COLL, None, stmt="v0.1", payload=_subj_payload(COLL, [{"name": "f", "digest": {"sha256": "a" * 64, "gitoid:sha1": "gitoid:blob:sha1:" + "b" * 40}}], "v0.1", {"name": "build", "attestations": ENVATT}))
+add("sign_type_v02", PROV, None, payload=json.dumps({"_type": "https://in-toto.io/Statement/v0.2", "predicateType": PROV, "predicate": SLSA_OK, "subject": [_G]}).encode())
+add("sign_ptype_num", PROV, None, payload=json.dumps({"_type": STMT["v1"], "predicateType": 5, "predicate": SLSA_OK, "subject": [_G]}).encode())
 open(p("subj-bad.txt"), "w").write(" ".join(sorted(SUBJ_BAD)))
-add("sign_slsa_min", STAGES["sign"], T, PROV, D, predicate={"buildDefinition": {"buildType": "https://example.com/bt/v1", "externalParameters": {}},
+add("sign_slsa_min", PROV, D, predicate={"buildDefinition": {"buildType": "https://example.com/bt/v1", "externalParameters": {"ref": "refs/tags/v0.3.0", "workflow": "https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0"}},
                                                            "runDetails": {"builder": {"id": "https://example.com/builder"}}}, raw_predicate=True)
 for _i, (_nm, _pr) in enumerate(sorted(SLSA_BAD.items())):
-    add("sign_" + _nm, STAGES["sign"], T, PROV, D, predicate=_pr, raw_predicate=True)
-dj("rekor-slsa.json", {"entries": [entry("sign_" + _nm, 200 + _i) for _i, _nm in enumerate(sorted(SLSA_BAD))] + [entry("sign_slsa_min", 199)]})
+    add("sign_" + _nm, PROV, D, predicate=_pr, raw_predicate=True)
 open(p("slsa-bad.txt"), "w").write(" ".join(sorted(SLSA_BAD)))
-open(p("sign_envinf.json"), "w").write(open(p("sign_prov.json")).read().replace('"payloadType"', '"x": Infinity, "payloadType"', 1))
-open(p("rekor-neginf.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -Infinity, "entries"', 1))
-# a number too large for a float parses to inf in Python: a non-finite value is refused like Infinity (Sonnet r1 info)
-open(p("rekor-big.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": 1e400, "entries"', 1))
-open(p("rekor-negbig.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -1e400, "entries"', 1))
-# ---- Codex security round 2 ----
-# (R2-1, 002-AC1) every certificate of both chains is checked at the stamp time, not only the leaf
-add("sign_intold", STAGES["sign"], T, PROV, D, ca="intold")          # the leaf's intermediate had expired when the stamp was taken
-add("sign_intnew", STAGES["sign"], T, PROV, D, ca="intnew")          # ... was not yet valid
-add("sign_tsaold", STAGES["sign"], T, PROV, D, tsa="tsaold")         # the TSA's signing certificate had expired
-add("sign_tsanew", STAGES["sign"], T, PROV, D, tsa="tsanew")         # ... was not yet valid
-dj("rekor-r2chain.json", {"entries": [entry(n, 30 + i) for i, n in enumerate(("sign_intold", "sign_intnew", "sign_tsaold", "sign_tsanew"))]})
-# (R2-note, 002-AC1) a genTime with a fraction is compared WITH its fraction: genTime T.fff against a certificate that ends at T
-def gentime(resp_b64):
-    open(p("gt.tsr"), "wb").write(base64.b64decode(resp_b64))
-    txt = sh("openssl", "ts", "-reply", "-in", p("gt.tsr"), "-text").decode()
-    import re as _re
-    m = _re.search(r"^Time stamp: (\w{3}\s+\d+ \d\d:\d\d:\d\d)(\.\d+)? (\d{4}) GMT$", txt, _re.M)
-    whole = dt.datetime.strptime(m.group(1) + " " + m.group(3), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
-    return whole, (m.group(2) or "").strip(".")
-sh("openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", p("fracedge.key"), "-out", p("fracedge.csr"), "-subj", "/CN=fracedge")
-_fp = json.dumps({"_type": STMT["v1"], "predicateType": PROV, "predicate": prov_predicate(PROV, None), "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in D.items()]}).encode()
-open(p("pae.bin"), "wb").write(pae(DSSE, _fp)); sh("openssl", "dgst", "-sha256", "-sign", p("fracedge.key"), "-out", p("sig.bin"), p("pae.bin"))
-_fsig = open(p("sig.bin"), "rb").read()
-for _try in range(40):
-    _fstamp = stamp(_fsig, "tsa", response=True, frac=True); _fwhole, _ffrac = gentime(_fstamp)
-    if _ffrac.strip("0"): break
-else: raise SystemExit("no stamp with a non-zero fraction in 40 tries: regenerate")
-open(p("fracedge.ext"), "w").write("subjectAltName = critical,URI:" + uri("stage-sign.yml", T) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + ISSUER
-                                    + "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri("release.yml", T) + "\n")
-for _nm, _extra in (("sign_fracedge", 0), ("sign_fracok", 1)):   # the certificate ends AT the whole second of genTime, or one second later
-    sh("openssl", "ca", "-batch", "-config", p("interm.cnf"), "-cert", p("interm.pem"), "-keyfile", p("interm.key"), "-in", p("fracedge.csr"),
-       "-out", p(_nm + ".pem"), "-notext", "-startdate", fmt(now - dt.timedelta(minutes=5)), "-enddate", fmt(_fwhole + dt.timedelta(seconds=_extra)), "-extfile", p("fracedge.ext"))
-    json.dump({"payloadType": DSSE, "payload": b64(_fp), "signatures": [{"keyid": "", "sig": b64(_fsig), "certificate": b64(open(p(_nm + ".pem"), "rb").read()),
-               "intermediates": [b64(open(p(c + ".pem"), "rb").read()) for c in ("interm", "root")], "timestamps": [{"type": "rfc3161-response", "data": _fstamp}]}]}, open(p(_nm + ".json"), "w"))
-    PAY[_nm] = hashlib.sha256(_fp).hexdigest()
-dj("rekor-frac.json", {"entries": [entry("sign_fracedge", 40, itime=int(_fwhole.timestamp()) - 60), entry("sign_fracok", 41, itime=int(_fwhole.timestamp()) - 60)]})
-open(p("fracedge.txt"), "w").write("%s.%s" % (_fwhole.strftime("%H:%M:%S"), _ffrac))
-# verify times that put genTime T.fff just past, or just inside, the 10-minute allowance after --now (where the fraction alone decides)
-open(p("now-frac-late.txt"), "w").write(fmt(_fwhole - dt.timedelta(seconds=600)))
-open(p("now-frac-in.txt"), "w").write(fmt(_fwhole - dt.timedelta(seconds=599)))
-# (R2-2, 002-AC3) logIndex and integratedTime are canonical protobuf-JSON decimal STRINGS; any other spelling of the same number is refused
-_base = entry("sign_prov", 7); _it = int(_base["integratedTime"])
-for _nm, _field, _val in (("idxnum", "logIndex", 7), ("idxplus", "logIndex", "+7"), ("idxspace", "logIndex", " 7"), ("idxzero", "logIndex", "07"),
-                          ("itnum", "integratedTime", _it), ("itfloat", "integratedTime", _it + 0.9), ("itplus", "integratedTime", "+%d" % _it), ("itzero", "integratedTime", "0%d" % _it)):
-    _e = json.loads(json.dumps(_base)); _e[_field] = _val; dj("rekor-%s.json" % _nm, {"entries": [_e]})
-# (R2-3, 003-AC1) stage-start applies Sign's digest-list format check: a Witness collection that attests a file that is not a digest list
-dj("digests-foobar.json", {"foo": "bar"})
-add("build_coll_foobar", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-foobar.json")
-# (R2-4, 003-AC1) subjects with the wrong field types are refusals, never tracebacks
 def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateType": pt, "predicate": prov_predicate(pt, None), "subject": subj}).encode()
-add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
-add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
-dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
-add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}]}).encode())
+add("sign_badname", PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
+add("sign_baddigest", PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
+add("build_baddigest", COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}]}).encode())
 # AC8 (Codex A/B r2): a SIGNED collection whose environment record names a token variable is refused by the next stage's verifier (verify and stage-start),
 # whichever ACTIONS_ID_TOKEN_REQUEST_ name it is, not from a fixed list; the same record without the variable is accepted
 def _envrec(var):
-    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {var: "x"}}}]
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {"GITHUB_REF": T, var: "x"}}}]
     return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build", "attestations": att},
                        "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "1" * 64}}]}).encode()
-add("build_env_custom", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
-add("build_env_gh", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("GH_TOKEN"))
-add("build_env_runtime", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_RUNTIME_URL"))
-add("build_env_sigstore", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("SIGSTORE_ID_TOKEN"))   # round 1 F1: the one sigstore token release-sign holds
-add("build_env_clean", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("HOSTNAME"))
-# ---- Codex security round 3 ----
+add("build_env_custom", COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
+add("build_env_gh", COLL, None, stmt="v0.1", payload=_envrec("GH_TOKEN"))
+add("build_env_runtime", COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_RUNTIME_URL"))
+add("build_env_sigstore", COLL, None, stmt="v0.1", payload=_envrec("SIGSTORE_ID_TOKEN"))   # round 1 F1: the one sigstore token release-sign holds
+add("build_env_awstokfile", COLL, None, stmt="v0.1", payload=_envrec("AWS_WEB_IDENTITY_TOKEN_FILE"))   # handoff 0713 R2: the path of the token file the AWS SDK reads
+add("build_env_awsrole", COLL, None, stmt="v0.1", payload=_envrec("AWS_ROLE_ARN"))                       # handoff 0713 R2: the role the token is exchanged for
+add("build_env_clean", COLL, None, stmt="v0.1", payload=_envrec("HOSTNAME"))
 # (X2) every envelope field has its JSON type; a wrong one is a refusal ("envelope"), never a traceback
 for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("ptype_null", lambda r: r.__setitem__("payloadType", None)),
                  ("ptype_list", lambda r: r.__setitem__("payloadType", ["x"])), ("ptype_dict", lambda r: r.__setitem__("payloadType", {"a": 1})),
                  ("payload_num", lambda r: r.__setitem__("payload", 5)), ("sigs_dict", lambda r: r.__setitem__("signatures", {"a": 1})),
                  ("sigs_item", lambda r: r.__setitem__("signatures", [5])), ("sig_num", lambda r: r["signatures"][0].__setitem__("sig", 5)),
+                 ("keyid_num", lambda r: r["signatures"][0].__setitem__("keyid", 5)), ("sig_null", lambda r: r["signatures"][0].__setitem__("sig", None)),
                  ("cert_null", lambda r: r["signatures"][0].__setitem__("certificate", None)), ("inter_str", lambda r: r["signatures"][0].__setitem__("intermediates", "x")),
                  ("inter_item", lambda r: r["signatures"][0].__setitem__("intermediates", [5])), ("stamps_str", lambda r: r["signatures"][0].__setitem__("timestamps", "x")),
                  ("stamps_item", lambda r: r["signatures"][0].__setitem__("timestamps", [5]))):
     mutate_field("sign_prov", "env_" + _nm, _ed)
-# (X3) the issuer (.1.8) and Build Config URI (.1.18) extensions are ONE DER UTF8String TLV (Fulcio v2), nothing else
-def _hx(t): return t.encode().hex()
-def _ln(n): return "%02x" % n
-_I, _C = ISSUER, uri("release.yml", T)
-for _nm, _kw in (("iss_raw", {"issuer_der": _hx(_I)}), ("iss_ia5", {"issuer_der": "16" + _ln(len(_I)) + _hx(_I)}),
-                 ("iss_len", {"issuer_der": "0c" + _ln(len(_I) + 1) + _hx(_I)}), ("iss_trail", {"issuer_der": "0c" + _ln(len(_I)) + _hx(_I) + "00"}),
-                 ("cfg_raw", {"config_der": _hx(_C)}), ("cfg_long", {"config_der": "0c81" + _ln(len(_C)) + _hx(_C)}),
-                 ("iss_der", {"issuer_der": "0c" + _ln(len(_I)) + _hx(_I)})):
-    add("sign_" + _nm, STAGES["sign"], T, PROV, D, **_kw)
-dj("rekor-x3.json", {"entries": [entry("sign_" + n, 60 + i) for i, n in enumerate(("iss_raw", "iss_ia5", "iss_len", "iss_trail", "cfg_raw", "cfg_long", "iss_der"))]})
+    mutate_field("sign_prov", "env_" + _nm, _ed)
 # ---- PR 4 (advisor 0386, read-back verifier-bindings): bind-items and check-list ----
 # items.json is a PRODUCT of Build's record next to digests.json; the four Check records (scanners, acceptance, runtime, arm64) are Witness collections
 # named for their step, signed by stage-sign.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
@@ -933,41 +606,39 @@ dj("items-other.json", {"image-production": D["image-production"], "image-fips":
 def _prods(items_name, digests_name="digests.json"):
     return [{"name": PRD + "digests.json", "digest": {"sha256": _fsha(digests_name)}}, {"name": PRD + "items.json", "digest": {"sha256": _fsha(items_name)}},
             {"name": "https://witness.dev/attestations/git/v0.1/commithash:" + "f" * 40, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + "f" * 40}}]
-def _coll(step, subj): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": []}, "subject": subj}).encode()
-add("bi_ok", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+def _envatt(ref): return [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": ref}}}]
+def _coll(step, subj, ref=T): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": _envatt(ref)}, "subject": subj}).encode()
+add("bi_ok", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 # 0707 fix 4: Build records that ARE bound to an items.json with one SBOM entry missing or malformed (so the refusal is about the entry, not about a hash mismatch)
 for _sb in ("modules-sbom-fips", "modules-sbom-standard", "sbom-fips", "sbom-production"):
     dj("items-no-%s.json" % _sb, {k: v for k, v in ITEMS.items() if k != _sb})
-    add("si_no_" + _sb, STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-no-%s.json" % _sb)))
+    add("si_no_" + _sb, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-no-%s.json" % _sb)))
 dj("items-badsbom.json", dict(ITEMS, **{"sbom-fips": "sha256:" + "G" * 64}))
-add("si_bad", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-badsbom.json")))
+add("si_bad", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-badsbom.json")))
 dj("items-dupkey.json", {})
 open(p("items-dupkey.json"), "w").write(json.dumps(ITEMS)[:-1] + ', "sbom-fips": "sha256:' + "4" * 64 + '"}')
-add("si_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-dupkey.json")))
-add("bi_otheritems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
-add("bi_noitems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
-add("bi_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
-add("bi_material", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", [_prods("items.json")[0], {"name": MAT + "items.json", "digest": {"sha256": _fsha("items.json")}}]))
-add("bi_wrongstage", OLD_CHECK, T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
-add("bi_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
-add("bi_unsigned", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")), signed=False)
+add("si_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-dupkey.json")))
+add("bi_otheritems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
+add("bi_noitems", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
+add("bi_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
+add("bi_material", COLL, None, stmt="v0.1", payload=_coll("build", [_prods("items.json")[0], {"name": MAT + "items.json", "digest": {"sha256": _fsha("items.json")}}]))
+add("bi_otherkey", COLL, None, stmt="v0.1", key="other", payload=_coll("build", _prods("items.json")))
+add("bi_unsigned", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")), signed=False)
 # REQ-CHAIN-007-AC19 (advisor ruling B): admission-baseline.json is a second product of Build's record, bound by `bind-items --product admission-baseline.json`
 dj("admission-baseline.json", {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.1"})
 dj("admission-baseline-other.json", {"baseline": "requirements/releases/v0.2.0.yaml", "baseline_version": "v0.2.0", "sha": "c" * 40, "tag": "v0.3.1"})
 _PADM = {"name": PRD + "admission-baseline.json", "digest": {"sha256": _fsha("admission-baseline.json")}}
-add("bi_adm", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM]))
-add("bi_adm_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM, dict(_PADM, digest={"sha256": _fsha("admission-baseline-other.json")})]))
-add("bi_adm_material", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
-def _chk(name, step, wf=None, ref=T, digests="digests.json", signed=True, subj=None):
-    wf = wf or STAGES["check"]
-    add(name, wf, ref, COLL, None, stmt="v0.1", signed=signed,
+add("bi_adm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM]))
+add("bi_adm_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM, dict(_PADM, digest={"sha256": _fsha("admission-baseline-other.json")})]))
+add("bi_adm_material", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
+def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T):
+    add(name, COLL, None, stmt="v0.1", signed=signed, key=key,
         payload=_coll(step, subj if subj is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}},
-                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": "9" * 64}}]))
+                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": "9" * 64}}], ref))
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("c_" + _sn, _sn)
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("co_" + _sn, _sn, digests="digests-other.json")      # all four agree with each other, not with Build's list
 _chk("c_arm64_job", "check-arm64"); _chk("c_runtime_arm64name", "arm64")
-_chk("c_scanners_buildid", "scanners", wf=OLD_BUILD); _chk("c_scanners_signid", "scanners", wf=OLD_CHECK); _chk("c_scanners_relid", "scanners", wf=STAGES["release"])
-_chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
+_chk("c_scanners_otherkey", "scanners", key="other"); _chk("c_scanners_throwaway", "scanners", key="throwaway")
 _chk("c_scanners_unsigned", "scanners", signed=False)
 _chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
 _chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}])
@@ -986,11 +657,8 @@ _cl("cl_dup", dict(OK4, acceptance="c_scanners"))                               
 _cl("cl_subst", dict(OK4, runtime="c_scanners", acceptance="c_acceptance"))              # a substituted record under another name
 _cl("cl_unverifiable", dict(OK4, runtime="c_scanners_unsigned"))
 _cl("cl_wrongjob", dict(OK4, arm64="c_arm64_job"))
-_cl("cl_buildid", dict(OK4, scanners="c_scanners_buildid"))
-_cl("cl_signid", dict(OK4, scanners="c_scanners_signid"))
-_cl("cl_relid", dict(OK4, scanners="c_scanners_relid"))
-_cl("cl_tag2", dict(OK4, scanners="c_scanners_tag2"))
-_cl("cl_branch", dict(OK4, scanners="c_scanners_branch"))
+_cl("cl_otherkey", dict(OK4, scanners="c_scanners_otherkey"))
+_cl("cl_throwaway", dict(OK4, scanners="c_scanners_throwaway"))
 _cl("cl_nomat", dict(OK4, scanners="c_scanners_nomat"))
 _cl("cl_prodonly", dict(OK4, scanners="c_scanners_prodonly"))
 _cl("cl_dupmat", dict(OK4, scanners="c_scanners_dupmat"))
@@ -1004,46 +672,44 @@ _cl("cl_empty", {})
 dj("gv.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v1.7.0"}})
 dj("gv-other.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v9.9.9"}})
 _GVP = PRD + "check-results/govulncheck.json"
-def _gv(name, step="scanners", wf=None, ref=T, digests="digests.json", signed=True, prods=None, mats=None):
-    wf = wf or STAGES["check"]
+def _gv(name, step="scanners", key="rel", digests="digests.json", signed=True, prods=None, mats=None, ref=T):
     m = mats if mats is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}}]
     pr = prods if prods is not None else [{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}]
-    add(name, wf, ref, COLL, None, stmt="v0.1", signed=signed, payload=_coll(step, m + pr))
+    add(name, COLL, None, stmt="v0.1", signed=signed, key=key, payload=_coll(step, m + pr, ref))
 _gv("gv_ok"); _gv("gv_otherfile", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
 _gv("gv_noprod", prods=[{"name": PRD + "check-results/scan-results.json", "digest": {"sha256": "9" * 64}}])
 _gv("gv_dup", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}, {"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
 _gv("gv_material", prods=[{"name": MAT + "check-results/govulncheck.json", "digest": {"sha256": _fsha("gv.json")}}])
 _gv("gv_wrongstep", step="acceptance"); _gv("gv_otherdigests", digests="digests-other.json")
-_gv("gv_nomat", mats=[]); _gv("gv_buildid", wf=OLD_BUILD); _gv("gv_tag2", ref=T2); _gv("gv_unsigned", signed=False)
-_gv("gv_branch", ref="refs/heads/main")
-# the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
-open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
-open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
-open(p("now-mid.txt"), "w").write(fmt(now + dt.timedelta(minutes=90)))   # inside sign_stampbefore's certificate window
-open(p("rekor-len.txt"), "w").write(str(len(PAY)))
-e = json.load(open(p("sign_prov.json")))["signatures"][0]
-open(p("chk.tst"), "wb").write(base64.b64decode(e["timestamps"][0]["data"]))
-sh("openssl", "ts", "-verify", "-digest", hashlib.sha256(base64.b64decode(e["sig"])).hexdigest(), "-in", p("chk.tst"), "-CAfile", p("tsaroot.pem"), "-no_check_time")
+# tag and branch binding of every consumer (the environment attestor's GITHUB_REF against the policy's ref): a record made at another tag or on a branch
+add("bi_othertag", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), T2))
+add("bi_branch", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), "refs/heads/main"))
+_chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
+_cl("cl_tag2", dict(OK4, scanners="c_scanners_tag2")); _cl("cl_branch", dict(OK4, scanners="c_scanners_branch"))
+_gv("gv_tag2", ref=T2); _gv("gv_branch", ref="refs/heads/main")
+_gv("gv_nomat", mats=[]); _gv("gv_otherkey", key="other"); _gv("gv_unsigned", signed=False)
+
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc run's records, laid out like Release's own directories ----
 # Every record is made for the release-candidate tag v0.3.0-rc1 (the identities of the policy made with --tag v0.3.0-rc1): Build's collection (digests.json and
 # items.json products), Sign's provenance with its Rekor stub, Rebuild's collection, the four Check records, and the hostile verdict's results file.
-TRC = "refs/tags/v0.3.0-rc1"
-add("rc_build", STAGES["build"], TRC, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+dj("admission-baseline-rc.json", {"baseline": "requirements/releases/v0.3.0-rc1.yaml", "baseline_version": "v0.3.0-rc1", "sha": "c" * 40, "tag": "v0.3.0-rc1"})
+dj("admission-baseline-final.json", {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.0"})
+def _padm(n): return dict(_PADM, digest={"sha256": _fsha(n)})
+add("rc_build", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], TRC))
+add("rc_build_final", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-final.json")], TRC))     # Q2a: Build's record of the run for the FINAL tag
+add("rc_build_noadm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), TRC))
 _RCC = os.environ.get("RC_COMMIT") or ("f" * 40)
-def _src(commit): return {"buildDefinition": dict(SLSA_OK["buildDefinition"], resolvedDependencies=[{"uri": "git+https://github.com/fosterstack/cache@" + TRC, "digest": {"gitCommit": commit}}])}
-add("rc_sign", STAGES["sign"], TRC, PROV, D, predicate=_src(_RCC))
-add("rc_sign_othersrc", STAGES["sign"], TRC, PROV, D, predicate=_src("e" * 40))
-add("rc_sign_nosrc", STAGES["sign"], TRC, PROV, D, predicate={"buildDefinition": dict(SLSA_OK["buildDefinition"], resolvedDependencies=[])})
-add("rc_rebuild", STAGES["rebuild"], TRC, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
-add("rc_rebuild_other", STAGES["rebuild"], TRC, COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
+def _src(commit): return {"buildDefinition": dict(slsa_ok(TRC)["buildDefinition"], resolvedDependencies=[{"uri": "git+https://github.com/fosterstack/cache@" + TRC, "digest": {"gitCommit": commit}}])}
+add("rc_sign", PROV, D, ref=TRC, predicate=_src(_RCC))
+add("rc_sign_othersrc", PROV, D, ref=TRC, predicate=_src("e" * 40))
+add("rc_sign_nosrc", PROV, D, ref=TRC, predicate={"buildDefinition": dict(slsa_ok(TRC)["buildDefinition"], resolvedDependencies=[])})
+add("rc_rebuild", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild", coll_ref=TRC)
+add("rc_rebuild_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild", coll_ref=TRC)
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn, ref=TRC)
-_chk("rc_c_scanners_tag", "scanners", ref=T)                       # a Check record of the FINAL tag's identity, not the rc tag's
-dj("rc-rekor.json", {"entries": [entry("rc_sign", 7)]})
-dj("rc-rekor-othersrc.json", {"entries": [entry("rc_sign_othersrc", 7)]})
-dj("rc-rekor-nosrc.json", {"entries": [entry("rc_sign_nosrc", 7)]})
-_HF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
+_chk("rc_c_scanners_otherkey", "scanners", key="other", ref=TRC)           # a Check record signed by a key the manifest does not name
+_HF = {"mint_sign_cert": ("sign", "signature is not the manifest key's (manifest key)"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
-       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
+       "forge_provenance": ("release", "provenance signature is not the manifest key's (manifest key)")}
 def _hrow(a, **k):
     r = {"attempt": a, "outcome": "refused", "stage": _HF[a][0], "reason": _HF[a][1], "judged_by": "verifier", "exit_code": 1}
     r.update(k); return r
@@ -1057,10 +723,10 @@ dj("rc-hostile-floatexit.json", {"attempts": [_hrow(a, exit_code=1.0) for a in _
 dj("rc-hostile-floatctl.json", {"attempts": [_hrow(a) for a in _HF] + [dict(_CTL, exit_code=0.0)]})
 dj("rc-hostile-boolexit.json", {"attempts": [_hrow(a, exit_code=True) for a in _HF] + [_CTL]})
 dj("rc-hostile-reworded.json", {"attempts": [_hrow(a, reason=_HF[a][1] + " ") for a in _HF] + [_CTL]})      # still a green verdict, other bytes
-def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", rekor="rc-rekor.json", hostile="rc-hostile", check=None, digests="digests.json"):
+def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", hostile="rc-hostile", check=None, digests="digests.json", adm="admission-baseline-rc"):
     d = p(name)
-    files = [("witness-build/build-collection.json", build + ".json"), ("witness-build/digests.json", digests), ("witness-build/items.json", "items.json"),
-             ("provenance/provenance.json", sign + ".json"), ("provenance/provenance.rekor.json", rekor),
+    files = [("witness-build/build-collection.json", build + ".json"), ("witness-build/digests.json", digests), ("witness-build/items.json", "items.json"), ("witness-build/admission-baseline.json", adm + ".json"),
+             ("provenance/provenance.json", sign + ".json"), ("provenance/provenance.rekor.json", sign + ".rekor.json"),
              ("witness-rebuild/rebuild-collection.json", rebuild + ".json"), ("hostile-results/hostile-results.json", hostile + ".json")]
     chk = {s: "rc_c_" + s for s in ("scanners", "acceptance", "runtime", "arm64")}
     chk.update(check or {})
@@ -1071,12 +737,18 @@ def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", rekor="r
         shutil.copy(p(src), os.path.join(d, rel))
 rcdir("rc_ok")
 rcdir("rc_badsign", sign="sign_othertag")
-rcdir("rc_othersrc", sign="rc_sign_othersrc", rekor="rc-rekor-othersrc.json")
-rcdir("rc_nosrc", sign="rc_sign_nosrc", rekor="rc-rekor-nosrc.json")
-rcdir("rc_norekor", rekor="rekor-empty.json")
-rcdir("rc_build_final", build="build_coll")
+rcdir("rc_othersrc", sign="rc_sign_othersrc")
+rcdir("rc_nosrc", sign="rc_sign_nosrc")
+rcdir("rc_build_final", build="rc_build_final", adm="admission-baseline-final")
+rcdir("rc_noadm", build="rc_build_noadm")
 rcdir("rc_check_missing", check={"arm64": None})
+rcdir("rc_check_otherkey", check={"scanners": "rc_c_scanners_otherkey"})
+_chk("rc_c_scanners_tag", "scanners", ref=T)          # a Check record made at the FINAL tag, offered under the rc tag's policy
+add("rc_build_finalref", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], T))
 rcdir("rc_check_finaltag", check={"scanners": "rc_c_scanners_tag"})
+rcdir("rc_build_finalref", build="rc_build_finalref")
+rcdir("rc_norekor")
+os.remove(p("rc_norekor/provenance/provenance.rekor.json"))
 rcdir("rc_rebuild_other", rebuild="rc_rebuild_other")
 rcdir("rc_hostile_accepted", hostile="rc-hostile-accepted")
 rcdir("rc_hostile_missing", hostile="rc-hostile-missing")
@@ -1087,6 +759,7 @@ rcdir("rc_hostile_boolexit", hostile="rc-hostile-boolexit")
 rcdir("rc_hostile_floatexit", hostile="rc-hostile-floatexit")
 rcdir("rc_hostile_floatctl", hostile="rc-hostile-floatctl")
 print("fixtures ok")
+
 PY
 # the rc repository comes first: Sign's rc provenance names the rc tag's commit as its source (REQ-CHAIN-001-AC6)
 CB="$root/bin/chain-bytes-sha.py"
@@ -1104,26 +777,22 @@ rcg add -A > /dev/null; rcg commit -q -m c1; rcg tag v0.3.0-rc1
 C1=$(rcg rev-parse HEAD)
 export RC_COMMIT=$C1
 python3 "$work/fx.py" "$work" > "$work/fx.log" 2>&1 || { cat "$work/fx.log"; echo "FAIL fixture generation"; exit 1; }
-NOW=$(cat "$work/now.txt"); NOWIN=$(cat "$work/now-in.txt"); NOWMID=$(cat "$work/now-mid.txt")
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # fixture self-checks: the inputs are what the cases claim they are (so a refusal is about the claimed cause)
 O=$OPENSSL
-$O verify -CAfile "$work/root.pem" -untrusted "$work/interm.pem" "$work/leaf1.pem" > /dev/null 2>&1 && ok "fixture: leaf chains root -> intermediate -> leaf" || bad "fixture: leaf chain"
-$O verify -CAfile "$work/otherroot.pem" -untrusted "$work/interm.pem" "$work/leaf1.pem" > /dev/null 2>&1 && bad "fixture: leaf must NOT chain to the other root" || ok "fixture: other root does not verify the leaf"
-grep -F -q 'stage-sign.yml@refs/tags/v0.3.0' <<< "$($O x509 -in "$work/leaf1.pem" -noout -ext subjectAltName 2> /dev/null)" && ok "fixture: leaf SAN is the Sign file at the tag" || bad "fixture: leaf SAN"
-grep -F -q '1.3.6.1.4.1.57264.1.8' <<< "$($O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null)" && ok "fixture: leaf carries the Fulcio OIDC-issuer extension" || bad "fixture: issuer extension"
-grep -F -q '1.3.6.1.4.1.57264.1.18' <<< "$($O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null)" && ok "fixture: leaf carries the Build Config URI extension (.1.18)" || bad "fixture: Build Config URI extension"
-grep -F -q "fixtures ok" "$work/fx.log" && ok "fixture: the timestamp token verifies against the TSA root (openssl ts -verify)" || bad "fixture: timestamp token"
-python3 - "$work" <<'PY' && ok "fixture: the real envelope shape (base64 PEM certificate, intermediates, Statement v0.1 collection, policy payloadType)" || bad "fixture: envelope shape"
-import base64, json, sys
+grep -F -q "fixtures ok" "$work/fx.log" && ok "fixture: the generator ran to its end" || bad "fixture: the generator did not finish"
+[ "$($O pkey -pubin -in "$work/rel.pub" -text -noout | grep -c 'ASN1 OID: prime256v1')" = 1 ] && ok "fixture: the release key is ECDSA P-256" || bad "fixture: the release key"
+[ "$($O pkey -in "$work/throwaway.key" -text -noout | head -n 1)" = "ED25519 Private-Key:" ] && ok "fixture: the building job's throwaway key is ed25519" || bad "fixture: the throwaway key"
+python3 - "$work" <<'PY' && ok "fixture: the real envelope shape (one signature {keyid, sig}, no certificate, Statement v0.1 collection, policy payloadType)" || bad "fixture: envelope shape"
+import base64, hashlib, json, sys
 w = sys.argv[1]; r = lambda n: json.load(open(w + "/" + n + ".json"))
-s = r("build_coll")["signatures"][0]
-assert base64.b64decode(s["certificate"]).startswith(b"-----BEGIN CERTIFICATE-----") and len(s["intermediates"]) == 2
+s = r("build_coll")["signatures"]
+assert len(s) == 1 and set(s[0]) == {"keyid", "sig"} and s[0]["keyid"].startswith("awskms:///alias/"), s
 st = json.loads(base64.b64decode(r("build_coll")["payload"]))
 assert st["_type"] == "https://in-toto.io/Statement/v0.1"
 sub = st["subject"][0]
 assert sub["name"] == "https://witness.dev/attestations/product/v0.1/file:digests.json" and set(sub["digest"]) == {"sha256", "gitoid:sha1", "gitoid:sha256"}, sub
-import hashlib
 assert sub["digest"]["sha256"] == hashlib.sha256(open(w + "/digests.json", "rb").read()).hexdigest()
 for k in ("upper", "sha512", "codename", "dotdotname", "hex65", "newline", "prefixed", "emptyname", "underscorename", "emptyobj", "newlinename", "unicodename", "unicodehex", "fullwidthhex"):   # the format cases ATTEST their own file, so equality cannot be what refuses them
     s2 = json.loads(base64.b64decode(r("build_coll_" + k)["payload"]))["subject"][0]["digest"]["sha256"]
@@ -1134,98 +803,117 @@ PY
 # ---- harness ----------------------------------------------------------------------------------------------------
 [ -f "$cv" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
 # a fake `cosign` (test-generated, first on PATH): implements only the pinned call
-#   cosign attest-blob --yes --signing-config CFG --statement S --bundle B
-# (cosign v3.1.3 cmd/cosign/cli/attest_blob.go; options/attest_blob.go: --statement needs no positional argument, --signing-config
-# needs --bundle and selects the services, here the committed .github/policy/cosign-signing-config.json that names Rekor v1: the
-# default --use-signing-config would pick the TUF-published config, which can name Rekor v2 (tiles, no signed entry timestamp)).
-# It signs the DSSE PAE with the fake leaf's key (SAN stage-sign.yml@v0.3.0, Build Config URI release.yml@v0.3.0) and writes a
-# bundle in the REAL protobuf-JSON shape (mediaType ...bundle.v0.3+json): dsseEnvelope; verificationMaterial.certificate.rawBytes
-# (base64 DER); timestampVerificationData.rfc3161Timestamps[].signedTimestamp = a DER TimeStampResponse (openssl ts -reply without
-# -token_out); tlogEntries[] = a Rekor v1 `dsse` entry (logId.keyId, string logIndex/integratedTime, kindVersion, inclusionPromise,
-# canonicalizedBody) signed by the test log key. Synthetic: the first real dry run captures a genuine bundle to replace this
-# fixture (cosign major version, entry kind and SET shape are confirmed there). The fake records its argv so the test pins it.
-# sign converts the bundle: DIR/provenance.json is the verify-shape envelope (certificate = base64 PEM, intermediates = the policy's
-# chain, timestamps = [{"type":"rfc3161-response","data":<signedTimestamp>}]) and DIR/provenance.rekor.json = {"entries":[the
-# bundle's tlogEntries, untouched]}, so a record Sign wrote can go straight into verify (a case below does exactly that).
+#   cosign attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config CFG --statement S --bundle B
+# (cosign v3.1.3 cmd/cosign/cli/attest_blob.go; --key names the KMS key by its alias; --signing-config selects the services, here the
+# committed .github/policy/cosign-signing-config.json, which names one Rekor, v1, and no Fulcio, no sign-in service and no timestamp authority). It signs the DSSE PAE
+# with the release key and writes a bundle in the protobuf-JSON shape (mediaType ...bundle.v0.3+json): dsseEnvelope and
+# verificationMaterial.publicKey.hint. Synthetic: the first real run (task T1) captures a genuine bundle to replace this fixture. The fake
+# records its argv so the test pins it, and refuses a signing config that names a service.
 cp "$root/.github/policy/cosign-signing-config.json" "$work/cosign-signing-config.json" 2> /dev/null || echo '{"missing":true}' > "$work/cosign-signing-config.json"
 mkdir -p "$work/fakebin"
 cat > "$work/fakebin/cosign" <<FAKE
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$work/cosign-argv.log"
-[ "\${1:-}" = attest-blob ] && [ "\${2:-}" = --yes ] && [ "\${3:-}" = --signing-config ] && [ "\${5:-}" = --statement ] && [ "\${7:-}" = --bundle ] && [ "\$#" = 8 ] || { echo "fake cosign: unexpected argv: \$*" >&2; exit 2; }
-exec python3 - "\$4" "\$6" "\$8" "$work" <<'PYF'
-import base64, datetime as dt, hashlib, json, os, subprocess, sys
+[ "\$#" = 10 ] && [ "\${1}" = attest-blob ] && [ "\${2}" = --yes ] && [ "\${3}" = --key ] && [ "\${4}" = awskms:///alias/fosterstack-release-signing ] \
+  && [ "\${5}" = --signing-config ] && [ "\${7}" = --statement ] && [ "\${9}" = --bundle ] || { echo "fake cosign: unexpected argv: \$*" >&2; exit 2; }
+exec python3 - "\${6}" "\${8}" "\${10}" "$work" <<'PYF'
+import base64, hashlib, json, os, subprocess, sys
 cfg, st, out, w = sys.argv[1:5]
 SSL = os.environ.get("OPENSSL", "openssl")
 def sh(*a): return subprocess.run((SSL,) + a, capture_output=True, check=True).stdout
 b64 = lambda b: base64.b64encode(b).decode()
+# a log tree of five leaves (the entry is the third) with its checkpoint, signed by the log key: the inclusion proof Rekor sends with every entry
+def _mh(l, r): return hashlib.sha256(b"\x01" + l + r).digest()
+def _mroot(ls):
+    if len(ls) == 1: return ls[0]
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mh(_mroot(ls[:k]), _mroot(ls[k:]))
+def _mpath(m, ls):
+    if len(ls) == 1: return []
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return _mpath(m, ls[:k]) + [_mroot(ls[k:])] if m < k else _mpath(m - k, ls[k:]) + [_mroot(ls[:k])]
+def add_proof(e, sign, log_der, pos=2, n=5):
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(e["canonicalizedBody"])).digest()
+    ls = [hashlib.sha256(b"\x00" + bytes([i]) * 8).digest() for i in range(n)]
+    ls[pos] = leaf
+    root = _mroot(ls)
+    note = "rekor.sigstore.dev - 1193050959916656506\n%d\n%s\n" % (n, base64.b64encode(root).decode())
+    sg = hashlib.sha256(log_der).digest()[:4] + sign(note.encode())
+    e["inclusionProof"] = {"logIndex": str(pos), "rootHash": base64.b64encode(root).decode(), "treeSize": str(n),
+                           "hashes": [base64.b64encode(h).decode() for h in _mpath(pos, ls)],
+                           "checkpoint": {"envelope": note + "\n\u2014 rekor.sigstore.dev " + base64.b64encode(sg).decode() + "\n"}}
+    return e
+
 conf = json.load(open(cfg))
-assert conf["rekorTlogUrls"][0]["majorApiVersion"] == 1, "the signing config must name Rekor v1"
+for service in ("caUrls", "oidcUrls", "tsaUrls"):
+    assert conf.get(service) == [], "the signing config must name no " + service
+assert len(conf.get("rekorTlogUrls", [])) == 1 and conf["rekorTlogUrls"][0].get("majorApiVersion") == 1, "the signing config must name exactly one Rekor, v1"
 body = open(st, "rb").read(); pt = "application/vnd.in-toto+json"
-# FAKE_BUNDLE (Opus r1-verify F1): a cosign that signs ANOTHER statement than the one Sign handed it; the bundle is otherwise genuine
+# FAKE_BUNDLE: a cosign that signs ANOTHER statement than the one Sign handed it (the bundle is otherwise genuine), or returns a bundle with
+# something that must not be there or no signature that verifies
 mode = os.environ.get("FAKE_BUNDLE", "")
 if mode in ("swapsubj", "predicate", "addsubj", "dry1", "dry1f"):
     stm = json.loads(body)
-    if mode == "dry1": stm["predicate"]["dryRun"] = 1          # H2: 1 where Sign built true (Python says 1 == True)
-    if mode == "dry1f": stm["predicate"]["dryRun"] = 1.0       # H2: 1.0 where Sign built true
+    if mode == "dry1": stm["predicate"]["dryRun"] = 1          # 1 where Sign built true (Python says 1 == True)
+    if mode == "dry1f": stm["predicate"]["dryRun"] = 1.0       # 1.0 where Sign built true
     if mode == "swapsubj": stm["subject"] = [{"name": "evil", "digest": {"sha256": "f" * 64}}]
     if mode == "predicate": stm["predicate"]["runDetails"]["metadata"]["invocationId"] = "https://evil.example/run/1"
     if mode == "addsubj": stm["subject"].append({"name": "evil", "digest": {"sha256": "f" * 64}})
     body = json.dumps(stm, sort_keys=True).encode()
 pae = b"DSSEv1 %d %s %d %s" % (len(pt), pt.encode(), len(body), body)
 open(w + "/fake.pae", "wb").write(pae)
-# Fulcio issues the certificate for the run's own ref: a dry run (builder at the branch) gets the branch leaf
-leaf = "fakeleafbr" if json.loads(body)["predicate"]["runDetails"]["builder"]["id"].endswith("@refs/heads/hostile-proof/x") else "fakeleaf"
-sig = sh("dgst", "-sha256", "-sign", w + "/" + leaf + ".key", w + "/fake.pae")
-q = sh("ts", "-query", "-digest", hashlib.sha256(sig).hexdigest(), "-sha256", "-cert", "-no_nonce"); open(w + "/fake.tsq", "wb").write(q)
-sh("ts", "-reply", "-queryfile", w + "/fake.tsq", "-signer", w + "/tsa.pem", "-inkey", w + "/tsa.key", "-chain", w + "/tsaroot.pem",
-   "-config", w + "/tsa.cnf", "-section", "t", "-out", w + "/fake.tsr")
-leaf_pem = open(w + "/" + leaf + ".pem").read(); leaf_b64 = b64(leaf_pem.encode())
-rb = json.dumps({"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
-      "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(body).hexdigest()}, "signatures": [{"signature": b64(sig), "verifier": leaf_b64}]}},
-      sort_keys=True, separators=(",", ":")).encode()
-logid = hashlib.sha256(sh("pkey", "-pubin", "-in", w + "/rekor.pub", "-outform", "DER")).hexdigest()
-itime = int(dt.datetime.now(dt.timezone.utc).timestamp())
-canon = b64(rb)
-open(w + "/fake.set", "wb").write(json.dumps({"body": canon, "integratedTime": itime, "logID": logid, "logIndex": 4242}, sort_keys=True, separators=(",", ":")).encode())
-tl = {"logIndex": "4242", "logId": {"keyId": b64(bytes.fromhex(logid))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"}, "integratedTime": str(itime),
-      "inclusionPromise": {"signedEntryTimestamp": b64(sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.set"))}, "canonicalizedBody": canon}
-der = sh("x509", "-in", w + "/" + leaf + ".pem", "-outform", "DER")
-vm = {"certificate": {"rawBytes": b64(der)}, "tlogEntries": [tl],
-      "timestampVerificationData": {"rfc3161Timestamps": [{"signedTimestamp": b64(open(w + "/fake.tsr", "rb").read())}]}}
-# FAKE_BUNDLE (Codex security r1 S1): a bundle cosign returns with exit 0 but with material missing or wrong; Sign must refuse it
-if mode in ("nots", "nothing"): del vm["timestampVerificationData"]
-if mode in ("notlog", "nothing"): del vm["tlogEntries"]
-if mode == "emptyts": vm["timestampVerificationData"]["rfc3161Timestamps"] = []
-if mode == "emptytlog": vm["tlogEntries"] = []
-if mode == "nocert": del vm["certificate"]
-if mode == "sslfail": open(w + "/ssl-fail", "w").close()   # the fake openssl fails from now on (I1)
-if mode == "badtlog": tl["logIndex"] = "99"          # the log's signed entry timestamp no longer verifies: only a verify of the output sees it
-json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm,
-           "dsseEnvelope": {"payloadType": pt, "payload": b64(body), "signatures": [{"sig": b64(sig), "keyid": ""}]}}, open(out, "w"))
+key = "other" if mode == "otherkey" else "rel"
+sig = sh("dgst", "-sha256", "-sign", w + "/" + key + ".key", w + "/fake.pae")
+vm = {"publicKey": {"hint": "awskms:///alias/fosterstack-release-signing"}}
+if mode == "withcert": vm = {"certificate": {"rawBytes": b64(b"x")}}
+if mode == "sslfail": open(w + "/ssl-fail", "w").close()   # the fake openssl fails from now on
+env = {"payloadType": pt, "payload": b64(body), "signatures": [{"sig": b64(sig), "keyid": ""}]}
+if mode != "notlog":
+    # the Rekor entry cosign gets back from the log for a key signature: bound to this payload hash, this signature and the signing key's public half
+    pub = open(w + "/" + key + ".pub").read()
+    rb = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
+          "payloadHash": {"algorithm": "sha256", "value": __import__("hashlib").sha256(body).hexdigest()},
+          "signatures": [{"signature": b64(sig), "verifier": b64(pub.encode())}]}}
+    cb = b64(json.dumps(rb, sort_keys=True, separators=(",", ":")).encode())
+    log_id = __import__("hashlib").sha256(sh("pkey", "-pubin", "-in", w + "/rekor.pub", "-outform", "DER")).hexdigest()
+    canon = json.dumps({"body": cb, "integratedTime": 1761800000, "logID": log_id, "logIndex": 7}, sort_keys=True, separators=(",", ":")).encode()
+    open(w + "/fake.set.in", "wb").write(canon)
+    _e = {"logIndex": "7", "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
+                          "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.set.in"))}}
+    def _sg(note): open(w + "/fake.note.in", "wb").write(note); return sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.note.in")
+    vm["tlogEntries"] = [add_proof(_e, _sg, sh("pkey", "-pubin", "-in", w + "/rekor.pub", "-outform", "DER"))]
+bundle = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm}
+if mode == "emptylog": vm["tlogEntries"] = []
+if mode == "badset": vm["tlogEntries"][0]["inclusionPromise"]["signedEntryTimestamp"] = b64(b"not the log's signature")
+if mode == "noproof": del vm["tlogEntries"][0]["inclusionProof"]
+if mode == "twosigs": env["signatures"].append(dict(env["signatures"][0]))      # a second signature that the converter would drop
+if mode != "nodsse": bundle["dsseEnvelope"] = env
+json.dump(bundle, open(out, "w"))
 PYF
 FAKE
 chmod +x "$work/fakebin/cosign"
-# rc-2 R1a: sign refuses a GITHUB_SHA that is not 40-hex and a GITHUB_RUN_ID that is not digits, so every case that signs runs with GitHub's own two variables set (the R1a cases below override them)
+# sign refuses a GITHUB_SHA that is not 40-hex and a GITHUB_RUN_ID that is not digits, so every case that signs runs with GitHub's own two variables set (the R1a cases below override them)
 export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242
 PY3=$(command -v python3)
 MARK="$work/.start-marker"; : > "$MARK"
 : > "$work/cosign-all.log"; SIGNS_OK=0; LEAKS=0
-ARGV_RE='^attest-blob --yes --signing-config [^ ]+/cosign-signing-config\.json --statement [^ ]+ --bundle [^ ]+/provenance\.bundle\.json$'
-SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SENTINEL-CIT-$$-2b8e"
-# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake cosign
-# first) and GITHUB_REF are passed THROUGH `env` so
-# sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
+ARGV_RE='^attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config [^ ]+/cosign-signing-config\.json --statement [^ ]+ --bundle [^ ]+/provenance\.bundle\.json$'
+SENT_TOK="SENTINEL-TOKEN-$$-7f3a"; SENT_URL="SENTINEL-URL-$$-9c1d"; SENT_CIT="SENTINEL-CIT-$$-2b8e"; SENT_AWS="SENTINEL-AWS-$$-4d6f"
+# run ARGS...: the verifier ($cvr: the copy with the openssl a case wants) under the network cut; PATH (fake cosign first) and
+# GITHUB_REF are passed THROUGH `env` so sudo's env_reset/secure_path (the ubuntu-24.04 fallback) cannot drop them; the fake's argv log is per run and appended to a total
 run() { : > "$work/cosign-argv.log"; local rc=0
-  "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" \
-    GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
+  "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
+    GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF-fosterstack/cache/.github/workflows/release.yml@${GITHUB_REF:-refs/tags/v0.3.0}}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
     ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
+    AWS_SECRET_ACCESS_KEY="$SENT_AWS" \
     "$PY3" "$cvr" "$@" 2> "$work/err" > "$work/out" || rc=$?
-  if grep -F -q -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work/err" "$work/out" "$work/cosign-argv.log" 2> /dev/null; then LEAKS=$((LEAKS + 1)); fi
+  if grep -F -q -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" -e "$SENT_AWS" "$work/err" "$work/out" "$work/cosign-argv.log" 2> /dev/null; then LEAKS=$((LEAKS + 1)); fi
   cat "$work/cosign-argv.log" >> "$work/cosign-all.log"
   [ "$rc" = 0 ] && [ "${1:-}" = sign ] && SIGNS_OK=$((SIGNS_OK + 1))
   return $rc; }
@@ -1237,12 +925,12 @@ expect_ok() { local l=$1; shift; local rc=0; run "$@" || rc=$?
 # expect_refuse LABEL "word[|word...]" args...   exit exactly 1, no traceback, the FIRST stderr line is `refused at <stage>: <reason>`
 # and every word is in that line; a word that is not the stage name in the prefix must be in the REASON (after the colon), so
 # a file name echoed in the prefix, or a stage name, can never stand in for the cause. For a `sign` command the fake cosign
-# must also never have been called (the check comes BEFORE the signature: Opus r3 B1).
+# must also never have been called (the check comes BEFORE the signature).
 expect_refuse() { local l=$1 w=$2 x=; shift 2; local rc=0 miss=0 l1 st reason; run "$@" || rc=$?
   l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
   if grep -E -q '^refused at [a-z]+: .' <<< "$l1"; then
     st=$(printf '%s' "$l1" | sed -E 's/^refused at ([a-z]+): .*/\1/'); reason=${l1#*: }
-    reason=${reason//"$(printf '%s' "$work" | tr 'A-Z' 'a-z')"/}   # round 8: the random mktemp path can never stand in for (or against) a cause word
+    reason=${reason//"$(printf '%s' "$work" | tr 'A-Z' 'a-z')"/}   # the random mktemp path can never stand in for (or against) a cause word
     IFS='|' read -r -a ws <<< "$w"
     for x in "${ws[@]}"; do
       case $x in
@@ -1253,165 +941,106 @@ expect_refuse() { local l=$1 w=$2 x=; shift 2; local rc=0 miss=0 l1 st reason; r
   else miss=1; fi
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && { [ "${1:-}" != sign ] || [ ! -s "$work/cosign-argv.log" ]; }; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with first line 'refused at <stage>: ...' and '$w'; fake cosign called: $([ -s "$work/cosign-argv.log" ] && echo YES || echo no); $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
-mkpol() { run policy make --template "$work/template.json" --tag v0.3.0 --trust "${2:-$work/trust.json}" \
-  --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/$1"; }
-V() { echo --policy "$work/policy.json" --now "${1:-$NOW}"; }
-R() { echo --rekor-stub "$work/${1:-rekor.json}"; }
+mkpol() { run policy make --template "${2:-$work}/template.json" --tag v0.3.0 --out "$work/$1"; }
+V() { echo --policy "$work/policy.json"; }
 rec() { echo --record "$work/$1.json"; }
-ST() { local cur=$1 prev=$2; shift 2; echo stage-start --stage "$cur" --previous "$prev" --policy "$work/policy.json" --now "$NOW" "$@"; }
+ST() { local cur=$1 prev=$2; shift 2; echo stage-start --stage "$cur" --previous "$prev" --policy "$work/policy.json" "$@"; }
 
-# ---- REQ-CHAIN-002-AC2: the per-tag policy ----------------------------------------------------------------------
-rc=0; mkpol policy.json || rc=$?; [ "$rc" = 0 ] && ok "002-AC2 policy for v0.3.0 is made from the template" || bad "002-AC2 policy make (exit $rc)"
-for c in badroot:"a Fulcio root" badtsa:"a timestamp authority root" badrekor:"a Rekor key"; do
-  k=${c%%:*}; rc=0; mkpol "policy-$k.json" "$work/trust-$k.json" || rc=$?
-  { [ "$rc" = 1 ] && grep -F -q -i trust "$work/err" && ! crashed; } && ok "002-AC2 ${c#*:} whose hash differs from the trust file is refused" || bad "002-AC2 $k hash (exit $rc)"
-done
-expect_ok     "002-AC2 sign file at v0.3.0 is accepted as stage sign" verify $(V) --stage sign $(rec sign_prov) $(R)
-expect_refuse "002-AC2 sibling file at the same tag is refused" "other.yml|!digest|!timestamp|!rekor|!signature" verify $(V) --stage sign $(rec sibling_as_sign) $(R)
-expect_refuse "002-AC2 the same file at another tag is refused" "v0.3.1" verify $(V) --stage sign $(rec sign_othertag) $(R)
-expect_refuse "002-AC2 a tag that only starts like the tag (v0.3.0-rc1) is refused" "v0.3.0-rc1" verify $(V) --stage sign $(rec sign_rc) $(R)
-expect_refuse "002-AC2 the same file on a branch is refused" "refs/heads/main" verify $(V) --stage sign $(rec sign_branch) $(R)
-expect_refuse "002-AC2 a file whose name merely starts with stage-sign.yml is refused" "stage-sign.yml.evil" verify $(V) --stage sign $(rec evilext_as_sign) $(R)
-expect_refuse "002-AC2 a file whose name merely ends with stage-sign.yml is refused" "xstage-sign.yml" verify $(V) --stage sign $(rec xprefix_as_sign) $(R)
-expect_refuse "002-AC2 the right file in another repository is refused" "attacker/cache" verify $(V) --stage sign $(rec sign_wrongrepo) $(R)
-expect_refuse "002-AC2 a certificate from another OIDC issuer is refused" "issuer|!digest|!timestamp|!rekor" verify $(V) --stage sign $(rec sign_badissuer) $(R)
-expect_refuse "001-AC4/002-AC2 right SAN but the top-level workflow is another file that calls stage-sign.yml: refused, the caller is named" "other-caller.yml" verify $(V) --stage sign $(rec sign_othercaller) $(R)
-expect_refuse "002-AC2 right SAN but the calling release.yml is at another tag is refused" "v0.3.1" verify $(V) --stage sign $(rec sign_callertag) $(R)
-expect_refuse "002-AC2 right SAN but the calling release.yml is on a branch is refused" "refs/heads/main" verify $(V) --stage sign $(rec sign_callerbranch) $(R)
-expect_refuse "002-AC2 right SAN but the calling workflow lives in another repository (attacker/cache) is refused" "attacker/cache" verify $(V) --stage sign $(rec sign_cfg_wrongrepo) $(R)
-expect_refuse "002-AC2 a calling repository that only starts like ours (fosterstack/cache-evil) is refused" "cache-evil" verify $(V) --stage sign $(rec sign_cfg_repoevil) $(R)
-expect_refuse "002-AC2 a calling repository that only has ours as a prefix (fosterstack/cachex) is refused" "cachex" verify $(V) --stage sign $(rec sign_cfg_repox) $(R)
-expect_refuse "002-AC2 a calling workflow that only ends like ours (prerelease.yml) is refused" "prerelease.yml" verify $(V) --stage sign $(rec sign_cfg_prerelease) $(R)
-expect_refuse "002-AC2 a calling workflow with a prefixed name (xrelease.yml) is refused" "xrelease.yml" verify $(V) --stage sign $(rec sign_cfg_xrelease) $(R)
-expect_refuse "002-AC2 a calling release.yml at a tag that only starts like ours (v0.3.0-rc1) is refused" "v0.3.0-rc1" verify $(V) --stage sign $(rec sign_cfg_rc) $(R)
-expect_refuse "002-AC2 a SAN repository that only starts like ours (cache-evil) is refused" "cache-evil" verify $(V) --stage sign $(rec sign_san_repoevil) $(R)
-expect_refuse "002-AC2 a certificate with no Build Config URI extension is refused" "build config" verify $(V) --stage sign $(rec sign_noconfig) $(R)
-expect_refuse "002-AC2 a certificate with no OIDC-issuer extension is refused" "issuer" verify $(V) --stage sign $(rec sign_noissuer) $(R)
-# (Codex #249 r6 B6, 001-AC4 "the refusal names the identity found") every identity refusal names the certificate's SAN, cause words kept
-expect_refuse "001-AC4 no Build Config URI extension: the refusal names the identity found" "build config|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_noconfig) $(R)
-expect_refuse "001-AC4 no OIDC-issuer extension: the refusal names the identity found" "issuer|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_noissuer) $(R)
-expect_refuse "001-AC4 another OIDC issuer: the refusal names the identity found" "issuer|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_badissuer) $(R)
-expect_refuse "001-AC4 a wrong Build Config URI (another caller): the refusal names the identity found" "other-caller.yml|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_othercaller) $(R)
-expect_refuse "001-AC4 a wrong Build Config URI (a caller on a branch): the refusal names the identity found" "refs/heads/main|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_callerbranch) $(R)
-for k in iss_raw cfg_raw; do
-  expect_refuse "001-AC4 a malformed issuer or config extension ($k) with a readable SAN: the refusal names the identity found" "malformed|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_$k) $(R rekor-x3.json)
-done
-expect_refuse "002-AC2 a certificate from another root is refused" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
-python3 - "$root" 2> /dev/null <<'PY' && ok "002-AC2 .github/policy/release-policy.template.json names the five stages (Build's, Rebuild's and Check's records are signed by stage-sign.yml) and the issuer" || bad "002-AC2 committed template missing or wrong"
-import json, sys
-t = json.load(open(sys.argv[1] + "/.github/policy/release-policy.template.json"))
-want = {"build": "stage-sign.yml", "sign": "stage-sign.yml", "rebuild": "stage-sign.yml", "check": "stage-sign.yml", "release": "stage-promote.yml"}
-assert t["caller_workflow"] == ".github/workflows/release.yml", t.get("caller_workflow")
-assert t["repository"] == "fosterstack/cache" and t["oidc_issuer"] == "https://token.actions.githubusercontent.com"
-assert {k: v["workflow"].rsplit("/", 1)[-1] for k, v in t["stages"].items()} == want, t["stages"]
+# ---- REQ-CHAIN-002-AC2: the per-tag policy, made from the template and the key manifest -----------------------------
+rc=0; mkpol policy.json || rc=$?; mkpol policy-otherkey.json "$work/keys-other" || true; [ "$rc" = 0 ] && ok "002-AC2 policy for v0.3.0 is made from the template and the key manifest" || bad "002-AC2 policy make (exit $rc: $(head -c 200 "$work/err" | tr '\n' ' '))"
+python3 - "$work/policy.json" "$work/rel.pub" "$work/rekor.pub" 2> /dev/null <<'PY' && ok "002-AC2 the policy holds the tag, the ref, the repository, the stage names, the release key (key_id = sha256 of its DER) and the pinned Rekor key, and no certificate, timestamp or issuer field" || bad "002-AC2 policy shape"
+import hashlib, json, subprocess, sys
+p = json.load(open(sys.argv[1])); pub = open(sys.argv[2]).read()
+der = subprocess.run(["openssl", "pkey", "-pubin", "-in", sys.argv[2], "-outform", "DER"], capture_output=True, check=True).stdout
+assert p == {"tag": "v0.3.0", "ref": "refs/tags/v0.3.0", "repository": "fosterstack/cache", "stages": ["build", "sign", "rebuild", "check", "release"],
+             "release_key": {"key_id": hashlib.sha256(der).hexdigest(), "public_key": pub}, "rekor_public_key": open(sys.argv[3]).read()}, p
 PY
-python3 - "$root" 2> /dev/null <<'PY' && ok "002-AC2 .github/policy/sigstore-trust.json pins the Fulcio root (3ba7b6cc..80c1), the TSA root (2aca8fea..d633) and the Rekor key" || bad "002-AC2 committed trust file missing or wrong"
-import json, re, sys
-t = json.load(open(sys.argv[1] + "/.github/policy/sigstore-trust.json"))
-assert set(t) - {"_note"} == {"fulcio_root_sha256", "tsa_root_sha256", "rekor_sha256"} and all(re.fullmatch(r"[0-9a-f]{64}", t[k]) for k in t if k != "_note"), t
-# the Rekor key hash is NOT recorded by any spike, so this test cannot pin it to a known value: the implementation PR must source it
-# from Sigstore's published trusted_root.json (tlogs[].publicKey) and say so in _note; an unexplained 64-hex value fails here
-assert "trusted_root" in t.get("_note", ""), "rekor_sha256 needs a _note naming its source (trusted_root.json tlogs publicKey)"
-# the Fulcio root fingerprint recorded by the Oct 9 spike (CN=sigstore, spike :50) starts with 3ba7b6cc and ends 80c1
-assert t["fulcio_root_sha256"].startswith("3ba7b6cc") and t["fulcio_root_sha256"].endswith("80c1"), t["fulcio_root_sha256"]
-# the TSA root fingerprint recorded by the Oct 9 spike (CN=sigstore-tsa-selfsigned, spike :51) starts with 2aca8fea and ends d633
-assert t["tsa_root_sha256"].startswith("2aca8fea") and t["tsa_root_sha256"].endswith("d633"), t["tsa_root_sha256"]
-PY
+expect_refuse "002-AC2 a key manifest signed by another root is refused before any policy is written" "manifest|signature" policy make --template "$work/keys-otherroot/template.json" --tag v0.3.0 --out "$work/policy-bad.json"
+[ ! -e "$work/policy-bad.json" ] && ok "002-AC2 a refused manifest leaves no policy file" || bad "002-AC2 a policy file exists after a refused manifest"
+expect_ok     "002-AC2 sign provenance made at the policy's ref is accepted as stage sign" verify $(V) --stage sign $(rec sign_prov)
+expect_refuse "002-AC2 the provenance of another tag (v0.3.1) is refused: the ref inside it is not the policy's" "ref|refs/tags/v0.3.1" verify $(V) --stage sign $(rec sign_othertag)
+expect_refuse "002-AC2 a tag that only starts like the tag (v0.3.0-rc1) is refused" "ref|v0.3.0-rc1" verify $(V) --stage sign $(rec sign_rc)
+expect_refuse "002-AC2 a branch is refused" "ref|refs/heads/main" verify $(V) --stage sign $(rec sign_branch)
+expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3.0) is refused (the ref is compared whole, not by its last segment)" "ref|refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_brtag)
+expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "ref|refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel)
 
-# ---- REQ-CHAIN-001-AC4: provenance only from Sign's identity, only as the Sign stage's record ------------------------
-expect_ok     "001-AC4 provenance under stage-sign.yml@tag is accepted" verify $(V) --stage sign $(rec sign_prov) $(R)
-for s in oldcheck:stage-verify.yml release:stage-promote.yml; do
-  expect_refuse "001-AC4 ${s%%:*}'s identity is refused and named" "${s#*:}" verify $(V) --stage sign $(rec ${s%%:*}_as_sign) $(R)
+# ---- the key binds every record: the signature, by the release key of the manifest, over the PAE --------------------
+expect_ok     "KEY a Build collection signed by the release key is accepted" verify $(V) --stage build $(rec build_coll)
+expect_refuse "KEY provenance signed by a key the manifest does not name is refused" "signature" verify $(V) --stage sign $(rec sign_otherkey)
+for s in build rebuild check; do
+  expect_refuse "KEY a $s record signed by a key the manifest does not name is refused" "$s|signature" verify $(V) --stage $s $(rec ${s}_coll_otherkey)
+  expect_refuse "KEY a $s record signed by the building job's own throwaway key is refused: it is not signed by the manifest key" "$s|signature|manifest key" verify $(V) --stage $s $(rec ${s}_coll_throwaway)
 done
-expect_refuse "001-AC4 a sibling file is refused and named" "other.yml" verify $(V) --stage sign $(rec sibling_as_sign) $(R)
-expect_refuse "001-AC4 provenance presented as stage build's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage build $(rec build_as_sign) $(R)
-expect_refuse "002-AC2/003-AC5 stage-build.yml run from scan.yml (Build Config URI scan.yml) is refused for the build stage and the caller is named" "scan.yml" verify $(V) --stage build $(rec build_coll_scan)
+expect_refuse "KEY provenance signed by the throwaway key is refused with the same plain reason" "signature|manifest key" verify $(V) --stage sign $(rec sign_throwaway)
+expect_refuse "KEY stage-start rebuild <- build refuses a Build record signed by the throwaway key" "build|signature|manifest key" $(ST rebuild build) $(rec build_coll_throwaway) --digests "$work/digests.json"
+expect_refuse "KEY tamper: payload changed after signing is refused" "signature" verify $(V) --stage sign $(rec sign_tamper_payload)
+expect_refuse "KEY tamper: signature bytes altered is refused" "signature" verify $(V) --stage sign $(rec sign_tamper_sig)
+expect_refuse "KEY an unsigned record (no signature at all) is refused" "signature" verify $(V) --stage sign $(rec sign_unsigned)
+expect_refuse "KEY a policy made from another manifest refuses a record signed by the real release key" "signature" verify --policy "$work/policy-otherkey.json" --stage sign $(rec sign_prov)
+expect_refuse "KEY an old-form record that still carries a certificate is refused, not read as a new one" "envelope|certificate" verify $(V) --stage sign $(rec sign_old_cert)
+expect_refuse "KEY an old-form record that still carries intermediates is refused" "envelope|intermediates" verify $(V) --stage sign $(rec sign_old_inter)
+expect_refuse "KEY an old-form record that still carries timestamps is refused" "envelope|timestamps" verify $(V) --stage sign $(rec sign_old_stamps)
+expect_refuse "KEY a keyid that is not a string is refused" "envelope|keyid" verify $(V) --stage sign $(rec sign_keyid_num)
+expect_refuse "KEY a signature entry with a field the form does not have is refused" "envelope|note" verify $(V) --stage sign $(rec sign_extra_field)
+expect_ok     "KEY the keyid is never used to find a key: a record whose keyid names another reference is judged by its signature alone" verify $(V) --stage sign --record "$work/sign_prov_keyid_other.json"
+
+
+# ---- REQ-CHAIN-001-AC4: provenance only as the Sign stage's record, the record type bound to the stage ------------------
+expect_ok     "001-AC4 provenance under stage-sign.yml@tag is accepted" verify $(V) --stage sign $(rec sign_prov)
+expect_refuse "001-AC4 provenance presented as stage build's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage build $(rec build_as_sign)
 for s in rebuild check release; do
-  expect_refuse "001-AC4 provenance presented as stage $s's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage $s $(rec ${s}_as_sign) $(R)
+  expect_refuse "001-AC4 provenance presented as stage $s's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage $s $(rec ${s}_as_sign)
 done
 expect_refuse "001-AC4 a Witness collection signed by Sign is refused (Sign signs provenance only)" "predicate" verify $(V) --stage sign $(rec sign_coll)
-expect_refuse "001-AC4 SLSA provenance v0.2 is not the allowed type" "predicate" verify $(V) --stage sign $(rec sign_prov_v0.2) $(R)
+expect_refuse "001-AC4 SLSA provenance v0.2 is not the allowed type" "predicate" verify $(V) --stage sign $(rec sign_prov_v0.2)
 # (Codex #249 r4 B4) the provenance must be a standard SLSA v1 record: a signed, logged statement of the right type whose predicate is {},
 # a list, or lacks buildDefinition (+ buildType, externalParameters) or runDetails.builder.id (a non-empty string) is refused at sign
 for _c in $(cat "$work/subj-bad.txt"); do
-  expect_refuse "001-AC4 a signed, logged provenance whose subject is malformed ($_c) is refused at sign, naming subject" "sign|subject" verify $(V) --stage sign $(rec sign_subj_$_c) $(R rekor-subj.json)
+  expect_refuse "001-AC4 a signed, logged provenance whose subject is malformed ($_c) is refused at sign, naming subject" "sign|subject" verify $(V) --stage sign $(rec sign_subj_$_c)
   expect_refuse "001-AC4 a signed Witness collection whose subject is malformed ($_c) is refused at build, naming subject" "build|subject" verify $(V) --stage build $(rec build_subj_$_c)
 done
-expect_ok "001-AC4 control: a provenance with well-formed subjects (sha256, sha512, sha1) is accepted" verify $(V) --stage sign $(rec sign_subj_ok) $(R rekor-subj.json)
+expect_ok "001-AC4 control: a provenance with well-formed subjects (sha256, sha512, sha1) is accepted" verify $(V) --stage sign $(rec sign_subj_ok)
 expect_ok "001-AC4 control: a collection whose subject carries a gitoid digest beside sha256 is accepted" verify $(V) --stage build $(rec build_subj_ok)
-expect_refuse "001-AC4 a statement _type other than in-toto Statement v0.1 or v1 is refused (pinned)" "predicate|statement type" verify $(V) --stage sign $(rec sign_type_v02) $(R rekor-subj.json)
-expect_refuse "001-AC4 a predicateType that is not a string is refused (pinned)" "predicate" verify $(V) --stage sign $(rec sign_ptype_num) $(R rekor-subj.json)
-expect_ok "001-AC4 control: the smallest valid SLSA v1 record (buildType, externalParameters {}, builder.id) is accepted" verify $(V) --stage sign $(rec sign_slsa_min) $(R rekor-slsa.json)
-expect_ok "001-AC4 control: the genuine provenance fixture is accepted" verify $(V) --stage sign $(rec sign_prov) $(R)
+expect_refuse "001-AC4 a statement _type other than in-toto Statement v0.1 or v1 is refused (pinned)" "predicate|statement type" verify $(V) --stage sign $(rec sign_type_v02)
+expect_refuse "001-AC4 a predicateType that is not a string is refused (pinned)" "predicate" verify $(V) --stage sign $(rec sign_ptype_num)
+expect_ok "001-AC4 control: the smallest valid SLSA v1 record (buildType, externalParameters {}, builder.id) is accepted" verify $(V) --stage sign $(rec sign_slsa_min)
+expect_ok "001-AC4 control: the genuine provenance fixture is accepted" verify $(V) --stage sign $(rec sign_prov)
 for _c in $(cat "$work/slsa-bad.txt"); do
-  expect_refuse "001-AC4 a signed, logged provenance whose predicate is not SLSA v1 ($_c) is refused at sign" "sign|predicate|slsa v1" verify $(V) --stage sign $(rec sign_$_c) $(R rekor-slsa.json)
+  expect_refuse "001-AC4 a signed, logged provenance whose predicate is not SLSA v1 ($_c) is refused at sign" "sign|predicate|slsa v1" verify $(V) --stage sign $(rec sign_$_c)
 done
-
-# ---- REQ-CHAIN-002-AC1: timestamps, checked 16 minutes after the certificate expired, offline ----------------------
-expect_ok     "002-AC1 expired certificate + valid stamp from the policy's authority, verified 16 min after expiry" verify $(V) --stage sign $(rec sign_prov) $(R)
-expect_ok     "002-AC1 the same record inside the certificate window" verify $(V $NOWIN) --stage sign $(rec sign_prov) $(R)
-expect_refuse "002-AC1 no timestamp after expiry is refused" "timestamp|!signature|!identity|!rekor" verify $(V) --stage sign $(rec sign_nostamp) $(R)
-expect_refuse "002-AC1 a stamp from another authority is refused" "timestamp" verify $(V) --stage sign $(rec sign_othertsa) $(R)
-expect_refuse "002-AC1 a stamp BEFORE the certificate's validity is refused even when --now is inside the window" "validity" verify $(V $NOWMID) --stage sign $(rec sign_stampbefore) $(R)
-expect_refuse "002-AC1 a stamp AFTER the certificate expired is refused" "validity" verify $(V) --stage sign $(rec sign_stampafter) $(R)
-# round 8 (Opus N-a, taken without faketime): with NO --now the default clock (the current UTC time) still judges the stamp against the certificate's
-# window. This certificate's window ended an hour before it was issued and the stamp is dated now, so an implementation that skips the time checks when --now is
-# absent accepts it and fails here; a correct one refuses it as a validity failure.
-expect_refuse "002-AC1 no --now: a stamp after the certificate expired is still refused (the default clock does not skip the validity check)" "validity" verify --policy "$work/policy.json" --stage sign $(rec sign_stampafter) $(R)
-expect_refuse "002-AC1 tamper: payload changed after signing is refused" "signature|!timestamp|!rekor|!identity" verify $(V) --stage sign $(rec sign_tamper_payload) $(R)
-expect_refuse "002-AC1 tamper: signature bytes altered is refused" "signature|!timestamp|!rekor|!identity" verify $(V) --stage sign $(rec sign_tamper_sig) $(R)
-expect_refuse "002-AC1 tamper: a stamp taken over a different signature is refused" "timestamp" verify $(V) --stage sign $(rec sign_tamper_stamp) $(R)
-expect_refuse "002-AC1 an unsigned record is refused" "signature|!timestamp|!identity" verify $(V) --stage sign $(rec sign_unsigned) $(R)
-python3 - "$work/policy.json" "$work/policy-notsa.json" 2> /dev/null <<'PY' || true
-import json, sys
-d = json.load(open(sys.argv[1])); d["timestampauthorities"] = {}; json.dump(d, open(sys.argv[2], "w"))
-PY
-true
-expect_refuse "002-AC1 a policy naming no authority refuses even a valid stamp" "timestamp" verify --policy "$work/policy-notsa.json" --now "$NOW" --stage sign $(rec sign_prov) $(R)
-
-# ---- REQ-CHAIN-002-AC3: Rekor for everything but Witness collections; the entry must be for THIS record ------------
-expect_ok     "002-AC3 provenance with a matching, correctly signed Rekor entry is accepted" verify $(V) --stage sign $(rec sign_prov) $(R)
-expect_refuse "002-AC3 provenance with no Rekor entry is refused" "rekor|!identity|!signature|!timestamp|!digest" verify $(V) --stage sign $(rec sign_prov) $(R rekor-empty.json)
-expect_refuse "002-AC3 provenance is refused when no Rekor source is given (the type decides, not a flag)" "rekor" verify $(V) --stage sign $(rec sign_prov)
-expect_refuse "002-AC3 an entry for a DIFFERENT record's payload is refused" "rekor|!identity|!timestamp" verify $(V) --stage sign $(rec sign_prov) $(R rekor-other.json)
-expect_refuse "002-AC3 an entry whose signed entry timestamp is garbage is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-badset.json)
-expect_refuse "002-AC3 an entry signed by a key that is not the policy's Rekor key is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-wrongkey.json)
-expect_refuse "002-AC3 an entry whose log index was edited after signing is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-editedidx.json)
-expect_refuse "002-AC3 an entry whose integrated time was edited after signing is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-editedtime.json)
-expect_refuse "002-AC3 an entry with the right payload hash but another record's signature and certificate in its body (validly signed by the log) is refused" "rekor|signature" verify $(V) --stage sign $(rec sign_prov) $(R rekor-bodysig.json)
-expect_refuse "002-AC3 an entry validly signed by the log but naming ANOTHER log (logID is not the sha256 of the policy's Rekor key) is refused" "rekor|log" verify $(V) --stage sign $(rec sign_prov) $(R rekor-wronglogid.json)
-expect_refuse "002-AC3 an entry with the right payload hash and signature but ANOTHER record's certificate in its body is refused" "rekor|certificate" verify $(V) --stage sign $(rec sign_prov) $(R rekor-bodycert.json)
-expect_ok     "002-AC3 the signed release policy with its Rekor entry is accepted" verify $(V) --stage release $(rec release_policy) $(R)
-expect_ok     "002-AC3 a Witness stage record needs no Rekor entry" verify $(V) --stage build $(rec build_coll) $(R rekor-empty.json)
-expect_refuse "002-AC3 a Witness record is checked for the timestamp instead" "timestamp" verify $(V) --stage build $(rec build_coll_nostamp)
-
+expect_refuse "M5 a Sign record offered as the Release record is refused by its step name: the type is bound to the stage" "predicate|provenance" verify $(V) --stage release $(rec sign_prov)
 # ---- REQ-CHAIN-003-AC2: only the standard record types, exact strings ------------------------------------------------
 expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_ID_TOKEN_REQUEST_CUSTOM (the whole prefix, not a fixed list)" "build|actions_id_token_request_custom" verify $(V) --stage build $(rec build_env_custom)
 expect_refuse "004-AC8 verify refuses a signed Build record whose environment names GH_TOKEN" "build|gh_token" verify $(V) --stage build $(rec build_env_gh)
 expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_RUNTIME_URL" "build|actions_runtime_url" verify $(V) --stage build $(rec build_env_runtime)
 expect_refuse "007-AC15 verify refuses a signed record whose environment names SIGSTORE_ID_TOKEN (the token release-sign alone holds)" "build|sigstore_id_token" verify $(V) --stage build $(rec build_env_sigstore)
+expect_refuse "R2 verify refuses a signed record whose environment names AWS_WEB_IDENTITY_TOKEN_FILE (the token file path of the AWS SDK)" "build|aws_web_identity_token_file" verify $(V) --stage build $(rec build_env_awstokfile)
+expect_refuse "R2 verify refuses a signed record whose environment names AWS_ROLE_ARN (both AWS variables are sensitive keys, so no record may hold them)" "build|aws_role_arn" verify $(V) --stage build $(rec build_env_awsrole)
 expect_ok "004-AC8 control: a signed Build record with an ordinary environment variable passes verify" verify $(V) --stage build $(rec build_env_clean)
 expect_refuse "004-AC8 stage-start refuses the same record as the previous stage's" "build|actions_id_token_request_custom" $(ST rebuild build) $(rec build_env_custom) --digests "$work/digests.json"
 expect_ok     "003-AC2 the Witness collection type (Statement v0.1, as Witness writes it) is allowed" verify $(V) --stage build $(rec build_coll)
 expect_ok     "003-AC2 the Witness collection type in a Statement v1 is allowed" verify $(V) --stage build $(rec build_coll_v1)
-expect_ok     "003-AC2 SLSA provenance v1 is allowed" verify $(V) --stage sign $(rec sign_prov) $(R)
-expect_ok     "003-AC2 the Witness policy payloadType is allowed (stage release)" verify $(V) --stage release $(rec release_policy) $(R)
-expect_refuse "003-AC2 an in-toto release Statement is not the signed policy and is refused" "predicate" verify $(V) --stage release $(rec release_stmt_policy) $(R)
-expect_refuse "003-AC2 the policy type presented by stage build is refused" "predicate|policy" verify $(V) --stage build $(rec build_policy) $(R)
+expect_ok     "003-AC2 SLSA provenance v1 is allowed" verify $(V) --stage sign $(rec sign_prov)
+expect_ok     "003-AC2 the Witness policy payloadType is allowed (stage release)" verify $(V) --stage release $(rec release_policy)
+expect_refuse "003-AC2 an in-toto release Statement is not the signed policy and is refused" "predicate" verify $(V) --stage release $(rec release_stmt_policy)
+expect_refuse "003-AC2 the policy type presented by stage build is refused" "predicate|policy" verify $(V) --stage build $(rec build_policy)
 for c in madeup ours ours_style v02 plural oldhost slash upper prefix slsa_slash; do
-  expect_refuse "003-AC2 near-miss/made-up type '$c' is refused" "predicate" verify $(V) --stage build $(rec build_$c) $(R)
+  expect_refuse "003-AC2 near-miss/made-up type '$c' is refused" "predicate" verify $(V) --stage build $(rec build_$c)
 done
 
 # ---- REQ-CHAIN-001-AC2: Sign takes Build's digests (a FILE), checked against Build's VERIFIED record ----------------------
 # The record binds the digest file by the sha256 of its bytes (the real product subject file:digests.json); the file's CONTENT is
 # then judged on its own, so the format cases below are attested by their own collections and equality cannot be what refuses them.
-S() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --now "${2:-$NOW}" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
+S() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
 expect_ok     "001-AC2 a digest file whose bytes Build's record attests is accepted (and signed)" $(S) --digests "$work/digests.json"
 for c in other:"a digest that differs" extra:"an extra entry" subset:"a missing entry" swapped:"two names with their values swapped"; do
   expect_refuse "001-AC2 ${c#*:} (other bytes than Build attested) is refused" "digest|!signature|!identity|!timestamp" $(S) --digests "$work/digests-${c%%:*}.json"
 done
 expect_refuse "001-AC2 Build's record for a different file than the one given (extra entries attested) is refused" "digest" $(S build_coll_plus) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record for the swapped file is refused against the real list" "digest" $(S build_coll_swapped) --digests "$work/digests.json"
+for c in rcref:"the rc tag (same digests, other ref)" otherref:"another tag" branchref:"a branch named like the tag" novar:"no GITHUB_REF" noenv:"no environment attestor" twoenv:"two environment attestors" refnotstr:"a GITHUB_REF that is not a string" varlist:"environment variables that are a list" varstr:"environment variables that are a string"; do
+  expect_refuse "004-AC1 a Witness collection whose ref is not the policy's (${c#*:}) is refused" "ref" $(S build_coll_${c%%:*}) --digests "$work/digests.json"
+done
 for v in wrongname:"file:digests.json carries the wrong hash while file:other carries the right one" dup:"two subjects named file:digests.json (wrong first)" dup2:"two subjects named file:digests.json (right first)" \
          bak:"the right hash under file:digests.json.bak (a prefix/substring match)" xname:"the right hash under file:xdigests.json (a suffix match)" \
          evilhost:"the right hash under https://evil.example/.../file:digests.json (a basename match)" material:"the right hash under .../material/v0.1/file:digests.json (a wrong attestor kind)" \
@@ -1429,23 +1058,21 @@ for c in sha512:"a sha512 value" 63:"63 hex characters" upper:"upper-case hex" n
 done
 expect_refuse "001-AC2 Build's record unsigned is refused before the digests are read" "build|signature" $(S build_coll_unsigned) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record tampered after signing (the file hash still equal) is refused" "build|signature" $(S build_coll_tampered) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record signed by another stage's identity (Check's former stage-verify.yml) is refused" "build|stage-verify.yml" $(S check_coll_oldb) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record from another tag is refused" "build|v0.3.1" $(S build_coll_othertag) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record run from a calling workflow that is not release.yml is refused" "build|scan.yml" $(S build_coll_scan) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record with no timestamp is refused" "build|timestamp" $(S build_coll_nostamp) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record of another type (made up) is refused" "build|predicate" $(S build_madeup) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record presented as the signed policy type is refused" "build|predicate|policy" $(S build_policy) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record under another OIDC issuer is refused" "build|issuer" $(S build_coll_badissuer) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record from a certificate under another root is refused" "build|root" $(S build_coll_wrongroot) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record signed in another repository is refused" "build|attacker/cache" $(S build_coll_wrongrepo) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record with no Build Config URI is refused" "build|build config" $(S build_coll_noconfig) --digests "$work/digests.json"
 # the sign side (rule 52: Sign WRITES the provenance only after the check passes), with a fake cosign on PATH
 mkdir -p "$work/sd"
-rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/ok" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/ok" || rc=$?
 if [ -f "$work/cosign-argv.log" ] && grep -E -q "$ARGV_RE" "$work/cosign-argv.log" \
-   && ! grep -E -q -- '--key|--identity-token|--sk|--output-key|--use-signing-config|--fulcio|--rekor|--tlog-upload' "$work/cosign-argv.log"; then
-  ok "001-AC3 sign runs exactly 'cosign attest-blob --yes --signing-config <committed config> --statement S --bundle DIR/provenance.bundle.json', with no key, token or endpoint flag"
+   && ! grep -E -q -- '--identity-token|--sk|--output-key|--use-signing-config|--fulcio|--rekor|--tlog-upload|--insecure|arn:aws' "$work/cosign-argv.log"; then
+  ok "001-AC3 sign runs exactly 'cosign attest-blob --yes --key awskms:///alias/fosterstack-release-signing --signing-config <committed config> --statement S --bundle DIR/provenance.bundle.json', with no token, endpoint or ARN"
 else bad "001-AC3 the cosign invocation is not the pinned one ($(tr '\n' ' ' < "$work/cosign-argv.log" 2> /dev/null | head -c 200))"; fi
+python3 - "$root" 2> /dev/null <<'PY' && ok "P5 the committed cosign-signing-config.json names no certificate authority, OIDC issuer, Rekor log or timestamp authority" || bad "P5 the committed signing config names a service, or is missing"
+import json, sys
+c = json.load(open(sys.argv[1] + "/.github/policy/cosign-signing-config.json"))
+for k in ("caUrls", "oidcUrls", "tsaUrls"): assert c.get(k) == [], k
+assert len(c.get("rekorTlogUrls", [])) == 1, "rekorTlogUrls"
+PY
 python3 - "$work/sd/ok" "$work/digests.json" <<'PY' 2> /dev/null && ok "001-AC2 sign writes SLSA provenance v1 whose subjects equal the digest list (names and values)" || bad "001-AC2 the provenance written by sign is missing or wrong"
 import base64, json, os, sys
 d, df = sys.argv[1], json.load(open(sys.argv[2]))
@@ -1458,7 +1085,10 @@ assert env["signatures"] and env["payloadType"] == "application/vnd.in-toto+json
 pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"), pr
 PY
 # rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before cosign is asked
-SGN() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
+SGN() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/$1"; }
+for _w in "fosterstack/cache-evil/.github/workflows/release.yml@refs/tags/v0.3.0" "fosterstack/cache/.github/workflows/prerelease.yml@refs/tags/v0.3.0" "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.1" ""; do
+  GITHUB_WORKFLOW_REF="$_w" expect_refuse "Q2b sign refuses to write a provenance when GITHUB_WORKFLOW_REF is '$_w'" "workflow" $(SGN wfref-${#_w}-$RANDOM)
+done
 GITHUB_SHA="" GITHUB_RUN_ID=424242 expect_refuse "R1a an empty GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-empty)
 [ ! -e "$work/sd/r1a-empty" ] && ok "R1a r1a-empty: no output folder was made" || bad "R1a r1a-empty: an output folder exists"
 GITHUB_SHA=0123456789abcdef GITHUB_RUN_ID=424242 expect_refuse "R1a a short GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-short)
@@ -1470,7 +1100,7 @@ GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID="" expect_refu
 GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=42a expect_refuse "R1a a GITHUB_RUN_ID that is not digits is refused by sign, naming it" "github_run_id" $(SGN r1a-badid)
 [ ! -e "$work/sd/r1a-badid" ] && ok "R1a r1a-badid: no output folder was made" || bad "R1a r1a-badid: an output folder exists"
 # the provenance says what was built from which source in which run (SLSA v1 buildDefinition / runDetails), from GitHub's own variables
-GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/meta" || true
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/meta" || true
 python3 - "$work/sd/meta" <<'PY' 2> /dev/null && ok "001-AC2 the provenance names the source commit and the run (resolvedDependencies gitCommit, invocationId = the run URL) and the Sign workflow as builder" || bad "001-AC2 the provenance lacks the commit or the run"
 import base64, json, os, sys
 st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
@@ -1491,7 +1121,7 @@ PY
 # a copy of the fixtures' folder per refusal, changed in one way
 mkitems() { # mkitems NAME: $work/it-NAME/ holds digests.json and items.json copies
   mkdir -p "$work/it-$1" && cp "$work/digests.json" "$work/it-$1/digests.json" && cp "$work/items.json" "$work/it-$1/items.json"; }
-SGI() { echo sign --check --signer cosign --items "${3:-$work/it-$1/items.json}" --build-record "$work/${2:-build_coll}.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/it-$1/digests.json" --out "$work/sd/$1"; }
+SGI() { echo sign --check --signer cosign --items "${3:-$work/it-$1/items.json}" --build-record "$work/${2:-build_coll}.json" --policy "$work/policy.json" --digests "$work/it-$1/digests.json" --out "$work/sd/$1"; }
 mkdir -p "$work/it-none" && cp "$work/digests.json" "$work/it-none/digests.json"
 GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 expect_refuse "0707-fix4 a missing --items file is refused by sign, naming --items" "sign|--items" $(SGI none)
 [ ! -e "$work/sd/none" ] && ok "0707-fix4 none: no output folder was made" || bad "0707-fix4 none: an output folder exists"
@@ -1526,7 +1156,7 @@ by = {b["name"]: b["digest"]["sha256"] for b in st["predicate"]["runDetails"]["b
 assert by["sbom-fips"] == items["sbom-fips"].split(":", 1)[1] and by["sbom-fips"] != "8" * 64, by
 PY
 rc=0; GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign \
-  --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" \
+  --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" \
   --out "$work/sd/noitems" || rc=$?
 if [ "$rc" = 2 ] && grep -q -- '--items' "$work/err" && [ ! -e "$work/sd/noitems" ]; then
   ok "0707-fix4 sign without --items is a usage error naming --items, and writes nothing"
@@ -1541,62 +1171,49 @@ for dp, _, fs in os.walk(sys.argv[1]):
         assert b"PRIVATE KEY" not in open(os.path.join(dp, f), "rb").read(), f
 assert n >= 1, "nothing was written"
 PY
-# sign's OWN output goes straight through verify (the bundle shape and the verify shape cannot drift): the envelope Sign wrote with its
-# certificate, the policy's intermediates and the timestamp, and the Rekor entries Sign extracted from the bundle
-expect_ok     "001-AC4 the provenance Sign itself wrote verifies as stage sign with the Rekor entry Sign extracted (the two shapes agree)" verify $(V) --stage sign --record "$work/sd/ok/provenance.json" --rekor-stub "$work/sd/ok/provenance.rekor.json"
-# the dry run's POSITIVE CONTROL line, exactly (no --now: the default is the current UTC time; the stub is the one Sign extracted)
-expect_ok     "001-AC5 positive-control shape: verify --stage sign --record <Sign's output> --policy P --rekor-stub <Sign's stub>, with NO --now, is accepted" verify --stage sign --record "$work/sd/ok/provenance.json" --policy "$work/policy.json" --rekor-stub "$work/sd/ok/provenance.rekor.json"
-expect_refuse "001-AC5 Sign's own output verified WITHOUT the stub is refused 'rekor' (a control without the pinned --rekor-stub could not pass by a shortcut)" "rekor" verify --stage sign --record "$work/sd/ok/provenance.json" --policy "$work/policy.json"
-expect_ok     "002-AC1 verify with no --now uses the current time: a record generated seconds ago is accepted" verify --policy "$work/policy.json" --stage sign $(rec sign_prov) $(R)
-expect_ok     "003-AC1 and release <- sign accepts Sign's own output for exactly the digests it signed" $(ST release sign) --record "$work/sd/ok/provenance.json" --rekor-stub "$work/sd/ok/provenance.rekor.json" --digests "$work/digests.json"
-rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/bad" || rc=$?
+expect_ok     "001-AC4 the provenance Sign itself wrote verifies as stage sign (the bundle shape and the verify shape agree)" verify $(V) --stage sign --record "$work/sd/ok/provenance.json"
+expect_ok     "001-AC5 positive-control shape: verify --stage sign --record <Sign's output> --policy P is accepted" verify --stage sign --record "$work/sd/ok/provenance.json" --policy "$work/policy.json"
+expect_ok     "003-AC1 and release <- sign accepts Sign's own output for exactly the digests it signed" $(ST release sign) --record "$work/sd/ok/provenance.json" --digests "$work/digests.json"
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/bad" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(ls -A "$work/sd/bad" 2> /dev/null)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "001-AC2 a failed check writes NOTHING to the output folder and never calls cosign"; else bad "001-AC2 a failed check left output or called cosign (exit $rc)"; fi
-rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests-other.json" --out "$work/sd/bad2" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests-other.json" --out "$work/sd/bad2" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(ls -A "$work/sd/bad2" 2> /dev/null)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "001-AC2 replay: provenance is not written, and cosign is not called, for digests Build did not attest"; else bad "001-AC2 replay with other digests wrote output (exit $rc)"; fi
-rc=0; run sign --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocheck" || rc=$?
+rc=0; run sign --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocheck" || rc=$?
 if [ "$rc" = 1 ] && ! crashed && [ -z "$(ls -A "$work/sd/nocheck" 2> /dev/null)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "001-AC2 sign without --check is not a mode: it refuses, calls no cosign and writes nothing"; else bad "001-AC2 sign without --check wrote output (exit $rc)"; fi
-
 # the Sign job passes the committed TEMPLATE as --policy: sign --check makes the per-tag policy itself (rule 57) from the template,
 # the committed trust file and PEMs (defaults next to the template, overridable by flags) and the tag from GITHUB_REF
-TP() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/template.json" --trust "$work/trust.json" \
-  --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
+TP() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/template.json" \
+  --digests "$work/digests.json" --out "$work/sd/$1"; }
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 --policy the template + GITHUB_REF=refs/tags/v0.3.0: the per-tag policy is made and Build's record verifies" $(TP tpl1)
 GITHUB_REF=refs/heads/main GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode on a branch (GITHUB_REF is not a tag) is refused" "tag|github_ref" $(TP tpl2)
-GITHUB_REF=refs/tags/v0.3.1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode at v0.3.1 refuses a Build record signed at v0.3.0" "v0.3.1|v0.3.0" $(TP tpl3)
 GITHUB_REF= GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with no GITHUB_REF is refused" "tag|github_ref" $(TP tpl4)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with a trust file whose hash differs is refused" "trust" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/template.json" --trust "$work/trust-badroot.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/tpl5"
-
 
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
-TPR() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" \
-  --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$2"; }
-CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json"; }
-GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_ok "001-AC2/rc: refs/tags/v0.3.0-rc1 is a release-candidate tag (vX.Y.Z-rcN, advisor 0383): Sign makes the per-tag policy for the FULL tag and Build's record signed at that ref verifies" $(CBR build_coll_rc)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: an rc Build record presented for the final tag is refused" "v0.3.0-rc1|v0.3.0" $(CBR build_coll_rc)
-GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: a final-tag Build record presented for the rc tag is refused" "v0.3.0" $(CBR build_coll)
+TPR() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --template "$work/template.json" \
+  --digests "$work/digests.json" --out "$work/sd/$2"; }
+CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --digests "$work/digests.json"; }
 for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
-  GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll_rc tagnm)
-  expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
-  expect_refuse "002-AC2/rc: policy make --ref refs/tags/$t is refused" "tag" policy make --template "$work/template.json" --ref "refs/tags/$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
+  GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll tagnm)
+  expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --out "$work/policy-bad.json"
+  expect_refuse "002-AC2/rc: policy make --ref refs/tags/$t is refused" "tag" policy make --template "$work/template.json" --ref "refs/tags/$t" --out "$work/policy-bad.json"
 done
-rc=0; run policy make --template "$work/template.json" --tag v0.3.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-rc.json" || rc=$?
-[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" and not p.get("dry_run") and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/tags/v0.3.0-rc1") else 1)' "$work/policy-rc.json" && ok "002-AC2/rc: policy make --tag v0.3.0-rc1 carries the FULL tag and ref, and its Sign identity ends @refs/tags/v0.3.0-rc1" || bad "002-AC2/rc: policy for v0.3.0-rc1 (exit $rc)"
-rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-rc-ref.json" || rc=$?
+rc=0; run policy make --template "$work/template.json" --tag v0.3.0-rc1 --out "$work/policy-rc.json" || rc=$?
+[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" and not p.get("dry_run") and p["stages"]==["build","sign","rebuild","check","release"] and len(p["release_key"]["key_id"])==64 else 1)' "$work/policy-rc.json" && ok "002-AC2/rc: policy make --tag v0.3.0-rc1 carries the FULL tag and ref, the five stages and the release key" || bad "002-AC2/rc: policy for v0.3.0-rc1 (exit $rc)"
+rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0-rc1 --out "$work/policy-rc-ref.json" || rc=$?
 [ "$rc" = 0 ] && cmp -s "$work/policy-rc.json" "$work/policy-rc-ref.json" && ok "002-AC2/rc: policy make --ref refs/tags/v0.3.0-rc1 is the same policy as --tag v0.3.0-rc1" || bad "002-AC2/rc: --ref rc differs from --tag rc (exit $rc)"
-expect_refuse "002-AC2/rc: the final-tag policy refuses a Build record signed at the rc ref (and the reverse is the case above)" "v0.3.0-rc1|v0.3.0" verify $(V) --stage build $(rec build_coll_rc)
-expect_refuse "002-AC2/rc: the snapshot version in the rc grammar (v0.0.0-rc1) has no policy" "snapshot" policy make --template "$work/template.json" --tag v0.0.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
-GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is refused" "tag" $(TPR build_coll_tagx tagx)
-GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: a branch on a push event is refused" "tag" $(TPR build_coll_branchx branchx)
-GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 a workflow_dispatch on a tag that is not vX.Y.Z is refused (dry run is for branches)" "tag" $(TPR build_coll_tagx dispx)
+expect_refuse "002-AC2/rc: the snapshot version in the rc grammar (v0.0.0-rc1) has no policy" "snapshot" policy make --template "$work/template.json" --tag v0.0.0-rc1 --out "$work/policy-bad.json"
+GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is refused" "tag" $(TPR build_coll tagx)
+GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: a branch on a push event is refused" "tag" $(TPR build_coll branchx)
+GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 a workflow_dispatch on a tag that is not vX.Y.Z is refused (dry run is for branches)" "tag" $(TPR build_coll dispx)
 for ev in schedule pull_request pull_request_target repository_dispatch; do
-  GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=$ev expect_refuse "001-AC2 event $ev on a branch is neither production nor a dry run: refused, no record" "tag" $(TPR build_coll_branchx evb-$ev)
-  GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=$ev expect_refuse "001-AC2 event $ev on refs/pull/1/merge is refused" "tag" $(TPR build_coll_branchx evp-$ev)
+  GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=$ev expect_refuse "001-AC2 event $ev on a branch is neither production nor a dry run: refused, no record" "tag" $(TPR build_coll evb-$ev)
+  GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=$ev expect_refuse "001-AC2 event $ev on refs/pull/1/merge is refused" "tag" $(TPR build_coll evp-$ev)
 done
-GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch on refs/pull/1/merge (not a branch) is refused" "tag" $(TPR build_coll_branchx evpd)
-GITHUB_REF= GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with an EMPTY ref is refused" "tag" $(TPR build_coll_branchx evempty)
-GITHUB_REF=main GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with a ref that is not fully qualified (main) is refused" "tag" $(TPR build_coll_branchx evbare)
-GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME= expect_refuse "001-AC2 an empty event name on a branch is refused" "tag" $(TPR build_coll_branchx evnone)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC2 DRY RUN: workflow_dispatch on a branch makes the policy for that ref and signs" $(TPR build_coll_br br1)
+GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch on refs/pull/1/merge (not a branch) is refused" "tag" $(TPR build_coll evpd)
+GITHUB_REF= GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with an EMPTY ref is refused" "tag" $(TPR build_coll evempty)
+GITHUB_REF=main GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with a ref that is not fully qualified (main) is refused" "tag" $(TPR build_coll evbare)
+GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME= expect_refuse "001-AC2 an empty event name on a branch is refused" "tag" $(TPR build_coll evnone)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC2 DRY RUN: workflow_dispatch on a branch makes the policy for that ref and signs" $(TPR build_coll_dry br1)
 python3 - "$work/sd/br1" <<'PY' 2> /dev/null && ok "001-AC2 DRY RUN: the provenance says dryRun true and DRY-RUN sits beside it" || bad "001-AC2 DRY RUN: marker or dryRun flag missing"
 import base64, json, os, sys
 d = sys.argv[1]; assert os.path.exists(os.path.join(d, "DRY-RUN"))
@@ -1611,106 +1228,61 @@ import base64, json, os, sys
 st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
 assert not st["predicate"].get("dryRun"), st["predicate"]
 PY
-rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-br.json" || rc=$?
-[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/heads/hostile-proof/x") else 1)' "$work/policy-br.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy whose identities end @ that ref" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
+rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --out "$work/policy-br.json" || rc=$?
+[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["ref"]=="refs/heads/hostile-proof/x" and p["tag"]=="" else 1)' "$work/policy-br.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy for that ref and no tag" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
 for r in refs/tags/x refs/pull/1/merge; do
-  expect_refuse "002-AC2 policy make --ref $r is refused" "tag" policy make --template "$work/template.json" --ref "$r" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
+  expect_refuse "002-AC2 policy make --ref $r is refused" "tag" policy make --template "$work/template.json" --ref "$r" --out "$work/policy-bad.json"
 done
-rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-reftag.json" || rc=$?
+rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --out "$work/policy-reftag.json" || rc=$?
 [ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/policy-reftag.json" && ok "002-AC2 policy make --ref refs/tags/v0.3.0 is the same policy as --tag v0.3.0" || bad "002-AC2 --ref on the exact tag differs from --tag (exit $rc)"
-expect_ok     "002-AC2 the dry-run policy accepts Sign's record at the dry-run ref (the positive control passes)" verify --policy "$work/policy-br.json" --now "$NOW" --stage sign $(rec sign_br) $(R rekor-br.json)
-expect_refuse "002-AC2 RELEASE'S TAG-PINNED POLICY REFUSES a Sign record whose SAN ref is a branch: a dry run can never be accepted" "refs/heads/hostile-proof/x" verify $(V) --stage sign $(rec sign_br) $(R rekor-br.json)
-expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3.0) is refused by the tag policy (the ref is compared whole, not by its last segment)" "refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_brtag) $(R rekor-brtag.json)
-expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel) $(R rekor-brtag.json)
-expect_refuse "002-AC2 round 5 B2a: right SAN but the calling workflow ref is the BRANCH refs/heads/v0.3.0 is refused" "refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_cfg_brtag) $(R rekor-brtag.json)
-expect_refuse "002-AC2 round 5 B2b: a Sign record whose predicate says dryRun true is refused under the TAG policy even though its SAN ref is the tag" "dry" verify $(V) --stage sign $(rec sign_flag_tag) $(R rekor-flag.json)
-expect_refuse "003-AC1 round 5 B2b: release <- sign with a dryRun-true record at the tag is refused: names sign and dry" "sign|dry" $(ST release sign) $(rec sign_flag_tag) $(R rekor-flag.json) --digests "$work/digests.json"
-expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run POLICY (release <- sign, a dry record): names dry" "dry" stage-start --stage release --previous sign --policy "$work/policy-br.json" --now "$NOW" $(rec sign_br) $(R rekor-br.json) --digests "$work/digests.json"
-expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run policy for every stage (rebuild <- build)" "dry" stage-start --stage rebuild --previous build --policy "$work/policy-br.json" --now "$NOW" $(rec build_coll_br) --digests "$work/digests.json"
-expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage build is refused)" "dry" verify --policy "$work/policy-br.json" --now "$NOW" --stage build $(rec build_coll_br)
-expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage release is refused)" "dry" verify --policy "$work/policy-br.json" --now "$NOW" --stage release $(rec release_policy) $(R)
-expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names sign and the branch ref" "sign|refs/heads/hostile-proof/x" $(ST release sign) $(rec sign_br) $(R rekor-br.json) --digests "$work/digests.json"
-# template mode with the DEFAULT locations (no override flags) in a copy of the policy folder, and a drifted default PEM
-mkdir -p "$work/polcopy"; cp "$work/template.json" "$work/polcopy/release-policy.template.json"; cp "$work/trust.json" "$work/polcopy/sigstore-trust.json"
-cp "$work/fulcio-chain.pem" "$work/polcopy/fulcio-chain.pem"; cp "$work/tsa-chain.pem" "$work/polcopy/tsa-chain.pem"; cp "$work/rekor.pub" "$work/polcopy/rekor.pub"; cp "$work/cosign-signing-config.json" "$work/polcopy/cosign-signing-config.json"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 template mode with NO override flags uses the committed defaults next to the template (the production invocation)" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default1"
-cp "$work/othertsaroot.pem" "$work/polcopy/tsa-chain.pem"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default PEM that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default2"
-cp "$work/tsa-chain.pem" "$work/polcopy/tsa-chain.pem"; cp "$work/otherroot.pem" "$work/polcopy/fulcio-chain.pem"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Fulcio chain that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default3"
-cp "$work/fulcio-chain.pem" "$work/polcopy/fulcio-chain.pem"; cp "$work/rekor2.pub" "$work/polcopy/rekor.pub"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Rekor key that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default4"
-cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 with all three default PEMs restored the production invocation succeeds again (the refusals were about the drift)" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default5"
-# ---- round 7 (Opus B-NEW a): policy make with NO file flags (the dry run's and Release's pinned lines), defaults next to the template ----
-rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-made.json" || rc=$?
-[ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/polcopy-made.json" && ok "002-AC2 policy make --tag with NO file flags uses the defaults next to the template and equals the policy made with explicit files (Release's pinned line)" || bad "002-AC2 policy make --tag with no file flags (exit $rc)"
-rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --ref refs/tags/v0.3.0 --out "$work/polcopy-made-ref.json" || rc=$?
-[ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/polcopy-made-ref.json" && ok "002-AC2 policy make --ref refs/tags/v0.3.0 with NO file flags equals the --tag policy" || bad "002-AC2 policy make --ref on the tag with no file flags (exit $rc)"
-rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --ref refs/heads/hostile-proof/x --out "$work/polcopy-made-br.json" || rc=$?
-[ "$rc" = 0 ] && cmp -s "$work/policy-br.json" "$work/polcopy-made-br.json" && ok "002-AC2 policy make --ref <branch> with NO file flags equals the dry-run policy (the dry run's pinned line)" || bad "002-AC2 policy make --ref <branch> with no file flags (exit $rc)"
-for c in tsa-chain:othertsaroot:"TSA" fulcio-chain:otherroot:"Fulcio"; do
-  f=${c%%:*}; r=${c#*:}; r=${r%%:*}; cp "$work/polcopy/$f.pem" "$work/$f.keep"; cp "$work/$r.pem" "$work/polcopy/$f.pem"
-  expect_refuse "002-AC2 policy make --tag with a drifted default ${c##*:} chain and no file flags is refused" "trust" policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-drift.json"
-  cp "$work/$f.keep" "$work/polcopy/$f.pem"
+expect_ok     "002-AC2 the dry-run policy accepts Sign's record at the dry-run ref (the positive control passes)" verify --policy "$work/policy-br.json" --stage sign $(rec sign_br)
+expect_refuse "002-AC2 RELEASE'S TAG-PINNED POLICY REFUSES a Sign record whose SAN ref is a branch: a dry run can never be accepted" "refs/heads/hostile-proof/x" verify $(V) --stage sign $(rec sign_br)
+expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3.0) is refused by the tag policy (the ref is compared whole, not by its last segment)" "refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_brtag)
+expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel)
+expect_refuse "Q2b 002-AC2 round 5 B2a: the run's ref is the tag but the calling workflow's ref is the BRANCH refs/heads/v0.3.0: refused" "workflow|refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_cfg_brtag)
+expect_refuse "Q2b a provenance with no calling workflow is refused (the field the policy compares must be there)" "workflow" verify $(V) --stage sign $(rec sign_nowf)
+for _k in evil cachex prerelease xrelease otherref nosite; do
+  expect_refuse "Q2b a provenance whose calling workflow is $_k (not exactly release.yml of this repository at the tag) is refused" "workflow" verify $(V) --stage sign $(rec sign_wf_$_k)
 done
-cp "$work/rekor2.pub" "$work/polcopy/rekor.pub"
-expect_refuse "002-AC2 policy make --tag with a drifted default Rekor key and no file flags is refused" "trust" policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-drift.json"
-cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
-expect_refuse "002-AC2 policy make --ref <branch> given a trust file whose hashes differ from the committed PEMs is refused too (the dry run trusts nothing the committed hashes do not)" "trust" policy make --template "$work/polcopy/release-policy.template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust-badtsa.json" --out "$work/polcopy-drift.json"
-# ---- round 7 (Opus B-NEW b, Sonnet findings 1-3): the dry run's pinned hostile lines can reach their causes ----------------------------
-# (1) verify --stage sign with NO --rekor-stub: identity / build config is checked BEFORE Rekor, so a hostile record is refused for the
-#     attack, never for the missing stub ("!rekor" is what makes an implementation that checks Rekor first fail here)
-expect_refuse "001-AC5 hostile row shape (no stub): a second workflow that calls stage-sign.yml is refused for its Build Config, not for Rekor" "other-caller.yml|!rekor" verify $(V) --stage sign $(rec sign_othercaller)
-expect_refuse "001-AC5 hostile row shape (no stub): provenance signed by Build's FORMER identity (stage-build.yml) is refused for the identity, not for Rekor" "stage-build.yml|!rekor" verify $(V) --stage sign $(rec oldbuild_as_sign)
-expect_refuse "001-AC5 hostile row shape (no stub): a certificate with no Build Config URI is refused for that, not for Rekor" "build config|!rekor" verify $(V) --stage sign $(rec sign_noconfig)
-expect_refuse "001-AC5 hostile row shape under the DRY policy (no stub): Build's FORMER identity (stage-build.yml) is refused for the identity, not for Rekor" "stage-build.yml|!rekor" verify --policy "$work/policy-br.json" --now "$NOW" --stage sign $(rec oldbuild_as_sign)
-# (2) sign --check under a made DRY policy (the hand_sign_code attempt): refused for digest or format, never for "dry"; cosign never called
-DSC() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --policy "$work/policy-br.json" --now "$NOW" --digests "$work/$2.json" --out "$work/sd/$3"; }
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_br digests-other dsc1)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_br_badval digests-badval dsc2)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_br digests dsc3)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 sign --check with no --now (the Sign job passes none) uses the current time" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --template "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --digests "$work/digests.json" --out "$work/sd/nonow"
-python3 - "$root" "$OPENSSL" 2> /dev/null <<'PY' && ok "002-AC2 the committed fulcio-chain.pem, tsa-chain.pem and rekor.pub hash to the values in sigstore-trust.json" || bad "002-AC2 committed PEMs missing, or their sha256(DER) differs from sigstore-trust.json"
-import hashlib, json, re, subprocess, sys
-root, ssl = sys.argv[1], sys.argv[2]
-pol = root + "/.github/policy/"; tr = json.load(open(pol + "sigstore-trust.json"))
-def first_cert_der(path):
-    m = re.search(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", open(path).read(), re.S)
-    return subprocess.run([ssl, "x509", "-outform", "DER"], input=m.group(0).encode(), capture_output=True, check=True).stdout
-assert hashlib.sha256(first_cert_der(pol + "fulcio-chain.pem")).hexdigest() == tr["fulcio_root_sha256"]
-assert hashlib.sha256(first_cert_der(pol + "tsa-chain.pem")).hexdigest() == tr["tsa_root_sha256"]
-der = subprocess.run([ssl, "pkey", "-pubin", "-in", pol + "rekor.pub", "-outform", "DER"], capture_output=True, check=True).stdout
-assert hashlib.sha256(der).hexdigest() == tr["rekor_sha256"]
-PY
+expect_refuse "Q3 a provenance with no externalParameters.ref is refused (with no certificate the ref is what ties it to the tag)" "ref" verify $(V) --stage sign $(rec sign_noref)
+# the committed key manifest does not exist until the owner makes the offline root key: that absence is ONE fail-closed case, not a failure of every case that makes a policy
+expect_refuse "P1 with the committed policy directory (no release-key-root.pub yet) policy make fails closed at the manifest" "manifest|release-key-root.pub" policy make --template "$root/.github/policy/release-policy.template.json" --tag v0.3.0 --out "$work/policy-committed.json"
+# the building jobs' local records (*.local.json, the throwaway-key form) are never read as a record, and must not sit beside a trusted one
+mkdir -p "$work/ldir" "$work/ldir2"
+cp "$work/build_coll.json" "$work/ldir/build-collection.json"; cp "$work/build_coll.json" "$work/ldir/apk-collection.local.json"
+cp "$work/build_coll.json" "$work/ldir2/x.local.json"
+expect_refuse "WM a directory handed to a verifier that holds a *.local.json is refused (an unsigned local record must never sit beside a trusted one)" "local.json" verify $(V) --stage build --record "$work/ldir/build-collection.json"
+expect_refuse "WM a record that is itself named *.local.json is refused, signed or not" "local.json" verify $(V) --stage build --record "$work/ldir2/x.local.json"
+expect_refuse "WM stage-start refuses a directory with a *.local.json too" "local.json" $(ST rebuild build) --record "$work/ldir/build-collection.json" --digests "$work/digests.json"
+rm -rf "$work/ldir" "$work/ldir2"
+expect_refuse "002-AC2 round 5 B2b: a Sign record whose predicate says dryRun true is refused under the TAG policy even though its SAN ref is the tag" "dry" verify $(V) --stage sign $(rec sign_flag_tag)
+expect_refuse "003-AC1 round 5 B2b: release <- sign with a dryRun-true record at the tag is refused: names sign and dry" "sign|dry" $(ST release sign) $(rec sign_flag_tag) --digests "$work/digests.json"
+expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run POLICY (release <- sign, a dry record): names dry" "dry" stage-start --stage release --previous sign --policy "$work/policy-br.json" $(rec sign_br) --digests "$work/digests.json"
+expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run policy for every stage (rebuild <- build)" "dry" stage-start --stage rebuild --previous build --policy "$work/policy-br.json" $(rec build_coll) --digests "$work/digests.json"
+expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage build is refused)" "dry" verify --policy "$work/policy-br.json" --stage build $(rec build_coll)
+expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage release is refused)" "dry" verify --policy "$work/policy-br.json" --stage release $(rec release_policy)
+expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names sign and the branch ref" "sign|refs/heads/hostile-proof/x" $(ST release sign) $(rec sign_br) --digests "$work/digests.json"
+DSC() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --policy "$work/policy-br.json" --digests "$work/$2.json" --out "$work/sd/$3"; }
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_dry digests-other dsc1)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_badval_dry digests-badval dsc2)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_dry digests dsc3)
 
 # ---- REQ-CHAIN-003-AC1: each stage verifies the one before it, with the cause named ------------------------------------
 expect_ok     "003-AC1 rebuild <- build: a valid record about exactly the given digests lets the stage start" $(ST rebuild build) $(rec build_coll) --digests "$work/digests.json"
 expect_ok     "003-AC1 check <- build: the same for Check" $(ST check build) $(rec build_coll) --digests "$work/digests.json"
-expect_ok     "003-AC1 release <- sign: provenance with its Rekor entry lets Release start" $(ST release sign) $(rec sign_prov) $(R) --digests "$work/digests.json"
-expect_refuse "003-AC1 release <- sign with a SUPERSET of the provenance's subjects is refused" "sign|digest" $(ST release sign) $(rec sign_prov) $(R) --digests "$work/digests-extra.json"
-expect_refuse "003-AC1 release <- sign with a SUBSET of the provenance's subjects is refused" "sign|digest" $(ST release sign) $(rec sign_prov) $(R) --digests "$work/digests-subset.json"
+expect_ok     "003-AC1 release <- sign: provenance with its Rekor entry lets Release start" $(ST release sign) $(rec sign_prov) --digests "$work/digests.json"
+expect_refuse "003-AC1 release <- sign with a SUPERSET of the provenance's subjects is refused" "sign|digest" $(ST release sign) $(rec sign_prov) --digests "$work/digests-extra.json"
+expect_refuse "003-AC1 release <- sign with a SUBSET of the provenance's subjects is refused" "sign|digest" $(ST release sign) $(rec sign_prov) --digests "$work/digests-subset.json"
 expect_ok     "003-AC1 release <- rebuild" $(ST release rebuild) $(rec rebuild_coll) --digests "$work/digests.json"
 expect_ok     "003-AC1 release <- check" $(ST release check) $(rec check_coll) --digests "$work/digests.json"
 expect_refuse "003-AC1 other digests: names build and the digest cause" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-other.json"
 expect_refuse "003-AC1 a SUBSET of the record's digests is refused" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-subset.json"
 expect_refuse "003-AC1 a SUPERSET of the record's digests is refused" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-extra.json"
 expect_refuse "003-AC1 a record with more subjects than the given list is refused" "build|digest" $(ST rebuild build) $(rec build_coll_plus) --digests "$work/digests.json"
-expect_refuse "003-AC1 wrong signer stage (a record under Check's former identity offered as Build's): names build and identity" "build|stage-verify.yml" $(ST rebuild build) $(rec check_coll_oldb) --digests "$work/digests.json"
 expect_refuse "003-AC1 an unsigned record: names build and signature" "build|signature" $(ST rebuild build) $(rec build_coll_unsigned) --digests "$work/digests.json"
 expect_refuse "003-AC1 tamper through stage-start: payload changed after signing" "build|signature" $(ST rebuild build) $(rec build_coll_tampered) --digests "$work/digests.json"
-expect_refuse "003-AC1 wrong tag through stage-start" "build|v0.3.1" $(ST rebuild build) $(rec build_coll_othertag) --digests "$work/digests.json"
-expect_refuse "003-AC1 no timestamp through stage-start" "build|timestamp" $(ST rebuild build) $(rec build_coll_nostamp) --digests "$work/digests.json"
 expect_refuse "003-AC1 no record: names build and missing" "build|missing" $(ST rebuild build) --record "$work/does-not-exist.json" --digests "$work/digests.json"
-expect_refuse "003-AC1 release <- sign without a Rekor entry: names sign and rekor" "sign|rekor" $(ST release sign) $(rec sign_prov) --digests "$work/digests.json"
-expect_refuse "003-AC1 release <- sign with forged provenance signed by Build's FORMER identity: names sign and the identity found" "sign|stage-build.yml" $(ST release sign) $(rec oldbuild_as_sign) $(R) --digests "$work/digests.json"
-expect_refuse "002-AC2 rebuild's record from a calling workflow that is not release.yml is refused: names rebuild and scan.yml" "rebuild|scan.yml" $(ST release rebuild) $(rec rebuild_cfg) --digests "$work/digests.json"
-expect_refuse "002-AC2 check's record from a calling workflow that is not release.yml is refused: names check and scan.yml" "check|scan.yml" $(ST release check) $(rec check_cfg) --digests "$work/digests.json"
-expect_refuse "002-AC2 release's policy from a calling workflow that is not release.yml is refused" "release|scan.yml" verify $(V) --stage release $(rec release_policy_cfg) $(R)
-expect_refuse "002-AC2 rebuild's record under another OIDC issuer is refused: names rebuild and issuer" "rebuild|issuer" $(ST release rebuild) $(rec rebuild_issuer) --digests "$work/digests.json"
-expect_refuse "002-AC2 check's record under another OIDC issuer is refused: names check and issuer" "check|issuer" $(ST release check) $(rec check_issuer) --digests "$work/digests.json"
-expect_refuse "002-AC2 release's policy under another OIDC issuer is refused" "release|issuer" verify $(V) --stage release $(rec release_policy_issuer) $(R)
-expect_refuse "003-AC1 replay: release <- sign with the provenance of OLD digests is refused as a digest mismatch" "sign|digest" $(ST release sign) $(rec sign_otherdigests) $(R rekor-other.json) --digests "$work/digests.json"
+expect_refuse "003-AC1 replay: release <- sign with the provenance of OLD digests is refused as a digest mismatch" "sign|digest" $(ST release sign) $(rec sign_otherdigests) --digests "$work/digests.json"
 expect_refuse "003-AC1 release <- check with other digests" "check|digest" $(ST release check) $(rec check_coll) --digests "$work/digests-other.json"
 expect_refuse "003-AC1 release <- rebuild whose digests differ from Build's: names rebuild" "rebuild|digest" $(ST release rebuild) $(rec rebuild_coll_other) --digests "$work/digests.json"
 
@@ -1794,42 +1366,23 @@ assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", x) for x in a["actions"]), a["a
 assert all(re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", x) for x in a["images"]), a["images"]
 PY
 
-# ---- step-8 round 1: the findings of the adversarial audit, each a case that fails on the old code ------------------------------
-# B-1 (Opus): the chain is checked against the policy root ONLY. An attacker CA that the environment's trust store knows (SSL_CERT_FILE,
-# SSL_CERT_DIR) must not make a forged record chain: the same record is refused with and without it.
-mkdir -p "$work/certdir"; cp "$work/otherroot.pem" "$work/certdir/attacker.pem"
-ln -sf attacker.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/otherroot.pem").0"
-cp "$work/othertsaroot.pem" "$work/certdir/attacker-tsa.pem"   # the attacker's TIMESTAMP root is trusted by the store too, so the TSA path is exercised
-ln -sf attacker-tsa.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/othertsaroot.pem").0"
-expect_refuse "B-1 a record that chains only to an attacker root is refused (no trust store)" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
-# rc-2 R8 (Fable R8): the certificate chain is verified BEFORE any field of the certificate is read; a record that is wrong in both ways (Check's identity, issued under the attacker root) is refused for its chain, not for the identity parsed from an unverified certificate
-expect_refuse "R8 a record with the wrong identity AND an attacker chain is refused for the chain first (the identity of an unverified certificate is not judged)" "root|!identity" verify $(V) --stage sign $(rec sibling_wrongroot) $(R)
-SSL_CERT_FILE="$work/otherroot.pem" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_FILE trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
-SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_DIR trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
-SSL_CERT_FILE="$work/othertsaroot.pem" SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 a stamp from an attacker timestamp authority is STILL refused when the trust store knows its root" "timestamp" verify $(V) --stage sign $(rec sign_othertsa) $(R)
-SSL_CERT_FILE="$work/otherroot.pem" SSL_CERT_DIR="$work/certdir" expect_ok "B-1 control: the genuine record is still accepted with the attacker root in the trust store" verify $(V) --stage sign $(rec sign_prov) $(R)
-# the real shapes (Opus SF-2, Sonnet blocker 1)
-expect_refuse "SF-2 a hashedrekord entry (the kind a message signature gets) is refused although the log signed it: kind dsse is required" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-hashedrekord.json)
-expect_refuse "SF-2 a validly signed entry whose integrated time is long after the certificate expired is refused" "rekor|integrated" verify $(V) --stage sign $(rec sign_prov) $(R rekor-latetime.json)
 # N-1: strict records
-expect_refuse "N-1 a record with a repeated JSON key is refused" "envelope|duplicate" verify $(V) --stage sign $(rec sign_dupkey) $(R)
-expect_refuse "N-1 a record with two signatures is refused: exactly one is judged" "exactly one signature" verify $(V) --stage sign $(rec sign_2sig) $(R)
-# N-5: bytes that are not UTF-8 in the certificate are a refusal, not a traceback
-expect_refuse "N-5 a certificate whose SAN is not valid UTF-8 is refused with a 'refused at' line" "malformed|identity" verify $(V) --stage sign $(rec sign_utf8) $(R)
+expect_refuse "N-1 a record with a repeated JSON key is refused" "envelope|duplicate" verify $(V) --stage sign $(rec sign_dupkey)
+expect_refuse "N-1 a record with two signatures is refused: exactly one is judged" "exactly one signature" verify $(V) --stage sign $(rec sign_2sig)
 # N-2: a stage starts only from the records it may start from
 expect_refuse "N-2 sign cannot start from rebuild's record" "stage" $(ST sign rebuild) $(rec rebuild_coll) --digests "$work/digests.json"
-expect_refuse "N-2 rebuild cannot start from sign's record" "stage" $(ST rebuild sign) $(rec sign_prov) $(R) --digests "$work/digests.json"
+expect_refuse "N-2 rebuild cannot start from sign's record" "stage" $(ST rebuild sign) $(rec sign_prov) --digests "$work/digests.json"
 expect_refuse "N-2 check cannot start from check's own record" "stage" $(ST check check) $(rec check_coll) --digests "$work/digests.json"
-expect_refuse "N-2 nothing starts from the release policy (release is nobody's predecessor)" "stage" $(ST release release) $(rec release_policy) $(R) --digests "$work/digests.json"
+expect_refuse "N-2 nothing starts from the release policy (release is nobody's predecessor)" "stage" $(ST release release) $(rec release_policy) --digests "$work/digests.json"
 expect_ok     "N-2 control: rebuild <- build, check <- build and sign <- build are the pairs" $(ST rebuild build) $(rec build_coll) --digests "$work/digests.json"
 # Sonnet SF3: a malformed statement is a refusal with a name, not a traceback
 expect_refuse "SF3 a collection whose subject list holds non-subjects is refused with a 'refused at' line" "subjects|malformed" $(ST rebuild build) $(rec build_badsubj) --digests "$work/digests.json"
 # check-build-record: Sign's check without the signature, no cosign in sight
-rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" || rc=$?
+rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" || rc=$?
 if [ "$rc" = 0 ] && [ ! -s "$work/cosign-argv.log" ]; then ok "check-build-record accepts Build's genuine record and the attested digests and calls no tool"; else bad "check-build-record on a genuine record (exit $rc)"; fi
-expect_refuse "check-build-record refuses a digest list Build did not attest: names digest" "digest" check-build-record --digests "$work/digests-other.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW"
-expect_refuse "check-build-record refuses attested digests of the wrong format: names format" "format" check-build-record --digests "$work/digests-upper.json" --build-record "$work/build_coll_upper.json" --policy "$work/policy.json" --now "$NOW"
-expect_refuse "check-build-record refuses a tampered Build record: names the signature" "signature" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --now "$NOW"
+expect_refuse "check-build-record refuses a digest list Build did not attest: names digest" "digest" check-build-record --digests "$work/digests-other.json" --build-record "$work/build_coll.json" --policy "$work/policy.json"
+expect_refuse "check-build-record refuses attested digests of the wrong format: names format" "format" check-build-record --digests "$work/digests-upper.json" --build-record "$work/build_coll_upper.json" --policy "$work/policy.json"
+expect_refuse "check-build-record refuses a tampered Build record: names the signature" "signature" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json"
 # SF-1: the follower reads every listed local action, whatever its file name or place
 mkdir -p "$work/tree/.github/actions/yaml" "$work/tree/tools/y"
 printf 'name: y\nruns:\n  using: composite\n  steps:\n    - uses: evil/act@main\n' > "$work/tree/.github/actions/yaml/action.yaml"
@@ -1842,57 +1395,23 @@ expect_refuse "SF-1 a listed local action in an action.yaml file is followed: th
 expect_refuse "SF-1 a listed local action outside .github/actions is followed too" "evil/act" actions "$work/w_sf1tools.yml" --allowed "$work/allowed-sf1.json" --root "$work/tree"
 expect_refuse "SF-1 a listed local action with no action.yml or action.yaml under --root is refused" "none" actions "$work/w_sf1none.yml" --allowed "$work/allowed-sf1.json" --root "$work/tree"
 expect_refuse "SF-1 a listed local action without --root cannot be read, so it is refused" "root" actions "$work/w_sf1yaml.yml" --allowed "$work/allowed-sf1.json"
+# ---- the Witness move (owner Oct 22) under one key: Build's, Rebuild's and Check's records are bound to their stage by type and collection name
+expect_ok     "WM a Build record signed by the release key is accepted" verify $(V) --stage build $(rec build_coll)
+expect_ok     "WM a Rebuild record signed by the release key is accepted" verify $(V) --stage rebuild $(rec rebuild_coll)
+expect_ok     "WM a Check record (collection scanners) signed by the release key is accepted" verify $(V) --stage check $(rec check_coll)
+expect_refuse "WM a Build record (collection build) presented as Check's is refused by its collection name, whoever signed it" "collection name" verify $(V) --stage check $(rec build_coll)
+expect_refuse "WM a Rebuild record (collection rebuild) presented as Check's is refused by its collection name" "collection name" verify $(V) --stage check $(rec rebuild_coll)
 
-# ---- step-8 round 2: NB-1 one certificate, one DER; N-8 UTF-8 only; S-1 composite actions under .github/workflows -------------------
-for v in junkb64 second trailing leadtext trailtext attack; do
-  for s in build rebuild check; do
-    expect_refuse "NB-1 $s record whose certificate field is '$v' (not exactly one PEM block) is refused, whatever its identity" "certificate|!digest|!rekor" verify $(V) --stage $s $(rec ${s}_coll_c$v) $(R)
-  done
-  expect_refuse "NB-1 $v through stage-start (release <- check) is refused" "certificate|!digest" $(ST release check) $(rec check_coll_c$v) --digests "$work/digests.json"
-  expect_refuse "NB-1 $v through check-build-record (the check sign --check runs before cosign) is refused, cosign not called" "certificate|!digest" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll_c$v.json" --policy "$work/policy.json" --now "$NOW"
-  expect_refuse "NB-1 $v on the provenance (stage sign) is refused before any Rekor lookup" "certificate|!rekor" verify $(V) --stage sign $(rec sign_prov_c$v) $(R)
-done
-expect_refuse "NB-1 the ATTACK: a genuine Build-identity record whose field is [self-made check-identity certificate, genuine block] is refused for stage check" "certificate" verify $(V) --stage check $(rec check_attack) $(R)
-expect_refuse "NB-1 the same attack through stage-start (release <- check)" "certificate" $(ST release check) $(rec check_attack) --digests "$work/digests.json"
-expect_refuse "NB-1 the attack in its bare form (base64 of a self-made DER, a newline, then the genuine PEM) is refused for stage check" "certificate" verify $(V) --stage check $(rec check_attack_b64) $(R)
-expect_refuse "NB-1 the bare-form attack through stage-start (release <- check)" "certificate" $(ST release check) $(rec check_attack_b64) --digests "$work/digests.json"
-expect_refuse "NB-1 control: the same genuine key with its true certificate is refused for stage release by IDENTITY (stage-sign.yml is not the Release identity), so the attack above was the only way past" "stage-sign.yml" verify $(V) --stage release $(rec check_as_build) $(R)
-expect_refuse "NB-1 a Rekor entry whose verifier is a genuine PEM plus junk is refused (the log's certificate is compared as one DER)" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-verifierjunk.json)
-expect_ok     "NB-1 control: the genuine records are accepted (one PEM block, whitespace around it allowed)" verify $(V) --stage build $(rec build_coll) $(R)
-# ---- the Witness move (owner Oct 22; verifier leg): Build's and Rebuild's records are trusted only under stage-sign.yml's identity -----------------------------
-expect_ok     "WM a Build record signed under stage-sign.yml (caller release.yml) is accepted" verify $(V) --stage build $(rec build_coll) $(R)
-expect_ok     "WM a Rebuild record signed under stage-sign.yml (caller release.yml) is accepted" verify $(V) --stage rebuild $(rec rebuild_coll) $(R)
-expect_refuse "WM a Build record under the FORMER identity stage-build.yml is refused: the identity found is named and stage-sign.yml is wanted" "stage-build.yml|stage-sign.yml" verify $(V) --stage build $(rec build_coll_old) $(R)
-expect_refuse "WM a Rebuild record under the FORMER identity stage-reproducibility.yml is refused: the identity found is named and stage-sign.yml is wanted" "stage-reproducibility.yml|stage-sign.yml" verify $(V) --stage rebuild $(rec rebuild_coll_old) $(R)
-expect_refuse "WM a Build record signed only by the building job's throwaway key (a key id, no certificate) is refused with the plain reason" "throwaway key" verify $(V) --stage build $(rec build_coll_throwaway) $(R)
-expect_refuse "WM a Rebuild record signed only by the throwaway key is refused with the plain reason" "throwaway key" verify $(V) --stage rebuild $(rec rebuild_coll_throwaway) $(R)
-expect_refuse "WM the throwaway-only form is refused at the other stages too, with the same plain reason" "throwaway key" verify $(V) --stage check $(rec check_coll_throwaway) $(R)
-expect_refuse "WM a Build record (collection build) presented as Check's is refused by its collection name now that the identities are one" "collection name" verify $(V) --stage check $(rec build_coll) $(R)
-expect_refuse "WM a Rebuild record (collection rebuild) presented as Check's is refused by its collection name" "collection name" verify $(V) --stage check $(rec rebuild_coll) $(R)
-expect_refuse "WM a Check record under the former stage-verify.yml identity is refused: only stage-sign.yml signs Check's records" "stage-verify.yml" verify $(V) --stage check $(rec check_coll_old) $(R)
-expect_ok     "WM a Check record signed by stage-sign.yml (the identity that signs Check's records) is accepted" verify $(V) --stage check $(rec check_coll) $(R)
-expect_ok     "WM a key id alongside a real certificate is not the throwaway form (the certificate decides)" verify $(V) --stage build $(rec build_coll_keyid_and_cert) $(R)
-expect_refuse "WM stage-start rebuild <- build refuses a throwaway-only Build record" "throwaway key" $(ST rebuild build) $(rec build_coll_throwaway) $(R) --digests "$work/digests.json"
-expect_refuse "WM stage-start check <- build refuses a Build record under the former identity" "stage-build.yml" $(ST check build) $(rec build_coll_old) $(R) --digests "$work/digests.json"
-mkdir -p "$work/ldir" "$work/ldir2"
-cp "$work/build_coll.json" "$work/ldir/build-collection.json"; cp "$work/build_coll.json" "$work/ldir/apk-collection.local.json"
-cp "$work/build_coll.json" "$work/ldir2/x.local.json"
-expect_refuse "WM a directory handed to a verifier that holds a *.local.json is refused (an unsigned local record must never sit beside a trusted one)" "local.json" verify $(V) --stage build --record "$work/ldir/build-collection.json" $(R)
-expect_refuse "WM a record that is itself named *.local.json is refused, signed or not" "local.json" verify $(V) --stage build --record "$work/ldir2/x.local.json" $(R)
-expect_refuse "WM stage-start refuses a directory with a *.local.json too" "local.json" $(ST rebuild build) --record "$work/ldir/build-collection.json" $(R) --digests "$work/digests.json"
-rm -rf "$work/ldir" "$work/ldir2"
-# N-8: every JSON reader is UTF-8 only; UTF-16 spellings are refused, not guessed
-expect_refuse "N-8 a record written in UTF-16 is refused" "envelope" verify $(V) --stage build --record "$work/build_coll_u16.json" $(R)
-expect_refuse "N-8 a Rekor entries file in UTF-16 is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) --rekor-stub "$work/rekor-u16.json"
+expect_refuse "N-8 a record written in UTF-16 is refused" "envelope" verify $(V) --stage build --record "$work/build_coll_u16.json"
 expect_refuse "N-8 a digest file in UTF-16 is refused by stage-start" "digest" $(ST release check) $(rec check_coll) --digests "$work/digests-u16.json"
-expect_refuse "N-8 a digest file in UTF-16 is refused by check-build-record" "digest" check-build-record --digests "$work/digests-u16.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW"
+expect_refuse "N-8 a digest file in UTF-16 is refused by check-build-record" "digest" check-build-record --digests "$work/digests-u16.json" --build-record "$work/build_coll.json" --policy "$work/policy.json"
 iconv -f UTF-8 -t UTF-16 "$work/policy.json" > "$work/policy-u16.json"
-expect_refuse "N-8 a policy file in UTF-16 is refused" "policy" verify --policy "$work/policy-u16.json" --now "$NOW" --stage build $(rec build_coll)
+expect_refuse "N-8 a policy file in UTF-16 is refused" "policy" verify --policy "$work/policy-u16.json" --stage build $(rec build_coll)
 # N-7: --template (the committed template, the policy is made here) and --policy (a finished policy) are two inputs, exactly one is given
-expect_refuse "N-7 a template given as --policy is refused: it is not a finished policy" "template|policy" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --policy "$work/template.json" --now "$NOW"
-rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --template "$work/template.json" --policy "$work/policy.json" --now "$NOW" || rc=$?
+expect_refuse "N-7 a template given as --policy is refused: it is not a finished policy" "template|policy" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --policy "$work/template.json"
+rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --template "$work/template.json" --policy "$work/policy.json" || rc=$?
 if [ "$rc" = 2 ]; then ok "N-7 --template and --policy together are a usage error (exactly one)"; else bad "N-7 --template with --policy must exit 2, got $rc"; fi
-rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --now "$NOW" || rc=$?
+rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" || rc=$?
 if [ "$rc" = 2 ]; then ok "N-7 neither --template nor --policy is a usage error"; else bad "N-7 neither flag must exit 2, got $rc"; fi
 # S-1: a composite action may be stored under .github/workflows/; only a reference that names a .yml/.yaml FILE (a reusable workflow) is judged as a workflow
 mkdir -p "$work/tree/.github/workflows/acts/thing" "$work/tree/.github/workflows/acts/ok"
@@ -1905,33 +1424,6 @@ printf 'name: t\non: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/l
 expect_refuse "S-1 a composite action stored under .github/workflows/ is followed: the unpinned action inside it is rejected" "evil/act" actions "$work/w_s1bad.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
 expect_ok     "S-1 control: a pinned composite action under .github/workflows/ is accepted" actions "$work/w_s1ok.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
 expect_ok     "S-1 control: a listed reusable workflow file (.yml) is not opened as an action directory" actions "$work/w_s1wf.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
-
-# ---- step-8 round 3: B-1 the time of a stamp comes from the TSA-signed token only; the stamp form is bound to the record type -----------------
-# (a) a genuine stamp taken AFTER the certificate expired, whose response got a statusString `x\nTime stamp: <date inside the window>`: the
-#     status section is outside the TSA's signature, so the response still verifies; the old reader took the time from the first
-#     `Time stamp:` line of the whole text and backdated the stamp into the window.
-expect_refuse "B-1 control: the genuine post-expiry stamp is refused as outside the certificate window" "outside|validity" verify $(V) --stage sign $(rec sign_stampafter) $(R)
-expect_refuse "B-1 (a) a response with an injected statusString that fakes a time inside the window is refused (status), not accepted as backdated" "timestamp|status" verify $(V) --stage sign $(rec sign_sa_inj) $(R)
-expect_refuse "B-1 (a) the same injected response through stage-start (release <- sign)" "timestamp|status" $(ST release sign) $(rec sign_sa_inj) $(R) --digests "$work/digests.json"
-for s in build rebuild check; do
-  expect_refuse "B-1 (a) the injection on a $s record that carries a response is refused: timestamp" "timestamp" verify $(V) --stage $s $(rec ${s}_sa_inj) $(R)
-  expect_refuse "B-1 (b) a $s Witness record carrying a whole response instead of the bare token is refused: names the form" "timestamp|form" verify $(V) --stage $s $(rec ${s}_coll_resp) $(R)
-done
-expect_refuse "B-1 (a) the injected record through stage-start (release <- check)" "timestamp" $(ST release check) $(rec check_sa_inj) --digests "$work/digests.json"
-expect_refuse "B-1 (a) the injected record through check-build-record (build)" "timestamp" check-build-record --digests "$work/digests.json" --build-record "$work/build_sa_inj.json" --policy "$work/policy.json" --now "$NOW"
-expect_refuse "B-1 (b) a Witness record with a response-form stamp through check-build-record" "timestamp|form" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll_resp.json" --policy "$work/policy.json" --now "$NOW"
-expect_refuse "B-1 (b) a Witness record with a response-form stamp through stage-start (release <- check)" "timestamp|form" $(ST release check) $(rec check_coll_resp) --digests "$work/digests.json"
-expect_refuse "B-1 (c) a provenance carrying a BARE TOKEN (type tsp) is refused: names the form" "timestamp|form" verify $(V) --stage sign $(rec sign_prov_tok) $(R)
-expect_refuse "B-1 (c) token bytes labelled as a response are refused (a response is not parsable from a token)" "timestamp" verify $(V) --stage sign $(rec sign_prov_toklabel) $(R)
-# (d) a genTime with milliseconds is read (the fraction is dropped) and accepted when the stamp is genuinely inside the window
-expect_ok     "B-1 (d) a stamp whose genTime has milliseconds does not crash and is accepted when it is inside the window (the fraction is kept)" verify $(V) --stage sign $(rec sign_prov_frac) $(R)
-# S-1 (Sonnet): a certificate with a repeated extension is refused, whatever it says (a second SAN used to replace the first)
-# rc-2 R8: the duplicate-extension certificates are re-signed by the test intermediate, so they CHAIN and the reader meets them on verified bytes. OpenSSL itself refuses a repeated SAN (the chain check names "certificate"), so the SAN case is worded for either layer; the private-OID case below is the proof that the reader refuses a repeated extension
-expect_refuse "S-1 a certificate with a second SAN extension is refused (by openssl's chain check or by the reader): repeated extension" "certificate" verify $(V) --stage build $(rec build_dupsan) $(R)
-# rc-2 R8: a repeated SAN whose signature is broken is refused for the CHAIN: the reader never sees its fields
-expect_refuse "R8 a second SAN extension on a certificate whose signature is broken is refused for its chain, not for the repeated extension" "root|!repeated" verify $(V) --stage build $(rec build_dupsanbadsig) $(R)
-expect_refuse "S-1 a certificate with a second Build Config URI extension is refused: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupcfg) $(R)
-expect_refuse "S-1 a repeated extension through check-build-record" "certificate" check-build-record --digests "$work/digests.json" --build-record "$work/build_dupsan.json" --policy "$work/policy.json" --now "$NOW"
 # rc-2 R4 (REQ-CHAIN-007-AC12): the command the Release job runs on each of its six Witness records (python3 -I bin/chain-verify.py record-env --record FILE) accepts a record that carries no token and refuses a record that names or holds one; the record is a DSSE envelope as Witness wrote it, the payload base64
 python3 - "$work" <<'PYE'
 import base64, json, sys
@@ -1972,7 +1464,6 @@ w w_ncstep "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: ./.github
 printf 'name: t\non: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/acts/d.yml\n' > "$work/w_ncjob.yml"
 expect_refuse "N-c a STEP-level local path that is a directory named d.yml holding an action.yml is followed: the unpinned action inside it is rejected" "evil/act" actions "$work/w_ncstep.yml" --allowed "$work/allowed-nc.json" --root "$work/tree"
 expect_ok     "N-c the same path at JOB level is a reusable workflow file and is not opened as a directory" actions "$work/w_ncjob.yml" --allowed "$work/allowed-nc.json" --root "$work/tree"
-
 # ---- step-8 round 4: S-1 one read of the digest file; S-2 strict base64; N-4 the PAE length is in bytes ----------------------------
 python3 - "$root" "$work" "$NOW" 2>&1 <<'PY' && ok "S-1 check-build-record reads the digest file ONCE: the hash and the subjects come from the same bytes, even if the file changes after the first read" || bad "S-1 the digest file is opened more than once (or its content from a second read was used)"
 import argparse, builtins, importlib.util, json, sys
@@ -1986,11 +1477,39 @@ def spy(f, *a, **k):
         if len(opened) > 1: f = w + "/digests-other.json"   # the file "changes" under a second read
     return real_open(f, *a, **k)
 builtins.open = spy
-ns = argparse.Namespace(template=None, policy=w + "/policy.json", now=now, digests=w + "/digests.json", build_record=w + "/build_coll.json", trust=None, fulcio_chain=None, tsa_chain=None, rekor_key=None)
+ns = argparse.Namespace(template=None, policy=w + "/policy.json", now=now, digests=w + "/digests.json", build_record=w + "/build_coll.json")
 pol, obj, _stmt = m.check_build_record(ns)
 builtins.open = real_open
 assert len(opened) == 1, "digest file opened %d times" % len(opened)
 assert obj == json.load(open(w + "/digests.json")), "the digest object does not match the attested file"
+PY
+# the REAL record: test-evidence/witness-real/build-collection.real.txt was written by the pinned Witness 0.12.0 (bin/witnessed-local.sh, step build, GITHUB_REF refs/tags/v0.3.0);
+# its environment attestor is the real shape, and the tag binding (collection_ref) and the variables guard (environment_ref) are run against it
+python3 - "$root" 2>&1 <<'PY' && ok "004-AC1 the environment attestor of a real Witness record binds the tag: it passes at its own ref, is refused at another, and variables that are not an object give a refusal, never a traceback" || bad "004-AC1 real Witness record: tag binding"
+import base64, importlib.util, json, sys
+root = sys.argv[1]; sys.path.insert(0, root + "/bin")
+spec = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+text = [l for l in open(root + "/test-evidence/witness-real/build-collection.real.txt").read().split("\n") if l and not l.startswith("#")]
+payload = "".join(text[text.index("payload:") + 1:])          # the base64 payload, wrapped in the file
+stmt = json.loads(base64.b64decode(payload))
+kinds = [a["type"].split("/")[-2] for a in stmt["predicate"]["attestations"]]
+assert kinds == ["environment", "git", "material", "command-run", "product"], kinds
+env = stmt["predicate"]["attestations"][0]["attestation"]
+assert m.environment_ref(env) == "refs/tags/v0.3.0", env
+m.collection_ref("build", {"ref": "refs/tags/v0.3.0"}, stmt)                       # no refusal at its own ref
+def refused(call):
+    try:
+        call()
+    except m.Refuse:
+        return True
+    return False
+assert refused(lambda: m.collection_ref("build", {"ref": "refs/tags/v0.3.1"}, stmt)), "another tag was accepted"
+for bad_vars in (["GITHUB_REF=refs/tags/v0.3.0"], "GITHUB_REF=refs/tags/v0.3.0", None, 7):
+    assert m.environment_ref({"variables": bad_vars}) is None, bad_vars
+    forged = json.loads(json.dumps(stmt)); forged["predicate"]["attestations"][0]["attestation"] = {"variables": bad_vars}
+    assert refused(lambda: m.collection_ref("build", {"ref": "refs/tags/v0.3.0"}, forged)), bad_vars
+for not_obj in (None, [], "x", 3):
+    assert m.environment_ref(not_obj) is None
 PY
 python3 - "$root" 2>&1 <<'PY' && ok "N-4 the DSSE pre-authentication length counts BYTES of the payload type, not characters" || bad "N-4 pae() counts characters"
 import importlib.util, sys
@@ -1998,23 +1517,14 @@ root = sys.argv[1]; sys.path.insert(0, root + "/bin")
 spec = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 assert m.pae("\u00e9", b"x") == b"DSSEv1 2 \xc3\xa9 1 x", m.pae("\u00e9", b"x")
 PY
-expect_refuse "S-2 junk characters inside the payload base64 ('!!-_ ' and a newline) are refused, not dropped" "envelope" verify $(V) --stage sign $(rec sign_prov_junkpay) $(R)
-expect_refuse "S-2 a '*' inside the signature base64 is refused" "malformed|signature" verify $(V) --stage sign $(rec sign_prov_junksig) $(R)
-expect_refuse "S-2 a '*' inside the certificate base64 is refused" "certificate|malformed" verify $(V) --stage sign $(rec sign_prov_junkcert) $(R)
-expect_refuse "S-2 a '*' inside an intermediate's base64 is refused" "malformed|certificate" verify $(V) --stage sign $(rec sign_prov_junkinter) $(R)
-expect_refuse "S-2 a '*' inside the timestamp data base64 is refused" "timestamp" verify $(V) --stage sign $(rec sign_prov_junkstamp) $(R)
-expect_refuse "S-2 the URL-safe alphabet (- and _) in the signature is refused" "malformed|signature" verify $(V) --stage sign $(rec sign_us_sig) $(R)
-expect_refuse "S-2 the URL-safe alphabet in the timestamp data is refused" "timestamp" verify $(V) --stage sign $(rec sign_us_stamp) $(R)
-expect_refuse "S-2 a newline inside the Rekor entry's canonical body, signed by the log as it is, is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-bodyjunk.json)
-expect_refuse "S-2 a '*' inside the signed entry timestamp is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-setjunk.json)
-expect_ok     "S-2 control: the genuine record with the genuine Rekor entry is still accepted (standard, unpadded-newline-free base64)" verify $(V) --stage sign $(rec sign_prov) $(R)
+expect_refuse "S-2 junk characters inside the payload base64 ('!!-_ ' and a newline) are refused, not dropped" "envelope" verify $(V) --stage sign $(rec sign_prov_junkpay)
+expect_refuse "S-2 a '*' inside the signature base64 is refused" "malformed|signature" verify $(V) --stage sign $(rec sign_prov_junksig)
+expect_refuse "S-2 the URL-safe alphabet (- and _) in the signature is refused" "malformed|signature" verify $(V) --stage sign $(rec sign_us_sig)
 
-# ---- Codex security round 1 --------------------------------------------------------------------------------------------------------
-# S1 (001-AC2, 002-AC1, 002-AC3): cosign exits 0 but its bundle lacks a timestamp or a Rekor entry, or carries a wrong one. Sign must refuse
-# AFTER cosign ran, name what is missing, and leave no provenance behind; it verifies its own output before it says ok.
+# ---- sign checks what cosign returned before it says ok: a bundle that is wrong is refused, and no provenance is left behind -------------------
 POSTSIGN=0
 expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" \
-    --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
+    --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
   [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
   l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
   grep -q '^refused at sign: ' <<< "$l1" || miss=1
@@ -2022,15 +1532,16 @@ expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BU
   for x in "${ws[@]}"; do case $x in '!'*) ! grep -F -q -- "${x#!}" <<< "${l1#*: }" || miss=1 ;; *) grep -F -q -- "$x" <<< "${l1#*: }" || miss=1 ;; esac; done
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && [ ! -e "$work/sd/post-$mode/provenance.json" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with 'refused at sign:' and '$words', no provenance.json left; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
-expect_postsign_refuse "S1 a bundle with no timestampVerificationData is refused after cosign: the timestamp is named" "timestamp|!rekor" nots
-expect_postsign_refuse "S1 a bundle with an EMPTY rfc3161Timestamps list is refused: the timestamp is named" "timestamp|!rekor" emptyts
-expect_postsign_refuse "S1 a bundle with no tlogEntries is refused after cosign: the Rekor entry is named" "rekor|!timestamp" notlog
-expect_postsign_refuse "S1 a bundle with an EMPTY tlogEntries list is refused: the Rekor entry is named" "rekor|!timestamp" emptytlog
-expect_postsign_refuse "S1 a bundle lacking BOTH materials is refused and names both" "timestamp|rekor" nothing
-expect_postsign_refuse "S1 a bundle with no certificate is refused, not a traceback" "certificate" nocert
-expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badtlog
-[ "$POSTSIGN" = 7 ] && ok "S1 control: cosign WAS called in each of the seven cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the seven bundle cases"
-expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/post-control"
+expect_postsign_refuse "S1 a bundle with no DSSE envelope is refused after cosign, not a traceback" "bundle|malformed" nodsse
+expect_postsign_refuse "S1 a bundle that carries a certificate is refused: no certificate belongs to this chain" "certificate" withcert
+expect_postsign_refuse "S1 a bundle with two signatures is refused, not converted with one dropped" "signatures" twosigs
+expect_postsign_refuse "S1 a bundle with no tlogEntries is refused after cosign: the Rekor entry is named" "rekor" notlog
+expect_postsign_refuse "S1 a bundle with an EMPTY tlogEntries list is refused: the Rekor entry is named" "rekor" emptylog
+expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badset
+expect_postsign_refuse "S1 a bundle whose Rekor entry has no inclusion proof is refused" "rekor|inclusion" noproof
+expect_postsign_refuse "S1 a bundle whose signature is by a key the manifest does not name is refused: Sign verifies what it wrote before it says ok" "signature" otherkey
+[ "$POSTSIGN" = 8 ] && ok "S1 control: cosign WAS called in each of the eight cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the eight bundle cases"
+expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
 # F1 (Opus r1 verify; 001-AC2): the bundle must carry the statement Sign built; cosign signing another one is refused, naming the mismatch
 expect_postsign_refuse "F1 a cosign that signs a statement with swapped subjects is refused: the signed statement is not the one Sign built" "statement" swapsubj
 expect_postsign_refuse "F1 a cosign that signs a statement with a changed predicate is refused" "statement" predicate
@@ -2038,21 +1549,21 @@ expect_postsign_refuse "F1 a cosign that signs a statement with an appended subj
 # I1: anything but a refusal inside the self-check (here openssl failing) is a refusal too, never a traceback, and leaves no provenance
 cat > "$work/fakebin-openssl" <<FSSL
 #!/usr/bin/env bash
-if [ -e "$work/ssl-fail" ] && [ "\${1:-}" = x509 ]; then echo "fake openssl: failure" >&2; exit 1; fi
+if [ -e "$work/ssl-fail" ] && [ "\${1:-}" = dgst ] && [ "\${2:-}" = -sha256 ] && [ "\${3:-}" = -verify ]; then echo "fake openssl: failure" >&2; exit 1; fi
 exec "$OPENSSL" "\$@"
 FSSL
 chmod +x "$work/fakebin-openssl"
 cvr=$(mkcv fakessl "$work/fakebin-openssl") \
-  expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback) \
-and removes the output" "openssl" sslfail
+  expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback), says openssl's exit status and what it said, and removes the output" "signature|openssl exit 1|fake openssl: failure" sslfail
 rm -f "$work/ssl-fail"
-rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
-[ "$POSTSIGN" = 11 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 7)) of the four cases"
+[ "$POSTSIGN" = 12 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 8)) of the four cases"
+
 # H1 (Opus r1-verify info, 001-AC2): --out must not exist yet. Sign creates it and, on a refusal, removes only what it created; an existing
 # path (., a directory, a file, a symlink) is a usage error before anything runs: nothing deleted, nothing written, cosign never called
 expect_out_refused() { local l=$1 out=$2 dir=$3 rc=0
-  (cd "$dir" && run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$out") || rc=$?
+  (cd "$dir" && run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$out") || rc=$?
   if [ "$rc" = 2 ] && ! crashed && grep -q -i "already exists" "$work/err" && [ -e "$dir/keep.txt" ] && [ -z "$(find "$dir" -name 'provenance*' -print -quit)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 2 'already exists', keep.txt kept, nothing written, no cosign; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
 mkdir -p "$work/h1/dot" "$work/h1/dir/existing" "$work/h1/file" "$work/h1/link/target"
@@ -2062,11 +1573,11 @@ expect_out_refused "H1 --out . (the current directory) is refused, and nothing i
 expect_out_refused "H1 --out an existing directory is refused, and nothing in it is deleted or written" existing "$work/h1/dir"
 expect_out_refused "H1 --out an existing file is refused, and the file is kept" out.txt "$work/h1/file"
 expect_out_refused "H1 --out a symlink to a directory is refused, and the directory it points to is untouched" "$work/h1/link/out" "$work/h1/link/target"
-rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/h1/fresh" || rc=$?
+rc=0; run sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/h1/fresh" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/h1/fresh/provenance.json" ] && ok "H1 control: a fresh --out is created and the provenance is written there" || bad "H1 control: a fresh --out failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 # H2 (Opus r1-verify info, 001-AC2): the signed statement must equal the built one TYPE-exactly (true is not 1, 1 is not 1.0, false is not 0)
 for m in dry1 dry1f; do
-  rc=0; GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch FAKE_BUNDLE=$m run $(TPR build_coll_br h2-$m) || rc=$?
+  rc=0; GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch FAKE_BUNDLE=$m run $(TPR build_coll_dry h2-$m) || rc=$?
   [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
   if [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*statement" "$work/err" && [ ! -e "$work/sd/h2-$m/provenance.json" ]; then ok "H2 a dry run whose signed statement says dryRun $([ $m = dry1 ] && echo 1 || echo 1.0) where Sign built true is refused"
   else bad "H2 $m: wanted refused at sign ... statement, no provenance (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi
@@ -2081,33 +1592,22 @@ for a in ({"s": [{"n": "x", "d": {"sha256": "a"}}], "p": {"dryRun": True}}, [1, 
     assert m.same_json(a, a) and m.same_json(a, __import__("json").loads(__import__("json").dumps(a))), a
 assert not m.same_json({"a": 1}, {"a": 1, "b": 2}) and not m.same_json([1], [1, 1])
 PY
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "H2 control: the honest dry-run sign (dryRun true as built) is accepted" $(TPR build_coll_br h2-control)
-# S2 (002-AC3, property e): a Rekor entries file whose `entries` is not a list of objects is a refusal naming the shape, never a traceback
-for k in int str null dict nondict; do
-  expect_refuse "S2 a Rekor entries file whose entries is $k is refused (no traceback), naming the list" "rekor|list" verify $(V) --stage sign $(rec sign_prov) $(R rekor-shape-$k.json)
-done
-# S3 (002-AC1, 002-AC3, NB-1): one byte string, one spelling. A non-canonical base64 (unused padding bits set, YR== for YQ==) is refused in every field
-expect_ok     "S3 control: the padded record with its Rekor entry is accepted (each field below differs from it only in its spelling)" verify $(V) --stage sign $(rec sign_pad) $(R rekor-pad.json)
-expect_refuse "S3 a non-canonical payload base64 is refused" "envelope" verify $(V) --stage sign $(rec sign_nc_payload) $(R rekor-pad.json)
-expect_refuse "S3 a non-canonical signature base64 is refused" "malformed" verify $(V) --stage sign $(rec sign_nc_sig) $(R rekor-pad.json)
-expect_refuse "S3 a non-canonical certificate base64 is refused" "malformed" verify $(V) --stage sign $(rec sign_nc_cert) $(R rekor-pad.json)
-expect_refuse "S3 a non-canonical timestamp base64 is refused" "timestamp" verify $(V) --stage sign $(rec sign_nc_stamp) $(R rekor-pad.json)
-expect_refuse "S3 a non-canonical Rekor log id (logId.keyId) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-nc-keyid.json)
-expect_refuse "S3 a non-canonical verifier in the Rekor entry's body (signed by the log as it is) is refused" "rekor" verify $(V) --stage sign $(rec sign_pad) $(R rekor-nc-verifier.json)
-# S3: NaN, Infinity and -Infinity are not JSON; every strict reader refuses them (payload, envelope, Rekor file, policy)
-expect_refuse "S3 a signed payload holding NaN is refused (not JSON)" "predicate|!signature" verify $(V) --stage sign $(rec sign_nan) $(R rekor-nan.json)
-expect_refuse "S3 an envelope holding Infinity is refused" "envelope" verify $(V) --stage sign $(rec sign_envinf) $(R)
-expect_refuse "S3 a Rekor entries file holding -Infinity is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-neginf.json)
-expect_refuse "S3 a Rekor entries file holding 1e400 (a float that overflows to inf) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-big.json)
-expect_refuse "S3 a Rekor entries file holding -1e400 is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-negbig.json)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "H2 control: the honest dry-run sign (dryRun true as built) is accepted" $(TPR build_coll_dry h2-control)
+# S3: one byte string, one spelling: a non-canonical base64 (unused padding bits set, YR== for YQ==) is refused in every field
+expect_ok     "S3 control: the padded record is accepted (each field below differs from it only in its spelling)" verify $(V) --stage sign $(rec sign_pad)
+expect_refuse "S3 a non-canonical payload base64 is refused" "envelope" verify $(V) --stage sign $(rec sign_nc_payload)
+expect_refuse "S3 a non-canonical signature base64 is refused" "envelope|signature" verify $(V) --stage sign $(rec sign_nc_sig)
+
+expect_refuse "S3 a signed payload holding NaN is refused (not JSON)" "predicate|!signature" verify $(V) --stage sign $(rec sign_nan)
+expect_refuse "S3 an envelope holding Infinity is refused" "envelope" verify $(V) --stage sign $(rec sign_envinf)
 sed 's/^{/{"nan": NaN, /' "$work/policy.json" > "$work/policy-nan.json"
-expect_refuse "S3 a policy holding NaN is refused" "policy" verify --policy "$work/policy-nan.json" --now "$NOW" --stage sign $(rec sign_prov) $(R)
+expect_refuse "S3 a policy holding NaN is refused" "policy" verify --policy "$work/policy-nan.json" --stage sign $(rec sign_prov)
 # S4 (001-AC1, the Sign job installs only cosign): the Sign path runs without PyYAML; only `actions` needs it and says so plainly
 mkdir -p "$work/noyaml"; printf 'raise ImportError("no PyYAML here (test stub)")\n' > "$work/noyaml/yaml.py"
 rc=0; PYTHONPATH="$work/noyaml" "$PY3" -S "$cv" --help > /dev/null 2> "$work/err" || rc=$?
 [ "$rc" = 0 ] && ! crashed && ok "S4 python3 -S chain-verify.py --help works with PyYAML unimportable" || bad "S4 --help needs PyYAML (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
-PYTHONPATH="$work/noyaml" expect_ok "S4 verify (the Sign path) works with PyYAML unimportable" verify $(V) --stage sign $(rec sign_prov) $(R)
-PYTHONPATH="$work/noyaml" expect_ok "S4 sign --check works with PyYAML unimportable" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/noyaml"
+PYTHONPATH="$work/noyaml" expect_ok "S4 verify (the Sign path) works with PyYAML unimportable" verify $(V) --stage sign $(rec sign_prov)
+PYTHONPATH="$work/noyaml" expect_ok "S4 sign --check works with PyYAML unimportable" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/noyaml"
 rc=0; PYTHONPATH="$work/noyaml" run $(A w_good) || rc=$?
 [ "$rc" = 2 ] && ! crashed && grep -q -i "pyyaml" "$work/err" && ok "S4 actions without PyYAML is a clear usage error (exit 2) naming PyYAML, not a traceback" || bad "S4 actions without PyYAML (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 expect_ok     "S4 control: actions works with PyYAML" $(A w_good)
@@ -2126,47 +1626,22 @@ w w_dupjob   "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n  
 for c in w_dup2pin:uses w_dupunpin:uses w_duppinun:uses w_duprun:run w_dupquote:uses w_duptrim:uses w_dupjob:j; do
   expect_refuse "S5 ${c%%:*}: a repeated key is refused and named (duplicate '${c#*:}')" "duplicate|${c#*:}|${c%%:*}" $(A "${c%%:*}")
 done
-
-# ---- Codex security round 2 ------------------------------------------------------------------------------------------------------
-# R2-1 (002-AC1): both chains are valid AT the stamp time: an intermediate or a TSA signer that had expired, or was not yet valid, is refused
-expect_refuse "R2-1 a leaf whose intermediate had expired at the stamp time is refused" "validity|!rekor" verify $(V) --stage sign $(rec sign_intold) $(R rekor-r2chain.json)
-expect_refuse "R2-1 a leaf whose intermediate was not yet valid at the stamp time is refused" "validity|!rekor" verify $(V) --stage sign $(rec sign_intnew) $(R rekor-r2chain.json)
-expect_refuse "R2-1 a stamp by a TSA certificate that had expired at its genTime is refused" "timestamp|!rekor" verify $(V) --stage sign $(rec sign_tsaold) $(R rekor-r2chain.json)
-expect_refuse "R2-1 a stamp by a TSA certificate that was not yet valid at its genTime is refused" "timestamp|!rekor" verify $(V) --stage sign $(rec sign_tsanew) $(R rekor-r2chain.json)
-# R2-note (002-AC1): genTime keeps its fraction: T.fff is AFTER a certificate that ends at T
-expect_refuse "R2 genTime $(cat "$work/fracedge.txt") is after a certificate that ends at the whole second: refused" "validity" verify $(V) --stage sign $(rec sign_fracedge) $(R rekor-frac.json)
-expect_ok     "R2 control: the same stamp under a certificate that ends one second later is accepted" verify $(V) --stage sign $(rec sign_fracok) $(R rekor-frac.json)
-# where the fraction alone decides (Opus r2 info): genTime T.fff against a verification clock whose 10-minute allowance ends at T. The certificate
-# window cannot show it (openssl's -attime check at the whole second below already refuses T.fff against an end at T), the clock bound can.
-expect_refuse "R2 genTime T.fff is later than a clock whose allowance ends at T: refused (dropping the fraction would accept it)" "later than the verification time" verify $(V "$(cat "$work/now-frac-late.txt")") --stage sign $(rec sign_fracok) $(R rekor-frac.json)
-expect_ok     "R2 control: the same record with the allowance ending one second later is accepted" verify $(V "$(cat "$work/now-frac-in.txt")") --stage sign $(rec sign_fracok) $(R rekor-frac.json)
-# R2-2 (002-AC3): logIndex and integratedTime must be canonical decimal strings ("7"), never a number, a float, a sign, a space or a leading zero
-for k in idxnum idxplus idxspace idxzero itnum itfloat itplus itzero; do
-  expect_refuse "R2-2 a Rekor entry spelled $k (the log's signature still verifies over the number) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-$k.json)
-done
-# R2-3 (003-AC1): stage-start checks the digest list's format like Sign does, before comparing
 expect_refuse "R2-3 stage-start: a Witness collection attesting {\"foo\":\"bar\"} is refused for its format" "build|format" $(ST rebuild build) $(rec build_coll_foobar) --digests "$work/digests-foobar.json"
 expect_refuse "R2-3 stage-start: an attested digest list with upper-case hex is refused for its format" "build|format" $(ST check build) $(rec build_coll_upper) --digests "$work/digests-upper.json"
-# R2-4 (003-AC1, 001-AC2): subject fields of the wrong type are refusals naming the subject, never a traceback
-expect_refuse "R2-4 release <- sign: a subject whose name is a list is refused" "sign|subject" $(ST release sign) $(rec sign_badname) $(R rekor-badsubj.json) --digests "$work/digests.json"
-expect_refuse "R2-4 release <- sign: a subject whose digest is a list is refused" "sign|subject" $(ST release sign) $(rec sign_baddigest) $(R rekor-badsubj.json) --digests "$work/digests.json"
+expect_refuse "R2-4 release <- sign: a subject whose name is a list is refused" "sign|subject" $(ST release sign) $(rec sign_badname) --digests "$work/digests.json"
+expect_refuse "R2-4 release <- sign: a subject whose digest is a list is refused" "sign|subject" $(ST release sign) $(rec sign_baddigest) --digests "$work/digests.json"
 expect_refuse "R2-4 rebuild <- build: a product subject whose digest is a list is refused" "build|subject" $(ST rebuild build) $(rec build_baddigest) --digests "$work/digests.json"
-expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused (at build since r7 B6: the record's own stage, as for its identity)" "build|subject" check-build-record --policy "$work/policy.json" --now "$NOW" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
+expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused (at build since r7 B6: the record's own stage, as for its identity)" "build|subject" check-build-record --policy "$work/policy.json" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
+WFREF=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
-rc=0; env PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --items "$work/items.json" \
-  --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" \
-  --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
+rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/nocosign" "$PY3" "$(mkcv nocosign "$work/nocosign/openssl")" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
 # ---- Codex security round 3 ----
 for k in ptype_num ptype_null ptype_list ptype_dict payload_num sigs_dict sigs_item sig_num cert_null inter_str inter_item stamps_str stamps_item; do
-  expect_refuse "X2 an envelope field of the wrong JSON type ($k) is refused, never a traceback" "envelope" verify $(V) --stage sign $(rec env_$k) $(R)
+  expect_refuse "X2 an envelope field of the wrong JSON type ($k) is refused, never a traceback" "envelope" verify $(V) --stage sign $(rec env_$k)
 done
-for k in iss_raw iss_ia5 iss_len iss_trail cfg_raw cfg_long; do
-  expect_refuse "X3 a Fulcio extension that is not one DER UTF8String TLV ($k) is refused" "malformed" verify $(V) --stage sign $(rec sign_$k) $(R rekor-x3.json)
-done
-expect_ok     "X3 control: the issuer written as an explicit DER UTF8String is accepted" verify $(V) --stage sign $(rec sign_iss_der) $(R rekor-x3.json)
 # X4: shapes GitHub would reject are refused by name, never skipped
 w x4_useslist  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: [evil/action@main]\n"
 w x4_jobuses   "  j:\n    uses: [evil/repo/.github/workflows/x.yml@main]\n"
@@ -2181,18 +1656,16 @@ for c in x4_useslist:"uses" x4_jobuses:"uses" x4_svcstr:"services" x4_svclist:"s
 done
 
 # ---- PR 4: bind-items and check-list (read-back verifier-bindings, advisor OK): refuse-only commands of Release's verify step, on the real verifier ----
-BI() { echo bind-items --policy "$work/policy.json" --now "$NOW" --record "$work/$1.json" --items "$work/${2:-items}.json"; }
+BI() { echo bind-items --policy "$work/policy.json" --record "$work/$1.json" --items "$work/${2:-items}.json"; }
 expect_ok     "PR4 bind-items: items.json equal to the product of Build's verified record is accepted" $(BI bi_ok)
 expect_refuse "PR4 bind-items: an items.json that is not the file Build's record holds is refused" "build|items.json|digest" $(BI bi_ok items-other)
 expect_refuse "PR4 bind-items: a record that holds another items.json hash is refused" "build|items.json|digest" $(BI bi_otheritems)
 expect_refuse "PR4 bind-items: a record with no items.json product is refused" "build|items.json" $(BI bi_noitems)
 expect_refuse "PR4 bind-items: two items.json products (one right, one wrong) are refused" "build|items.json" $(BI bi_dup)
 expect_refuse "PR4 bind-items: a material subject of the same name does not count as the product" "build|items.json" $(BI bi_material)
-expect_refuse "PR4 bind-items: a record signed by another stage's file (Check's former stage-verify.yml) is refused" "build|stage-verify.yml" $(BI bi_wrongstage)
-expect_refuse "PR4 bind-items: a record of another tag is refused" "build|v0.3.1" $(BI bi_othertag)
 expect_refuse "PR4 bind-items: an unsigned record is refused" "build|signature" $(BI bi_unsigned)
 # REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the same binding for a second product of Build's record, named by --product (default items.json)
-BP() { echo bind-items --policy "$work/policy.json" --now "$NOW" --record "$work/$1.json" --items "$work/${2:-admission-baseline}.json" --product "${3:-admission-baseline.json}"; }
+BP() { echo bind-items --policy "$work/policy.json" --record "$work/$1.json" --items "$work/${2:-admission-baseline}.json" --product "${3:-admission-baseline.json}"; }
 expect_ok     "AB bind-items --product: admission-baseline.json equal to its product of Build's verified record is accepted" $(BP bi_adm)
 expect_refuse "AB bind-items --product: a baseline file that is not the one Build's record holds is refused" "build|admission-baseline.json|digest" $(BP bi_adm admission-baseline-other)
 expect_refuse "AB bind-items --product: a record with no admission-baseline.json product (items.json only) is refused" "build|admission-baseline.json" $(BP bi_ok)
@@ -2200,11 +1673,10 @@ expect_refuse "AB bind-items --product: two products of that name are refused" "
 expect_refuse "AB bind-items --product: a material subject of that name does not count as the product" "build|admission-baseline.json" $(BP bi_adm_material)
 expect_refuse "AB bind-items --product: items.json is still bound under its own name (the default product)" "build|items.json|digest" $(BI bi_adm items-other)
 expect_refuse "AB bind-items --product: a product name with a slash is refused" "build|product" $(BP bi_adm admission-baseline ../items.json)
-expect_refuse "AB bind-items --product: a record signed for another tag is refused for the baseline file too" "build|v0.3.1" $(BP bi_othertag)
 expect_ok     "AB bind-items --product '': an empty name is the default product, items.json" $(BI bi_ok) --product ""
 expect_refuse "AB bind-items --product '': ...and is judged as items.json" "build|items.json|digest" \
   $(BI bi_ok items-other) --product ""
-CLS() { echo check-list --policy "$work/policy.json" --now "$NOW" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
+CLS() { echo check-list --policy "$work/policy.json" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
 expect_ok     "PR4 check-list: exactly scanners, acceptance, runtime and arm64, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
 expect_refuse "PR4 check-list: a missing record (arm64) is refused, naming Check and the record" "check|arm64|missing" $(CLS cl_missing)
 expect_refuse "PR4 check-list: an extra record is refused, naming it" "check|extra" $(CLS cl_extra)
@@ -2214,11 +1686,6 @@ expect_refuse "PR4 check-list: the scanners record presented twice (as acceptanc
 expect_refuse "PR4 check-list: a record substituted under another step's name is refused" "check|runtime" $(CLS cl_subst)
 expect_refuse "PR4 check-list: an unverifiable (unsigned) record is refused, naming the record" "check|runtime|signature" $(CLS cl_unverifiable)
 expect_refuse "PR4 check-list: the arm64 slot holding a record of the job check-arm64 (wrong job) is refused" "check|arm64" $(CLS cl_wrongjob)
-expect_refuse "PR4 check-list: a record signed by Build's former stage-build.yml is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_buildid)
-expect_refuse "PR4 check-list: a record signed by Check's former stage-verify.yml is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_signid)
-expect_refuse "PR4 check-list: a record signed by stage-promote.yml is refused (wrong identity)" "check|stage-promote.yml" $(CLS cl_relid)
-expect_refuse "PR4 check-list: a record of another tag is refused" "check|v0.3.1" $(CLS cl_tag2)
-expect_refuse "PR4 check-list: a record signed on a branch is refused" "check|refs/heads/main" $(CLS cl_branch)
 expect_refuse "PR4 check-list: a record with no material digest list is refused" "check|scanners|digests" $(CLS cl_nomat)
 expect_refuse "PR4 check-list: a product named like the digest list does not stand in for the material" "check|scanners|digests" $(CLS cl_prodonly)
 expect_refuse "PR4 check-list: two material subjects for the digest list are refused" "check|scanners|digests" $(CLS cl_dupmat)
@@ -2227,7 +1694,7 @@ expect_refuse "PR4 check-list: one record for other digests among three right on
 expect_refuse "PR4 check-list: against another digest list of Build's none of the records matches" "check|digest" $(CLS cl_ok digests-other)
 expect_refuse "PR4 check-list: an empty directory is refused" "check|missing" $(CLS cl_empty)
 # ruling G: bind-check, the same binding for the one file of Check's scanners record that Release uses (govulncheck.json)
-BC() { echo bind-check --policy "$work/policy.json" --now "$NOW" --record "$work/$1.json" --digests "$work/${3:-digests}.json" --file "$work/${2:-gv}.json" --product "${4:-check-results/govulncheck.json}"; }
+BC() { echo bind-check --policy "$work/policy.json" --record "$work/$1.json" --digests "$work/${3:-digests}.json" --file "$work/${2:-gv}.json" --product "${4:-check-results/govulncheck.json}"; }
 expect_ok     "G bind-check: govulncheck.json equal to the product of Check's verified scanners record, for Build's digests, is accepted" $(BC gv_ok)
 expect_refuse "G bind-check: a file that is not the one Check's record holds is refused" "check|govulncheck.json|digest" $(BC gv_ok gv-other)
 expect_refuse "G bind-check: a record that holds another file's hash is refused" "check|govulncheck.json|digest" $(BC gv_otherfile)
@@ -2238,12 +1705,13 @@ expect_refuse "G bind-check: the record of another step (acceptance) is refused:
 expect_refuse "G bind-check: a record about another digest list than Build's is refused" "check|digests" $(BC gv_otherdigests)
 expect_refuse "G bind-check: against another digest list of Build's the record does not match" "check|digests" $(BC gv_ok gv digests-other)
 expect_refuse "G bind-check: a record with no material digest list is refused" "check|digests" $(BC gv_nomat)
-expect_refuse "G bind-check: a record signed by Build's former stage-build.yml is refused (wrong identity)" "check|stage-sign.yml" $(BC gv_buildid)
-expect_refuse "G bind-check: a record of another tag is refused" "check|v0.3.1" $(BC gv_tag2)
-expect_refuse "G bind-check: a record signed on a branch is refused" "check|refs/heads/main" $(BC gv_branch)
 expect_refuse "G bind-check: an unsigned record is refused" "check|signature" $(BC gv_unsigned)
 expect_refuse "G bind-check: a product name outside check-results/ is refused" "check|product" $(BC gv_ok gv digests ../gv.json)
 expect_refuse "G bind-check: a product name that is not a plain file of check-results/ is refused" "check|product" $(BC gv_ok gv digests check-results/a/b.json)
+expect_refuse "PR4 bind-items: a record signed by a key the manifest does not name is refused" "build|signature" $(BI bi_otherkey)
+expect_refuse "PR4 check-list: a record signed by a key the manifest does not name is refused" "check|signature" $(CLS cl_otherkey)
+expect_refuse "PR4 check-list: a record signed by the throwaway key is refused" "check|signature|manifest key" $(CLS cl_throwaway)
+expect_refuse "G bind-check: a record signed by a key the manifest does not name is refused" "check|signature" $(BC gv_otherkey)
 
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc-proof marker, bin/chain-bytes-sha.py and `chain-verify.py rc-proof` ----
 # bin/chain-bytes-sha.py defines the chain-file set ONCE: the workflows release.yml and stage-*.yml, every script a row of .github/policy/chain-scripts.json lists, and every file
@@ -2353,7 +1821,8 @@ save("rcdot", dict(m, rc_tag="v0.3.0-rc.1"))
 save("badrun", dict(m, run_id="12ab"))
 save("upper", dict(m, chain_sha256=m["chain_sha256"].upper()))
 save("short", dict(m, chain_sha256=m["chain_sha256"][:60]))
-r = dict(m["records"]); del r["rekor"]; save("norecord", dict(m, records=r))
+r = dict(m["records"]); del r["sign"]; save("norecord", dict(m, records=r))
+r = dict(m["records"]); del r["rekor"]; save("norekor", dict(m, records=r))      # ratify B: a marker without its rekor row
 r = dict(m["records"]); r["extra"] = "0" * 64; save("extrarecord", dict(m, records=r))
 r = dict(m["records"]); r["build"] = "XYZ"; save("badrecord", dict(m, records=r))
 save("other", dict(m, chain_sha256="0" * 64))
@@ -2368,6 +1837,7 @@ cm_no "AC6 marker: a run id that is not digits is refused" "run_id" "$C2" "$work
 cm_no "AC6 marker: an upper-case chain sha is refused" "chain_sha256" "$C2" "$work/marker-upper.json"
 cm_no "AC6 marker: a short chain sha is refused" "chain_sha256" "$C2" "$work/marker-short.json"
 cm_no "AC6 marker: a record digest missing is refused" "shape" "$C2" "$work/marker-norecord.json"
+cm_no "AC6 marker: a marker without its rekor record row is refused (ratify B: every signature keeps its Rekor entry)" "shape" "$C2" "$work/marker-norekor.json"
 cm_no "AC6 marker: an extra record digest is refused" "shape" "$C2" "$work/marker-extrarecord.json"
 cm_no "AC6 marker: a record digest that is not a sha256 is refused" "records" "$C2" "$work/marker-badrecord.json"
 cm_no "AC6 marker: a sha for other bytes (all zero) is refused, naming the bytes" "bytes" "$C2" "$work/marker-other.json"
@@ -2390,8 +1860,9 @@ m = json.load(open(sys.argv[1])); json.dump(dict(m, rc_tag="v0.3.0-rc3", chain_s
 PY
 cm_no "AC6 marker: the sha equals the commit's but the rc tag's commit holds other chain files: refused" "rc tag" "$C_AFTER" "$work/marker-rc3.json"
 # ---- chain-verify.py rc-proof: the rc run's records, verified under the rc tag's identities, and the marker's digests
-RCP() { echo rc-proof --marker "${3:-$MK}" --commit "${2:-$C2}" --repo "$RG" --records "$work/$1" --template "$work/template.json" --trust "$work/trust.json" \
-          --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --repository "${RCREPO:-fosterstack/cache}"; }
+# ---- chain-verify.py rc-proof: the rc run's records, verified under the rc tag's identities, and the marker's digests
+RCP() { echo rc-proof --marker "${3:-$MK}" --commit "${2:-$C2}" --repo "$RG" --records "$work/$1" --template "$work/template.json" \
+          --repository "${RCREPO:-fosterstack/cache}"; }
 expect_ok "AC6 rc-proof: the marker, the commit and a complete rc run (Build, Sign with its Rekor stub, Rebuild, the four Check records, the hostile verdict) are accepted" $(RCP rc_ok)
 expect_ok "AC6 rc-proof: the same proof is accepted at a later commit with the same chain files" $(RCP rc_ok "$C3")
 expect_refuse "AC6 rc-proof: a marker for other bytes is refused before any record is read" "marker|bytes" $(RCP rc_ok "$cother")
@@ -2401,10 +1872,9 @@ expect_refuse "AC6 rc-proof: a final tag in the marker is refused" "marker|rc_ta
 expect_refuse "AC6 rc-proof: Sign's provenance whose built commit is not the rc tag's commit (a moved or recreated tag) is refused naming the commit" "marker|built|commit" $(RCP rc_othersrc)
 expect_refuse "AC6 rc-proof: Sign's provenance that names no built commit is refused" "marker|built|commit" $(RCP rc_nosrc)
 expect_refuse "AC6 rc-proof: Sign's provenance made for another tag is refused (the rc tag's identity)" "sign|v0.3.1" $(RCP rc_badsign)
-expect_refuse "AC6 rc-proof: no Rekor entry for Sign's provenance is refused" "sign|rekor" $(RCP rc_norekor)
-expect_refuse "AC6 rc-proof: Build's record of the FINAL tag's identity is refused under the rc tag's policy" "build|v0.3.0" $(RCP rc_build_final)
+expect_refuse "Q2a AC6 rc-proof: Build's record of the run for the FINAL tag (its signed admission baseline names v0.3.0) is refused under the rc tag's policy" "build|tag|v0.3.0" $(RCP rc_build_final)
+expect_refuse "Q2a AC6 rc-proof: a Build record that holds no admission-baseline.json product is refused (nothing signed names the tag)" "build|admission-baseline.json" $(RCP rc_noadm)
 expect_refuse "AC6 rc-proof: a missing Check record (arm64) is refused" "check|arm64|missing" $(RCP rc_check_missing)
-expect_refuse "AC6 rc-proof: a Check record of the final tag's identity is refused" "check|v0.3.0" $(RCP rc_check_finaltag)
 expect_refuse "AC6 rc-proof: Rebuild's record about other digests is refused" "rebuild|digest" $(RCP rc_rebuild_other)
 expect_refuse "AC6 rc-proof: a hostile verdict in which an attempt was accepted is refused" "mint_sign_cert" $(RCP rc_hostile_accepted)
 expect_refuse "AC6 rc-proof: a hostile verdict with a missing case row stays an error, not a skip" "read_sign_key" $(RCP rc_hostile_missing)
@@ -2432,6 +1902,7 @@ RCREPO=evil/cache; rcargs=$(RCP rc_ok); RCREPO=
 expect_refuse "AC6 rc-proof: a run of another repository (the provenance names fosterstack/cache) is refused" "marker|run|repository" $rcargs
 rc=0; python3 "$cv" rc-proof --help > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "AC6 rc-proof: the subcommand exists (usage)" || bad "AC6 rc-proof: no such subcommand (exit $rc)"
+expect_refuse "AC6 rc-proof: a Check record signed by a key the manifest does not name is refused" "check|signature" $(RCP rc_check_otherkey)
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
 # cosign returned a bad bundle and Sign refused it); never one for a refusal of the check itself
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
@@ -2444,6 +1915,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
+
 # ---- apk-compare (the owner's rule of Oct 21 2026: the comparison of Build's and Rebuild's apks runs in a job without a key; Release reads only its small result file) ----
 # bin/release-compare.sh writes apk-compare/apk-compare.json (verdict pass, four pairs with the sha256 and the apk-tool digest of both apks); `apk-compare` checks that file
 # against Build's attested apk digests (witness-build/digests.json keys apk-<variant>-<amd64|arm64>) and accepts only pass, exactly four pairs, rebuild == build == attested
@@ -2506,6 +1978,30 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
+# ---- restored (re-aimed) cases: what the keyless identity used to enforce, now enforced by the ref a collection carries, Sign's workflow ref and the Rekor entry
+expect_refuse "001-AC2 Build's record from another tag is refused" "build|ref" $(S build_coll_otherref) --digests "$work/digests.json"
+expect_refuse "003-AC1 wrong tag through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_otherref) --digests "$work/digests.json"
+expect_refuse "003-AC1 a branch through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_branchref) --digests "$work/digests.json"
+expect_refuse "PR4 bind-items: a record of another tag is refused" "build|ref" $(BI bi_othertag)
+expect_refuse "PR4 bind-items: a record made on a branch is refused" "build|ref" $(BI bi_branch)
+expect_refuse "AB bind-items --product: a record made for another tag is refused for the baseline file too" "build|ref" $(BP bi_othertag)
+expect_refuse "PR4 check-list: a record of another tag is refused" "check|ref" $(CLS cl_tag2)
+expect_refuse "PR4 check-list: a record made on a branch is refused" "check|ref" $(CLS cl_branch)
+expect_refuse "G bind-check: a record of another tag is refused" "check|ref" $(BC gv_tag2)
+expect_refuse "G bind-check: a record made on a branch is refused" "check|ref" $(BC gv_branch)
+expect_refuse "AC6 rc-proof: Build's record of the FINAL tag is refused under the rc tag's policy" "build|ref" $(RCP rc_build_finalref)
+expect_refuse "AC6 rc-proof: a Check record of the final tag is refused" "check|ref" $(RCP rc_check_finaltag)
+expect_refuse "003-AC1 release <- sign without a Rekor entry: names sign and rekor" "sign|rekor" $(ST release sign) $(rec sign_prov_rk_none) --digests "$work/digests.json"
+expect_refuse "001-AC5 verify of a provenance without its entries file is refused 'rekor'" "rekor" verify $(V) --stage sign $(rec sign_prov_rk_none)
+expect_refuse "AC6 rc-proof: no Rekor entry for Sign's provenance is refused" "sign|rekor" $(RCP rc_norekor)
+rm -rf "$work/sd/norek"; mkdir -p "$work/sd/norek"; cp "$work/sd/ok/provenance.json" "$work/sd/norek/provenance.json"
+expect_refuse "001-AC5 Sign's own output without its Rekor entries is refused 'rekor' (no shortcut passes the control)" "rekor" verify $(V) --stage sign --record "$work/sd/norek/provenance.json"
+expect_ok "002-AC3 provenance with a matching, correctly signed Rekor entry (inclusion proof and checkpoint too) is accepted" verify $(V) --stage sign $(rec sign_prov)
+expect_ok "002-AC3 the signed release policy with its Rekor entry is accepted end to end (a real openssl signature, nothing stubbed)" verify $(V) --stage release $(rec release_policy)
+for k in idx_edit it_edit set_garbage set_star keyid_nl body_nl verifier_junk verifier_nl hashedrekord other_payload other_sig other_key no_proof bad_checkpoint idxnum idxplus idxspace idxzero itnum itfloat itplus itzero utf16 nan inf big nbig ent_int ent_str ent_null ent_dict ent_nondict ent_empty; do
+  expect_refuse "002-AC3 verify: a provenance whose Rekor entry file is damaged ($k, see RK_ENTRY and RK_FILE in the fixtures) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov_rk_$k)
+done
+
 # chain_common.py names its openssl by one fixed absolute path on one TEST-SUBST line,
 # and reads no environment variable for it
 python3 - "$root/bin/chain_common.py" << 'PY' \
@@ -2520,7 +2016,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=895
+EXPECT=761
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

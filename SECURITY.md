@@ -1,5 +1,8 @@
 # Security policy
 
+This page is the policy. The full list of what we do is in
+[Everything we do for security](docs/everything-we-do-for-security.md).
+
 ## Reporting a vulnerability
 
 Please use [GitHub's private vulnerability reporting](https://github.com/fosterstack/cache/security/advisories/new)
@@ -83,31 +86,40 @@ scanners report (critical through low, and unknown), so a CVE disclosed against
 bytes we already shipped raises a tracked issue (or a new comment on the open
 one for that image and scanner) rather than waiting for someone to look.
 
+## FIPS 140-3
+
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. How to check it, and the certificate links, are in [`docs/fips.md`](docs/fips.md).
+
 ## Approved-only cryptography
 
 Enforcement is delegated to the validated module rather than to a list.
 
 CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
 build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
-refuses any non-approved algorithm at runtime. Any reach for non-approved
-cryptography — ours or a dependency's — fails that commit's `fips140-only`
-check.
+makes non-approved algorithms fail at runtime, as a best-effort test aid.
+When the mode catches a reach for non-approved cryptography — ours or a
+dependency's — that commit's `fips140-only` check fails.
 
 Two limits of that claim, stated so it cannot be over-read: the check proves
-the paths the test suite executes, built in FIPS mode. The released
-`fscache-fips` binary is separately run by the release's artifact acceptance,
-which reads its `/statusz` and requires the validated-module line; the release
-also starts each published image by digest (amd64, and arm64 under emulation)
-and serves traffic from it, but no test yet reads the `/statusz` posture of
-those running images; and its status as a merge-blocking check is set by the repository ruleset,
-which is listed in [.github/policy/required-checks.json](.github/policy/required-checks.json).
+the paths the test suite executes, built in FIPS mode; and its status as a
+merge-blocking check is set by the repository ruleset, which is listed in
+[.github/policy/required-checks.json](.github/policy/required-checks.json).
+
+Separately, before anything is published, the release's Check stage binds each
+built candidate image to Build's recorded digest. On amd64 it starts the
+production and `-fips` images and reads their `/statusz`: the standard image must
+report the validated module off and the `-fips` image must report the
+validated-module line. The artifact checks start both images and serve cache
+traffic on amd64 and on a hosted arm64 runner; on arm64 the `/statusz` posture
+is read from the binaries, not from the running images. This tests the images as
+built, before publication.
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
 in-boundary crypto imports are permitted, and third-party cryptographic
 implementations are denied outright, because `GOFIPS140` does not govern
 code outside the module.
 
-**What each half proves, stated plainly.** `fips140=only` proves the paths
+**What each half proves, stated plainly.** `fips140=only` checks the paths
 the tests execute; it says nothing about a path no test reaches. The
 allowlist is a static check: it sees imports, not behaviour. Together they
 cover more than either does alone, and neither is a proof of total coverage.
@@ -116,7 +128,7 @@ The `-fips` build announces itself at startup, so the property is
 observable at runtime rather than taken on trust:
 
 ```
-"fips140":"active (Go validated module, CMVP cert #5247)"
+"fips140":"active (Go validated module ..., CMVP cert #5247)"
 ```
 
 Standard builds report `"fips140":"off"`.

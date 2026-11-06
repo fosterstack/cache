@@ -26,12 +26,15 @@ name: scan
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
 # (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
 # ratified Sep 29, decision row 73; the role's trust names those subjects).
+# In the merge queue the subject is ref:refs/heads/gh-readonly-queue/main/...: the role's trust must admit it (a maintainer
+# step, before the queue is turned on) or the inspector job fails, and with it `scan`, for every merge group.
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
 
 on:
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
   push:
     branches: [main]
     tags: ['v*']
@@ -68,7 +71,7 @@ jobs:
     with:
       mode: snapshot
 
-  # The PR-mode proof of the reproducibility property (rule 31, kept): Rebuild in snapshot mode rebuilds everything on fresh runners and compares every item with
+  # The PR-mode proof of the reproducibility property (kept): Rebuild in snapshot mode rebuilds everything on fresh runners and compares every item with
   # Build's snapshot record; it FAILS the job on any difference (REQ-CHAIN-005-AC7). The release relies only on release.yml's own Rebuild; this is a PR/main proof.
   rebuild:
     needs: build
@@ -306,7 +309,7 @@ jobs:
           echo "fresh=${stored}" >> "$GITHUB_OUTPUT"
           echo "- SBOMs assessed: ${sent} sent to Inspector, ${reused} reused (same inventory, same UTC day)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -eq 1 ]; then
-            echo "::error::Amazon Inspector found vulnerabilities. Fix the dependency, or publish a VEX statement via the audit-lane review." >&2
+            echo "::error::Amazon Inspector found vulnerabilities. Fix the dependency, or publish a VEX statement via the audit review." >&2
           elif [ "$rc" -ge 2 ]; then
             echo "::error::Amazon Inspector did not run on every image — a pipeline failure, not a finding and not a clean pass." >&2
           fi

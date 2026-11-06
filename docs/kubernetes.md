@@ -155,17 +155,7 @@ spec:
                 secretKeyRef:
                   name: fscache-auth
                   key: password
-            # Optional (see docs/docker-deploy.md#configuration).
-            # These are commented out so this manifest applies verbatim as tested;
-            # uncomment to enable.
-            # - name: FSCACHE_MAX_CONCURRENT_UPLOADS   # bound PUTs in flight; default 32, 0 disables; the request past the limit gets 429 + Retry-After
-            #   value: "32"
-            # - name: FSCACHE_RO_USERNAME              # optional read-only pair: reads cache entries but not writes them (a write gets 403)
-            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-username } }
-            # - name: FSCACHE_RO_PASSWORD
-            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-password } }
-            # An entry larger than FSCACHE_MAX_BYTES is refused with 413 and
-            # X-FSCache-Reject: entry-exceeds-cache-cap; nothing is evicted to make room.
+            # Optional settings (upload limit, read-only user, entry-size cap): docs/docker-deploy.md#configuration
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -549,7 +539,9 @@ file that is missing, unreadable, not PEM, or a key that does not match the
 certificate, stops the start with a message naming the variable and the path,
 before anything under the data directory is touched. Each file may be at most
 1 MiB, and each must be a regular file (a symlink to one, as in a Secret
-volume, is fine).
+volume, is fine). Issue the server certificate from your organization's approved
+certificate authority; a self-signed certificate is a finding under common
+platform assessments.
 
 Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
 read-only. Both files must be readable by the container's non-root user
@@ -622,17 +614,7 @@ spec:
                 secretKeyRef:
                   name: fscache-auth
                   key: password
-            # Optional (see docs/docker-deploy.md#configuration).
-            # These are commented out so this manifest applies verbatim as tested;
-            # uncomment to enable.
-            # - name: FSCACHE_MAX_CONCURRENT_UPLOADS   # bound PUTs in flight; default 32, 0 disables; the request past the limit gets 429 + Retry-After
-            #   value: "32"
-            # - name: FSCACHE_RO_USERNAME              # optional read-only pair: reads cache entries but not writes them (a write gets 403)
-            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-username } }
-            # - name: FSCACHE_RO_PASSWORD
-            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-password } }
-            # An entry larger than FSCACHE_MAX_BYTES is refused with 413 and
-            # X-FSCache-Reject: entry-exceeds-cache-cap; nothing is evicted to make room.
+            # Optional settings (upload limit, read-only user, entry-size cap): docs/docker-deploy.md#configuration
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

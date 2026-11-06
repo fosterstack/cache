@@ -30,17 +30,18 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 # every secret (toJSON) or inherited secrets are exactly these; a new consumer must come through review and be listed.
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("agent-review-gate.yml", "record"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
-           ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
+           ("main-candidate-rescan.yml", "panel-scout"),
            ("main-candidate-rescan.yml", "panel-google"),  # the release.yml promotion job (scans) is gone: Check holds no secret (PR 3), Release is the release job (PR 4)
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
            # panel-scout/panel-google above; it never mints or uses the auditor App's token
            ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),
-           # automatic patch releases (REQ-REL-009, PR B/#159): decide is main-only + gitsign (id-token) AND mints
-           # the auditor App's token (contents write only) to push the signed tag; patch-notes mints the same App's
-           # token (contents + pull-requests) to open the changelog PR after that tag — both deliberate, reviewed
-           # consumers of that credential (Sonnet #158 r3, REL-DECIDE-01: the earlier comment wrongly said decide
-           # never touches the App's secrets)
-           ("release.yml", "decide"), ("release.yml", "patch-notes"),
+           # automatic patch releases (REQ-REL-009, PR B/#159): decide holds no environment and no secret and cuts no tag
+           # (handoff 0713 P8); patch-notes alone mints the auditor App's token (contents + pull-requests) for the
+           # changelog PR
+           ("release.yml", "patch-notes"),
+           # REQ-DEP-005-AC3: queue-publish mints the App token with checks:write only to publish the merge-queue
+           # verdict (queue-judge holds no credential) - a new consumer, reviewed and listed here
+           ("agent-review-gate.yml", "queue-publish"),
            # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
            # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
            # on main
@@ -154,7 +155,7 @@ rmint = [s for s in rsteps if str(s.get("uses", "")).startswith("actions/create-
 if len(rmint) != 1 or rmint[0].get("with") != want or rmint[0].get("id") != "app-token":
     bad.append("AC28: the refresh job does not mint the App token exactly as the check job does: %s" % [s.get("with") for s in rmint])
 rusers = [s.get("name") for s in rsteps if "steps.app-token.outputs.token" in str(s)]
-if rusers != ["refresh the inputs (stage the pull request)", "check for a newer certified crypto module", "open the pull requests"]:
+if rusers != ["refresh the inputs (stage the pull request)", "check for a newer FIPS module version", "open the pull requests"]:
     bad.append("AC28: the App token reaches steps other than the three refresh steps: %s" % rusers)
 KEYCHK = "check the live Wolfi key against the pinned one"
 ARCHKEY = "check the live Wolfi key against the pulled archive"
@@ -174,7 +175,7 @@ if len(rnames) < 2 or rnames[1] != KEYCHK if rnames else True:
 elif "./bin/refresh-inputs.sh key-check " not in "".join(str(x.get("run", "")) for x in rsteps if x.get("name") == KEYCHK) or any(x.get("if") for x in rsteps if x.get("name") == KEYCHK):
     bad.append("AC26/AC30: the key check step does not call refresh-inputs.sh key-check, or carries an if")
 ORDER = ["pull the archive by its recorded digest", "refresh the inputs (stage the pull request)",
-         "check for a newer certified crypto module", "store the archive when something changed", "open the pull requests"]
+         "check for a newer FIPS module version", "store the archive when something changed", "open the pull requests"]
 BOOT = "bootstrap the archive from the pined Wolfi key".replace("pined", "pinned")
 pos = [rnames.index(n) if n in rnames else -1 for n in ORDER]
 if -1 in pos or pos != sorted(pos):
@@ -273,9 +274,9 @@ case_ store-if-inverted      bad "[s.__setitem__('run', s['run'].replace('if [ \
 case_ archive-keycheck-removed bad "$R['steps'] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pulled archive']"
 case_ archive-keycheck-if      bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pulled archive']"
 case_ archive-keycheck-late    bad "$R['steps'].append($R['steps'].pop([k for k, s in enumerate($R['steps']) if s.get('name') == 'check the live Wolfi key against the pulled archive'][0]))"
-case_ later-step-always        bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
-case_ later-step-failure-space bad "[s.__setitem__('if', '\${{ failure () }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
-case_ later-step-always-upper  bad "[s.__setitem__('if', '\${{ ALWAYS() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ later-step-always        bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
+case_ later-step-failure-space bad "[s.__setitem__('if', '\${{ failure () }}') for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
+case_ later-step-always-upper  bad "[s.__setitem__('if', '\${{ ALWAYS() }}') for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
 case_ refresh-no-concurrency  bad "$R.pop('concurrency', None)"
 case_ refresh-cancel-in-prog  bad "$R['concurrency'] = {'group': 'refresh-inputs', 'cancel-in-progress': True}"
 case_ refresh-other-group     bad "$R['concurrency'] = {'group': 'refresh-inputs-' + '\${{ github.run_id }}', 'cancel-in-progress': False}"
@@ -335,11 +336,11 @@ case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in 
 case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
 case_ refresh-bootstrap-always bad "[s.pop('if', None) for s in $R['steps'] if s.get('name') == 'bootstrap the archive from the pinned Wolfi key']"
 case_ refresh-keycheck-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pinned one']"
-case_ refresh-go-root-floating bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '\$(go env GOROOT)')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-go-root-floating bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '\$(go env GOROOT)')) for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
 case_ refresh-pinned-go-or-true bad "[s.__setitem__('run', s['run'].rstrip() + ' || true\\n') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
-case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '/usr/local/bin/fscache-go2')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '/usr/local/bin/fscache-go2')) for s in $R['steps'] if s.get('name') == 'check for a newer FIPS module version']"
 case_ refresh-pinned-go-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'install the pinned Go toolchain']"
-case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer certified crypto module') + 1, a.pop(n.index('install the pinned Go toolchain')))"
+case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer FIPS module version') + 1, a.pop(n.index('install the pinned Go toolchain')))"
 case_ refresh-setup-go-back bad "$R['steps'].insert(2, {'uses': 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'with': {'go-version': '1.27'}})"
 case_ refresh-pinned-go-unlisted-install bad "[s.__setitem__('run', 'tar -xzf \"\$RUNNER_TEMP/go.tgz\" -C /usr/local/bin') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
 case_ refresh-keycheck-late bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('check the live Wolfi key against the pinned one'); a.insert(n.index('pull the archive by its recorded digest'), a.pop(i))"

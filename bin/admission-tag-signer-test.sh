@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC6, REQ-REL-009-AC13
-# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057): the owner's
-# SSH signature (allowed-signers) on any tag; the release.yml-on-main gitsign identity on a PATCH tag only (vX.Y.Z,
-# Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
-# tag object, or the CI identity on a minor, major or rc tag is refused. The route only picks the verifier; the
-# verifier (git verify-tag against allowed-signers, or gitsign verify-tag with the identity pinned) still has to pass.
+# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): only the owner's
+# SSH signature (allowed-signers), on any tag. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
+# release.yml gitsign identity), or an ambiguous tag object is refused. The route only picks the verifier; the verifier
+# (git verify-tag against allowed-signers) still has to pass.
 # The second half of this file judged the wiring of stage-admission.yml (policy from protected main; gitsign verify-tag pinning the identity,
 # issuer, repository, ref and tagged commit; the baseline rules). PR 2 of the v0.3.0 chain removed that workflow: admission is the first step of
 # Build's apk job (bin/build-admit.py) and the same properties are judged by bin/chain-build-admit-test.sh (REQ-CHAIN-004-AC4, AC5).
@@ -37,27 +36,40 @@ for obj, want in [(SSH, "ssh"), (X509, "x509"), (PGP, "pgp"), (HEAD, "none"),
     check("kind -> %s" % want, got == want, got)
 REL = ["v0.1.0", "v0.2.0", "v0.2.1"]
 for tag, obj, tags, want, why in [
-    ("v0.2.2", X509, REL, "gitsign", "the CI identity on the next patch"),
+    ("v0.2.2", X509, REL, "refuse", "a keyless signature on the next patch (handoff 0713 P8: no keyless route is left)"),
     ("v0.3.0", X509, REL, "refuse", "the CI identity on a minor tag"),
     ("v1.0.0", X509, REL, "refuse", "the CI identity on a major tag"),
     ("v0.2.3", X509, REL, "refuse", "the CI identity skipping a patch (v0.2.2 not released)"),
     ("v0.2.2-rc.1", X509, REL, "refuse", "the CI identity on an rc"),
     ("v0.4.1", X509, REL, "refuse", "the CI identity on a line with no owner release"),
-    ("v0.2.2", SSH, REL, "ssh", "the owner on a patch"),
+    ("v0.2.2", SSH, REL, "ssh", "the owner's own signature on a patch tag (advisor 09:52Z: KMS rule 2 removes keyless signing, not the owner's key)"),
+    ("v0.2.1", SSH, REL, "ssh", "the owner's own signature on an existing patch tag (a re-tag is for the other admission checks to refuse)"),
+    ("v0.3.1", SSH, REL + ["v0.3.0"], "ssh", "the owner's own signature on the first patch of a released minor"),
+    ("v0.3.0-rc1", SSH, REL, "ssh", "the owner on a release candidate"),
+    ("v0.3.0-rc1", X509, REL, "refuse", "a keyless signature on a release candidate"),
     ("v0.3.0", SSH, REL, "ssh", "the owner on a minor"),
     ("v0.2.2", HEAD, REL, "refuse", "an unsigned tag (the App pushed it unsigned)"),
     ("v0.2.2", PGP, REL, "refuse", "a PGP signature"),
     ("v0.2.2", SSH + "-----BEGIN SIGNED MESSAGE-----\nB\n-----END SIGNED MESSAGE-----\n", REL, "refuse", "two signatures"),
     ("v0.2.1", X509, REL, "refuse", "the CI identity re-signing an existing tag"),
 ]:
-    got = T.route(tag, obj, tags)
+    got = T.route(obj)
     check("route: %s -> %s" % (why, want), got[0] == want, got)
 import hashlib, json, os, tempfile, io, contextlib
 d = tempfile.mkdtemp(); o = os.path.join(d, "obj"); open(o, "w").write(X509); t = os.path.join(d, "tags"); open(t, "w").write("\n".join(REL) + "\n")
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    rc = T.main(["route", "--tag", "v0.2.2", "--tag-object", o, "--tags", t])
-check("CLI prints the route first", rc == 0 and buf.getvalue().split()[0] == "gitsign", buf.getvalue())
+    rc = T.main(["route", "--tag-object", o])
+check("CLI prints the route first (a keyless patch tag is refused)", rc == 0 and buf.getvalue().split()[0] == "refuse", buf.getvalue())
+# older tagged callers (v0.2.2's workflow, the chain's earlier build-admit.py) pass --tag and --tags: both are accepted
+# and ignored, so the route is the same as without them
+for extra in ([], ["--tag", "v0.2.2"], ["--tags", t], ["--tag", "v0.2.2", "--tags", t]):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = T.main(["route", "--tag-object", o] + extra)
+    check("CLI: route %s gives the same answer as the bare call" % (" ".join(extra) or "alone"),
+          rc == 0 and out.getvalue().split()[0] == "refuse", out.getvalue())
+check("no route named gitsign is left in the router", 'return "gitsign"' not in open(sys.argv[1]).read(), "the router still returns the gitsign route")
 
 # --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses
 def req_yaml(entries):

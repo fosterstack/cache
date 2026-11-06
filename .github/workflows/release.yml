@@ -1,6 +1,6 @@
 name: Release
 
-# The release chain (release-chain-design.md; v0.3.0 rules 50 to 71): build once, verify by digest, publish by digest. Each stage is a reusable
+# The release chain (release-chain-design.md): build once, verify by digest, publish by digest. Each stage is a reusable
 # workflow with its own OIDC identity; one signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
 # are sha256 digests emitted by the stage that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
 # pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
@@ -12,7 +12,7 @@ on:
   push:
     tags:
       - "v*"
-    # Automatic patch releases (owner RATIFIED Oct 2; REQ-REL-009): a push to main and a daily schedule run ONLY the
+    # Automatic patch releases (REQ-REL-009): a push to main and a daily schedule run ONLY the
     # decide job below; the chain itself starts only on a v* tag.
     branches:
       - main
@@ -27,17 +27,20 @@ on:
         type: boolean
         default: false
 
-# Every job asks for what it needs (v0.3.0 rule 56: only the Release job holds write access to packages and the repository's releases). The
+# Every job asks for what it needs. The
 # workflow default is read-only; a caller's grants must COVER what the called stage requests, or the run is a startup_failure with zero jobs.
 permissions:
   contents: read
 
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
-  # Automatic patch releases (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056/0057; REQ-REL-009).
+  # Automatic patch releases (REQ-REL-009).
   # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag, rule 1; at once for
-  # a removed critical/high finding on push, else at most once a day, rule 2), signs the tag keylessly with gitsign under
-  # THIS workflow's identity (rule 3), and pushes it with the auditor App's token, whose tag push starts the chain below.
+  # a removed critical/high finding on push, else at most once a day, rule 2), checks the ACs baseline and the tagged
+  # commit's required checks, and writes
+  # the notes. It cuts NO tag: until the release KMS Sign job signs a patch tag (maintainer question O4) there is no signer
+  # here, and an unsigned tag is never
+  # cut (handoff 0713 P8). The step `cut` records that.
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
@@ -45,14 +48,12 @@ jobs:
       group: patch-decide
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    environment: agent          # the App's secrets live here (main only)
     permissions:
       contents: read
-      checks: read              # wait for the tagged commit's required checks (advisor 0063)
-      id-token: write           # gitsign signs with this workflow's own OIDC identity (no key)
+      checks: read              # wait for the tagged commit's required checks
       issues: write             # the standing "main is not patch-clean" issue
     outputs:
-      tagged: ${{ steps.push.outputs.tagged }}   # the patch-notes job opens the changelog PR (advisor 0135)
+      tagged: ${{ steps.cut.outputs.tagged }}    # always false until a signer cuts the tag; the patch-notes job opens the changelog PR only for a pushed tag
       version: ${{ steps.decide.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,10 +66,9 @@ jobs:
       - name: the rc-proof marker validates for this commit
         run: python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"
 
-      - name: install the pinned tools (gitsign; grype)
+      - name: install the pinned tool (grype)
         run: |
           set -euo pipefail
-          ./bin/install-scanner.sh gitsign
           ./bin/install-scanner.sh grype
 
       - name: what changed since the latest tag (the PR labels of each commit) and whether a patch was cut today
@@ -112,7 +112,7 @@ jobs:
           # each scan goes to the decision on its own and is validated there — no aggregation that turns a malformed
           # document into an empty one; a base-image failure is the base's alone (Codex #159 r2, B2 / NEW-1)
           rel_args=(); for f in "${rel[@]}"; do rel_args+=(--release-grype "$f"); done
-          # Rules 61 and 62: no base image exists (the image is assembled by apko from committed locks), so none is scanned and no distribution package
+          # No base image exists (the image is assembled by apko from committed locks), so none is scanned and no distribution package
           # finding counts as removed (unknown never counts). The base inputs are the committed locks and records of .github/policy/base-inputs.json; the
           # ones that moved since the release are printed here, and bin/patch-decide.py classifies a commit from the same list (the base-input-changed signal).
           python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE" > "$RUNNER_TEMP/base-moved.txt" || exit 1
@@ -150,7 +150,7 @@ jobs:
           import json, sys
           t = sys.argv[1]
           d = json.load(open(t + "/decision.json"))
-          body = "No patch was cut: these commits since %s are not fix-only (rule 1). A minor release, or the owner's patch-fix label on the PR, resolves each.\n\n" % (d.get("since") or "the latest tag")
+          body = "No patch was cut: these commits since %s are not fix-only. A minor release, or a maintainer's patch-fix label on the PR, resolves each.\n\n" % (d.get("since") or "the latest tag")
           LIMIT, total, placed = 60000, len(d["not_clean"]), 0
           foot = lambda left: "\n... and %d more of %d commits; the decide job log lists them all\n" % (left, total)
           for e in d["not_clean"]:
@@ -164,10 +164,12 @@ jobs:
           n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
-      # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
-      # if the requirements are byte-for-byte unchanged since it. Admission applies this rule; decide applies the SAME
-      # rule to the same sources first (owner-signed tags), so it never cuts a tag admission must refuse. Otherwise no
-      # cut: it waits for the owner.
+      # REQ-REL-009-AC13: a CI patch uses the latest maintainer-approved ACs baseline of its line, only
+      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources
+      # (maintainer-signed
+      # tags) and cuts no tag at all since handoff 0713 P8 (no signer exists yet); admission accepts an maintainer-signed
+      # patch
+      # tag on the maintainers' baseline. Otherwise no cut: it waits for a maintainer.
       - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
         id: basecheck
         if: ${{ steps.decide.outputs.cut == 'true' }}
@@ -175,8 +177,8 @@ jobs:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
           set -euo pipefail
-          # baselines only from owner-SSH-signed tags of the line, verified against protected main's allowed signers —
-          # exactly what admission reads (Codex #163 r1, B01; advisor 0093)
+          # baselines only from SSH-signed tags of the line, verified against protected main's allowed signers —
+          # exactly what admission reads (Codex #163 r1, B01)
           git fetch -q --no-tags origin main
           git show origin/main:.github/policy/allowed_signers > "$RUNNER_TEMP/allowed_signers"
           python3 bin/admission-tag-signer.py owner-baselines --tag "${VERSION}" \
@@ -186,19 +188,19 @@ jobs:
           echo "$b"
           case "$b" in
             "use "*)
-              # admission will read the tagged commit's copy and refuse it unless it equals the owner tag's (pin pass B03)
+              # admission will read the tagged commit's copy and refuse it unless it equals the signed tag's
               base=$(cut -d' ' -f2 <<<"$b")
               if git show "${base}:requirements/releases/${base}.yaml" | cmp -s - "requirements/releases/${base}.yaml"; then
                 echo "ok=true" >> "$GITHUB_OUTPUT"
               else
-                echo "::notice::no cut: requirements/releases/${base}.yaml differs from the owner-signed ${base}"
+                echo "::notice::no cut: requirements/releases/${base}.yaml differs from the signed ${base}"
                 echo "ok=false" >> "$GITHUB_OUTPUT"
               fi ;;
             *) echo "::notice::no cut: ${b#no }"; echo "ok=false" >> "$GITHUB_OUTPUT" ;;
           esac
 
       # Admission requires every push-scoped required check green on the exact tagged commit; on a push, that commit's
-      # checks are still running when decide runs. Wait for them (bounded: a wait, never a retry, rule 7); cut only if they
+      # checks are still running when decide runs. Wait for them (bounded: a wait, never a retry); cut only if they
       # are all green, judged as admission judges them. Otherwise no cut, and the daily run picks the patch up.
       - name: wait for the tagged commit's required checks (as admission judges them; bounded)
         id: checks
@@ -228,7 +230,7 @@ jobs:
           echo "::notice::no cut: the required checks did not finish within 60 minutes; the daily run tries again"
           echo "ready=false" >> "$GITHUB_OUTPUT"
 
-      # AC8 (advisor 0130/0135): the fixes from the release scans, the VEX changes since the latest tag and the
+      # AC8: the fixes from the release scans, the VEX changes since the latest tag and the
       # next-release entries no earlier patch published; an incomplete scan or an uncited entry fails here: no tag
       - name: the patch notes (bin/patch-decide.py notes)
         if: ${{ steps.decide.outputs.cut == 'true' }}
@@ -253,40 +255,19 @@ jobs:
             --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: sign the patch tag keylessly (gitsign, this workflow's identity)
-        if: ${{ steps.checks.outputs.ready == 'true' }}
+      - name: no tag is cut until the release KMS Sign job signs it (owner question O4)
+        id: cut
         env:
           VERSION: ${{ steps.decide.outputs.version }}
+          READY: ${{ steps.checks.outputs.ready }}
         run: |
           set -euo pipefail
-          git config user.name "fosterstack release"
-          git config user.email "release@users.noreply.github.com"
-          git -c gpg.format=x509 -c gpg.x509.program=gitsign tag -s --cleanup=verbatim -F "$RUNNER_TEMP/notes.md" "$VERSION"
-          git -c gpg.format=x509 -c gpg.x509.program=gitsign verify-tag "$VERSION" 2>&1 | tail -2 || true
+          echo "tagged=false" >> "$GITHUB_OUTPUT"
+          if [ "$READY" = true ]; then
+            echo "A patch $VERSION is due and its required checks are ready. No tag is cut: nothing here signs a tag, and an unsigned tag is never cut." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: mint the auditor App's token (contents write on cache only)
-        id: app-token
-        if: ${{ steps.checks.outputs.ready == 'true' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: cache
-          permission-contents: write
-
-      - name: push the signed tag (the App transports it)
-        id: push
-        if: ${{ steps.checks.outputs.ready == 'true' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ steps.decide.outputs.version }}
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          git push origin "refs/tags/${VERSION}"
-          echo "tagged=true" >> "$GITHUB_OUTPUT"
-
-  # AC8 + advisor 0130/0135: the pushed tag's notes go on top of docs/quality/releases/CHANGELOG.md and leave docs/next-release-notes.md,
+  # AC8: the pushed tag's notes go on top of docs/quality/releases/CHANGELOG.md and leave docs/next-release-notes.md,
   # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
   patch-notes:
     needs: decide
@@ -331,7 +312,7 @@ jobs:
           oid=$(python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
             --message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}")
           # RESIDUALS (documented, not handled here): (1) moving the live branch is not atomic: a writer between the head re-read and the forced
-          # ref update can be overwritten (inherited from the signed-commit helper, #190; one run per tag; the branch name is not a reserved lane, so this is a residual);
+          # ref update can be overwritten (inherited from the signed-commit helper, #190; one run per tag; so this is a residual);
           # (2) a rerun after the notes were published and merged can prepend the same changelog entry again (no already-published detection).
           # Re-runnable, bound to what THIS job made: the PR is the open one from this branch INTO main, in THIS repository (a fork PR with the same
           # branch name is ignored), exactly one, kept by NUMBER, and its head must be the commit the helper just made ($oid); auto-merge is enabled
@@ -341,7 +322,7 @@ jobs:
           [ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
           if [ "$count" -eq 0 ]; then
             gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
-              --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
+              --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
           fi
           number=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].number")
           head=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].headRefOid")
@@ -369,9 +350,9 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/stage-build.yml
     with:
-      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}   # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
+      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}   # the hostile Build step runs on a push of a release-candidate tag only
 
-  # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here, with the digests.json text Build wrote.
+  # The Sign job of v0.3.0: its own workflow file, called only from here, with the digests.json text Build wrote.
   sign:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: build
@@ -383,7 +364,7 @@ jobs:
       digests: ${{ needs.build.outputs.digests }}
       stage: build
 
-  # Rebuild (rule 54): fresh runners rebuild everything Build built and compare every item; its only output is the verdict. It starts from Build's SIGNED records
+  # Rebuild: fresh runners rebuild everything Build built and compare every item; its only output is the verdict. It starts from Build's SIGNED records
   # (the building jobs hold no identity token; Sign signs what they recorded), so it needs Sign.
   rebuild:
     needs: [build, sign]
@@ -391,7 +372,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/stage-reproducibility.yml
 
-  # Sign's second call (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): the same file, the stage rebuild: it checks and signs Rebuild's records
+  # Sign's second call: the same file, the stage rebuild: it checks and signs Rebuild's records
   # and receives no Rebuild apk or image. Its identity is the first call's (one workflow file, release.yml on top).
   sign-rebuild:
     needs: [build, rebuild]
@@ -404,7 +385,7 @@ jobs:
       stage: rebuild
       records: ${{ needs.rebuild.outputs.records }}
 
-  # Check (rules 55, 58, 70; REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
+  # Check (REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
   # digests, as three Witness steps. It needs Build and Sign (it verifies Build's record, signed by Sign, on entry) and runs beside Rebuild, never after it.
   check:
     needs: [build, sign]
@@ -426,8 +407,8 @@ jobs:
       records: ${{ needs.check.outputs.records }}
       records-arm64: ${{ needs.check.outputs.records-arm64 }}
 
-  # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
-  # releases. It needs exactly Check, Sign, Sign-rebuild and Sign-check (rule 70; it reaches Build and Rebuild through them), has no `if` that survives a failed or skipped predecessor
+  # Release (REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
+  # releases. It needs exactly Check, Sign, Sign-rebuild and Sign-check (it reaches Build and Rebuild through them), has no `if` that survives a failed or skipped predecessor
   # (a dry run publishes nothing, a branch run is not a release, and a skipped Build skips it through `needs`), passes no secrets to the stage (the environment named release holds them)
   # and creates no tag.
   release:
@@ -446,7 +427,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/stage-promote.yml
 
-  # Scanner-panel rule 12 (owner RATIFIED Oct 2; REQ-SCAN-012): on a release candidate (vX.Y.Z-rcN, nothing is published) the candidate images are pushed by digest
+  # (REQ-SCAN-012): on a release candidate (vX.Y.Z-rcN, nothing is published) the candidate images are pushed by digest
   # from Build's artifacts to the dedicated test repositories and the page's load and removal commands run as written; the blocks that read a release or a
   # registry run in live-test-release after publishing (docs/using-our-vex.cannot-run.json).
   live-test:
@@ -456,7 +437,7 @@ jobs:
     concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
       group: vex-live-test
       cancel-in-progress: false
-    environment: live-test   # holds the five LIVE_TEST_* identifiers (advisor 0078); its tag policy must admit rc and final v tags
+    environment: live-test   # holds the five LIVE_TEST_* identifiers; its tag policy must admit rc and final v tags
     permissions:
       contents: read
       id-token: write
@@ -534,7 +515,7 @@ jobs:
     concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
       group: vex-live-test
       cancel-in-progress: false
-    environment: live-test   # holds the five LIVE_TEST_* identifiers (advisor 0078); its tag policy must admit rc and final v tags
+    environment: live-test   # holds the five LIVE_TEST_* identifiers; its tag policy must admit rc and final v tags
     permissions:
       contents: read
       id-token: write
@@ -591,7 +572,7 @@ jobs:
           DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
         run: bash bin/vex-live-run.sh cleanup
 
-  # The hostile judges, run on a release-candidate tag push (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
+  # The hostile judges, run on a release-candidate tag push (REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
   # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be
   # ACCEPTED by the same policy. The outcome of an attempt is the verifier's own exit code, captured per attempt, never a field
   # the hostile step wrote. This job only judges; it publishes nothing.
@@ -632,7 +613,7 @@ jobs:
       - name: attempt read_sign_key
         run: |
           rc=0
-          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json 2> /tmp/read_sign_key.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
       - name: attempt hand_sign_code
         run: |
@@ -673,7 +654,7 @@ jobs:
       - name: every hostile attempt refused with its own cause, the positive control accepted
         run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
 
-  # Persona UAT, release-candidate leg (REQ-UAT-001-AC1; advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14): on a release candidate the three personas
+  # Persona UAT, release-candidate leg (REQ-UAT-001-AC1): on a release candidate the three personas
   # (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator) test the image Build made, BEFORE anything is released, and nothing is published. The job needs Build only.
   # Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only; the pushed
   # digest must equal Build's image-production digest. The job holds no registry credential and no write permission (contents read, id-token write for the federated model

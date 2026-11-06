@@ -18,6 +18,7 @@ tool at it — [Gradle setup](gradle.md) / [Maven setup](maven.md) — and
 you're done.
 
 Pin a version tag for anything real; `:latest` is for a first look.
+How tags move, and how to upgrade, is on [upgrading and pinning](upgrading.md).
 
 ### Verify it is working
 
@@ -60,6 +61,8 @@ docker run --rm -v fscache-data:/data busybox chown 65532:65532 /data
 docker run -d -p 127.0.0.1:8080:8080 -v fscache-data:/data \
   -e FSCACHE_DATA_DIR=/data ghcr.io/fosterstack/cache:latest
 ```
+
+What the server writes to its log, including the startup line: [logging](logging.md).
 
 ## Sizing
 
@@ -164,13 +167,11 @@ alerting examples in [Kubernetes](kubernetes.md)).
 
 ## Configuration
 
-All configuration is environment variables (see the main
-[README](../README.md#build-and-run-from-source) for the full table):
-`FSCACHE_ADDR`, `FSCACHE_DATA_DIR` (defaults to `./data`, which resolves to
-`/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
-`FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
+All configuration is environment variables. The full table, with defaults, is in the main
+[README](../README.md#build-and-run-from-source). In the image `FSCACHE_DATA_DIR` defaults to
+`./data`, which resolves to `/home/nonroot/data`.
 
-Four more:
+Four settings that need more than a table row:
 
 - **Read-only credentials** — `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`, an
   optional second username/password pair that can read cache entries but not
@@ -197,6 +198,8 @@ Four more:
   Each file may be at most 1 MiB. The files are read only at startup: replace
   them, then restart the container. Terminating TLS in a reverse proxy in front
   of the server remains the other option, and needs neither variable.
+  The image has no CA certificate bundle, so the server cannot verify any
+  outside certificate; it only presents the certificate and key you give it.
   If clients cannot connect over TLS, check from the client side:
   `openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
   chain, the negotiated version and cipher, and the alert). The server does not
@@ -234,6 +237,10 @@ this project deliberately avoids.
 `/statusz` and the browser landing page sit behind Basic Auth when it is
 enabled. `/healthz` and `/metrics` stay open, so liveness probes and Prometheus
 scrapers need no credentials.
+
+What the landing page and `/statusz` show: [status page](status-page.md).
+
+After a crash or a forced stop the server reconciles its stores before it serves: [crash recovery](crash-recovery.md).
 
 ## Resetting the cache
 

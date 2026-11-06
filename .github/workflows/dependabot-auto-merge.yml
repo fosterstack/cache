@@ -1,12 +1,12 @@
 name: Dependabot auto-merge
 
-# Brief §0.2(a) autonomous lane, mechanised: dependency bumps to
+# Autonomous path, mechanised: dependency bumps to
 # upstream-published versions ship after the full CI gate and do not wait on
-# the owner. This file arms patch and minor. A major is an API-break risk, so
+# a maintainer. This file arms patch and minor. A major is an API-break risk, so
 # it gets a READER instead of a human: the hourly dependabot-reviewer.yml
 # (register row 75) judges it against upstream release notes and our usage.
 # So does a patch/minor whose release notes say "breaking" or "deprecat"
-# (REQ-DEP-003-AC2, advisor tighten-only reading, Oct 22): the `screen` step applies the
+# (REQ-DEP-003-AC2, Oct 22): the `screen` step applies the
 # reviewer's own rule, so a flagged bump is treated here as a major.
 #
 # Two deliberate safety properties:
@@ -51,7 +51,7 @@ jobs:
 
       # The same rule as bin/dependabot-reviewer.py `is_flagged` (the reviewer's candidate step), as a
       # heredoc because this workflow checks out nothing and fetches no script; bin/dependency-lanes-test.sh
-      # runs this very code against the reviewer's on a corpus, so the two lanes cannot disagree about
+      # runs this very code against the reviewer's on a corpus, so the two paths cannot disagree about
       # who arms what. The PR body arrives by env, never interpolated into the script. No
       # `continue-on-error`: if the screen cannot run, nothing below arms.
       - name: screen — do the release notes say breaking or deprecated (REQ-DEP-003-AC2)
@@ -155,7 +155,7 @@ jobs:
             echo "holds with an issue. Nothing waits on a person."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Owner, Oct 1: a merge verdict holds only for the head the reviewer read. A push to a major PR
+      # A merge verdict holds only for the head the reviewer read. A push to a major PR
       # (a Dependabot rebase or a new version) voids it: unless the reviewer has already approved THIS
       # head (its success check is on it — the reviewer may have got there first), auto-merge comes off
       # here at once and the hourly reviewer judges the new head afresh. Fails loudly if it cannot.
@@ -229,7 +229,7 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: >-
           gh pr review --approve "$PR_URL"
-          --body "Autonomous lane (brief 0.2a): patch/minor dependency bump to
+          --body "Autonomous path: patch/minor dependency bump to
           an upstream-published version. Merging once every required check is green."
 
       - name: enable auto-merge
@@ -241,7 +241,7 @@ jobs:
         # Bound to the head this run screened: an older run (an older body) cannot arm a newer head. The hold below reads the PR's files at that same head.
         run: |
           set -euo pipefail
-          # held out of auto-merge and handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): the pinned tool module (go.mod and go.sum under
+          # held out of auto-merge and handled as a normal PR: the pinned tool module (go.mod and go.sum under
           # tools/govulncheck/), whose version is also written by hand in ci.yml, which Dependabot cannot change; and any PR whose file list is at the API's cap of 100 (it
           # may be cut, so it cannot be judged). The hourly reviewer turns off an arm made earlier.
           # one read gives the file list and the head they belong to; the arm below is bound to the head this run screened (HEAD_SHA), so a push between the screen and the arm is not armed
@@ -257,7 +257,7 @@ jobs:
           fi
           if [ "$held" != 0 ] || [ "$total" -ge 100 ]; then
             echo "### Held out of auto-merge" >> "$GITHUB_STEP_SUMMARY"
-            echo "This PR touches tools/govulncheck/ (the pinned tool's version is also written in ci.yml) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal lane PR." >> "$GITHUB_STEP_SUMMARY"
+            echo "This PR touches tools/govulncheck/ (the pinned tool's version is also written in ci.yml) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal PR." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"

@@ -23,7 +23,7 @@
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
 #   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
-#               only_new_workflow (stage-sign.yml is the only new signing file since v0.2.2; customer-words-edited.yml is the one other added file); listed_signers + direct_signers (every workflow and
+#               only_new_workflow (stage-sign.yml is the only new signing file since v0.2.2; customer-words-edited.yml is the one other added file; evidence-letter.yml is the monthly letter's, the owner's Oct 3 amendment); listed_signers + direct_signers (every workflow and
 #               composite action matched against the signer table; provenance only in stage-sign.yml, every other signer listed with a
 #               reason in .github/policy/chain-signers.json); stage_grammars (every stage-*.yml over the closed key, env, uses and run-line
 #               grammar, running only scripts listed in .github/policy/chain-scripts.json by path and sha256); listed_scripts (each listed
@@ -378,10 +378,14 @@ stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-pr
 stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
-    """001-AC1: stage-sign.yml is the only new signing file v0.3.0 adds beyond the files that existed at v0.2.2 (rule 52). customer-words-edited.yml is
-    the one other added file: it holds no signer (listed_signers and direct_signers still judge it), and a new file is allowed by decision 98, Oct 3."""
+    """001-AC1: stage-sign.yml (rule 52) is the only new signing file v0.3.0 adds beyond the files that existed at v0.2.2. customer-words-edited.yml is
+    the added file that holds no signer (listed_signers and direct_signers still judge it; decision 98, Oct 3), and evidence-letter.yml (the monthly evidence
+    letter; the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md) may be there or not."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if new != ["customer-words-edited.yml", "stage-sign.yml"]: bad.append("AC1: workflow files added since v0.2.2 must be exactly [customer-words-edited.yml, stage-sign.yml], found %s" % new)
+    if not {"stage-sign.yml", "customer-words-edited.yml"} <= set(new) or set(new) - {"stage-sign.yml", "customer-words-edited.yml", "evidence-letter.yml"}:
+        bad.append("AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52), customer-words-edited.yml (decision 98, Oct 3) and at most "
+                   "evidence-letter.yml (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md), "
+                   "found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -2806,6 +2810,39 @@ d=$(mk t_cwsigner); printf 'jobs:\n  b:\n    steps:\n      - run: notation sign 
 expect caught "AC1 customer-words-edited.yml is no exemption: a signer in it is still found" tree "$d"
 d=$(mk t_cwgone); rm "$d/.github/workflows/customer-words-edited.yml"
 expect caught "AC1 the added set is exact: without customer-words-edited.yml it is wrong too" tree "$d"
+# the monthly evidence letter's workflow is the second new file (rule 52 and the owner's Oct 3 amendment,
+# ops/docs/ratify/2026-10-02-owner-load.md):
+# admitted with its one signing job on the id-token list; unlisted, or with a third new file beside it, refused
+addletter() { cp "$root/.github/workflows/evidence-letter.yml" "$1/.github/workflows/evidence-letter.yml"; }
+listletter() { python3 - "$1/.github/policy/id-token-jobs.json" <<'PY'
+import json, sys
+p = sys.argv[1]; j = json.load(open(p))
+j["jobs"].append({"workflow": "evidence-letter.yml", "job": "sign",
+                  "reason": "the monthly evidence letter's one signing job (REQ-REL-013-AC9)"})
+json.dump(j, open(p, "w"))
+PY
+}
+d=$(mk t_letter); addletter "$d"; listletter "$d"
+expect ok "AC1 evidence-letter.yml is admitted beside stage-sign.yml when its signing job is on the id-token list" \
+  tree "$d"
+d=$(mk t_letter_unlisted); addletter "$d"
+expect caught "AC1 evidence-letter.yml's signing job must be on the id-token list" tree "$d"
+# the third file must be refused for being a third file: evidence-letter.yml is listed on the id-token list and
+# stage-extra.yml signs nothing,
+# so the only finding left is the workflow-name one (F3 of the cache#777 round-one ruling)
+d=$(mk t_letter_third); addletter "$d"
+extra="$d/.github/workflows/stage-extra.yml"
+printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha" > "$extra"
+printf '        with:\n          persist-credentials: false\n' >> "$extra"
+listletter "$d"
+out=$(judge tree "$d" 2>/dev/null) || true
+want="AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52), customer-words-edited.yml (decision 98, Oct 3) and at most evidence-letter.yml"
+want="$want (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md),"
+want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'stage-extra.yml', 'stage-sign.yml']"
+if [ "$out" = "$want" ]; then
+  pass=$((pass + 1))
+  echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone, with evidence-letter.yml listed"
+else failn=$((failn + 1)); echo "FAIL AC1 third new workflow file -> ${out:0:500}"; fi
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
@@ -2887,7 +2924,8 @@ expect ok "the real tree: only release.yml calls stage-sign.yml and no stage cal
 # bytes in .github/policy/legacy-stage-files.json; the tree judge leaves out the findings OF a listed file whose bytes match (it still reads
 # them to see which scripts they run), and judges everything else in full. So the real tree is an ordinary `expect ok`. A file whose bytes
 # differ is judged in full; when the last legacy file is rewritten, deleting the list leaves this same case judging the whole tree.
-expect ok "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
+label="the real tree: only stage-sign.yml and evidence-letter.yml are new and only stage-sign.yml signs provenance"
+expect ok "$label (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
@@ -3089,21 +3127,22 @@ case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung t
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
-# the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
+# (the shadowed module must be one bin/chain-verify.py imports: it was fractions until the certificate and timestamp code went, and a control that shadows an unimported module proves nothing)
+# the isolation really works: with a bin/shutil.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
 iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
-printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
+printf 'print("SHADOW-MARKER-%s")\nfrom shutil import *\n' "$$" > "$iso/bin/shutil.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
-case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/fractions.py (not isolated)";;
-  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/fractions.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
+case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/shutil.py (not isolated)";;
+  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/shutil.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
   *) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help did not run: ${out:0:200}";; esac
 rc=0; out=$(cd "$iso" && python3 bin/chain-verify.py --help 2>&1) || rc=$?
-case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/fractions.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
+case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/shutil.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
 # Opus r5 B1: the helper modules are compiled from the bytes that carry the listed sha256, never from a bytecode cache. An UNCHECKED-HASH
 # bin/__pycache__/chain_common.<tag>.pyc that prints a marker must not run; and a changed chain_common.py (bytes no longer the listed ones)
 # is refused before it runs
-rm -f "$iso/bin/fractions.py"
+rm -f "$iso/bin/shutil.py"
 python3 - "$iso/bin" <<'PYC'
 import os, py_compile, sys, tempfile
 b = sys.argv[1]
@@ -3358,7 +3397,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='efb81a90da53fc970cef9a28b15ea7b19553707eca093a756131fba43b168900'
+FX_PIN='e524e980f362fa1b54b7c8532b4c312a473ac1f47434957b78bb6dabdb29b2e2'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5094,7 +5133,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2114
+EXPECT=2116
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

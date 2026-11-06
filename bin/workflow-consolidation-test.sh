@@ -106,11 +106,12 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
-    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
-                             "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
+    "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
+    "drift-issue": ("open the required-check drift issue", {"contents": "read", "issues": "write"}, None, None,
+                    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
+    "dependency-review": (None, {"contents": "read"}, None, None,
+                          "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -122,13 +123,13 @@ for jid, (name, perms, env, needs, cond) in MOVED.items():
         bad.append("job %s changed: %s" % (jid, got))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
-if d.get("permissions") != {"contents": "read"}:
+if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
 # the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
 LIVE = {"group": "vex-live-test", "cancel-in-progress": "false"}
 if any(j.get("concurrency") and not (jid == "live-test" and j.get("concurrency") == LIVE) for jid, j in jobs.items()):
     bad.append("ci.yml gained a job-level concurrency setting")   # the one top-level block is judged by judge_conc
-if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
+if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": "", "merge_group": ""}:
     bad.append("ci.yml's events changed: %s" % d.get("on"))
 for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
@@ -175,9 +176,10 @@ case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
-case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
+case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
+case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
 case_ci live-test-cancels        bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
@@ -338,8 +340,8 @@ root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
+if on != {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
+    bad.append("scan.yml's events changed (pull requests, the merge queue, pushes to main and v* tags): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:
@@ -455,23 +457,24 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61; 19 after that; 20 today with customer-words-edited.yml, a new file under the Oct 3 amendment because ci.yml's pull_request must stay unfiltered, reported to the owner; the list below): after the consolidation PRs the workflow directory holds exactly
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61; 19 after that; 21 today with evidence-letter.yml (a new file under the Oct 3 amendment, REQ-REL-013) and customer-words-edited.yml, a new file under the Oct 3 amendment because ci.yml's pull_request must stay unfiltered, reported to the owner; the list below): after the consolidation PRs the workflow directory holds exactly
 # the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
 # stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
-stage-sign.yml supply-chain.yml customer-words-edited.yml"
+stage-sign.yml supply-chain.yml customer-words-edited.yml evidence-letter.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 20:
-    print("the ratified list is not 20 files"); sys.exit(1)
+if len(want) != 21:
+    print("the ratified list is not 21 files"); sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s" % (extra, missing, odd)); sys.exit(1)
+    print("extra: %s missing: %s odd names: %s (the list is rule 52 and the owner's Oct 3 amendment: "
+          "stage-sign.yml and evidence-letter.yml)" % (extra, missing, odd)); sys.exit(1)
 print("ok")
 PY
 }
@@ -480,11 +483,20 @@ case_set() {
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS set:$1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL set:$1 → $got, want $2 ($out)"; fi
 }
+case_cites() { # case_cites NAME SET: the refusal names rule 52 and the owner's Oct 3 amendment (the two new files)
+  out=$(judge_set "$2") || true
+  if [[ "$out" == *"rule 52"* && "$out" == *"Oct 3"* ]]; then pass=$((pass+1)); echo "PASS cites:$1 ($out)"
+  else failn=$((failn+1)); echo "FAIL cites:$1 → the refusal does not name rule 52 and the Oct 3 amendment ($out)"; fi
+}
 # every entry of the directory, unfiltered: a non-YAML file or a name with a newline is a difference (Codex #162 pin, R78-B3)
 real_set=$(python3 -c 'import json, os, sys; print(json.dumps(sorted(os.listdir(sys.argv[1]))))' "$root/.github/workflows")
 edit_set() { python3 -c 'import json, sys; s = json.loads(sys.argv[1]); exec(sys.argv[2]); print(json.dumps(s))' "$real_set" "$1"; }
 case_set real          ok  "$real_set"
 case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
+case_set a-third-new-file bad "$(edit_set 's.append("stage-extra.yml")')"
+case_set letter-missing bad "$(edit_set 's.remove("evidence-letter.yml")')"
+case_cites a-third-new-file "$(edit_set 's.append("stage-extra.yml")')"
+case_cites letter-missing "$(edit_set 's.remove("evidence-letter.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
@@ -589,6 +601,11 @@ case_conc supply-chain-daily-cancels bad supply-chain "d['jobs']['daily-audit'][
 case_conc ci-live-test-cancels bad ci "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
 case_conc ci-live-test-group-changed bad ci "d['jobs']['live-test']['concurrency']['group'] = 'other'"
 case_conc ci-live-test-group-dropped bad ci "d['jobs']['live-test'].pop('concurrency')"
+
+# The fixer is retired (row 76): no job in ci.yml dispatches it.
+if grep -q "drift-fixer-dispatch" "$root/.github/workflows/ci.yml"; then
+  echo "FAIL: ci.yml holds the retired drift-fixer-dispatch job"; failn=$((failn+1))
+else echo "ok: ci.yml has no drift-fixer-dispatch job"; pass=$((pass+1)); fi
 
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

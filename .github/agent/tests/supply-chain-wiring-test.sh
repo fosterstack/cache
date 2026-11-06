@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC1, REQ-SUP-001-AC4, REQ-SUP-001-AC6, REQ-SUP-001-AC36
+# proves: REQ-REL-013-AC11
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175): Dependabot waits 7 days on the github-actions and pip entries only (AC1);
 # the pull request check is a job that runs on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
 # held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `image-signatures` (pull_request),
-#   `daily-audit` (schedule), `rerun-held` (schedule)
+#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request, merge_group), `image-signatures` (pull_request),
+#   `daily-audit` (schedule), `rerun-held` (schedule), `evidence-letter-present` (schedule; the monthly evidence
+#   letter's daily presence check, read-only)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
@@ -22,11 +24,15 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
 
-# AUDIT_DEADLINE is assumed, not read: pin-audit.py's --base deadline (cache#788), not in chain-v030's pin-audit.py yet
-# (until then the audit half is unbounded; PRs into chain-v030 take 77-174 s). SETUP: two checkouts, measured <= 8 s.
+# AUDIT_DEADLINE is read from pin-audit.py's deadline_for (the --base number): a changed deadline turns this fit red.
+# SETUP: two checkouts, measured <= 8 s.
 # BOUND + AUDIT_DEADLINE + SETUP must fit timeout-minutes, so a slow age check ends with a line, not a silent cancel.
 BOUND = 540
-AUDIT_DEADLINE = 600
+_audit_src = open(os.path.join(root, ".github/agent/supply-chain/pin-audit.py")).read()
+_m = re.search(r"return (\d+) if \(a\.rerun_held or a\.base\) else \d+", _audit_src)
+if not _m:
+    sys.exit("supply-chain-wiring-test: deadline_for's --base number not found in pin-audit.py")
+AUDIT_DEADLINE = int(_m.group(1))
 SETUP = 60
 
 CANONICAL_RUNS = {
@@ -38,24 +44,30 @@ CANONICAL_RUNS = {
     'pin-age':
         'set -uo pipefail\n'
         'status=0\n'
-        "# 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop\n"
-        'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ '
-        'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n'
-        "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
+        "# a pull request is read at its own base and head; the merge queue at the queue's "
+        '(REQ-DEP-005-AC2);\n'
+        '# an empty one fails\n'
+        'BASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"\n'
+        'HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"\n'
+        ': "${BASE_SHA:?no base commit to compare: this check fails}" \\\n'
+        '  "${HEAD_SHA:?no head commit to compare: this check fails}"\n'
+        "# 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop\n"
+        'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \\\n'
+        '  --head "$HEAD_SHA" || status=1\n'
+        "# the reviewers' rulings come from the base branch too: a pull request must not bring its own\n"
         'exceptions=trusted/.github/supply-chain-exceptions.json\n'
         'if [ ! -f "$exceptions" ]; then\n'
         '  exceptions="$RUNNER_TEMP/no-exceptions.json"\n'
         '  echo \'{"exceptions": []}\' > "$exceptions"\n'
         'fi\n'
-        'python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ '
-        'github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions '
-        '"$exceptions" --report-only || status=1\n'
+        'python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head '
+        '"$HEAD_SHA" \\\n'
+        '  --exceptions "$exceptions" --report-only || status=1\n'
         'exit $status\n',
     'daily-audit':
         'python3 .github/agent/supply-chain/pin-audit.py --observations-out '
         '"$RUNNER_TEMP/tag-observations/state.json"',
-    'rerun-held':
-        'python3 .github/agent/supply-chain/pin-audit.py --rerun-held',
+    'rerun-held': 'python3 .github/agent/supply-chain/pin-audit.py --rerun-held',
 }
 
 
@@ -101,8 +113,9 @@ def judge_wf(d, real=False):
     if top not in ({}, {"contents": "read"}, None) or (top is None):
         bad.append("the workflow has no top-level permissions block of {} or contents: read")
     jobs = d.get("jobs", {})
-    if sorted(jobs) != ["daily-audit", "image-signatures", "pin-age", "rerun-held"]:
-        bad.append(f"the jobs are not exactly pin-age, image-signatures, daily-audit and rerun-held: {sorted(jobs)}")
+    if sorted(jobs) != ["daily-audit", "evidence-letter-present", "image-signatures", "pin-age", "rerun-held"]:
+        bad.append("the jobs are not exactly pin-age, image-signatures, daily-audit, rerun-held and "
+                   f"evidence-letter-present: {sorted(jobs)}")
         return bad
     # pin-age
     j = jobs["pin-age"]
@@ -116,7 +129,7 @@ def judge_wf(d, real=False):
     if f"timeout -v {BOUND} python3 trusted/.github/agent/supply-chain/pin-age-check.py" not in runs:
         bad.append("pin-age's age check has no time bound: a slow check ends in a silent cancel")
     if BOUND + AUDIT_DEADLINE + SETUP > 60 * int(str(j.get("timeout-minutes", "0"))):
-        bad.append("the age check's bound and pin-audit's 600 s (cache#788) do not fit the job")
+        bad.append(f"the age check's bound and pin-audit's {AUDIT_DEADLINE} s (deadline_for) do not fit the job")
     for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
             bad.append(f"pin-age does not run {prog} {flag} (the age check and the audit of what the PR moves)")
@@ -127,7 +140,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
         bad.append("pin-age stops at the first failure: the age check and the advisory audit must both run, and the job fails if either did")
-    if "${{ github.event.pull_request.base.sha }}" not in runs or "${{ github.event.pull_request.head.sha }}" not in runs:
+    if ("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" not in runs
+            or "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" not in runs):
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
     j = jobs["daily-audit"]
@@ -155,6 +169,20 @@ def judge_wf(d, real=False):
         bad.append(f"rerun-held's permissions are not exactly actions: write + contents: read + pull-requests: read + checks: read (found {j.get('permissions')})")
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
+    # evidence-letter-present: the daily presence check of the monthly evidence letter; reads releases, writes nothing
+    j = jobs["evidence-letter-present"]
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("evidence-letter-present's permissions are not exactly contents: read "
+                   f"(found {j.get('permissions')})")
+    if str(j.get("if", "")) != "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'":
+        bad.append("evidence-letter-present's condition is not exactly the schedule or dispatch allow list")
+    elp = j.get("steps", [])
+    elp_co = [st for st in elp if str(st.get("uses", "")).startswith("actions/checkout@")]
+    if len(elp_co) != 1 or str((elp_co[0].get("with") or {}).get("persist-credentials")).lower() != "false":
+        bad.append("evidence-letter-present must check out once, with persist-credentials false")
+    if [str(st.get("run", "")).strip() for st in elp if "run" in st] != [
+            "bash bin/install-scanner.sh cosign", "bash bin/evidence-letter-present.sh"]:
+        bad.append("evidence-letter-present's run steps are not exactly the cosign install and the presence script")
     # image-signatures: the cosign cross-check of the pin-age proof (reads only, the base checker, no token)
     j = jobs["image-signatures"]
     if (j.get("if") != "github.event_name == 'pull_request'"
@@ -214,7 +242,11 @@ def judge_wf(d, real=False):
                     or set(pw) != {"path", "fetch-depth", "persist-credentials"}):
                 bad.append(f"{jn}'s checkouts take inputs other than the ratified ones "
                            "(e.g. sparse-checkout would empty the trusted checker)")
-            base_ok = (tw.get("ref") == "${{ github.event.pull_request.base.sha }}" and tw.get("path") == "trusted"
+            # pin-age also runs in the merge queue (REQ-DEP-005-AC2); image-signatures is a pull_request check only
+            ref = "${{ github.event.pull_request.base.sha }}"
+            if jn == "pin-age":
+                ref = "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
+            base_ok = (tw.get("ref") == ref and tw.get("path") == "trusted"
                        and str(tw.get("persist-credentials")).lower() == "false")
             if not base_ok:
                 bad.append(f"{jn}'s trusted checkout is not the BASE sha at path trusted "
@@ -233,7 +265,7 @@ def judge_wf(d, real=False):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
-    PR_IF = "github.event_name == 'pull_request'"
+    PR_IF = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
     for name, jj in jobs.items():
         for st in jj.get("steps", []):
             # a step may not be skipped, tolerated or cut short: the only conditions are the ratified ones
@@ -520,7 +552,10 @@ def live_pin_age(age_exit=None, bound="1"):
     steps = [x["run"] for x in real_wf["jobs"]["pin-age"]["steps"] if "pin-age-check" in str(x.get("run", ""))]
     if len(steps) != 1 or steps[0].count(AGE) != 1:
         return "the step does not hold `timeout -v 540 ` exactly once"
-    text = (steps[0].replace(AGE, f"timeout -v {bound} ").replace("${{ github.event.pull_request.base.sha }}", "b")
+    text = (steps[0].replace(AGE, f"timeout -v {bound} ")
+            .replace("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}", "b")
+            .replace("${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}", "h")
+            .replace("${{ github.event.pull_request.base.sha }}", "b")
             .replace("${{ github.event.pull_request.head.sha }}", "h"))
     with tempfile.TemporaryDirectory() as d:
         stub = os.path.join(d, "stub"); os.mkdir(stub)
@@ -588,6 +623,19 @@ mut_wf("a top-level concurrency whose pull-request group is shared by re-runs", 
 mut_wf("a top-level concurrency that borrows github.workflow", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace("'supply-chain-pr-{0}', ", "'{0}-pr-{1}', github.workflow, ").replace("'supply-chain-{0}-{1}', ", "'{0}-{1}-{2}', github.workflow, ")))
 mut_wf("a top-level concurrency dropped entirely", "not the reviewed block", lambda d: d.pop("concurrency"))
 mut_wf("a top-level concurrency on its own", "not the reviewed block", lambda d: d.update(concurrency={"group": "x", "cancel-in-progress": "false"}))
+mut_wf("a sixth job appears", "the jobs are not exactly",
+       lambda d: d["jobs"].update({"extra": {"runs-on": "ubuntu-latest"}}))
+mut_wf("evidence-letter-present gains id-token", "evidence-letter-present's permissions are not exactly",
+       lambda d: J(d, "evidence-letter-present")["permissions"].update({"id-token": "write"}))
+mut_wf("evidence-letter-present runs on any event but a pull request",
+       "evidence-letter-present's condition is not exactly",
+       lambda d: J(d, "evidence-letter-present").update({"if": "github.event_name != 'pull_request'"}))
+mut_wf("evidence-letter-present keeps the token in the checkout", "must check out once, with persist-credentials false",
+       lambda d: [x["with"].update({"persist-credentials": "true"})
+                  for x in J(d, "evidence-letter-present")["steps"] if "uses" in x])
+mut_wf("evidence-letter-present runs another script", "run steps are not exactly the cosign install",
+       lambda d: [x.update(run="bash bin/other.sh") for x in J(d, "evidence-letter-present")["steps"]
+                  if "evidence-letter-present" in str(x.get("run", ""))])
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
 mut_wf("daily-audit stops keeping the observations", "does not keep the tag observations", lambda d: J(d, "daily-audit").update(steps=[x for x in J(d, "daily-audit")["steps"] if "upload-artifact" not in str(x.get("uses", ""))]))
 mut_wf("the observations are kept only on success", "does not keep the tag observations", lambda d: [x.pop("if") for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])

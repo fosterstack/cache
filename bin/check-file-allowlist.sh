@@ -130,7 +130,6 @@ ALLOW_PATTERNS=(
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
-  '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
   '^bin/inspector-reuse\.py$'
@@ -150,11 +149,12 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files|no-keyless-tag)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
   '^\.github/policy/rekor\.pub$'
+  '^\.github/policy/fulcio-chain\.pem$'
+  '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
@@ -200,6 +200,9 @@ ALLOW_PATTERNS=(
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/check-action-pins\.py$'
+  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch
+  # (its test is under tests/).
+  '^\.github/agent/bin/queue-gate-judge\.sh$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)
   '^\.github/agent/bin/auditorlib/openvex-schema\.json$'
@@ -271,6 +274,14 @@ ALLOW_PATTERNS=(
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
+  # the base-layout package (0710): its recipe, its test and the files its recipe copies into our own base-layout apk
+  '^build/melange-baselayout\.yaml$'
+  '^build/melange-baselayout\.yaml\.tmpl$'
+  '^build/baselayout/members\.txt$'
+  '^build/baselayout/etc/(group|hosts|nsswitch\.conf|os-release|passwd|protocols|services)$'
+  '^bin/baselayout-test\.sh$'
+  '^bin/build-baselayout-apk\.sh$'
+  '^bin/build-baselayout-apk-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
@@ -283,6 +294,11 @@ ALLOW_PATTERNS=(
   # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
   '^build/host-tools\.yaml$'
   '^build/locks/host-tools\.lock$'
+  # The VM build inputs (REQ-REFRESH-001-AC39 to AC41): the two package lists, their locks,
+  # the kernel lock and the kernel package key.
+  '^build/vm-(host|guest)\.yaml$'
+  '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/vm-keys/kernel-key-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
@@ -331,6 +347,11 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
+  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
+  # two tests and the signatory text.
+  '^bin/evidence-letter\.py$'
+  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
+  '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
@@ -368,6 +389,30 @@ SUPPRESSION_PATTERNS=(
   # through the auditor lane's auditor/panel branch
   '^\.auditor/panel-state\.json$'
 )
+# The merge queue's commit has no pull request head branch (GITHUB_QUEUE_REF is set there, to the queue ref). The pull
+# request the ref names (gh-readonly-queue/main/pr-<N>-<sha>) is read through the API, one call, and its head branch and
+# repository stand in for GITHUB_HEAD_REF and GITHUB_HEAD_REPO, so the lane rule below is the same one. An unclear
+# or failed lookup stops the check: there is no fallback to the queue ref's name.
+if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
+  _q="${GITHUB_QUEUE_REF#refs/heads/}"
+  # accepted: gh-readonly-queue/main/pr-12-<sha>; refused: gh-readonly-queue/main/pr--<sha>, feature/x
+  case "$_q" in
+    gh-readonly-queue/main/pr-[0-9]*-*) ;;
+    *) echo "blocked — not a merge queue ref: ${GITHUB_QUEUE_REF}" >&2; exit 1 ;;
+  esac
+  _n="${_q#gh-readonly-queue/main/pr-}"; _n="${_n%%-*}"
+  [[ "$_n" != *[!0-9]* ]] || { echo "blocked — no pull request number in the merge queue ref" >&2; exit 1; }
+  _answer="$(gh api "repos/${GITHUB_REPOSITORY:-}/pulls/${_n}" \
+    --jq '[.head.ref // "", .head.repo.full_name // ""] | @tsv')" \
+    || { echo "blocked — the head branch of pull request ${_n} could not be looked up" >&2; exit 1; }
+  _tab="$(printf '\t')"
+  case "$_answer" in *"$_tab"*) ;; *) _answer= ;; esac
+  GITHUB_HEAD_REF="${_answer%%"$_tab"*}"; GITHUB_HEAD_REPO="${_answer#*"$_tab"}"
+  if [ -z "$_answer" ] || [ -z "$GITHUB_HEAD_REF" ] || [ -z "$GITHUB_HEAD_REPO" ] \
+      || [ "$(printf '%s\n' "$_answer" | wc -l)" -ne 1 ]; then
+    echo "blocked — pull request ${_n} did not name one head branch and repository" >&2; exit 1
+  fi
+fi
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves
 # to a non-auditor branch, i.e. suppression paths stay blocked by default.
@@ -415,6 +460,13 @@ _resolve_merge_base() {
       _merge_base_err="ALLOWLIST_HEAD_REV is not a commit here"; return 1
     fi
     _head_rev="$_rev"
+  fi
+  if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
+    # a queue entry is judged on its own merge: its first parent is the entry before it in the group, or main
+    if ! _merge_base="$(git rev-parse --verify --quiet "${_head_rev}^1^{commit}")" || [ -z "$_merge_base" ]; then
+      _merge_base=""; _merge_base_err="the queue head $_head_rev has no first parent"; return 1
+    fi
+    return 0
   fi
   if ! [[ "$_base_name" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || [[ "$_base_name" == *..* ]]; then
     _merge_base_err="base ref name '$_base_name' is not usable"; return 1
