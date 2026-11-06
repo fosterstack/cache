@@ -24,7 +24,7 @@
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
 #   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
-#               only_new_workflow (stage-sign.yml, and at most evidence-letter.yml, are the only files added since
+#               only_new_workflow (stage-sign.yml, and at most evidence-letter.yml and customer-words-edited.yml, are the only files added since
 #               v0.2.2); listed_signers + direct_signers (every workflow and
 #               composite action matched against the signer table; provenance only in stage-sign.yml, every other signer listed with a
 #               reason in .github/policy/chain-signers.json); stage_grammars (every stage-*.yml over the closed key, env, uses and run-line
@@ -385,13 +385,14 @@ stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-pr
 stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
-    """001-AC1: stage-sign.yml (rule 52) and evidence-letter.yml (the monthly evidence letter; the owner's Oct 3
-    amendment, ops/docs/ratify/2026-10-02-owner-load.md) are the only workflow files v0.3.0 adds beyond the files that
-    existed at v0.2.2. The tree under judgement holds stage-sign.yml always; evidence-letter.yml may be there or not."""
+    """001-AC1: stage-sign.yml (rule 52), evidence-letter.yml (the monthly evidence letter; the owner's Oct 3
+    amendment, ops/docs/ratify/2026-10-02-owner-load.md) and customer-words-edited.yml (decision 98, Oct 3) are the only
+    workflow files v0.3.0 adds beyond the files that existed at v0.2.2. The tree under judgement holds stage-sign.yml always;
+    the other two may be there or not (listed_signers and direct_signers still judge them)."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if "stage-sign.yml" not in new or set(new) - {"stage-sign.yml", "evidence-letter.yml"}:
+    if "stage-sign.yml" not in new or set(new) - {"stage-sign.yml", "evidence-letter.yml", "customer-words-edited.yml"}:
         bad.append("AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52) and at most "
-                   "evidence-letter.yml (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md), "
+                   "evidence-letter.yml (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md) and customer-words-edited.yml (decision 98, Oct 3), "
                    "found %s" % new)
 
 def listed_signers(base, bad):
@@ -1090,6 +1091,7 @@ SPEC_GOOD=$(cat "$FXDIR/spec_good.json")
 mk() {
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
+  printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # the one added file that is not a signer
   cp "$good" "$d/.github/workflows/stage-sign.yml"
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
   printf 'jobs:\n  d:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n' > "$d/.github/workflows/release.yml"
@@ -2895,12 +2897,14 @@ printf '        with:\n          persist-credentials: false\n' >> "$extra"
 listletter "$d"
 out=$(judge tree "$d" 2>/dev/null) || true
 want="AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52) and at most evidence-letter.yml"
-want="$want (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md),"
-want="$want found ['evidence-letter.yml', 'stage-extra.yml', 'stage-sign.yml']"
+want="$want (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md) and customer-words-edited.yml (decision 98, Oct 3),"
+want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'stage-extra.yml', 'stage-sign.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))
   echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone, with evidence-letter.yml listed"
 else failn=$((failn + 1)); echo "FAIL AC1 third new workflow file -> ${out:0:500}"; fi
+d=$(mk t_cwsigner); printf 'jobs:\n  b:\n    steps:\n      - run: notation sign "$IMG"\n' > "$d/.github/workflows/customer-words-edited.yml"
+expect caught "AC1 customer-words-edited.yml is no exemption: a signer in it is still found" tree "$d"
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
@@ -3455,7 +3459,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='de6814e5c7afe3ab645547471cdabb2e43d4274b4b58a30b537dc563ac010955'
+FX_PIN='b05d93b00fa2efd67ef4e3c0bf8b2ffdf4680eb039c6f6b5c65906ee489a396c'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5100,6 +5104,8 @@ while IFS= read -r l; do
   case "$l" in ok*) pass=$((pass + 1)); echo "$l";; *) failn=$((failn + 1)); echo "$l";; esac
 done < <(python3 "$work/setupgo.py" 2>&1)
 
+# ---- cache#853 (handoff 0713 P3): the release signing role is assumed by ONE pinned action step in Release's job, and the key reference is one literal in release-sign's step env -------
+
 # ---- Codex A r4 #2 / B F1: the judge prints its findings as structured ids, one for one with its own list (CHAIN_FINDINGS=1; stderr; output only) ----------------
 fj="$work/fj"; mkdir -p "$fj"
 d=$(tracked_copy fjson); printf 'cosign attest --type slsaprovenance x\n' > "$d/bin/fj-signer.sh"; ( cd "$d" && git add -A 2> /dev/null || true )
@@ -5246,7 +5252,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2136
+EXPECT=2137
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

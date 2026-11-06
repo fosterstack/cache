@@ -784,7 +784,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "5fa2ab1c2d4cf32e29832d0a24f2fb910b752e812d108ba85449b4e219e5cb8f",
+      "sha256": "79c4dd3a911d3063721bf27d41bd7fc67253a22976df9d290144c4bc8ebf7898",
       "tools": [
         "env",
         "go",
@@ -1725,8 +1725,8 @@
         "bin/vex-forms.py"
       ],
       "signs": "other",
-      "reason": "Release, step release-sign: every signature is made by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call with the release key RELEASE_KMS_KEY_REF, the one Rekor entry posted by the same call; KA-2): the images in both registries and the manifest referrer are signed as DSSE statements whose bundles cosign attach attestation attaches (cosign signs nothing here: its login and attach calls only reach the registries), the SBOMs, lock files, dependency evidence, checksums, release policy and release-files list as digests (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256, else exit 2 (kms-sign asserts it again on every signing call)",
-      "sha256": "ff0192d5c26d26cc3b3930c46cb6594515798e51bb4029240d13416d58d5230d",
+      "reason": "Release, step release-sign: cosign signatures made with the release KMS key (reached through the role and token file the Witness wrapper hands the step), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "sha256": "4e68f5b569736ef7ec01e5988d71b2a5d8d454252c68d48dda9ff0784e526ad0",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1867,7 +1867,7 @@
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "fecd013212d50663a026f2cc4655c25ac30a3df06bf36ef083434127fad07004",
+      "sha256": "123f05a9ac2ff3d1ca4dff2a217d350845417b5a281c99b6fc4c6894b0218878",
       "exceptions": [
         {
           "rule": "deny",
@@ -1961,7 +1961,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
+      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
       "tools": [
         "at",
         "curl",
@@ -2052,7 +2052,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "7102fb6b83d6b2cf4c444ec35e01144daa92b6305b75f9b49d1165785e93f1d2",
+      "sha256": "494deabe556f7aa2139e61d370b53333a10075fcaa54c2acf9353096ba004c05",
       "tools": [
         "at",
         "gh",

@@ -581,7 +581,7 @@ def metadata(path):
     def at(pat, start=0):
         return next((i for i in range(start, len(lines)) if re.search(pat, lines[i])), None)
     marks = {"images": at(r"release-metadata\.py images "), "cp": at(r"^cp \.vex/fosterstack-cache\.openvex\.json release-metadata/"), "vex": at(r"python3 bin/vex-forms\.py "),
-             "baseline": at(r"release-metadata\.py baseline "), "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": at(r"^cosign login "), "attest": at(r"^kms_image attest "), "lsign": at(r"^kms_blob release-evidence/release-files\.sha256\.bundle ")}
+             "baseline": at(r"release-metadata\.py baseline "), "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": at(r"^cosign (login|sign)"), "attest": at(r"^cosign attest "), "lsign": at(r"cosign sign-blob .*release-files\.sha256\.bundle")}
     bad = ["release-sign.sh has no %s step" % k for k, v in marks.items() if v is None]
     if bad:
         return bad
@@ -592,34 +592,33 @@ def metadata(path):
     for k, need in (("images", ["--items witness-build/items.json", "--digests witness-build/digests.json", "--images-dir images"]),
                     ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "--images release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
                     ("baseline", ["--admission witness-build/admission-baseline.json", '--tag "$GITHUB_REF_NAME"', '--commit "$GITHUB_SHA"']),
-                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata",
-                                  "--digests witness-build/digests.json", '--baseline-version "$baseline"',
-                                  "--modules-dir apks/ubuntu-24.04 "])):      # trailing space: -arm is another path
+                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata", "--digests witness-build/digests.json", '--baseline-version "$baseline"',
+                                  "--modules-dir apks/ubuntu-24.04 "])):
         for n in need:
             if n not in lines[marks[k]]:
                 bad.append("the %s step must carry %s" % (k, n))
     # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
-    # KA-2 p4 (image kinds): nothing is signed by cosign any more; `kms_image <sign|attest> <image> <digest>` makes the statement, signs it through kms-sign (a v0.3 DSSE bundle) and attaches the bundle with
-    # `cosign attach attestation`. One `kms_image attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
-    atts = [l for l in lines if l.startswith("kms_image attest ")]
-    base = 'kms_image attest '
-    want = {base + '"ghcr.io/$repo" "$digest"', base + '"docker.io/$repo" "$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"'}
+    # one `cosign attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
+    atts = [l for l in lines if l.startswith("cosign attest ")]
+    base = ('cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
+            '--type https://fosterstack.com/attestations/release-manifest/v1 ')
+    want = {base + '"ghcr.io/$repo@$digest"', base + '"docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"'}
     if sorted(atts) != sorted(want):
-        bad.append("release-sign.sh must hold exactly these two `kms_image attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
+        bad.append("release-sign.sh must hold exactly these two `cosign attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
                    "the Docker Hub mirror best-effort with a warning): %r" % atts)
-    signs = [l for l in lines if l.startswith("kms_image sign ")]
-    if signs != ['kms_image sign "$host/$repo" "$digest"']:
-        bad.append('release-sign.sh must hold exactly one `kms_image sign "$host/$repo" "$digest"` line (every public digest signed in both registries): %r' % signs)
-    cos = [l for l in lines if re.match(r"cosign (sign|sign-blob|attest|attest-blob) ", l)]
-    if cos:      # KA-2: every signature is made by kms-sign (the release key named with its algorithm on every call) and keeps its Rekor entry; no cosign call signs anything
-        bad.append("release-sign.sh must not sign through cosign (every signature is a kms-sign call): %r" % cos[:2])
-    if sorted(atts) != sorted(want):
-        pass
-    elif marks.get("attest") is not None:
+    keyed = 'cosign {} --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json '
+    blob = re.compile(re.escape(keyed.format("sign-blob")) + r"--bundle [\w./-]+ [\w./-]+")
+    allowed = want | {keyed.format("sign") + '"$host/$repo@$digest"', 'cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"',
+                      'cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"'}
+    # handoff 0713 P3: every signature is made with the release KMS key the job pins and keeps its Rekor entry through the signing config; any other line that runs cosign is refused
+    odd = [l for l in lines if re.search(r"(?<![\w-])cosign(?![\w-])", l) and l not in allowed and not blob.fullmatch(l)]
+    if odd:
+        bad.append("every cosign signing line must be exactly `--yes --key \"$RELEASE_KMS_KEY_REF\" --signing-config .github/policy/cosign-signing-config.json ...` and nothing else: %r" % odd[:2])
+    if sorted(atts) == sorted(want) and marks.get("attest") is not None:
         loop = next((i for i in range(marks["attest"], -1, -1) if lines[i].startswith("for digest in ")), None)
         if loop is None or lines[loop] != 'for digest in "$prod" "$fips"; do':
             bad.append('the manifest attestations must sit inside `for digest in "$prod" "$fips"; do` (both public digests)')
-        last_img_sign = max((i for i, l in enumerate(lines) if l.startswith("kms_image sign ")), default=-1)
+        last_img_sign = max((i for i, l in enumerate(lines) if re.match(r'cosign sign --yes ', l)), default=-1)
         if marks["attest"] < last_img_sign:
             bad.append("the manifest attestations must come after every image signature (nothing is attached to an unsigned image)")
     return bad

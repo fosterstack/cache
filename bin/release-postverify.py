@@ -564,6 +564,14 @@ def refuse_certificate_bundles(plan):
                    % (n, key, ", ".join(sorted(MATERIAL_KEYS))))
         for key in sorted(set(bundle) - BUNDLE_KEYS):
             refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
+def place_release_key():
+    key = "build/keys/release.rsa.pub"
+    if os.path.exists(ASSETS + "/release.rsa.pub"):
+        refuse("%s/release.rsa.pub exists: a published asset must not stand in for the committed key" % ASSETS)
+    if not os.path.isfile(key) or os.path.getsize(key) == 0:
+        refuse("%s is missing or empty: the commands that verify with --key release.rsa.pub need it" % key)
+    with open(key, "rb") as src, open(ASSETS + "/release.rsa.pub", "wb") as dst:
+        dst.write(src.read())
 
 
 def main():
@@ -576,6 +584,7 @@ def main():
         refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can "
                "resolve its files; nothing is run" % ASSETS)
     refuse_certificate_bundles(plan)
+    place_release_key()
     failed = run_plan(plan)
     if failed:
         refuse("post-publish verification failed: %d of %d runs failed: %s"

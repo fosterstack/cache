@@ -2951,6 +2951,13 @@ promptsame="$(cmp -s .github/agent/prompts/adjudicator.md "$d4/prompt.before" &&
 { eq "$prop" "yes" && eq "$ev" "yes" && eq "$logsame" "yes" && eq "$promptsame" "yes"; } \
   && ok || no "proposal delivered w/ evidence; live log + prompt file unchanged" "prop=$prop ev=$ev log=$logsame prompt=$promptsame"
 
+begin "bot-text-2-proposals-note-plain" "the note in adjudicator-proposals.json says a reviewer promotes a proposal: no audit-lane, no requirement id, no owner word, and it passes the repository's customer-words check"
+note="$("$PY" -c 'import json,sys
+print(json.load(open(sys.argv[1])).get("note",""))' "$WORK/req16-ac4/.auditor/proposals/adjudicator-proposals.json" 2>/dev/null)"
+nok="no"; printf '%s' "$note" | grep -q 'and a reviewer promotes it to a trusted row' && ! printf '%s' "$note" | grep -qi 'audit-lane' && ! printf '%s' "$note" | grep -q 'REQ-' && nok="yes"
+wok="$(PR_TITLE=x PR_BODY="$note" "$PY" -I bin/check-customer-words.py </dev/null >/dev/null 2>&1 && echo yes || echo no)"
+{ eq "$nok" "yes" && eq "$wok" "yes"; } && ok || no "the proposals note is plain (a reviewer promotes it; customer-words rc 0)" "words=$nok customer_words=$wok note=$note"
+
 begin "req16-ac5-python-known-model-generalises" "cost split: a KNOWN finding (defect-log hit) makes ZERO model calls; the model is consulted ONLY to generalise the new unique-lineage no-fix suspected FP"
 o="$WORK/req16-ac5"; rm -rf "$o"; : > "$LEDGER"; _req16_src "$WORK/req16-ac5-src"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/req16-ac5-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
@@ -4622,7 +4629,7 @@ PP
 )"
 eq "$r15" "OK" && ok || no "rc-5b fix 15: five consecutive unsettled runs open one stable-titled issue, restart on settle, say a missing state, stop on a corrupt one" "$r15"
 
-echo "=== rc-5b item 9 (A6, A7): a major bump is held as a harness lane task; an open Dependabot PR \
+echo "=== rc-5b item 9 (A6, A7): a major bump needs a manual change; an open Dependabot PR \
 for the same bump is deferred to ==="
 # rc5b9_probe <shim log> <module> <from> <to>: _deliver_bumps over one row with the shim ledger; prints the row's action
 rc5b9_probe() {
@@ -4675,15 +4682,16 @@ minor_issue="$(grep -c 'issue create' "$sh1")"; major_issue="$(grep -c '^gh issu
 owner_label="$(grep -c 'owner-decision\|--assignee' "$sh2")";
 drafts="$(grep -c '^gh pr create --draft .*auditor/bump-example.org-m-1.0.0' "$sh2")";
 armed="$(grep -c 'pr merge --auto' "$sh2")"
-held="$(printf '%s' "$a2" | grep -c 'held as a harness lane task')";
-titled="$(grep -c 'issue create --title .*major bump example.org/m' "$sh2")"
+held="$(printf '%s' "$a2" | grep -c 'needs a manual change')";
+titled="$(grep -c 'issue create --title .*major bump example.org/m -> v1.0.0 needs a manual change' "$sh2")"
+plain="$(grep '^gh issue create' "$sh2" | grep -ci 'owner\|harness lane\|audit-lane')"
 { eq "$minor_issue" "0" && eq "$major_issue" "1" && eq "$owner_label" "0" && eq "$drafts" "1" \
-    && eq "$armed" "0" && eq "$held" "1" && eq "$titled" "1" \
+    && eq "$armed" "0" && eq "$held" "1" && eq "$titled" "1" && eq "$plain" "0" \
     && printf '%s' "$a1" | grep -q 'opened draft bump PR'; } \
    && ok  || \
     no "minor: PR only; major: draft PR, one held-major issue (no owner label/assignee), never armed, \
 row says held" "minor_issues=$minor_issue major_issues=$major_issue owner_label_or_assignee=$owner_label \
-drafts=$drafts armed=$armed held=$held titled=$titled a1=[$a1] a2=[$a2]"
+drafts=$drafts armed=$armed held=$held titled=$titled plain=$plain a1=[$a1] a2=[$a2]"
 
 begin "rc5b9-an-open-dependabot-pr-for-the-same-bump-is-deferred-to" \
   "an open Dependabot PR whose title names the module and the target version is deferred to: \

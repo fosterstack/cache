@@ -65,6 +65,7 @@ VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "
 VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
 def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
+KMS_REF = "awskms:///alias/fosterstack-release-signing"
 # REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
 # no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read
 # only (it runs release-verify under the local Witness script with a throwaway key: no identity token), no environment, no secret, and reads only the result file; `release` needs both, is skipped for a release candidate, holds the environment and the three
@@ -553,12 +554,12 @@ sg m_novdir  ' --vex-dir release-metadata'                                      
 sg m_nobase  'baseline=\$\(python3 bin/release-metadata\.py baseline [^\n]*\n'                              ''                              'no baseline step'   "AC19 the baseline is not read from Build's verified admission-baseline.json"
 sg m_basetag 'baseline --admission witness-build/admission-baseline.json --tag "\$GITHUB_REF_NAME"'    'baseline --admission witness-build/admission-baseline.json --tag v0.3.0' 'must carry --tag' "AC19 the baseline check is not made for this run's tag"
 sg m_ownbase ' --baseline-version "\$baseline"'                                                       ' --baseline-version "$GITHUB_REF_NAME"' 'must carry --baseline-version' "AC19 the manifest takes the tag's own name as the baseline (a CI patch tag has no such file)"
-sg m_noatt   'for digest in "\$prod" "\$fips"; do\n  kms_image attest [^\n]*\n  kms_image attest [^\n]*\ndone\n'  ''     'no attest step' "AH the two kms_image attest lines are gone: the release manifest is no longer attached to the public digests (the v0.2.x referrer customers have)"
-sg m_atttype 'kms_image attest "ghcr\.io/\$repo" "\$digest"' 'kms_image sign "ghcr.io/$repo" "$digest"' 'exactly these two' "AH the GHCR kms_image attest line is another kind (it must attach the release-manifest/v1 referrer)"
-sg m_attpred 'kms_image attest "ghcr\.io/\$repo" "\$digest"' 'kms_image attest "ghcr.io/$repo" "$prod"' 'exactly these two' "AH the GHCR kms_image attest line names another digest than the loop's (the verified manifest attested to both public digests)"
-sg m_attghcr 'kms_image attest "ghcr\.io/\$repo" "\$digest"' 'kms_image attest "ghcr.io/$repo" "$digest" || true'   'exactly these two' "AH the GHCR kms_image attest line is best-effort (it is required)"
-sg m_attnohub 'kms_image attest "docker\.io[^\n]*\n' ''                                                  'exactly these two' "AH the Docker Hub mirror kms_image attest line is missing"
-sg m_attearly '(for host in ghcr.io docker.io; do\n  for digest in "\$prod" "\$fips"; do\n    kms_image sign[^\n]*\n  done\ndone\n)((?:#[^\n]*\n)*for digest in[^\n]*\n  kms_image attest[^\n]*\n  kms_image attest[^\n]*\ndone\n)' '\2\1' 'must come after every image signature' "AH the kms_image attest lines before the kms_image sign lines (the manifest attested before the image signatures)"
+sg m_noatt   'for digest in "\$prod" "\$fips"; do\n  cosign attest [^\n]*\n  cosign attest [^\n]*\ndone\n'  ''                          'no attest step' "AH the release manifest is no longer attached to the public digests (the v0.2.x referrer customers have)"
+sg m_atttype 'attestations/release-manifest/v1 "ghcr'  'attestations/release-manifest/v2 "ghcr'                         'exactly these two' "AH the referrer type is not release-manifest/v1"
+sg m_attpred 'release-metadata/release-manifest.json --type' 'release-metadata/vex-images.json --type'            'exactly these two' "AH the attested predicate is not the verified manifest"
+sg m_attghcr ' "ghcr.io/\$repo@\$digest"' ' "ghcr.io/$repo@$digest" || true'                                    'exactly these two' "AH the GHCR referrer is best-effort (it is required)"
+sg m_attnohub 'cosign attest [^\n]*docker.io[^\n]*\n' ''                                                         'exactly these two' "AH the Docker Hub mirror referrer is missing"
+sg m_attearly '(for host in ghcr.io docker.io; do\n  for digest in "\$prod" "\$fips"; do\n    cosign sign --yes[^\n]*\n  done\ndone\n)((?:#[^\n]*\n)*for digest in[^\n]*\n  cosign attest[^\n]*\n  cosign attest[^\n]*\ndone\n)' '\2\1' 'must come after every image signature' "AH the manifest attestations before the image signatures"
 sg m_nolist  'python3 bin/release-metadata\.py list [^\n]*\n'                                   ''                              'no list step'       "AC13 release-files.sha256 is not made"
 sg m_early   '(python3 bin/release-metadata\.py images [^\n]*\n)'                              'cosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\n\1' 'must come before' "AC13 a registry login (the first cosign call) before the metadata exists"
 sg m_modkey  '--key "\$RELEASE_KMS_KEY_REF" (--signing-config [^\n]*--bundle release-evidence/fscache-modules\.spdx\.json\.bundle)' '\1' 'every cosign signing line' "0707 a Go module SBOM signed without the release KMS key"
@@ -604,124 +605,71 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-# ---- KA-2 p4: no cosign KMS call is left (the signing is KA-1's kms-sign: chain-verify.py kms-sign through the aws CLI) -----------------------------------
-# RED until KA-2 p4's code: bin/release-sign.sh (3 lines after the blob group: the image signature and the two attestations) and bin/chain-verify.py (the attest-blob argv of kms_sign) still run cosign with the release key; the nine sign-blob lines and bin/evidence-letter-publish.sh are kms-sign since the blob group.
-# The judge below is first proven on a known-good fixture and on mutants of it (a judge that cannot fail shows nothing), then applied to the three real files (EXPECT 0 each) and to the
-# repository (.github/workflows/*.yml, bin/*.sh, bin/*.py, test files aside). Verify-only and attach forms are the VERIFY_ONLY list of bin/chain-check-shape.py, imported, never copied.
-cat > "$work/nocosign.py" <<'PY'
-import glob, importlib.util, os, re, sys
-spec = importlib.util.spec_from_file_location("ccs", sys.argv[1]); ccs = importlib.util.module_from_spec(spec); spec.loader.exec_module(ccs)
-VERIFY = ccs.VERIFY_ONLY
-CC = r'(?:cosign|\$\{?\w*cosign\w*\}?)'
-SUB = r'(?:sign-blob|sign|attest-blob|attest)(?![\w-])'
-SH = re.compile(r'(?<![\w.-])["\']?' + CC + r'["\']?\s+(?:-\S+\s+)*' + SUB, re.I)
-KEYREF = r'(?:RELEASE_KMS_KEY_REF|RELEASE_KEY_REF|awskms:///)'
-SHKEY = re.compile(r'--key(?![\w-])["\']?[ =]\s*["\']?\$?\{?' + KEYREF)
-PYC = re.compile(r'(?:["\']cosign["\']|\b\w*cosign\w*)\s*,\s*["\']' + SUB + r'["\']', re.I)
-PYKEY = re.compile(r'["\']--key["\']\s*,\s*(?:RELEASE_KEY_REF|RELEASE_KMS_KEY_REF|["\']awskms:///)')
-def nocomment(t): return "\n".join(l for l in t.split("\n") if not l.lstrip().startswith("#"))
-def scan(f):
-    bad = []; t = nocomment(open(f).read())
-    if f.endswith(".py"):
-        for rx in (PYC, PYKEY):
-            for m in rx.finditer(t): bad.append("%s: %s" % (f, " ".join(m.group(0).split())))
-    else:
-        for n, l in enumerate(re.sub(r'\\\n\s*', ' ', t).split("\n"), 1):
-            l = VERIFY.sub("", l)
-            for rx in (SH, SHKEY):
-                m = rx.search(l)
-                if m: bad.append("%s: %s" % (f, " ".join(m.group(0).split())))
-    return bad
-args = sys.argv[2:]
-if args[:1] == ["--repo"]:
-    r = args[1]; args = []
-    for g in (".github/workflows/*.yml", "bin/*.sh", "bin/*.py"):
-        args += sorted(p for p in glob.glob(os.path.join(r, g)) if not re.search(r'(-test\.sh|_test\.py|-test\.py|chain-test-(harness|signers)\.py)$', p))
-bad = [b for f in args for b in scan(f)]
-print("; ".join(bad) or "ok")
-sys.exit(1 if bad else 0)
+# ---- handoff 0713 P3 / cache#853: release signing with the release KMS key, wired end to end --------------------------------------------------------
+# every signing line of bin/release-sign.sh is judged as a whole line, not by how it starts: a second --key, a prefix, another spelling of the word cosign all fail
+KW='cosign signing line'
+sg m_k_dup   '(--signing-config \.github/policy/cosign-signing-config\.json )("\$host/\$repo@\$digest")'   '\1--key awskms:///alias/other \2'    "$KW" "P3 a second --key after the approved arguments of the image signature"
+sg m_k_empty '(--signing-config \.github/policy/cosign-signing-config\.json )("\$host/\$repo@\$digest")'   '\1--key "" \2'                       "$KW" "P3 an appended empty --key (cosign makes an ephemeral key of it) on the image signature"
+sg m_k_cmd   '(\n +)cosign sign --yes --key'                                                                '\1command cosign sign --yes --key'  "$KW" "P3 the image signature spelled \`command cosign sign\`"
+sg m_k_tab   '(\n +)cosign sign --yes --key'                                                                $'\\1cosign\tsign --yes --key'        "$KW" "P3 a tab between cosign and sign"
+sg m_k_two   '(\n)cosign sign-blob --yes --key'                                                             '\1cosign  sign-blob --yes --key'    "$KW" "P3 two spaces between cosign and sign-blob"
+sg m_k_semi  '(mkdir -p release-evidence\n)'                                                                '\1true; cosign sign-blob --yes --bundle b.json policy.json\n' "$KW" "P3 an unkeyed sign-blob after a semicolon"
+sg m_k_glob  '(\n +)cosign sign --yes --key'                                                                '\1cosign --verbose sign --yes --key' "$KW" "P3 a global flag before sign"
+sg m_k_or    '(\n +)cosign sign --yes --key'                                                                '\1false || cosign sign --yes --key' "$KW" "P3 the image signature after ||"
+sg m_k_if    '(\n +)(cosign sign --yes --key [^\n]*)'                                                       '\1if \2; then :; fi'                "$KW" "P3 the image signature as an if condition"
+sg m_k_ab    '(mkdir -p release-evidence\n)'                                                                '\1cosign attest-blob --yes --signing-config .github/policy/cosign-signing-config.json --statement s.json --bundle b.json\n' "$KW" "P3 an unkeyed cosign attest-blob line"
+sg m_k_var   '(\ncosign sign-blob --yes --key )"\$RELEASE_KMS_KEY_REF"'                                      '\1"$OTHER_KEY"'                      "$KW" "P3 a sign-blob keyed with another variable"
+sg m_k_eq    '(\ncosign sign-blob --yes )--key "\$RELEASE_KMS_KEY_REF"'                                    '\1--key="$RELEASE_KMS_KEY_REF"'      "$KW" "P3 --key= instead of --key and a space"
+cat > "$work/kmsdocs.py" <<'PY'
+import json, os, re, sys
+root = sys.argv[1]
+out = []
+def case(label, good, why=""): out.append(("ok   " if good else "FAIL ") + "P3 " + label + ("" if good else " -> " + str(why)[:220]))
+def read(f): return open(os.path.join(root, f)).read()
+def commands(t):
+    """the verify commands of the fenced blocks, each with whether the block follows a sentence about releases before v0.3.0 (the older certificate form, which stays documented)"""
+    out_ = []
+    for m in re.finditer(r"```[a-z]*\n(.*?)```", t, re.S):
+        older = "before v0.3.0" in t[max(0, m.start() - 700):m.start()].lower()
+        for l in re.sub(r"\\\n\s*", " ", m.group(1)).split("\n"):
+            l = l.strip()
+            if re.match(r"cosign verify(-attestation|-blob)? ", l): out_.append((re.sub(r"\s+", " ", l), older))
+    return out_
+def customer_forms(cmds):
+    return [c for c, older in cmds if not older and "slsa.dev/provenance" not in c and ("fosterstack/cache" in c or "<IMAGE_REF" in c or c.startswith("cosign verify-blob ") or "release-manifest" in c)]
+KEY = "release.rsa.pub"
+FETCH = re.compile(r"curl -fsSLO \"?https://raw\.githubusercontent\.com/fosterstack/cache/(v\$\{VER(SION)?\}|<TAG>)/build/keys/release\.rsa\.pub\"?")
+def keyed(c): return re.search(r"--key[ =]release\.rsa\.pub(?= |$)", c) is not None and "--certificate-identity" not in c and len(re.findall(r"--key\b", c)) == 1
+for f in ("docs/verify-release.md", "docs/verify-images.md", "docs/install.md", "docs/using-our-vex.md", "RELEASING.md"):
+    txt = read(f)
+    mine = customer_forms(commands(txt))
+    bad_ = [c[:90] for c in mine if not keyed(c)]
+    case("%s: every verify of an image, its manifest attestation or a signed release file (but the older certificate form) is exactly --key release.rsa.pub with no certificate identity (%d commands)" % (f, len(mine)), mine and not bad_, bad_[:1] or "no verify command found")
+    case("%s tells the reader to fetch release.rsa.pub from build/keys/ at the release tag (curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<tag>/build/keys/release.rsa.pub)" % f, FETCH.search(re.sub(r"\s+", " ", txt)) is not None)
+for f in ("docs/verify-release.md", "docs/verify-images.md", "docs/install.md", "docs/using-our-vex.md"):
+    case("%s no longer says the release signatures are keyless" % f, "keyless" not in read(f).lower(), re.findall(r".*keyless.*", read(f), re.I)[:1])
+rows = json.load(open(os.path.join(root, "docs/verify-release.cannot-run.json")))
+img = [r["command"] for r in rows if ("<IMAGE_REF" in r["command"] and r["command"].startswith("cosign ")) or r["command"].startswith("cosign verify-blob ")]
+bad_ = [c[:90] for c in img if not keyed(c)]
+case("docs/verify-release.cannot-run.json (what release-postverify runs): every image and signed-file verify is exactly --key release.rsa.pub with no certificate identity (%d rows)" % len(img), img and not bad_, bad_[:1] or "no row found")
+vcr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
+vb = [b for b in vcr["blocks"] if "cosign verify-attestation" in b]
+case("docs/using-our-vex.cannot-run.json: the manifest verify block is exactly --key release.rsa.pub with no certificate identity", vb and all(keyed(re.sub(r"\s+", " ", b.replace("\\\n", " "))) for b in vb), [b[:90] for b in vb][:1] or "no block found")
+rl = re.sub(r"\s+", " ", read("RELEASING.md"))
+case("RELEASING.md says once: until the key manifest is published, the key file named in this repository is the reference", rl.lower().count("until the key manifest is published, the key file named in this repository is the reference") == 1, rl.lower().count("until the key manifest is published"))
+case("README.md no longer says the image is keylessly signed", "keylessly signed" not in read("README.md").lower())
+for f, ph in (("RELEASING.md", "release files keyless"), ("docs/verify-images.md", "files keyless, under `stage-promote.yml`"), ("docs/verify-images.md", "cosign keyless blob-signature"), ("docs/verify-images.md", "There is no signing key to leak")):
+    case("%s no longer says %r of the release signatures" % (f, ph), ph not in re.sub(r"\s+", " ", read(f)))
+print("\n".join(out))
 PY
-nc() { # nc ok|caught LABEL FILE...   (rc 1 and a named finding = caught)
-  local want=$1 label=$2; shift 2; local out rc=0
-  out=$(python3 "$work/nocosign.py" "$root/bin/chain-check-shape.py" "$@" 2>&1) || rc=$?
-  if [ "$want" = ok ]; then if [ "$rc" = 0 ]; then ok "$label"; else bad "$label -> $out"; fi
-  elif [ "$rc" = 1 ] && [ "$out" != ok ]; then ok "$label (caught: ${out:0:80})"
-  else bad "$label -> rc=$rc, wanted a finding: ${out:0:140}"; fi
-}
-nd="$work/nc"; mkdir -p "$nd"
-cat > "$nd/good.sh" <<'EOF'
-#!/usr/bin/env bash
-# cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" (a comment is not a call)
-cosign login ghcr.io -u me --password-stdin <<< "$T"
-cosign verify --key k.pub img
-cosign verify-blob --bundle b.bundle f
-cosign attach attestation --attestation b.bundle "$host/$repo@$digest"
-python3 -I bin/chain-verify.py kms-sign --key-ref awskms:///alias/x --digest "$d" --out s --bundle b
-EOF
-cat > "$nd/good.yml" <<'EOF'
-jobs:
-  j:
-    steps:
-      - name: install cosign (pinned by checksum)
-        run: bash bin/install-scanner.sh cosign
-      - env:
-          RELEASE_KMS_KEY_REF: awskms:///alias/x
-        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests d.json
-EOF
-cat > "$nd/good.py" <<'EOF'
-# argv = ["cosign", "attest-blob"] (a comment is not a call)
-"""the docstring may say cosign attest-blob --key"""
-argv = ["cosign", "verify-blob", "--key", "k.pub"]
-argv2 = ["python3", "bin/chain-verify.py", "kms-sign", "--key-ref", "awskms:///alias/x"]
-EOF
-nc ok "KA-2 p4 the judge accepts a shell file with login, verify, verify-blob, attach attestation and kms-sign, and a comment that names a signing call" "$nd/good.sh"
-nc ok "KA-2 p4 the judge accepts a workflow that installs cosign, sets RELEASE_KMS_KEY_REF as env and passes --signer cosign to a script" "$nd/good.yml"
-nc ok "KA-2 p4 the judge accepts a python file with verify argv, kms-sign argv, a signing word in a comment and in a docstring" "$nd/good.py"
-nc ok "KA-2 p4 the judge accepts --key-ref awskms:/// (the kms-sign option is not a cosign --key)" "$nd/good.sh"
-nc ok "KA-2 p4 the judge accepts a line with a comment-only signing command" "$nd/good.sh"
-mut() { # mut NAME GOOD APPEND-TEXT   (the mutant is the good fixture plus the text)
-  cp "$nd/$2" "$nd/$1"; printf '%b\n' "$3" >> "$nd/$1"
-}
-mut m_sign.sh good.sh 'cosign sign --yes --key "$RELEASE_KMS_KEY_REF" "$host/$repo@$digest"'
-mut m_blob.sh good.sh 'cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --bundle b f'
-mut m_att.sh good.sh 'cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --predicate p --type t "$img"'
-mut m_attblob.sh good.sh 'cosign attest-blob --yes --key "$RELEASE_KMS_KEY_REF" --statement s --bundle b'
-mut m_var.sh good.sh '$COSIGN sign-blob --yes f'
-mut m_brace.sh good.sh '"${cosign}" attest --yes img'
-mut m_env.sh good.sh 'env AWS_REGION=x cosign sign --yes img'
-mut m_xargs.sh good.sh 'ls f | xargs cosign sign-blob --yes'
-mut m_cont.sh good.sh 'cosign \\\n  sign-blob --yes f'
-mut m_key.sh good.sh 'wrapper --key "$RELEASE_KMS_KEY_REF" f'
-mut m_awskms.sh good.sh 'wrapper --key awskms:///alias/fosterstack-release-signing f'
-mut m_run.yml good.yml '      - run: cosign sign-blob --yes f'
-mut m_ykey.yml good.yml '      - run: tool --key "$RELEASE_KMS_KEY_REF" f'
-mut m_argv.py good.py 'argv = ["cosign", "attest-blob", "--yes", "--key", RELEASE_KEY_REF]'
-mut m_argvml.py good.py 'argv = [\n    "cosign",\n    "attest-blob",\n]'
-mut m_pykey.py good.py 'argv = ["tool", "--key", RELEASE_KEY_REF]'
-mut m_pysq.py good.py "argv = ['cosign', 'sign', img]"
-nc caught "KA-2 p4 mutant: a cosign sign line is found" "$nd/m_sign.sh"
-nc caught "KA-2 p4 mutant: a cosign sign-blob line is found (the evidence letter and the nine release-sign lines)" "$nd/m_blob.sh"
-nc caught "KA-2 p4 mutant: a cosign attest line is found" "$nd/m_att.sh"
-nc caught "KA-2 p4 mutant: a cosign attest-blob line is found" "$nd/m_attblob.sh"
-nc caught "KA-2 p4 mutant: a call through a variable (\$COSIGN) is found" "$nd/m_var.sh"
-nc caught "KA-2 p4 mutant: a call through a quoted braced variable is found" "$nd/m_brace.sh"
-nc caught "KA-2 p4 mutant: a call behind env is found" "$nd/m_env.sh"
-nc caught "KA-2 p4 mutant: a call behind xargs is found" "$nd/m_xargs.sh"
-nc caught "KA-2 p4 mutant: a call split over a backslash-continued line is found (the lines are joined first)" "$nd/m_cont.sh"
-nc caught "KA-2 p4 mutant: --key with RELEASE_KMS_KEY_REF on any command is found" "$nd/m_key.sh"
-nc caught "KA-2 p4 mutant: --key with an awskms:/// reference on any command is found" "$nd/m_awskms.sh"
-nc caught "KA-2 p4 mutant: a cosign signing call in a workflow run line is found" "$nd/m_run.yml"
-nc caught "KA-2 p4 mutant: --key with the release key reference in a workflow run line is found" "$nd/m_ykey.yml"
-nc caught "KA-2 p4 mutant: a python argv list that starts cosign attest-blob is found" "$nd/m_argv.py"
-nc caught "KA-2 p4 mutant: a python argv list split over lines is found" "$nd/m_argvml.py"
-nc caught "KA-2 p4 mutant: a python argv with --key and the release key reference is found" "$nd/m_pykey.py"
-nc caught "KA-2 p4 mutant: a python argv in single quotes is found" "$nd/m_pysq.py"
-t_reuse() { ! grep -q 'verify-blob-attestation' "$work/nocosign.py" && grep -q 'ccs.VERIFY_ONLY' "$work/nocosign.py"; }
-if t_reuse; then ok "KA-2 p4 the judge takes the verify-only forms from bin/chain-check-shape.py (imported, no copy of the list)"; else bad "KA-2 p4 the judge holds its own copy of the verify-only list"; fi
-nc ok "KA-2 p4 the real bin/release-sign.sh holds no cosign signing call (EXPECT 0; today 3 lines: the image signature and the two attestations)" "$root/bin/release-sign.sh"
-nc ok "KA-2 p4 the real bin/evidence-letter-publish.sh holds no cosign signing call (EXPECT 0)" "$root/bin/evidence-letter-publish.sh"
-nc ok "KA-2 p4 the real bin/chain-verify.py holds no cosign signing argv (EXPECT 0; today the attest-blob argv of kms_sign)" "$root/bin/chain-verify.py"
-nc ok "KA-2 p4 no workflow, shell or python file of the repository holds a cosign signing call or --key with the release key reference" --repo "$root"
+while IFS= read -r l; do
+  case "$l" in ok*) ok "${l#ok   }";; *) bad "${l#FAIL }";; esac
+done < <(python3 "$work/kmsdocs.py" "$root" 2>&1)
+# only bin/release-sign.sh may run cosign to sign: a keyed signing line added to another release script is caught by its row's tool list
+rsx() { mkdir -p "$work/rsx_$1"; cp "$root/bin/$1.sh" "$work/rsx_$1/$1.sh"
+  printf '\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle b.json f\n' >> "$work/rsx_$1/$1.sh"
+  expect caught "P3 a keyed cosign sign-blob line added to bin/$1.sh is refused (only bin/release-sign.sh lists cosign)" "uses 'cosign'" scan "$work/rsx_$1/$1.sh" "$root/.github/policy/chain-scripts.json"; }
+for n in release-publish release-assets release-verify; do rsx "$n"; done
 # KA-2 p4 group 4: no bare /usr/local/bin/aws path is left in any non-test script or workflow (the pinned aws CLI is installed under RUNNER_TEMP/aws-cli/aws by bin/install-scanner.sh aws-cli).
 # The KA-0 guard's `--aws` defaults (found by name) in bin/chain-verify.py go with its cosign-path branch (ruling 3g) and are not this scan's subject.
 bare_aws() { grep -rIn --include='*.sh' --include='*.py' --include='*.yml' -e '/usr/local/bin/aws' "$@" 2>/dev/null | grep -v -e '-test\.' ; }
@@ -805,8 +753,6 @@ out = re.sub(r"(chain-verify\.py key-ref-check[^\n]*?) --aws \"\$RUNNER_TEMP/aws
 open(sys.argv[2], "w").write(out)
 DROPPY
 if [ -n "$(awscalls "$work/awscalls/m_release_sign.sh")" ]; then ok "KA-2 p4 r2 C1 mutant: the real release-sign.sh with --aws dropped from its key-ref-check line is found by the scan"; else bad "KA-2 p4 r2 C1 mutant: the aws scan missed release-sign.sh without --aws on key-ref-check"; fi
-sed 's|--aws "\$RUNNER_TEMP/aws-cli/aws" --key-ref "\$RELEASE_KMS_KEY_REF" --digest|--key-ref "$RELEASE_KMS_KEY_REF" --digest|' "$root/bin/release-sign.sh" > "$work/awscalls/m_release_sign_blob.sh"
-if cmp -s "$root/bin/release-sign.sh" "$work/awscalls/m_release_sign_blob.sh"; then bad "KA-2 p4 r2 C1 mutant: the kms_blob mutation did not apply"; elif [ -n "$(awscalls "$work/awscalls/m_release_sign_blob.sh")" ]; then ok "KA-2 p4 r2 C1 mutant: the real release-sign.sh with --aws dropped from its kms_blob call is found by the scan"; else bad "KA-2 p4 r2 C1 mutant: the aws scan missed release-sign.sh without --aws on kms_blob"; fi
 # KA-2 p4 r2 (1b', round 1 ruling): the pinned aws CLI is installed only where KMS is reached: `bash bin/install-scanner.sh aws-cli` runs in no job of .github/workflows/*.yml except stage-sign sign, sign-rebuild and sign-check, evidence-letter sign and stage-promote release
 awsfiles() { local r=$1; shopt -s globstar nullglob; printf '%s\n' "$r"/.github/workflows/*.y*ml "$r"/.github/actions/**/action.y*ml; }      # KA-2 p4 r2 C4: .yml and .yaml, workflows and composite actions
 awsjobs() { python3 - "$@" <<'JOBSPY'
@@ -843,7 +789,7 @@ rm -f "$work/awstree/.github/workflows/w.yaml"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
-EXPECT=344
+EXPECT=355
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

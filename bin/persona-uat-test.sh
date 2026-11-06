@@ -98,7 +98,7 @@
 #       AFTER its response, so a persona's last request is attributed to its own window and never to the next persona's (the `delayed` case);
 #       401s (withAuth wraps withMetrics) and the three uncounted routes make no counted request. The GitLab runner's mux serves /metrics only (/ is
 #       404) and the readiness probe must use /metrics of the started container; a started container with no listener is a did-not-run persona.
-#       `kind create cluster` is bounded by --ready-timeout (the test passes 2 and requires the run to end within 16 seconds), not by a separate flag.
+#       `kind create cluster` is bounded by --ready-timeout (the test passes 2; the fake kind hangs 90 s, past RUN_TIMEOUT 60, so only a driver that gives up ends under the 45 s bound), not by a separate flag.
 #       After every persona the driver runs ONE cleanup container over the persona's sandbox mount (run --rm --network none --user 0:0 --label <the
 #       persona's> -v <sandbox>:/work -w /work <shell image> rm -rf ...), after the label sweep: files a tool image created as another uid (root in
 #       the maven image, curl_user in the curl image) cannot be removed or chmod'ed by the runner, and real ownership cannot be simulated without
@@ -115,7 +115,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (624 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="201 150 273"
+SEG_CASES="201 171 273"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -751,7 +751,7 @@ if a[:2] == ["create", "cluster"]:
 elif a[:2] == ["delete", "cluster"]:
     noise("delete")
 if cfg.get("kind_hang") and a[:2] == ["create", "cluster"]:
-    time.sleep(20)
+    time.sleep(90)
 if cfg.get("kind_fail"):
     sys.stderr.write("kind: simulated failure\n"); sys.exit(1)
 port, pn = int(cfg["kind_port"]), cfg.get("procnet")
@@ -3556,6 +3556,35 @@ check test "$(head -1 "$(out cmp10)/compliance-reviewer.report.md")" = "VERDICT:
 cmpcase cmp11 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity=x@sha256:$(printf 'a%.0s' $(seq 64))\",\"ghcr.io/example/cache:1.0\"],\"exit\":0}]}"
 CASE="compliance proof: the digest inside a flag's value (not an image argument) is no proof: blocking"
 check test "$(head -1 "$(out cmp11)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+# the release key file: `cosign verify --key release.rsa.pub` (fetched from build/keys/ at the tag) is proof of FosterStack's signature when it is the ONLY key and no certificate identity or issuer is beside it; any other --key value is not (orchestrator ruling, as the cache#828 judge)
+kcase() { # <name> <verify arguments before the image, as JSON words> <pass|blocking> <exit> <label> [image]
+  cmpcase "$1" "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$2,\"${6:-$RCD}\"],\"exit\":$4}]}"
+  CASE="compliance proof: $5: $3"
+  check test "$(head -1 "$(out "$1")/compliance-reviewer.report.md")" = "VERDICT: $3"
+}
+kcase cmpk1  '"--key","release.rsa.pub"' pass 0 "a verify with --key release.rsa.pub of the image under test is proof"
+kcase cmpk2  '"--key=release.rsa.pub"' pass 0 "the --key=release.rsa.pub spelling is the same proof"
+kcase cmpk3  '"--key","release.rsa.pub","--verbose"' pass 0 "the release key with a presentation flag (--verbose) is still proof"
+kcase cmpk4  '"--key","docs/release-signing-key.pub"' blocking 0 "another key file name (not release.rsa.pub) is no proof"
+kcase cmpk5  '"--key","./release.rsa.pub"' blocking 0 "a leading ./ is not the file name release.rsa.pub (the whole value is compared)"
+kcase cmpk6  '"--key","/tmp/x/release.rsa.pub"' blocking 0 "the right file name inside another directory is no proof"
+kcase cmpk7  '"--key","build/keys/release.rsa.pub"' blocking 0 "a directory part in front of the name is no proof (exactly release.rsa.pub)"
+kcase cmpk8  '"--key","my.pub"' blocking 0 "the reader's own key file is no proof"
+kcase cmpk9  '"--key","https://example.com/release.rsa.pub"' blocking 0 "a key from a URL, even with the right file name, is no proof"
+kcase cmpk10 '"--key","awskms:///alias/fosterstack-release-signing"' blocking 0 "a KMS key reference is no proof (a customer has no AWS role)"
+kcase cmpk11 '"--key","env://COSIGN_PUBLIC_KEY"' blocking 0 "a key taken from an environment variable is no proof"
+kcase cmpk12 '"--key","release.rsa.pub","--key","my.pub"' blocking 0 "a second --key after the release key is no proof"
+kcase cmpk13 '"--key","my.pub","--key","release.rsa.pub"' blocking 0 "a second --key before the release key is no proof"
+kcase cmpk14 '"--key","release.rsa.pub.evil"' blocking 0 "a name that only starts with release.rsa.pub is no proof"
+kcase cmpk15 '"--key",""' blocking 0 "an empty --key value is no proof"
+kcase cmpk16 '"--key","release.rsa.pub","--certificate-identity","x"' blocking 0 "the release key with a certificate identity beside it is no proof (no identity or issuer beside the key)"
+kcase cmpk17 '"--key","release.rsa.pub","--certificate-oidc-issuer","https://token.actions.githubusercontent.com"' blocking 0 "the release key with an OIDC issuer beside it is no proof"
+kcase cmpk18 '"--key","release.rsa.pub"' blocking 1 "a verify that FAILED (exit 1) is no proof, whatever the key"
+kcase cmpk19 '"--key","release.rsa.pub"' blocking 0 "a verify of ANOTHER repository that ends in the same digest is no proof" "ghcr.io/evil/cache@sha256:$(printf 'a%.0s' $(seq 64))"
+kcase cmpk20 '"--key","release.rsa.pub","--insecure-ignore-tlog"' blocking 0 "the release key with a flag that changes what is verified is no proof"
+cmpcase cmpk21 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"--key\",\"release.rsa.pub\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: verify-blob with the release key is not judged as proof of the image (only cosign verify of the image counts): blocking"
+check test "$(head -1 "$(out cmpk21)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 run proofreset '{"gradle-platform-engineer":{"requests":3},"maven-jenkins-ci":{"requests":3},"readme-evaluator":{"reset":true,"requests":1}}' weekly
 CASE="proof: a counter that went BACKWARDS during the window (the server restarted: fewer samples after than before) is no proof: that persona, with no findings, is blocking; the others pass"
 check test "$(head -1 "$(out proofreset)/readme-evaluator.report.md")" = "VERDICT: blocking" -a "$(head -1 "$(out proofreset)/gradle-platform-engineer.report.md")" = "VERDICT: pass"
@@ -3852,11 +3881,12 @@ pl = json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "=="))
 assert pl["exp"] - pl["iat"] == 7200
 PY
 KIND_HANG=1 READY_TIMEOUT=2 RUN_TIMEOUT=60 run kindhang '{}' weekly
-CASE="kind hang: a 'kind create cluster' that does not return is bounded (the run finishes in well under the 20s the fake hangs): the on-call persona did not run, the other four ran, the run fails, no traceback"
+CASE="kind hang: a 'kind create cluster' that does not return is bounded (the driver stops kind at its 4s kind timeout, twice the 2s ready timeout; the fake hangs 90s, past the 60s run timeout, so a driver that waited would be ended at 60s): the on-call persona did not run, the other four ran, the run fails, no traceback"
 check python3 - "$work/kindhang" "$(out kindhang)" "$rc" "$RUNSECS" <<'PY'
 import json, sys
 d = sys.argv[1]
-assert int(sys.argv[3]) != 0 and int(sys.argv[4]) < 16, ("the driver waited for a hung kind", sys.argv[4])
+assert int(sys.argv[3]) != 0, "the run passed although a persona did not run"
+assert int(sys.argv[4]) < 45, "the driver waited for a hung kind (RUNSECS=%s, bound 45)" % sys.argv[4]
 assert "Traceback" not in open(d + "/stderr").read()
 assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/log")] and len(open(d + "/log").read().splitlines()) == 4
 assert "did not run" in open(sys.argv[2] + "/on-call-engineer.report.md").read().lower()

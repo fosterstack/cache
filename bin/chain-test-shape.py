@@ -1642,7 +1642,7 @@ stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml sup
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "evidence-letter.yml"})
+    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "evidence-letter.yml", "customer-words-edited.yml"})
     only = ("(the only new files of v0.3.0 are stage-sign.yml, rule 52, and evidence-letter.yml, "
             "the owner's Oct 3 amendment in ops/docs/ratify/2026-10-02-owner-load.md)")
     bad = ["workflow file %s was added %s" % (f, only) for f in added]

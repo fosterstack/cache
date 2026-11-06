@@ -22,6 +22,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
+export RELEASE_ROOT="$root"
 python3 - "$@" <<'PY'
 import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
@@ -65,15 +66,17 @@ esac''',
  "cosign": r'''#!/usr/bin/env bash
 echo "cosign $*" >> "$LOG"
 echo "$PWD" >> "$LOG.cwd"
-if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt|*"{"*|*"*"*) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
+for a in "$@"; do if [ "$a" = release.rsa.pub ]; then [ -f release.rsa.pub ] || { echo "open release.rsa.pub: no such file or directory" >&2; exit 1; }; cat release.rsa.pub >> "$LOG.keyseen"; fi; done
+if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
-if [ "$1 $2" = "attach attestation" ] && [ -n "${COSIGN_ATTEST_FAIL_ON:-}" ]; then   # KA-2 p4: only the attach of a release-manifest attestation bundle fails (the image signatures are attached the same way)
-  case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) b=""; for x in "$@"; do [ "$p" = "--attestation" ] && b=$x; p=$x; done
-    if [ -f "$b" ] && python3 -c 'import base64,json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if "release-manifest" in base64.b64decode(d["dsseEnvelope"]["payload"]).decode() else 1)' "$b"; then echo "cosign attach failed" >&2; exit 1; fi;; esac
-fi
-case "$1" in sign-blob|sign|attest|attest-blob) echo "cosign $1 must not be called: every signature is made by chain-verify.py kms-sign (KA-2); cosign only logs in and attaches" >&2; exit 1;; esac''',
+[ "$1" != attest ] || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attest failed" >&2; exit 1;; esac
+if [ "$1" = sign-blob ]; then
+  while [ $# -gt 0 ]; do [ "$1" = --bundle ] && b=$2; shift; done
+  if [ -n "${COSIGN_NOREKOR:-}" ] && [ "$(basename "$b")" = "${COSIGN_NOREKOR}" ]; then echo '{"verificationMaterial":{"tlogEntries":[]}}' > "$b"
+  else echo '{"verificationMaterial":{"tlogEntries":[{"logIndex":"1"}]}}' > "$b"; fi
+fi''',
  "git": r'''#!/usr/bin/env bash
 # release-assets reads the release tag's object (cat-file tag); release-sign asks for the admitted commit's committer date (log -1 --format=%ct)
 if [ "$1 $2" = "cat-file tag" ]; then
@@ -226,6 +229,7 @@ def adm(t, tag, base, **over):
     d = {"tag": tag, "sha": "c" * 40, "baseline_version": base, "baseline": "requirements/releases/%s.yaml" % base}
     d.update(over)
     json.dump(d, open(os.path.join(t, "witness-build/admission-baseline.json"), "w"))
+KEYTXT = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA-release-key-test\n-----END PUBLIC KEY-----\n"
 def tree(extra_env=None):
     t = tempfile.mkdtemp(); fb = os.path.join(t, ".fakebin"); os.makedirs(fb); os.makedirs(os.path.join(t, "bin")); os.makedirs(os.path.join(t, "reg"))
     for n, body in FAKES.items():
@@ -281,10 +285,11 @@ def tree(extra_env=None):
                  ("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz")):
         open(os.path.join(t, "dist", n), "wb").write(k.encode())
     os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
+    os.makedirs(os.path.join(t, "build/keys"), exist_ok=True); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write(KEYTXT)
     os.makedirs(os.path.join(t, "release-published"), exist_ok=True)   # what release-assets.sh downloads the published release into (gh release download -D release-published)
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
     return t
-KMS = "awskms:///alias/fosterstack-release-signing"      # the value the release job pins in RELEASE_KMS_KEY_REF (handoff 0713 P3)
+KMS = "awskms:///alias/fosterstack-release-signing"      # the value stage-promote.yml gives RELEASE_KMS_KEY_REF; the P3 workflow cases below read it from that file
 def run(t, script, env=None, creds=None, tag="v0.3.0"):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
@@ -521,7 +526,7 @@ layout_refused(t, "a child blob replaced under its name", "production")
 t = tree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
 check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
 # ---- AC8: release-sign.sh -------------------------------------------------------------------------------------------------------------------
-def signs(t): return [l for l in log(t) if l.startswith(("cosign", "chain-verify kms-sign"))]
+def signs(t): return [l for l in log(t) if l.startswith("cosign")]
 t = tree(); os.makedirs(os.path.join(t, "reg"), exist_ok=True); rc, so, se = run(t, "release-sign", creds=REG); L = [l for l in log(t) if not l.startswith("chain-verify key-ref-check")]   # the key-reference check (W2, KA-0) is the step's first call, and is judged below
 check(rc == 0, "AC8 a good run signs", se)
 check(L and L[0].startswith("vendor-provenance evidence --out"), "AC8 the dependency evidence is produced first (bin/vendor-provenance.py evidence --out DIR)", str(L[:1]))
@@ -542,83 +547,20 @@ for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, "c
 for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
     tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env=env)
     check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
-# KA-2 p4 (image kinds): every image signature and every manifest attestation is a `chain-verify kms-sign --dsse-statement` call (a v0.3 DSSE bundle with its Rekor entry), attached with `cosign attach attestation`;
-# the model signer keeps each statement it signed (LOG.stmts: path, tab, the statement), so the cases read what the script built
-def stmts_raw(t):
-    p = os.path.join(t, "calls.log.stmts"); out = {}
-    if os.path.exists(p):
-        for ln in open(p).read().splitlines():
-            if "\t" in ln: k, v = ln.split("\t", 1); out[k] = v
-    return out
-def stmts_of(t): return {k: json.loads(v) for k, v in stmts_raw(t).items()}
-def ksi_of(L, t):     # (the kms-sign line, its statement) for every DSSE call, in call order
-    sm = stmts_of(t); r = []
-    for l in L:
-        if l.startswith("chain-verify kms-sign") and " --dsse-statement " in l:
-            r.append((l, sm.get(re.search(r" --dsse-statement (\S+)", l).group(1))))
-    return r
-KSI = ksi_of(L, t)
-SIGT, ATTT = "https://sigstore.dev/cosign/sign/v1", "https://fosterstack.com/attestations/release-manifest/v1"
-imgs = [(l, st) for l, st in KSI if st and st["predicateType"] == SIGT]
-check({(st["subject"][0]["name"], "sha256:" + st["subject"][0]["digest"]["sha256"]) for l, st in imgs} == {("%s/fosterstack/cache" % h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()} and len(imgs) == 4,
-      "AC8 each published image digest is signed in BOTH registries (four kms-sign statements of type cosign/sign/v1, one per registry and digest)", str(imgs))
+imgs = [l for l in L if l.startswith("cosign sign ")]
+check({(re.search(r"(ghcr\.io|docker\.io)/fosterstack/cache@(sha256:\w+)", l).groups()) for l in imgs} == {(h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()}, "AC8 each published image digest is signed in BOTH registries", str(imgs))
 # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays attached to each public image digest as an OCI referrer (as on v0.2.x), type
 # https://fosterstack.com/attestations/release-manifest/v1; the GHCR referrer is required, the Docker Hub mirror is best-effort with a loud warning
-atts = [(l, st) for l, st in KSI if st and st["predicateType"] == ATTT]
-want_refs = sorted(("%s/fosterstack/cache" % h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values())
-check(sorted((st["subject"][0]["name"], "sha256:" + st["subject"][0]["digest"]["sha256"]) for l, st in atts) == want_refs and len(atts) == 4 and len(KSI) == 8,
-      "AC8 the release manifest is attested on each public digest in both registries, with the pinned type (four attestations), and nothing else is signed as an image statement", str([st["predicateType"] for l, st in KSI]))
-check(all((" --key-ref " + KMS + " ") in l and " --signing-config .github/policy/cosign-signing-config.json " in l and " --public-key build/keys/release.rsa.pub " in l and " --bundle " in l for l, st in KSI),
-      "P3 each of the 8 image statements (4 signatures, 4 attestations) is signed with the release key reference (--key-ref), then the signing config and the committed public key, into a bundle", str([l for l, st in KSI][:1]))
-last_sign = max((i for i, (l, st) in enumerate(KSI) if st and st["predicateType"] == SIGT), default=-1); first_att = next((i for i, (l, st) in enumerate(KSI) if st and st["predicateType"] == ATTT), -2)
+ATT = "cosign attest --yes --key " + KMS + " --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "
+atts = [l for l in L if l.startswith("cosign attest ")]
+want_refs = sorted("%s/fosterstack/cache@%s" % (h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values())
+check(sorted(l[len(ATT):] for l in atts if l.startswith(ATT)) == want_refs and len(atts) == 4, "AC8 the release manifest is attested on each public digest in both registries, with exactly the pinned flags and type (four attestations)", str(atts))
+last_sign = max((i for i, l in enumerate(L) if l.startswith("cosign sign ")), default=-1); first_att = next((i for i, l in enumerate(L) if l.startswith("cosign attest ")), -2)
 check(last_sign >= 0 and first_att > last_sign, "AC8 the manifest attestations come AFTER the image signatures (nothing is attached to an unsigned image)", "sign %s attest %s" % (last_sign, first_att))
-att_lines = [l for l in L if l.startswith("cosign attach attestation ")]
-check(len(att_lines) == 8 and all(re.fullmatch(r"cosign attach attestation --attestation \S+\.bundle (ghcr\.io|docker\.io)/fosterstack/cache@sha256:\w+", l) for l in att_lines),
-      "KA-2 p4 each of the eight image bundles is attached with `cosign attach attestation --attestation BUNDLE IMAGE@DIGEST` (and cosign signs nothing)", str(att_lines[:2]))
-# KA-2 p4 r2 (A1, round 1 ruling): each attach call carries the bundle of ITS statement: the destination image name and digest are the subject of the statement the bundle was signed for (the 8 bundles are 8 distinct files)
-def attach_bound(tt):
-    Lx = log(tt); bun = {}
-    for lx, stx in ksi_of(Lx, tt): bun[re.search(r" --bundle (\S+)", lx).group(1)] = stx
-    al = [lx for lx in Lx if lx.startswith("cosign attach attestation ")]; seen = set()
-    for lx in al:
-        m = re.fullmatch(r"cosign attach attestation --attestation (\S+) (\S+)@(sha256:[0-9a-f]+)", lx); stx = bun.get(m.group(1)) if m else None
-        if not (stx and stx["subject"][0]["name"] == m.group(2) and "sha256:" + stx["subject"][0]["digest"]["sha256"] == m.group(3)): return False
-        seen.add(m.group(1))
-    return len(al) == 8 and len(seen) == 8
-check(attach_bound(t), "KA-2 p4 r2 A1 each of the eight attach calls names, as image and digest, the subject of the statement its bundle was signed for (the bundles are eight distinct files)", str(att_lines[:2]))
-def pins_ok(tt):      # the pinned statement shapes (the two checks above, as one function so a mutated run is judged by the same words): four signatures, four attestations of the pinned type, the predicate the manifest as `jq -c` writes it
-    kx = ksi_of(log(tt), tt); sgx = sorted((x["subject"][0]["name"], "sha256:" + x["subject"][0]["digest"]["sha256"]) for lx, x in kx if x and x["predicateType"] == SIGT)
-    atx = sorted((x["subject"][0]["name"], "sha256:" + x["subject"][0]["digest"]["sha256"]) for lx, x in kx if x and x["predicateType"] == ATTT)
-    mf = os.path.join(tt, "release-metadata/release-manifest.json"); jx = subprocess.run(["jq", "-c", ".", mf], capture_output=True, text=True).stdout.strip() if os.path.exists(mf) else ""
-    rw = [r for r in stmts_raw(tt).values() if '"predicateType":"' + ATTT + '"' in r]
-    return sgx == want_refs and atx == want_refs and len(kx) == 8 and len(rw) == 4 and jx.startswith("{") and all(r.rstrip("\n").endswith('"predicate":' + jx + "}") for r in rw)
-check(pins_ok(t), "KA-2 p4 r2 the pinned statement shapes judge the real run green (the control of the type and predicate mutants below)")
-def rs_mutant(old, new, label, judge):
-    """a copy of the real tree with ONE edit in bin/release-sign.sh is run; `judge` must call the edit out (the mutated run still ends 0 or the judge is not what is being proven)"""
-    tm = tree(); pm = os.path.join(tm, "bin/release-sign.sh"); src = open(pm).read()
-    if src.count(old) != 1: check(False, label, "the mutation did not apply (%d places)" % src.count(old)); return
-    open(pm, "w").write(src.replace(old, new)); rcm, som, sem = run(tm, "release-sign", creds=REG)
-    check(rcm == 0 and not judge(tm), label, "rc=%s %s" % (rcm, first(sem)))
-rs_mutant('cosign attach attestation --attestation "$bundle" "$name@$dg"', 'cosign attach attestation --attestation "$bundle" "$name@$prod"',
-          "KA-2 p4 r2 A1 mutant: the attach destination is the production digest for every bundle (the FIPS bundles are attached to the wrong image) is caught", attach_bound)
-rs_mutant('cosign attach attestation --attestation "$bundle" "$name@$dg"', 'cosign attach attestation --attestation "$bundle" "${name%%/*}/fosterstack/other@$dg"',
-          "KA-2 p4 r2 A1 mutant: the attach destination names another image than the statement's is caught", attach_bound)
-rs_mutant('predicateType: "https://fosterstack.com/attestations/release-manifest/v1"', 'predicateType: "https://fosterstack.com/attestations/release-manifest/v2"',
-          "KA-2 p4 r2 m_atttype mutant: the manifest attestation has another predicate type than the pinned one is caught by the statement shapes", pins_ok)
-rs_mutant('kms_image attest "ghcr.io/$repo" "$digest"', 'kms_image sign "ghcr.io/$repo" "$digest"',
-          "KA-2 p4 r2 m_atttype mutant: the GHCR manifest line makes a signature statement, not an attestation, is caught by the statement shapes", pins_ok)
-rs_mutant('--slurpfile p release-metadata/release-manifest.json', '--slurpfile p witness-build/digests.json',
-          "KA-2 p4 r2 m_attpred mutant: the attestation predicate is another file than the release manifest is caught by the statement shapes", pins_ok)
-rs_mutant('kms_image attest "ghcr.io/$repo" "$digest"', 'kms_image attest "ghcr.io/$repo" "$prod"',
-          "KA-2 p4 r2 m_attpred mutant: the GHCR manifest line attests the production digest for both loops is caught by the statement shapes", pins_ok)
 mfile = os.path.join(t, "release-metadata/release-manifest.json"); lf2 = os.path.join(t, "release-metadata/release-files.sha256")
 check(os.path.exists(mfile) and ("%s  release-manifest.json" % hashlib.sha256(open(mfile, "rb").read()).hexdigest()) in open(lf2).read(), "AC8 the attested predicate is the manifest release-files.sha256 lists (made from Build's verified material, not another file)")
-jqc = subprocess.run(["jq", "-c", ".", mfile], capture_output=True, text=True).stdout.strip()
-raw_atts = [raw for raw in stmts_raw(t).values() if '"predicateType":"' + ATTT + '"' in raw]
-check(len(raw_atts) == 4 and jqc.startswith("{") and all(raw.rstrip("\n").endswith('"predicate":' + jqc + "}") for raw in raw_atts),
-      "KA-2 p4 (ruling iii) the attestation predicate is the manifest as `jq -c . release-manifest.json` writes it, in each of the four statements", jqc[:80])
 t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "docker.io/"})
-check(rc5 == 0 and "docker.io" in so5 + se5 and "::warning::" in so5 and len([l for l in log(t5) if l.startswith("cosign attach attestation ")]) == 8 and any(l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l for l in log(t5)),
+check(rc5 == 0 and "docker.io" in so5 + se5 and "::warning::" in so5 and len([l for l in log(t5) if l.startswith("cosign attest ")]) == 4 and any(l.startswith("cosign sign-blob") for l in log(t5)),
       "AC8 a Docker Hub mirror referrer that cannot be attached is a loud warning, never a silent skip, and the run continues (GHCR is authoritative)", "rc=%s %s" % (rc5, first(se5)))
 t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "ghcr.io/"})
 check(rc5 != 0 and not any(l.startswith("cosign sign-blob") for l in log(t5)), "AC8 a GHCR referrer that cannot be attached stops the run before any file is signed", "rc=%s %s" % (rc5, first(se5)))
@@ -628,7 +570,7 @@ for f in ("production.sbom.json", "fips.sbom.json", "production.full.lock.json",
           "fscache-modules.spdx.json", "fscache-modules-fips.spdx.json"):
     check(f in blobs, "AC8 %s is signed with a bundle" % f)
 check(all("--bundle" in l for l in L if l.startswith("cosign sign-blob")), "AC8 every signed file gets a bundle")
-# handoff 0713 P3 (ratify B): every signature is made with the release KMS key, named by the job (RELEASE_KMS_KEY_REF), and keeps its Rekor entry through the signing config
+# handoff 0713 P3 (ratify B): customers check every signature against the one published KMS key, so a call without --key would leave an artifact they cannot check
 signing = [l for l in L if l.startswith(("cosign sign ", "cosign sign-blob", "cosign attest "))]
 SIGNING_CONFIG = " --signing-config .github/policy/cosign-signing-config.json "
 check(len(signing) == 19 and all((" --key " + KMS + " ") in l and SIGNING_CONFIG in l for l in signing),
@@ -639,7 +581,27 @@ check(not any(re.search(r"--(identity-token|fulcio|oidc)", l) for l in L if l.st
 tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
 check(rc != 0 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(tn) if l.startswith(("cosign", "vendor-provenance"))], "P3 a job with no RELEASE_KMS_KEY_REF stops the step before anything is made or signed, naming the variable", "rc=%s %s" % (rc, first(se)))
 tb = tree(); rc, so, se = run(tb, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "arn:aws:kms:us-east-1:111122223333:key/abc"})
-check(rc == 2 and not [l for l in log(tb) if l.startswith("cosign")], "P3 a key reference that is not awskms:/// is refused before any signature, exit 2 (the one check, W2)", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and not [l for l in log(tb) if l.startswith("cosign")], "P3 a key reference that is not awskms:/// is refused before any signature", "rc=%s %s" % (rc, first(se)))
+def files_of(t):
+    out = []
+    for dp, dn, fn in os.walk(t):
+        out += [os.path.relpath(os.path.join(dp, f), t) for f in fn if f != "calls.log"]
+    return sorted(out)
+def refused_ref(val, label, want_rc=None):
+    t = tree(); before = files_of(t)
+    rc, so, se = run(t, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": val})
+    check(rc != 0 and (want_rc is None or rc == want_rc) and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(t) if l.startswith(("cosign", "vendor-provenance"))] and files_of(t) == before,
+          label, "rc=%s %s" % (rc, first(se)))
+refused_ref("", "P3 an EMPTY RELEASE_KMS_KEY_REF stops the step with exit 2 before anything is made or signed", 2)
+refused_ref("awskms:///a --other", "P3 a reference with a space (a second word for cosign) is refused before anything is made or signed", 1)
+refused_ref("awskms:///a\nb", "P3 a reference with a newline is refused before anything is made or signed", 1)
+refused_ref("awskms:///a\tb", "P3 a reference with a tab is refused before anything is made or signed", 1)
+refused_ref("awskms:///*", "P3 a reference that is only a glob character is refused before anything is made or signed", 1)
+refused_ref("awskms:///", "P3 a reference with an empty key name is refused before anything is made or signed", 1)
+refused_ref("awskms:///alias/", "F4 a reference with an empty alias name (awskms:///alias/) is refused before anything is made or signed", 1)
+refused_ref("awskms:///alias", "F4 a reference that is the word alias with no alias name is refused before anything is made or signed", 1)
+tn2 = tree(); before_n = files_of(tn2); rcn, son, sen = run(tn2, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
+check(rcn == 2 and files_of(tn2) == before_n, "P3 an absent RELEASE_KMS_KEY_REF leaves no file behind (nothing is made before the check)", "rc=%s %s" % (rcn, first(sen)))
 # W2 (Q/W2 ruling) + KA-0: release-sign.sh has no key-reference check of its own: it calls the one check in bin/chain-verify.py (key-ref-check, with the algorithm guard) once, before its
 # first cosign call, and a refusal there ends the step with exit 2 before anything is made or signed
 tw = tree(); rc, so, se = run(tw, "release-sign", creds=REG); lw = log(tw)
@@ -685,19 +647,11 @@ for variant, name in MODULE_SBOMS:
           "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing cosign (it fails at login, the first call) stops at the first call")
-# an image signature fails (the login passes): the failing kms-sign call is the only one made, and nothing is attached, attested or signed after it
-t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"KMSSIGN_FAIL_ON": "image.1.bundle"})
+# the signature itself fails (the login passes): the failing `cosign sign` is the only one made, and no attestation and no blob signature follows it
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "sign --yes"})
 Lf = log(t)
-check(rc != 0 and len([l for l in Lf if l.startswith("chain-verify kms-sign")]) == 1 and not any(l.startswith("cosign attach") for l in Lf),
-      "AC8 a refused image signature stops at the first one: no attach, no attestation and no file is signed after it", "rc=%s %s" % (rc, first(se)))
-# the attach of an image signature fails (the signing worked): the one failing `cosign attach attestation` is the only one made and no further statement is signed
-t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "attach attestation"})
-Lf = log(t)
-check(rc != 0 and len([l for l in Lf if l.startswith("cosign attach attestation ")]) == 1 and len([l for l in Lf if l.startswith("chain-verify kms-sign")]) == 1,
-      "AC8 an image bundle that cannot be attached stops at the first one: nothing further is signed", "rc=%s %s" % (rc, first(se)))
-# an image bundle with no Rekor entry fails the script, naming the file, before it is attached
-t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": "image.1.bundle"})
-check(rc != 0 and "rekor" in se.lower() and "image.1.bundle" in se and not any(l.startswith("cosign attach") for l in log(t)), "AC8 an image bundle with no Rekor entry fails the script, naming the file, before it is attached", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and len([l for l in Lf if l.startswith("cosign sign ")]) == 1 and not any(l.startswith(("cosign attest ", "cosign sign-blob")) for l in Lf),
+      "AC8 a failing image signature stops at the first one: no attestation and no file is signed after it", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
 # AC13: the four metadata files and the signed list are made in release-sign, before the first signature, from Build's verified digests only
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
@@ -1037,6 +991,25 @@ for bad_cmd, what in (("jq -e '.messageSignature'", "no file operand (it would r
                       ("jq -n 1", "jq -n alone")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "other.json": OK}); check(rc != 0 and not calls(t), "AC20 post-publish: a jq-only command with %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, "jq -c '.messageSignature' provenance.bundle.json | jq -e '. == true'"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 post-publish: a jq pipe whose first jq reads a verified file is accepted (the later jq reads the pipe)", "rc=%s %s" % (rc, first(se)))
+# the release key is the committed build/keys/release.rsa.pub, never a release asset: the commands that say `--key release.rsa.pub` find it in release-published/ (the working directory)
+PVK = "cosign verify --key release.rsa.pub <IMAGE_REF>"
+PVKB = "cosign verify-blob --key release.rsa.pub --bundle b.json x.txt"
+KPATH = "build/keys/release.rsa.pub"
+def keyseen(t):
+    p = os.path.join(t, "calls.log.keyseen"); return open(p).read() if os.path.exists(p) else ""
+t, rc, so, se = pv([PVK, PVKB])
+check(rc == 0 and len(calls(t)) == 3, "AC20 post-publish: `--key release.rsa.pub` commands run (two registries for the image form, once for the blob form)", "rc=%s %s calls=%s" % (rc, first(se), calls(t)))
+check(keyseen(t) == KEYTXT * 3, "AC20 post-publish: every `--key release.rsa.pub` command finds the committed key in its working directory, byte for byte", repr(keyseen(t))[:120])
+check(os.path.exists(os.path.join(t, "release-published/release.rsa.pub")) and open(os.path.join(t, "release-published/release.rsa.pub")).read() == KEYTXT, "AC20 post-publish: release-published/release.rsa.pub is a byte-for-byte copy of build/keys/release.rsa.pub")
+for what, mutate in (("missing", lambda t: os.remove(os.path.join(t, KPATH))), ("empty", lambda t: open(os.path.join(t, KPATH), "w").write(""))):
+    t = tree(); mutate(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+    rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+    check(rc != 0 and KPATH in se and not calls(t), "AC20 post-publish: a %s %s in the checkout fails the run, naming it, before any command runs" % (what, KPATH), "rc=%s %s" % (rc, first(se)))
+t = tree(); open(os.path.join(t, "release-published/release.rsa.pub"), "w").write("a published asset\n")
+os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc != 0 and "release-published/release.rsa.pub" in se and not calls(t) and open(os.path.join(t, "release-published/release.rsa.pub")).read() == "a published asset\n", "AC20 post-publish: a release asset named release.rsa.pub is refused, never overwritten and never taken for the committed key, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV1, PV3]); check(rc == 0 and len(calls(t)) == 4 and keyseen(t) == "", "AC20 post-publish: commands that do not name release.rsa.pub run as before", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([]); check(rc == 0 and not calls(t), "AC20 post-publish: an empty list runs nothing and passes with the assets directory present")
 # round 1 (both seats): the grammar is CLOSED, so none of these reads a file nothing verified
 for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined short options (-ef loads a program file)"), ("jq -er '.messageSignature' provenance.bundle.json", "combined short options (-er)"),

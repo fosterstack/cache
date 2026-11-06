@@ -132,7 +132,7 @@ ALLOWED_MENTIONS = {
 # 207 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
 # plus the two outbound-check patterns (0710), the recorded publisher signatures (REQ-SUP-001), the kept Fulcio chain, the real-record
 # fixtures and the one P2 file, the three base-layout patterns, the two of the base-layout builder, and the recipe template and members list (0710)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 222, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 225, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "faf1e02e06ef1f06008d993232d8dbb89d0c1964c12bd2c3e1352e4ab85922b2"
+PINNED_SHA256 = "2b3dd7b00cef066455b2566a8adac9a9ad7856880e0c4950397050614ad5a5ae"
 if rstart and rend:
     import hashlib
     _b = _rawlines

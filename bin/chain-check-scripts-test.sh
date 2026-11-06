@@ -898,7 +898,7 @@ echo "go $*" >> "$FAKE_LOG"
 [ "$1 $2" = "version -m" ] || exit 2
 echo "$3: go1.26.0"; echo "	build	CGO_ENABLED=0"
 case "$(basename "$3")" in
-  fscache-fips) [ -n "${FAKE_GOFIPS_FIPS-v1.0.0}" ] && echo "	build	GOFIPS140=${FAKE_GOFIPS_FIPS-v1.0.0}";;
+  fscache-fips) v=${FAKE_GOFIPS_FIPS-v1.0.0-c2097c7c}; [ -z "$v" ] || echo "	build	GOFIPS140=$v";;
   fscache) [ -z "${FAKE_GOFIPS_STD:-}" ] || echo "	build	GOFIPS140=${FAKE_GOFIPS_STD}";;
 esac
 exit 0
@@ -1022,6 +1022,8 @@ afail "AC17 --arch arm64: the fips binary reporting off fails" "fips build" FAKE
 mkarch "$fa/dist"
 mkarch "$fa/dist"
 afail "FIPS-001-AC1 the fips binary embeds no module selection fails" GOFIPS140 FAKE_GOFIPS_FIPS= -- "${ART[@]}"
+afail "FIPS-001-AC1 the fips binary embedding the version alone (v1.0.0) fails" GOFIPS140 FAKE_GOFIPS_FIPS=v1.0.0 -- "${ART[@]}"
+afail "FIPS-001-AC1 the fips binary embedding a longer id (v1.0.0-c2097c7c9) fails" GOFIPS140 FAKE_GOFIPS_FIPS=v1.0.0-c2097c7c9 -- "${ART[@]}"
 afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 FAKE_GOFIPS_FIPS=v1.26.0 -- "${ART[@]}"
 afail "FIPS-001-AC1 the standard binary embedding a selection (crossed variants) fails" crossed FAKE_GOFIPS_STD=v1.0.0 -- "${ART[@]}"
 afail "FIPS-002-AC1 the fips binary reporting off fails" "fips build" FAKE_FIPS_NOTE=off -- "${ART[@]}"
@@ -1549,6 +1551,7 @@ gvcases_=(
   'GOFIPS140 in the standard recipe|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange.yaml"'
   'the FIPS recipe without the GOFIPS140 export|sed -i.bak "/export GOFIPS140=v1.0.0/d" "$gvt/build/melange-fips.yaml"'
   'the FIPS recipe with another GOFIPS140 value|sed -i.bak "s#export GOFIPS140=v1.0.0#export GOFIPS140=off#" "$gvt/build/melange-fips.yaml"'
+  'the FIPS recipe without the proof line|sed -i.bak "/^      grep -Eqx /d" "$gvt/build/melange-fips.yaml"'
   'the FIPS recipe with GOFIPS140 twice|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange-fips.yaml"'
   'a fifth environment key|sed -i.bak "s/^    GOPROXY: \"off\"$/    GOPROXY: \"off\"\n    GOAMD64: v3/" "$gvt/build/melange.yaml"'
   'CGO_ENABLED set twice in the environment block|sed -i.bak "s/^    CGO_ENABLED: \"0\"$/    CGO_ENABLED: \"0\"\n    CGO_ENABLED: \"1\"/" "$gvt/build/melange.yaml"'
@@ -1653,7 +1656,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=577
+EXPECT=580
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -332,7 +332,7 @@ check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "111"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "124"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

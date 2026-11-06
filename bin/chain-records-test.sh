@@ -87,7 +87,7 @@ def scan(rel, text, raw=False):
     bad = BAD if rel not in FROZEN else []          # a frozen legacy file's own findings are left out (its products still count)
     for e, ctx in _cts.calls(text, TABLE, not raw):      # a LISTED script is scanned raw: a signer name in a comment, quote or heredoc counts
         n = e["name"]
-        why = _cts.unresolved_signing(e, ctx)               # Codex #249 r7 B7: an unresolved call is an explicit error, never an assumption
+        why = _cts.unresolved_signing(e, ctx, rel)               # Codex #249 r7 B7: an unresolved call is an explicit error, never an assumption
         if why: bad.append("%s: %s" % (rel, why)); continue
         if n == "witness run":
             add(COLL)
@@ -228,11 +228,44 @@ expect ok "the same sign-blob with the cosign signature row (consumer: customer)
 d=$(mk relrow); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
 addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
 expect ok "the release policy's sign-blob with a row whose consumer is the release stage passes" "$d"
-# handoff 0713 P3: a sign-blob made with the release KMS key names it as `--key "$RELEASE_KMS_KEY_REF"` (the job pins the value); that one variable as the key's value does not
-# make the blob unresolved, and no other variable does the same
-d=$(mk relkey); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
+listed() { # listed DIR PATH TOOL...: write DIR/.github/policy/chain-scripts.json listing PATH with its real sha256 (a script a stage file may run)
+  python3 - "$@" <<'PY'
+import hashlib, json, os, sys
+d, path, tools = sys.argv[1], sys.argv[2], sys.argv[3:]
+f = d + "/.github/policy/chain-scripts.json"
+j = json.load(open(f)) if os.path.exists(f) else {"scripts": []}
+j["scripts"].append({"path": path, "sha256": hashlib.sha256(open(os.path.join(d, path), "rb").read()).hexdigest(), "tools": tools, "signs": "other", "reason": "x", "runs": []})
+json.dump(j, open(f, "w"))
+PY
+}
+# handoff 0713 P3: the release KMS key is named in bin/release-sign.sh as `--key "$RELEASE_KMS_KEY_REF"` (the release job's environment gives the value); as the value of --key in that
+# script, and only there, the variable does not make a literal blob unresolved
+d=$(mk relkey); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/bin/release-sign.sh"; listed "$d" bin/release-sign.sh cosign
 addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
-expect ok "a sign-blob with --key \"\$RELEASE_KMS_KEY_REF\" and a literal blob resolves like any literal sign-blob" "$d"
+expect ok "bin/release-sign.sh: a sign-blob with --key \"\$RELEASE_KMS_KEY_REF\" and a literal blob resolves like any literal sign-blob" "$d"
+d=$(mk relkeywf); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
+addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+expect_named "the same sign-blob in a workflow step is refused as an unresolved argument (the key variable is known in bin/release-sign.sh only)" "$d" "unresolved argument"
+d=$(mk relkeyoth); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
+addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+expect_named "the same sign-blob in a listed script other than bin/release-sign.sh is refused as an unresolved argument" "$d" "unresolved argument"
+relkeyrs() { # relkeyrs NAME 'cosign line' LABEL: the line as bin/release-sign.sh's only signing call, with the signature row present: refused as an unresolved argument
+  local d; d=$(mk "$1"); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\n%s\n' "$2" > "$d/bin/release-sign.sh"; listed "$d" bin/release-sign.sh cosign
+  addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+  expect_named "$3" "$d" "unresolved argument"; }
+relkeyrs rk_dashdash 'cosign sign-blob --yes --signing-config c.json --bundle b.json -- "--key=$RELEASE_KMS_KEY_REF"' 'bin/release-sign.sh: a blob named "--key=$RELEASE_KMS_KEY_REF" after -- is a positional argument with an unresolved variable, not the key'
+relkeyrs rk_glued 'cosign sign-blob --yes --signing-config c.json --bundle b.json "payload--key=$RELEASE_KMS_KEY_REF"' 'bin/release-sign.sh: a blob whose name only ends in --key=$RELEASE_KMS_KEY_REF is an unresolved argument'
+relkeyrs rk_flagval 'cosign sign-blob --yes --signing-config c.json --bundle --key "$RELEASE_KMS_KEY_REF" policy.json' 'bin/release-sign.sh: --key as the value of --bundle leaves "$RELEASE_KMS_KEY_REF" a positional blob: an unresolved argument'
+relkeyrs rk_twokeys 'cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --key "$OTHER_KEY" --signing-config c.json --bundle b.json policy.json' 'bin/release-sign.sh: a second --key with another variable is an unresolved argument'
+sigform() { # sigform NAME 'run line' LABEL: a signing call whose form hides `cosign sign` from a match at the start of a word run still needs its row
+  local d; d=$(mk "$1"); printf 'jobs:\n  c:\n    steps:\n      - run: %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"
+  expect_named "$3" "$d" "stage-verify.yml"; }
+sigform sf_twosp 'cosign  sign --yes "$IMG"' 'cosign sign with two spaces between the words is still an image signature with no row'
+sigform sf_tab "$(printf 'cosign\tsign --yes "$IMG"')" 'cosign sign with a tab between the words is still an image signature with no row'
+sigform sf_command 'command cosign sign --yes "$IMG"' '`command cosign sign` is still an image signature with no row'
+sigform sf_or 'false || cosign sign --yes "$IMG"' 'cosign sign after || is still an image signature with no row'
+sigform sf_if 'if cosign sign --yes "$IMG"; then :; fi' 'cosign sign as an if condition is still an image signature with no row'
+sigform sf_semi 'true; cosign sign-blob --yes --bundle b.json policy.json' 'cosign sign-blob after a semicolon is still a signature with no row'
 d=$(mk relkey2); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --key "$OTHER_KEY" --signing-config c.json --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
 addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
 expect_named "a sign-blob with --key of any other variable is still refused as an unresolved argument" "$d" "unresolved argument"
@@ -326,16 +359,6 @@ d=$(mk wra); printf 'jobs:\n  c:\n    steps:\n      - uses: testifysec/witness-r
 expect_named "testifysec/witness-run-action is a provenance producer (fail closed) and needs a row" "$d" "stage-verify.yml"
 d=$(mk trailing); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG" # verify only\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "a trailing comment exempts nothing (cosign sign with no row still fails)" "$d"
-listed() { # listed DIR PATH TOOL...: write DIR/.github/policy/chain-scripts.json listing PATH with its real sha256 (a script a stage file may run)
-  python3 - "$@" <<'PY'
-import hashlib, json, os, sys
-d, path, tools = sys.argv[1], sys.argv[2], sys.argv[3:]
-f = d + "/.github/policy/chain-scripts.json"
-j = json.load(open(f)) if os.path.exists(f) else {"scripts": []}
-j["scripts"].append({"path": path, "sha256": hashlib.sha256(open(os.path.join(d, path), "rb").read()).hexdigest(), "tools": tools, "signs": "other", "reason": "x", "runs": []})
-json.dump(j, open(f, "w"))
-PY
-}
 d=$(mk lscript); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
 expect_named "a LISTED script that signs an image has no row: the judge names the script" "$d" "bin/publish.sh"
 d=$(mk lscriptvar); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
@@ -422,8 +445,8 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-# KA-2 on the REAL release-sign.sh (its pinned sha256 re-written in the copy, so the finding is the record type and not
-# the pin): drop its kms_image calls
+# On the REAL release-sign.sh (its pinned sha256 re-written in the copy, so the finding is the record type and not
+# the pin): drop its cosign attest and cosign sign calls
 # realmut NAME SED-EXPR: a tracked copy whose bin/release-sign.sh is edited by SED-EXPR and re-listed with its new
 # sha256
 realmut() {
@@ -437,11 +460,11 @@ json.dump(j, open(f, "w"), indent=1)
 PY
   echo "$d"
 }
-d=$(realmut realnoatt '/^ *kms_image attest /d')
-expect_named "KA-2 mutant on the real release-sign.sh: both kms_image attest lines dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
-d=$(realmut realnosig '/^ *kms_image sign /d')
-expect_named "KA-2 mutant on the real release-sign.sh: the kms_image sign line dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
-EXPECT=113
+d=$(realmut realnoatt '/^ *cosign attest /d')
+expect_named "mutant on the real release-sign.sh: both cosign attest lines dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
+d=$(realmut realnosig '/^ *cosign sign --yes /d')
+expect_named "mutant on the real release-sign.sh: the cosign sign line dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
+EXPECT=125
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

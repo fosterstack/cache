@@ -103,8 +103,8 @@ cosign verify-blob --key release.rsa.pub --bundle release-files.sha256.bundle re
 ### The signed evidence files
 
 Beside the images, the Release stage's `release-sign` step signs each of these
-files with the release key (the same key as the images, made through the cloud
-key service), with a Rekor entry, and the release carries the file with its bundle:
+files with the release key (the same key as the images), with a Rekor entry,
+and the release carries the file with its bundle:
 `<variant>.sbom.json` and `<variant>.full.lock.json` for `production` and
 `fips`, `vendor-evidence.json`, `dependency-list.json`, `policy.json` (its
 bundle is `release-policy.bundle`), `checksums.txt` and
@@ -335,8 +335,8 @@ container-averse or air-gapped environments — see
 [Install FosterStack Cache](install.md), or
 ["Installing on disconnected networks"](offline-install.md) for the air-gap
 path) ship a
-`checksums.txt` covering every archive, plus a kms-sign blob signature checked with
-the release key, as a bundle over that file:
+`checksums.txt` covering every archive, plus a blob signature made with the release
+key, as a bundle over that file:
 
 ```sh
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
@@ -349,7 +349,7 @@ sha256sum -c checksums.txt   # verifies every archive you downloaded, transitive
 
 For customers who want to *require* this at admission time rather than
 verify manually, a starting Kyverno policy — restrict a namespace to only
-admit images signed by this repository's own release workflow:
+admit images signed with this repository's release key:
 
 ```yaml
 apiVersion: kyverno.io/v1
@@ -370,13 +370,17 @@ spec:
             - "ghcr.io/fosterstack/cache:*"
           attestors:
             - entries:
-                - keyless:
-                    subjectRegExp: "^https://github.com/fosterstack/cache/"
-                    issuer: "https://token.actions.githubusercontent.com"
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      (the contents of release.rsa.pub, fetched from the release tag)
+                      -----END PUBLIC KEY-----
 ```
 
-Adjust `subjectRegExp` if you pin to a specific workflow ref rather than
-any ref in this repo. This is a starting point, not a turnkey compliance
+This is for v0.3.0 and later, whose images are signed with the release key. A <!-- pinned: historical -->
+release before v0.3.0 carries a certificate: use a certificate attestor with the <!-- pinned: historical -->
+signing workflow's identity and the issuer
+`https://token.actions.githubusercontent.com` instead. This is a starting point, not a turnkey compliance
 artifact — review it against your own cluster's admission-control setup.
 
 ## Why this matters more than most vendors' equivalent page

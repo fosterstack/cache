@@ -115,7 +115,7 @@ sha256sum -c checksums.txt 2>/dev/null | grep OK
 
 The signature proves the checksums file was signed with our release key; the checksums then cover every archive transitively.
 
-Releases before v0.3.0 carry a short-lived certificate instead of a key:
+Releases before v0.3.0 carry a short-lived certificate instead of a key: <!-- pinned: historical -->
 
 ```sh
 cosign verify-blob \

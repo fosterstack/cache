@@ -32,7 +32,7 @@ Two small things, and nothing else:
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import bisect, codecs
-import fnmatch, hashlib, json, os, re
+import fnmatch, hashlib, json, os, re, shlex
 
 def jload(path):
     """json.load that REFUSES a repeated object key at any depth (round 1 (6)): a plain reader keeps only the last of two equal keys, so the
@@ -578,7 +578,7 @@ PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
-AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./-]+")
+AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./:-]+")
 
 # Release's NAMED SECRETS (rule 56: only Release holds a stored secret; advisor 0386 J): ONE closed list of four rows, in code, so that a fifth row, another name, another place
 # or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  bin/witnessed.sh receives every
@@ -724,7 +724,25 @@ def signing_files(base, errs=None):
             if isinstance(d, dict) and ({"jobs", "runs"} & set(d)): out.add(f)
     return sorted(out)
 
-def unresolved_signing(e, ctx):
+KMS_REF = ("$RELEASE_KMS_KEY_REF", "${RELEASE_KMS_KEY_REF}")
+SIGN_VALUE_FLAGS = {"--bundle", "--signing-config", "--output-signature", "--output-certificate", "--rekor-url", "--timestamp-server-url", "--identity-token"}
+
+def without_kms_key(ctx):
+    """The words of a sign-blob call with the one `--key "$RELEASE_KMS_KEY_REF"` taken out. Only an option before `--` counts, and not as the value of another option."""
+    try: words = shlex.split(ctx)
+    except ValueError: return ctx
+    rest, seen, i = [], False, 0
+    while i < len(words):
+        w = words[i]
+        if w == "--": rest += words[i:]; break
+        if not seen and ((w == "--key" and words[i + 1:i + 2] and words[i + 1] in KMS_REF) or w in ["--key=" + r for r in KMS_REF]):
+            seen = True; i += 2 if w == "--key" else 1; continue
+        takes_value = w in SIGN_VALUE_FLAGS or w == "--key"
+        rest += words[i:i + 2] if takes_value else [w]
+        i += 2 if takes_value else 1
+    return " ".join(rest)
+
+def unresolved_signing(e, ctx, rel=""):
     """Why a signing call's record type cannot be resolved from its text, or None (Codex #249 r7 B7: an explicit error, never an
     assumption). witness run: a config file (-c/--config), a WITNESS_* environment setting, or any attestor value that is not a literal.
     cosign sign-blob and sigstore (python) sign: an argument that is a variable, substitution or glob (the blob, and so its type,
@@ -736,9 +754,9 @@ def unresolved_signing(e, ctx):
             return "witness run with an unresolved attestor list (a config file or WITNESS_ setting) (fail closed)"
         if any(not lit for _v, lit in witness_attestors(ctx)):
             return "witness run with an unresolved attestor list (fail closed)"
-    if n == "cosign sign-blob":
+    if n == "cosign sign-blob" and rel == "bin/release-sign.sh":
         # the release KMS key is named by one pinned variable (handoff 0713 P3): as the value of --key it is the key, not the blob, so it does not make the blob unresolved
-        ctx = re.sub(r"--key[ =]\"?\$\{?RELEASE_KMS_KEY_REF\}?\"?(?=\s|$)", "--key", ctx)
+        ctx = without_kms_key(ctx)
     if n in ("cosign sign-blob", "sigstore python sign") and (UNRESOLVED.search(ctx) or re.search(r"[*?]", ctx)):
         return "%s with an unresolved argument (its blob, and so its type, cannot be known) (fail closed)" % n
     return None
