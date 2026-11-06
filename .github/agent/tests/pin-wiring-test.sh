@@ -418,7 +418,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/layout-archive-test.sh"
   },
   {
-   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
+   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest",
    "run": "bash bin/vex-forms-test.sh"
   },
   {
@@ -426,7 +426,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/scout-root-cause-test.sh"
   },
   {
-   "name": "the Docker Scout older-versions sweep (advisor 0520) \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
+   "name": "the Docker Scout older-versions sweep \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
    "run": "bash bin/scout-older-versions-test.sh"
   },
   {
@@ -527,7 +527,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/chain-release-metadata-test.sh"
   },
   {
-   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)",
+   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named",
    "run": "bash bin/vex-guide-test.sh"
   },
   {
@@ -622,7 +622,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-test.sh"
   },
   {
-   "name": "dependency lanes wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)",
+   "name": "dependency paths wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor path after the guard",
    "run": "bash bin/dependency-lanes-test.sh"
   },
   {
@@ -630,7 +630,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-gather-test.sh"
   },
   {
-   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)",
+   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited",
    "run": "bash bin/panel-test.sh"
   },
   {
@@ -642,19 +642,19 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
   {
-   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)",
+   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags",
    "run": "bash bin/patch-decide-test.sh"
   },
   {
-   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012)",
    "run": "bash bin/audit-record-test.sh"
   },
   {
-   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
+   "name": "admission's tag signer \u2014 the maintainers' SSH key on any tag, the release workflow's keyless identity on patch tags only",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
   {
-   "name": "release.yml's automatic patch wiring \u2014 decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)",
+   "name": "release.yml's automatic patch wiring \u2014 decide on main only, keyless gitsign, the App pushes, failures open an issue",
    "run": "bash bin/release-patch-wiring-test.sh"
   },
   {
@@ -682,11 +682,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/rescan-current-only-test.sh"
   },
   {
-   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)",
+   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception",
    "run": "bash bin/panel-wiring-test.sh"
   },
   {
-   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md (advisor 0084)",
+   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md",
    "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
   },
   {
