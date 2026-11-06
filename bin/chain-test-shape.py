@@ -776,7 +776,7 @@ def listed(path, root):
 # and import). A file that does not read as UTF-8
 # text or does not parse is a finding (its children could not be followed). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on
-# the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the second review), and
+# the review list (its witness, go and crane arms run in Build, so a change there gets the second review), and
 # install-build-tools.sh compiles nothing. bin/build-freeze.sh is no root: a closure file that names it is a finding.
 # No finding is known on the real tree. The admission step in bin/build-admit.py runs no go: the requirements tool's
 # freeze check is the job `freeze` before Build (bin/build-freeze.sh), and admission reads its file.
@@ -880,7 +880,7 @@ def ns_shell(path, name):
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
-    "bin/admission-tag-signer.py": "e3df12b9a6dc8d83f24572f2c3a5fe9f11db859d435ae630c785fe5d5b3f2145",
+    "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
     "bin/apk-tool.py": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",

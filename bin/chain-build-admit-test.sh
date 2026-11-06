@@ -457,8 +457,8 @@ GNUPGHOME="$W/gh-check" G -c gpg.format=openpgp verify-commit HEAD > /dev/null 2
 commit_move other "other";
 GNUPGHOME="$W/gh-check" G -c gpg.format=openpgp verify-commit HEAD > /dev/null 2>&1 && bad "fixture: the other-key GPG commit must NOT verify" || ok \
     "fixture: a commit signed by another GPG key does not verify against the pinned key"
-fresh; patch_tag v0.3.1; G cat-file tag v0.3.1 > "$W/c/tagobj"; git -C "$W/c/repo" tag -l 'v*' > "$W/c/released"
-r=$(python3 "$root/bin/admission-tag-signer.py" route --tag v0.3.1 --tag-object "$W/c/tagobj" --tags "$W/c/released" 2>&1 || true);
+fresh; patch_tag v0.3.1; G cat-file tag v0.3.1 > "$W/c/tagobj"
+r=$(python3 "$root/bin/admission-tag-signer.py" route --tag-object "$W/c/tagobj" 2>&1 || true);
 [ "${r%% *}" = refuse ] && ok "fixture: the router refuses the keyless patch tag (handoff 0713 P8: no keyless route is left)" || bad "fixture: patch route is '$r'"
 r=$(GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api "repos/fosterstack/cache/commits/$SHAC/check-runs?filter=latest&per_page=100" | jq -r '.check_runs[0].name');
 [ "$r" = ci ] && ok "fixture: the fake gh serves the check runs of the tagged commit" || bad "fixture: fake gh"
