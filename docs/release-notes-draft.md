@@ -1,9 +1,5 @@
 # DRAFT release notes for the next release (not published)
 
-This is a draft for the owner to read rendered. Nothing here is a release, a tag or a claim until he says so. The text between the two rules is what would become the release body; the section after it is for the owner and is deleted before anything is published. Claims about the release chain and about the platforms are written for the state after the chain's landing pull request (cache#359) is merged: on `main` today the release definition still lists six archives including macOS, and the chain branch changes it to the four Linux archives (REQ-PLAT-001-AC1 there). If the chain does not land first, the platform bullet and the isolation section do not apply.
-
----
-
 ## Next release: Go 1.27.3<!-- pinned: upstream -->, optional HTTPS, and building and signing kept apart
 
 This release is rebuilt with **Go 1.27.3**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
@@ -44,31 +40,3 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 - The release pipeline's own signing tools are not FIPS-validated. (The `-fips` image uses Go's FIPS 140-3 module, which is a different claim.)
 
 See `release-manifest.json` for the evidence bundle: image digests, archive checksums, the requirements baseline, per-AC results and the transparency-log index.
-
----
-
-## For the owner (delete this section before anything is published)
-
-**Open before this can be posted**
-1. The affected functions, the defect line and the VEX verdict for the previous release are not in the repository (the id GO-2026-6809 appears only in the Go 1.27.3<!-- pinned: upstream --> commit message). Take them from pkg.go.dev/vuln/GO-2026-6809 and the VEX the release run generates (`docs/using-our-vex.md` describes it). The owner decided (relayed by the advisor) that the fix ships in this release with no separate patch release, and that the notes name CVE-2026-111943 and GO-2026-6809 as fixed here.
-2. The "building and signing" section is true only after the release chain's landing pull request (cache#359) merges. Nothing in the pipeline has been proven end to end by a real release yet: the first release candidate is the proof. Do not describe the chain as having run a release before then. (When this draft was written, the hosted build jobs were red on every chain pull request; that is the pipeline lane's work.)
-3. The docs this section quotes: `docs/build-and-signing-isolation.md` is a draft pull request (cache#516) and is not merged.
-4. The version and tag names are the owner's; the heading above is a placeholder.
-5. The CA bundle line (the three eMudhra roots removed by `ca-certificates-bundle` 20260909-r3) is the owner's decision that all the eMudhra fixes ship in this release (relayed by the advisor). Check the bundle version in the image's package list on the day.
-
-**Where each claim comes from** (pipeline lane, read from the repository)
-- Optional HTTPS and TLS 1.2: REQ-TLS-001 (cache#296). Start-up order, unknown-variable warning, upload count: cache#257. Unclean marker kept: cache#295 and REQ-STORE-005-AC4/AC5. Temp-file and `..` key fixes: cache#292, cache#291. Disk metrics: cache#258; gauges seeded at start-up: cache#254.
-- 431 on more than 500 header values and no macOS or Windows binaries: `docs/next-release-notes.md` (owner decisions, advisor 0115 and 0390).
-- Go fix: the Go 1.27.3<!-- pinned: upstream --> bump (cache#464).
-- Isolation: the chain's stage workflows (Build, Rebuild, Sign, Check, Release; the `compare`, `verify` and `release` jobs) as described on the isolation page.
-- Logs without client addresses: 741ba075 (failure logs, REQ-OBS-006) and fbd4f5e7 (Go's own server error lines). Credential digests: 428b5ea4 (REQ-AUTH-002). Method label: 13c4bbb0 (REQ-OBS-002). Store consistency: cache#553 (same-key uploads, REQ-STORE-001-AC2), df55ebd2 and 181b3c6e (non-regular file at a key's path, no link followed, no FIFO block), cbe2c1e5 (corrupt record, not a panic).
-- Dependencies: client_golang and its libraries: cache#394 (go.mod). Go 1.27.3<!-- pinned: upstream -->: cache#464.
-- Deliberately not listed as dependency updates: the `build/docker` base-image digests (the release images are built by the chain, not from a container build file) and every update to a build or CI tool (nothing in the shipped files).
-- The list of server changes is built from commits under `cmd/` and `internal/` since the previous release; it is not a vetted complete list. Re-run `git log` from the previous tag before publishing.
-
-**Tonight's changes (Oct 22), and why none is in the release body yet** (cache docs lane)
-- *Witness records on the builder, signed by the signer* (ratified rule `ops/docs/ratify/2026-10-22-witness-signed-outside-build.md`): the rule is ratified but the workflows are not changed (the pipeline lane's read-back is awaiting the advisor). Until it lands, the Build and Rebuild jobs still hold `id-token` and sign their own Witness records. The isolation paragraph above says only that the image and checksum signatures use short-lived workflow-tied certificates, which is true either way; do not add "the build jobs hold no signing identity" until the change is merged.
-- *Four scanners* (advisor, Oct 22: the ratified four are the daily rescan set; the release and pull request gate lists are narrower): the daily main-candidate rescan uses four scanners (Grype, Docker Scout, Amazon Inspector, Google Artifact Analysis; `ops/docs/ratify/2026-10-02-scanner-panel-rules.md`), and that rule still names a debug image; the v0.3 chain builds none (production and -fips only), while main's release and rescan still build one. The release gate in `.github/policy/scanners.json` on the chain branch is two scanners (Grype and OSV-Scanner) plus the govulncheck source scan, and the pull request gate is Grype and Inspector. The body must not say "four" for the gates.
-- *Isolation*: REQ-REL-011 (cache#521) is merged on `main`; the body's isolation section already rests on it and on the chain's stage workflows.
-
-**Deliberately not claimed** (do not add): macOS or Windows binaries; hardware-separated builds; automated signing-key rotation; FIPS validation of the pipeline's signing tools; the Docker Scout live check until the first release candidate has passed it; customer suppression files; any statement that the release chain has completed a real release.

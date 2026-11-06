@@ -55,8 +55,58 @@ showed more in a scan than the production image because busybox itself
 carries a package surface. From v0.3.0 the release carries two images, <!-- pinned: historical -->
 production and `-fips`, and neither contains busybox, so there is no
 debug variant to scan or to exclude from a gate. To troubleshoot a running
-container use an ephemeral helper container instead; see [Docker
-deploy](docker-deploy.md).
+container use a separate helper container instead; see [troubleshooting
+without a shell](docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
+
+## Using our VEX files in your scanner
+
+Each release carries our exceptions as published statements, generated from one
+source ([`.vex/`](../.vex/)). Download them from the release page
+(`gh release download v${VER} --repo fosterstack/cache -p 'fosterstack-cache*'`) and
+check them against the signed release manifest as described in
+[Verify our images](verify-images.md). Then apply the form your scanner reads:
+
+| Your scanner | File | How |
+|---|---|---|
+| Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
+| Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
+| Docker Scout | none yet | Scout does not apply a VEX file given on the command line (see [Docker Scout](#docker-scout)) |
+| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per statement: `aws inspector2 create-filter`, one rule per call |
+| Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
+
+The three files are generated from the same statements. The OpenVEX and CSAF files
+carry every statement; the Inspector file carries one rule per `not_affected` or
+`fixed` statement and none for `affected` or `under_investigation`. Google applies
+whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
+
+## Suppression rules
+
+A suppression rule in your scanner is only as trustworthy as the claim behind it,
+so ours work in one direction: **every suppression traces to a published
+statement**.
+
+- **Our rules.** We keep no scanner-side ignore that stands alone. A suppression in
+  our repository must cite the statement that governs it
+  ([`.vex/README.md`](../.vex/README.md)), and the Inspector rules above are
+  generated from the statements, never written by hand.
+- **Which statements become rules.** `not_affected` and `fixed` statements become
+  suppression rules. `affected` and `under_investigation` never do: those findings
+  stay visible in your scanner.
+- **Scoped to what we shipped.** Each rule is scoped by the CVE and by the digests
+  of the release it was written for (and by package and version when the statement
+  names one), so it does not hide the same CVE in a different image.
+- **Your own rules.** Put the statement ID in the rule's reason or comment, so a
+  reviewer on your side can trace it back to our file the same way.
+
+## Docker Scout
+
+Docker Scout does not apply a VEX file you give it on the command line. The
+`--vex-location` option is accepted, but our statements are not applied on any Scout
+release we tested, from 1.9.3 through 1.26.0 (Docker's open report is
+[docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). A Scout scan
+of our images therefore still lists the findings our statements cover. Read them
+against the published OpenVEX file ([above](#using-our-vex-files-in-your-scanner)) by
+hand until Scout can apply it; we will say here when it can.
 
 ## Reproducing our own gate
 
@@ -65,9 +115,16 @@ Our release pipeline's scan step is public:
 ([`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml)),
 is the gate itself. The scanners are the ones in
 [the scanner list](../.github/policy/scanners.json): Grype and OSV-Scanner.
+Both scan the exact built images by digest (Grype also scans the four Linux
+archives, OSV-Scanner the Go modules). The same Check stage also runs
+`govulncheck` once on the tagged source, a separate Go source scan with its own
+policy that the rest of this section does not describe. Pull requests are
+scanned by [`scan.yml`](../.github/workflows/scan.yml) on the candidate images,
+with Grype and Amazon Inspector.
 
-The gate's policy is every severity, with the published VEX applied, and the
-example below uses the same policy. It is a simplified reproduction, not the exact
+The gate's policy is every severity, with the published VEX applied (a finding
+of unknown severity fails it too), and the example below uses the same policy.
+It is a simplified reproduction, not the exact
 invocation: the gate also runs Grype with an empty configuration file and refuses
 `GRYPE_*` and `OSV_SCANNER_*` variables (so a local setting cannot hide a finding),
 scans each platform of the index separately, and checks that every finding

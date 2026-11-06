@@ -99,9 +99,9 @@ Actions history for the CI claims, the commands in
 [`RELEASING.md`](RELEASING.md) for signatures and provenance. What those
 commands prove, and what they do not, is stated in RELEASING.md itself.
 
-Full core (eviction, size limits, metrics) is free forever under MIT — see
-[`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
-SLA, and compliance support on top of the same open core; nothing is
+Full core (eviction, size limits, metrics) is free under MIT — see
+[`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a 48-hour CVE
+response target, and compliance support on top of the same open core; nothing is
 withheld from the free tier for security.
 
 The security evidence itself is public and free: SBOMs, SLSA provenance,
@@ -216,7 +216,7 @@ Desktop may still need one. See
 
 **Docker without `docker debug`** works on any Docker, with no plan or sign-in:
 start a tools container that shares the cache container's network and process
-namespaces. (This is the no-shell route; see also the
+namespaces. (This is the no-shell route; the images have no shell of their own; see also the
 [troubleshooting section](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).)
 
 ```sh
@@ -299,7 +299,7 @@ before implementation. CI fails if the matrix drifts from its sources.
 
 ## Security
 
-- Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
+- Static binary, zero CGO, no shell and no package manager in the image, and a small OS package surface (base layout, CA certificates,
   time zone data), patched by a new image, not on a running one.
 - CI runs the full test suite under `GODEBUG=fips140=only`, where Go's FIPS 140-3
   module makes non-approved algorithms fail. That mode is a best-effort test
@@ -317,7 +317,7 @@ before implementation. CI fails if the matrix drifts from its sources.
   `lsof -nP -a -p <pid> -i` against a running server shows one listening
   socket and accepted inbound connections, nothing else.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
-  and patch SLA once published.
+  and the 48-hour response target.
 
 ## License
 
