@@ -1392,6 +1392,12 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertIn("--verdict \"${RUNNER_TEMP}/panel/verdict.json\"", self.steps[judges[0]]["run"])
         self.assertIn("always()", self.steps[judges[0]]["if"])               # not skipped when the CVE audit fails
 
+    def test_the_rescan_lookup_prefix_is_the_panels_title_prefix(self):
+        spec = importlib.util.spec_from_file_location("rescan_statement", os.path.join(REPO, "bin", "rescan-statement.py"))
+        lookup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lookup)
+        self.assertEqual(P.policy.subject(P.ISSUE_TITLE), lookup.FAMILY_PREFIX + P.ISSUE_TITLE)
+
     def test_both_seats_are_keyless_and_named_only_by_secrets(self):        # REQ-SCAN-008-AC3
         j = self.steps[self.step("auditor-panel.py judge")]
         env = j["env"]

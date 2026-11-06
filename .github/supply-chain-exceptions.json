@@ -1291,24 +1291,6 @@
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
-      "form": "an unpinned package install",
-      "key": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
-      "line": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
-      "line": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
       "form": "a pip requirements file not named requirements*.txt",
       "key": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
       "line": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
