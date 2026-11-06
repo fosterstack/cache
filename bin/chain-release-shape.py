@@ -292,8 +292,9 @@ def stage(path):
             bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
         want_if = RC_IF if kinds and (kinds[-1][:2] in ("W:", "RE") or kinds[-1] in ("aws", "keychk")) and kinds[-1] not in ("W:release-verify", "RE:release-verify") else None
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
-            bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
-                       % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
+            what = {"aws": "the AWS step", "keychk": "the key reference check step"}.get(kinds[-1], "step %r" % (r or u))
+            bad.append("%s must carry %s, found %r (a release candidate ends after release-verify; the AWS step, the key reference check and every Witness step after release-verify carry that if; release-verify and every other step carry no if)"
+                       % (what, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
     want = ["checkout"] + ["install:" + t for t in INSTALLS] + ["install:melange"]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]

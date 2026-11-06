@@ -103,8 +103,9 @@ made (nothing is rebuilt). The images and the release files are signed with
 the release signing key, a key held in a cloud key service that the Release job
 reaches with short-lived credentials, each with an entry in Rekor. Sign's
 records and provenance are signed keyless (Fulcio certificate from GitHub OIDC,
-entry in Rekor). The apk release key is separate and only Release's
-`release-apks` step reads it:
+entry in Rekor). The apks are signed in Release's `release-apks` step, which
+today reads a separate local apk release key; the intended state is the one
+release signing key, and it lands with the APK signing change:
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
   `linux/arm64` index holding the `fscache` binary and a few packages (base layout, CA

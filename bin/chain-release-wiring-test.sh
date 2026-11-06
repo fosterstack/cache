@@ -238,6 +238,7 @@ m s_kclate   '(      - name: release signing key reference check\n(?:        [^\
 m s_nokc     '(      - name: release signing key reference check\n(?:        [^\n]*\n)+)'   ''   'key reference'  "F2 no key reference check step before release-publish"
 m s_kcenv    '=          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/release-key-ref-check.sh'   '          RELEASE_KMS_KEY_REF: awskms:///alias/other\n        run: bash bin/release-key-ref-check.sh'   'key reference'  "F2 the check step gives another reference than release-sign gets"
 m s_kcrun    '=run: bash bin/release-key-ref-check.sh\n'   'run: bash bin/release-key-ref-check.sh --skip\n'   'key reference'  "F2 the check step runs with an argument"
+m s_kcif     '=      - name: release signing key reference check\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n'   '      - name: release signing key reference check\n        if: ${{ always() }}\n'   'key reference'  "F2 the check step carries another if than release-sign (the refusal names the key reference check)"
 m s_job2    'jobs:\n  compare:'                          'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  compare:' 'exactly'  "AC1 a fourth job"
 m s_selfh   'runs-on: ubuntu-24.04'                         'runs-on: self-hosted'                                   'ubuntu-24.04'       "AC1 a self-hosted runner"
 m s_envnone '    environment: release\n'                     ''                                                       'environment'        "AC1 no environment (the credentials would not be protected)"
@@ -718,7 +719,7 @@ rsx() { mkdir -p "$work/rsx_$1"; cp "$root/bin/$1.sh" "$work/rsx_$1/$1.sh"
   printf '\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle b.json f\n' >> "$work/rsx_$1/$1.sh"
   expect caught "P3 a keyed cosign sign-blob line added to bin/$1.sh is refused (only bin/release-sign.sh lists cosign)" "uses 'cosign'" scan "$work/rsx_$1/$1.sh" "$root/.github/policy/chain-scripts.json"; }
 for n in release-publish release-assets release-verify; do rsx "$n"; done
-EXPECT=346
+EXPECT=347
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
