@@ -610,7 +610,7 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
       - name: apk build driver and release signing regressions
-        run: bash bin/build-apk-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json build-apk-test.sh bin/build-apk-test.sh
 
       - name: input refresh script regressions
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json refresh-inputs-test.sh bin/refresh-inputs-test.sh
@@ -735,6 +735,8 @@ jobs:
       - name: "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
 
+      - name: "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json witness-kms-test.sh bin/witness-kms-test.sh
       - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
 
@@ -939,8 +941,7 @@ jobs:
         with:
           persist-credentials: false
       # One open issue, updated in place, never duplicated.
-      - name: open or update the `required-check drift` issue when main's list has drifted
-        id: drift-issue
+      - name: open the required-check drift issue
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

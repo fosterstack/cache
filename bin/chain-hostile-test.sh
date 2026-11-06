@@ -260,7 +260,7 @@ printf '# transcript: tried\nclaims: %s\n' "$TS" > "$work/tok_shorttr.txt"
 printf '%s\n' "$TR" > "$work/tok_tronly.txt"
 # KEY material (step-8 SF-3): the step records the sha256 of the PUBLIC key of every key file it found and how many files it searched;
 # the verifier compares them with the manifest key of the policy (the one release key Sign signs with) (never by the words PRIVATE KEY)
-for k in signk otherk; do openssl ecparam -name prime256v1 -genkey -noout -out "$work/$k.key" 2> /dev/null; openssl ec -in "$work/$k.key" -pubout -out "$work/$k.pem" 2> /dev/null; done
+for k in signk otherk; do openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$work/$k.key" 2> /dev/null; openssl pkey -in "$work/$k.key" -pubout -out "$work/$k.pem" 2> /dev/null; done
 kh() { openssl pkey -pubin -in "$1" -outform DER | shasum -a 256 | cut -d' ' -f1; }
 H1=$(kh "$work/signk.pem"); H2=$(kh "$work/otherk.pem")
 python3 -c 'import json,sys; json.dump({"release_key": {"public_key": open(sys.argv[1]).read()}}, open(sys.argv[2],"w"))' "$work/signk.pem" "$work/keypol.json"
@@ -342,7 +342,7 @@ printf 'attempt_mint_sign_cert\nattempt_forge_provenance\n' >> "$work/stepsign/f
 # the policy needs a key manifest (handoff 0713): made here with a throwaway root key and release key, since the committed manifest is the owner's
 mkdir -p "$work/keys"
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/root.key" 2> /dev/null && openssl pkey -in "$work/keys/root.key" -pubout -out "$work/keys/release-key-root.pub" \
-  && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/rel.key" 2> /dev/null && openssl pkey -in "$work/keys/rel.key" -pubout -out "$work/keys/rel.pub" \
+  && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$work/keys/rel.key" 2> /dev/null && openssl pkey -in "$work/keys/rel.key" -pubout -out "$work/keys/rel.pub" \
   && python3 - "$work/keys" <<'PY' && openssl dgst -sha256 -sign "$work/keys/root.key" -out "$work/keys/sig.der" "$work/keys/release-key-manifest.json" \
   && python3 -c 'import base64,sys; sys.stdout.write(base64.b64encode(open(sys.argv[1], "rb").read()).decode() + "\n")' "$work/keys/sig.der" > "$work/keys/release-key-manifest.sig" \
   || { bad "hostile step (Sign refusals): the throwaway key manifest could not be made"; }

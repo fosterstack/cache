@@ -162,6 +162,7 @@ ALLOW_PATTERNS=(
   '^bin/witnessed\.sh$'
   '^bin/witnessed-local\.sh$'
   '^bin/witness-sign-staged\.sh$'
+  '^bin/witness-kms-test\.sh$'
   '^bin/rebuild-records-digests\.sh$'
   '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
@@ -314,6 +315,8 @@ ALLOW_PATTERNS=(
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/build-freeze\.sh$'
+  # The wrapper that hands the release role and its token file to a release step as AWS variables.
+  '^bin/with-aws-token\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
@@ -361,6 +364,11 @@ ALLOW_PATTERNS=(
 
   # The real Maven project the Maven acceptance workflow builds.
   '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
+
+  # A retired release key's public half, under the day it was retired, kept so the apks it signed stay verifiable
+  # (SECURITY.md); never deleted. Matches build/keys/retired/2027-11-01/release.rsa.pub; refuses
+  # build/keys/retired/x/release.rsa.pub.
+  '^build/keys/retired/[0-9]{4}-[0-9]{2}-[0-9]{2}/release\.rsa\.pub$'
 )
 
 # Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore

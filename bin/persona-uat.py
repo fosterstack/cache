@@ -1400,9 +1400,11 @@ def cosign_operation(argv):
     return (sub, pos, flags) if sub else None
 
 
-# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer; the rest is presentation). Anything else - a --key,
+# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer, or `--key release.rsa.pub` from v0.3.0; the rest is presentation). Anything else - another --key,
 # --certificate, --offline, --insecure-ignore-*, a trusted root or Rekor override - changes WHAT is verified, so it proves nothing about FosterStack's signature.
 PROOF_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "-o", "--output", "--verbose", "-d", "--platform", "-a", "--annotations"}
+RELEASE_KEY_FILE = "release.rsa.pub"                                  # docs/verify-images.md: the release public key, fetched as build/keys/release.rsa.pub at the tag
+IDENTITY_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer"}
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"       # docs/verify-images.md: --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 PROMOTION_WORKFLOW = "stage-promote.yml"                           # docs/verify-images.md: the current chain signs the public image in stage-promote.yml
 
@@ -1433,7 +1435,7 @@ def verified_digest(answer, image):
     """the compliance reviewer's proof of exercising the RC image, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
     PARSES as `cosign verify` (never verify-attestation alone: the guide verifies provenance with gh, and a bare attestation proves nothing about the signature) of exactly ONE
     image argument that IS the image under test (the same registry and repository, @sha256:<the candidate digest>: not another repository with the same digest), carrying the
-    documented promotion-workflow identity and the documented OIDC issuer, with no flag that changes what is verified (--key, --certificate, --offline, --insecure-ignore-*...),
+    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub` and no identity or issuer), with no flag that changes what is verified (--certificate, --offline, --insecure-ignore-*...),
     no help/version spelling, exit 0. Words in echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
     if not digest.startswith("sha256:") or "@" not in image:
@@ -1447,6 +1449,11 @@ def verified_digest(answer, image):
             continue
         sub, pos, flags = op
         if sub != "verify" or len(pos) != 1 or pos[0] != image:
+            continue
+        keys = [v for name, v in flags if name == "--key"]
+        if keys:   # v0.3.0 and later (docs/verify-images.md): the image is verified with the release public key, exactly `--key release.rsa.pub`, and with no certificate identity or issuer beside it
+            if keys == [RELEASE_KEY_FILE] and all(name in PROOF_FLAGS - IDENTITY_FLAGS or name == "--key" for name, _ in flags):
+                return True
             continue
         if any(name not in PROOF_FLAGS for name, _ in flags):
             continue

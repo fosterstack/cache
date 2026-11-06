@@ -102,24 +102,32 @@ To move to another version later, see [upgrading and pinning](upgrading.md).
 ## Verify what you downloaded
 
 Do this before you install it, not after. Every release ships a
-`checksums.txt` covering all four archives plus a cosign keyless signature
-bundle over that file:
+`checksums.txt` covering all four archives plus a signature bundle over that
+file, signed with our release key:
 
 ```sh
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/checksums.txt"
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/checksums.txt.bundle"
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
 
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
+
+sha256sum -c checksums.txt 2>/dev/null | grep OK
+```
+
+The signature proves the checksums file was signed with our release key; the checksums then cover every archive transitively.
+
+Releases before v0.3.0 carry a short-lived certificate instead of a key: <!-- pinned: historical -->
+
+```sh
 cosign verify-blob \
   --bundle checksums.txt.bundle \
   --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
-
-sha256sum -c checksums.txt 2>/dev/null | grep OK
 ```
 
-The signature proves the checksums file was signed by this repo's Release
-stage (`stage-promote.yml`) at this release's tag; the checksums then cover every archive transitively. Full detail,
+Full detail,
 including image signatures and SLSA provenance, is in
 [Verify our images](verify-images.md).
 

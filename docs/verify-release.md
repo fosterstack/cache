@@ -2,6 +2,7 @@
 
 DRAFT. Every line marked TO-VERIFY has not been run against a real release.
 For v0.2.x releases, use [Verify our images](verify-images.md).
+Every image and file of a v0.3.0 and later release is signed with the release key; each step below checks it with the release public key and a Rekor entry, not with a workflow identity. <!-- pinned: historical -->
 
 You need cosign, gh and jq. The steps cover both images: production and -fips.
 Set these once:
@@ -9,9 +10,7 @@ Set these once:
 - `<IMAGE_REF>`: the production image by digest, as repository@sha256:digest, with the digest from `image-production` in `digests.json` on the release page (`image-fips` for the -fips image).
 - `<IMAGE_REF_FIPS>`: the -fips image by digest, as repository@sha256:digest.
 - `<TAG>`: the release tag, for example v0.3.0.
-- `<RELEASE_KEY>`: the release public key file, from our key manifest after the manifest is checked against our root public key. TO-VERIFY: where the manifest and the root key are published, and the manifest check.
-
-Without network access, add `--insecure-ignore-tlog` to each verify-blob command below: it checks our key alone, without the public log. Images need a registry. TO-VERIFY: offline.
+- `release.rsa.pub`: the release public key, `build/keys/release.rsa.pub` at the release tag. Fetch it once: `curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<TAG>/build/keys/release.rsa.pub`.
 
 ## 1. Image signatures
 
@@ -19,9 +18,9 @@ Did our release workflow sign these exact images? The signer is the Release stag
 
 ```sh
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF> --key <RELEASE_KEY>
+cosign verify --key release.rsa.pub <IMAGE_REF>
 # Not run before release: it needs the image in a registry.
-cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>
+cosign verify --key release.rsa.pub <IMAGE_REF_FIPS>
 ```
 
 ## 2. Provenance
@@ -32,7 +31,7 @@ The provenance is a SLSA provenance statement (predicate type https://slsa.dev/p
 
 ```sh
 # Not run before release.
-cosign verify-blob-attestation --key <RELEASE_KEY> --bundle provenance.bundle.json \
+cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bundle.json \
   --type https://slsa.dev/provenance/v1 --check-claims=false
 ```
 
@@ -53,13 +52,13 @@ Each SBOM lists what is in an image; each lock lists the packages the image was 
 
 ```sh
 # Not run before release.
-cosign verify-blob --key <RELEASE_KEY> --bundle production.sbom.json.bundle production.sbom.json
+cosign verify-blob --key release.rsa.pub --bundle production.sbom.json.bundle production.sbom.json
 # Not run before release.
-cosign verify-blob --key <RELEASE_KEY> --bundle fips.sbom.json.bundle fips.sbom.json
+cosign verify-blob --key release.rsa.pub --bundle fips.sbom.json.bundle fips.sbom.json
 # Not run before release.
-cosign verify-blob --key <RELEASE_KEY> --bundle production.full.lock.json.bundle production.full.lock.json
+cosign verify-blob --key release.rsa.pub --bundle production.full.lock.json.bundle production.full.lock.json
 # Not run before release.
-cosign verify-blob --key <RELEASE_KEY> --bundle fips.full.lock.json.bundle fips.full.lock.json
+cosign verify-blob --key release.rsa.pub --bundle fips.full.lock.json.bundle fips.full.lock.json
 ```
 
 ## What this shows, and what it does not

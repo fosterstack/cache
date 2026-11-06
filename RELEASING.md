@@ -3,7 +3,7 @@
 **Releases build only in CI.** No binary, image, or tag that ships to a user
 is ever produced on a developer machine — including the maintainers'. This
 is a hard rule, not a preference: it's what makes the SLSA provenance and
-Sigstore signatures on every release mean something (an attacker with a
+signatures on every release mean something (an attacker with a
 laptop cannot forge a release that GitHub's own runners never built).
 
 ## Pipeline (`.github/workflows/release.yml`)
@@ -59,7 +59,8 @@ signing key or `packages: write`.
   `bin/release-sign-apks.sh`; `release-publish` pushes the images by digest to
   `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and reads each
   registry back; `release-sign` signs the images in both registries and the
-  release files keyless, each with a Rekor entry; `release-assets` attaches the
+  release files with the release signing key, each with a Rekor entry, and
+  `release-assets` attaches the
   evidence to the GitHub release; `release-postverify` runs the customer-guide
   commands that need a registry against what was just published. Release
   creates no tag.
@@ -79,6 +80,16 @@ release authorization, promotion); the image signer of those releases is
 
 ## Cutting a release
 
+The release signing key is made by a terraform apply of the release signing
+key (the role `fosterstack-cache-release-signing` and the alias
+`alias/fosterstack-release-signing`), and that apply is the precondition of a
+real release: without it the `release-sign` step cannot sign. Before the first
+release, once the key exists, a person commits its public half as
+`build/keys/release.rsa.pub`, replacing the placeholder there (the output of
+`cosign public-key --key awskms:///alias/fosterstack-release-signing`).
+
+The key replacement lands together with the APK signing change (the release APKs are signed with the same key); until then the placeholder stays and the APK signing step cannot use a KMS key.
+
 ```sh
 git tag -s -m "..." vX.Y.Z
 git push origin vX.Y.Z
@@ -91,9 +102,13 @@ release path.
 ## What a release contains
 
 From v0.3.0, with every file below made by the Release stage from what Build <!-- pinned: historical -->
-made (nothing is rebuilt), and every signature keyless (Fulcio certificate
-from GitHub OIDC, entry in Rekor; no signing key exists to steal, except the
-apk release key, which only Release's `release-apks` step reads):
+made (nothing is rebuilt). The images and the release files are signed with
+the release signing key, a key held in a cloud key service that the Release job
+reaches with short-lived credentials, each with an entry in Rekor. Sign's
+records and provenance are signed keyless (Fulcio certificate from GitHub OIDC,
+entry in Rekor). The apks are signed in Release's `release-apks` step, which
+today reads a separate local apk release key; the intended state is the one
+release signing key, and it lands with the APK signing change:
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
   `linux/arm64` index holding the `fscache` binary and a few packages (base layout, CA
@@ -103,8 +118,8 @@ apk release key, which only Release's `release-apks` step reads):
   `:X.Y` moves to every final release of that line; `:X` and `:latest` move
   only when the release is the highest released version. Releases before
   v0.3.0 also had a `-debug` variant; v0.3.0 and later do not. <!-- pinned: historical -->
-- Per image: a cosign signature by digest in both registries, made by
-  `stage-promote.yml` at the release tag. Sign's SLSA provenance, signed under
+- Per image: a cosign signature by digest in both registries, made with the
+  release signing key by the Release stage. Sign's SLSA provenance, signed under
   `stage-sign.yml`, is verified by Release before anything is published.
 - The apks of both architectures, re-signed with the release key and attached
   as `<arch>-<name>` (both architectures carry the same file names).
@@ -152,15 +167,30 @@ VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest 
 echo "$VER"
 ```
 
+Get the release signing key from this repository, at the release tag. Until the
+key manifest is published, the key file named in this repository is the
+reference.
+
 ```sh
-# Image signature: who signed these exact bytes. The signer is the Release
-# stage's workflow at this release tag.
-cosign verify "ghcr.io/fosterstack/cache:${VER}" \
-  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
 ```
 
-The same command verifies the `-fips` variant with `${VER}-fips`. The whole
+```sh
+# Image signature: was this exact image signed with the release signing key.
+cosign verify --key release.rsa.pub "ghcr.io/fosterstack/cache:${VER}"
+```
+
+The same command verifies the `-fips` variant with `${VER}-fips`. Sign's
+provenance is signed keyless and is checked against Sign's workflow identity:
+
+```sh
+cosign verify-blob-attestation --bundle provenance.bundle.json \
+  --type https://slsa.dev/provenance/v1 --check-claims=false \
+  --certificate-identity "https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v${VER}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The whole
 chain (Build, Sign, Rebuild, Check, Release) is verifiable record by record;
 the commands are in [docs/verify-images.md](docs/verify-images.md).
 
@@ -171,12 +201,9 @@ every archive by SHA-256. The four metadata files are pinned the same way by
 `release-files.sha256`.
 
 ```sh
-# 1. Prove each list is ours (pin the Release stage at this tag).
+# 1. Prove each list is ours (signed with the release signing key).
 for f in checksums.txt release-files.sha256; do
-  cosign verify-blob "$f" \
-    --bundle "$f.bundle" \
-    --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}" \
-    --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+  cosign verify-blob --key release.rsa.pub --bundle "$f.bundle" "$f"
 done
 
 # 2. Prove the files you downloaded match those lists.
@@ -191,12 +218,12 @@ a file that anyone could have written.
 
 | Artifact | Signature | Covered by |
 |---|---|---|
-| Images (`${VER}`, `-fips`) | cosign, per digest, both registries | the signature itself |
+| Images (`${VER}`, `-fips`) | cosign with the release signing key, per digest, both registries | the signature itself |
 | Binary archives | via the signed `checksums.txt` | `checksums.txt` |
-| `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each | its own bundle |
+| `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each, with the release signing key | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, keyless | Build's, Rebuild's and Check's: `stage-sign.yml` at the tag; Release's: the Release stage |
+| Witness records | Witness envelope, signed with the KMS key; its Rekor entry is recorded | Build's, Rebuild's and Check's: `stage-sign.yml` at the tag; Release's: the Release stage (`stage-promote.yml`) |
 
 ### VEX statements
 

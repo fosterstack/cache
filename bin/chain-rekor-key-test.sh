@@ -76,10 +76,10 @@ def add_proof(e, sign, log_der, pos=2, n=5):
     return e
 
 
-def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pem=kms_pem, index="7", itime="1761800000", proof=True):
+def entry(rk=rekor_priv, rk_der=rekor_der, payload=payload, sig=sig, verifier_pem=kms_pem, index="7", itime="1761800000", proof=True, env_hash="0" * 64):
     """A Rekor v1 `dsse` entry as it sits in a bundle's tlogEntries, signed (the signed entry timestamp) by the log key `rk`."""
     body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {
-        "envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
+        "envelopeHash": {"algorithm": "sha256", "value": env_hash},
         "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()},
         "signatures": [{"signature": b64(sig), "verifier": b64(verifier_pem.encode())}]}}
     cb = b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
@@ -227,15 +227,18 @@ def vr(label, stage, ptype, predicate_type, rekor_path, want):
 
 
 stat = entries_file("vr-good.json", {"entries": [e_good]})
-vr("verify_record: a provenance with its Rekor entry is accepted", "sign", cv.DSSE_STMT, PROV, stat, None)
-vr("verify_record: a provenance with no Rekor entries file is refused", "sign", cv.DSSE_STMT, PROV, None, "rekor")
-vr("verify_record: a provenance whose entries file holds no entry for it is refused", "sign", cv.DSSE_STMT, PROV, entries_file("vr-empty.json", {"entries": []}), "no rekor entry")
-vr("verify_record: the release policy with no Rekor entries file is refused", "release", POLT, "policy", None, "rekor")
-vr("verify_record: a Witness record needs no Rekor entry", "build", cv.DSSE_STMT, COLL, None, None)
+# every record type verify_record accepts (the provenance, the release policy and a Witness collection) needs its entry: the same cases run over all three
+other_entries = entries_file("vr-other.json", {"entries": [entry(payload=b"another payload")[0]]})
+for kind, stage_, ptype_, pred_ in (("provenance", "sign", cv.DSSE_STMT, PROV), ("release policy", "release", POLT, "policy"), ("Witness collection", "build", cv.DSSE_STMT, COLL)):
+    vr("verify_record: a %s with its entry is accepted" % kind, stage_, ptype_, pred_, stat, None)
+    vr("verify_record: a %s with no entries file is refused" % kind, stage_, ptype_, pred_, None, "rekor")
+    vr("verify_record: a %s with a missing entries file is refused" % kind, stage_, ptype_, pred_, os.path.join(work, "absent-entries.json"), "entries file")
+    vr("verify_record: a %s whose entries file holds no entry at all is refused" % kind, stage_, ptype_, pred_, entries_file("vr-empty-%s.json" % stage_, {"entries": []}), "no rekor entry")
+    vr("verify_record: a %s whose only entry is for another payload is refused" % kind, stage_, ptype_, pred_, other_entries, "no rekor entry")
 for n, f in real.items():
     setattr(cv, n, f)
 
-# Sign's output: the bundle cosign wrote carries the Rekor entries, and they go to provenance.rekor.json
+# Sign's output: the bundle kms-sign wrote carries the Rekor entries, and they go to provenance.rekor.json
 bun = {"verificationMaterial": {"tlogEntries": [e_good]}, "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": b64(payload), "signatures": [{"keyid": "", "sig": b64(sig)}]}}
 od = os.path.join(work, "out1"); os.makedirs(od)
 try:
@@ -337,6 +340,322 @@ note_lines[2] = b64(b"\x02" * 32); resigned = "\n".join(note_lines[:3]) + "\n"
 e2["inclusionProof"]["checkpoint"]["envelope"] = resigned + "\n\u2014 rekor.sigstore.dev " + b64(hashlib.sha256(rekor_der).digest()[:4] + sign_note(resigned.encode())) + "\n"
 inc("inclusion: a validly signed checkpoint for another root than the proof's is refused", e2, "another root hash")
 good("an entry with a good signed timestamp and no inclusion proof is refused by check_rekor_entry", entry(proof=False), "inclusion proof")
+
+# ---- the one signing function (KA-2): kms_sign signs the statement through the DSSE kind of kms-sign (aws kms sign once, one dsse 0.0.1 Rekor entry posted with the one retry rule, a v0.3 bundle) and writes the
+# record (one signature) and its entries file beside it. The tests run the real function against a fake aws CLI (a script that logs every call and answers like KMS) and a fake Rekor (cv.rekor_open and the clock are
+# replaced in this process), so no test calls the aws CLI, KMS or a public Rekor.
+import re, shutil, types, urllib.error, contextlib, io, email.message
+STATEMENT = b'{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"x","subject":[],"predicate":{}}'
+SIGNING_CONFIG = os.path.join(root, ".github", "policy", "cosign-signing-config.json")
+PKCS1 = "RSASSA_PKCS1_V1_5_SHA_256"
+KMSPUB = os.path.join(work, "kms-release.pub"); open(KMSPUB, "w").write(kms_pem)
+
+
+def fake_aws(fb, d, algs, rc=0, sign_rc=0):
+    """The aws CLI of KMS: logs its argv to <d>/aws-calls; --version answers; get-public-key answers the key's SigningAlgorithms (in the order the key lists them) and its PublicKey (the DER of the KMS key, base64);
+    kms sign answers the fixed signature; rc fails every call but --version, sign_rc fails only kms sign (AccessDeniedException)."""
+    os.makedirs(fb, exist_ok=True)
+    src = ("#!/usr/bin/env python3\nimport json, sys\na = sys.argv[1:]\nopen(%r, 'a').write(' '.join(a) + '\\n')\n"
+           "if a[:1] == ['--version']:\n    print('aws-cli/2.39.3 Python/3.13.0 Linux/6 exe/x86_64'); sys.exit(0)\n"
+           "if %d:\n    sys.stderr.write('An error occurred (AccessDeniedException)'); sys.exit(%d)\n"
+           "if 'get-public-key' in a:\n    q = a[a.index('--query') + 1] if '--query' in a else ''\n"
+           "    print(json.dumps({'SigningAlgorithms': %r, 'PublicKey': %r} if 'PublicKey' in q else %r)); sys.exit(0)\n"
+           "if a[:2] == ['kms', 'sign']:\n    if %d:\n        sys.stderr.write('An error occurred (AccessDeniedException)'); sys.exit(%d)\n"
+           "    print(json.dumps({'SigningAlgorithm': %r, 'Signature': %r})); sys.exit(0)\nsys.exit(3)\n"
+           % (os.path.join(d, "aws-calls"), rc, rc or 255, list(algs), b64(kms_der), list(algs), sign_rc, sign_rc or 255, PKCS1, b64(sig)))
+    open(os.path.join(fb, "aws"), "w").write(src); os.chmod(os.path.join(fb, "aws"), 0o755)
+
+
+class Resp:
+    def __init__(self, status, raw): self.status, self._raw = status, raw
+    def read(self, n=-1): return self._raw
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def rekor_canon_pem(verifier_b64):
+    """What Rekor 1.5.3 (dsse 0.0.1) does with a posted verifier: it parses the public key and writes it back as the canonical PEM of its DER (64-column lines), whatever the line wrapping of the PEM posted"""
+    der = sh("openssl", "pkey", "-pubin", "-outform", "DER", inp=base64.b64decode(verifier_b64))
+    enc = b64(der)
+    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(enc[i:i + 64] for i in range(0, len(enc), 64)) + "\n-----END PUBLIC KEY-----\n"
+
+
+def answer_for(posted, payload_override=None, sig_override=None, entries=1, verifier_override=None):
+    """What Rekor answers to a dsse 0.0.1 POST: one entry built (and signed by the test log key) from the envelope posted, as {uuid: entry}."""
+    prop = json.loads(posted)["spec"]["proposedContent"]
+    env_text = prop["envelope"]
+    env = json.loads(env_text)
+    e, _ = entry(payload=payload_override if payload_override is not None else base64.b64decode(env["payload"]),
+                 sig=sig_override if sig_override is not None else base64.b64decode(env["signatures"][0]["sig"]),
+                 env_hash=hashlib.sha256(env_text.encode()).hexdigest(),
+                 verifier_pem=verifier_override if verifier_override is not None else rekor_canon_pem(prop["verifiers"][0]))
+    ip = e["inclusionProof"]
+    one = {"body": e["canonicalizedBody"], "integratedTime": int(e["integratedTime"]), "logID": base64.b64decode(e["logId"]["keyId"]).hex(), "logIndex": int(e["logIndex"]),
+           "verification": {"signedEntryTimestamp": e["inclusionPromise"]["signedEntryTimestamp"],
+                            "inclusionProof": {"logIndex": int(ip["logIndex"]), "rootHash": base64.b64decode(ip["rootHash"]).hex(), "treeSize": int(ip["treeSize"]),
+                                               "hashes": [base64.b64decode(h).hex() for h in ip["hashes"]], "checkpoint": ip["checkpoint"]["envelope"]}}}
+    return {("%064x" % i): one for i in range(entries)}
+
+
+RK = {"script": [], "posts": [], "after": None, "answer": {}, "gscript": None, "gets": []}
+SLEPT = []
+
+
+def fake_rekor_open(req):
+    if req.get_method() == "GET":        # the existing entry after a 409 (a case that sets gscript); any other GET is a defect the case must see
+        assert RK.get("gscript") is not None, "the tests expect no GET of an existing entry"
+        RK["gets"].append(req.full_url)
+        gstep = RK["gscript"].pop(0) if RK["gscript"] else "ok"
+        if gstep == "neterr":
+            raise urllib.error.URLError("down")
+        if isinstance(gstep, int):
+            raise urllib.error.HTTPError(req.full_url, gstep, "stub", email.message.Message(), None)
+        return Resp(200, json.dumps(answer_for(RK["posts"][-1], **RK["answer"])).encode())
+    RK["posts"].append(req.data)
+    step = RK["script"].pop(0) if RK["script"] else "ok"
+    if step == "neterr":
+        raise urllib.error.URLError("down")
+    if step == "409":
+        hdr = email.message.Message(); hdr["Location"] = "/api/v1/log/entries/" + "a" * 80
+        raise urllib.error.HTTPError(req.full_url, 409, "Conflict", hdr, None)
+    if isinstance(step, int):
+        raise urllib.error.HTTPError(req.full_url, step, "stub", email.message.Message(), None)
+    doc = answer_for(req.data, **RK["answer"])
+    if RK["after"]:
+        RK["after"]()
+    return Resp(201, json.dumps(doc).encode())
+
+
+cv.rekor_open = fake_rekor_open
+_real_sleep = cv.time.sleep
+def _sleep(s):   # the waits of the retry rule are time.sleep calls made by the code under test: recorded, nothing here waits; the stdlib subprocess module polls with time.sleep (0.0005..0.05 s) under subprocess.run(timeout=...) and that sleep runs for real and is not recorded (same rule as the build-apk launcher)
+    if sys._getframe(1).f_globals.get("__name__") == "subprocess": return _real_sleep(s)
+    SLEPT.append(s)
+cv.time.sleep = _sleep
+cv.pinned_rekor_pem = lambda cfg: rekor_pem
+
+
+def ks(label, want, script=(), answer=None, sign_rc=0, algs=(PKCS1,), aws=None, outname="rec/a-collection.json", after=None, public_key=None, gscript=None):
+    """Run the real kms_sign with the fake aws and the fake Rekor; want is None (success) or a word the refusal (its stderr line or its reason) must hold. Returns (calls, posts, slept, out, stderr)."""
+    d = os.path.join(work, "ks-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:40]); fb = os.path.join(d, "fb")
+    os.makedirs(os.path.join(d, "rec"), exist_ok=True)
+    fake_aws(fb, d, algs, sign_rc=sign_rc)
+    sp, out = os.path.join(d, "statement.json"), os.path.join(d, outname)
+    open(sp, "wb").write(STATEMENT)
+    RK.update(script=list(script), posts=[], after=after, answer=answer or {}, out=out, gscript=None if gscript is None else list(gscript), gets=[]); SLEPT.clear()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            cv.kms_sign(sp, out, SIGNING_CONFIG, aws or os.path.join(fb, "aws"), public_key or KMSPUB)
+        got = None
+    except cv.Refuse as ex:
+        got = ex.reason
+    text = (got or "") + "\n" + err.getvalue()
+    if want is None:
+        (ok if got is None else bad)(label if got is None else "%s -> refused: %s" % (label, text.strip()[:200]))
+    else:
+        hit = got is not None and want.lower() in text.lower()
+        (ok if hit else bad)("%s (refused: %s)" % (label, text.strip().splitlines()[-1][:120]) if hit else "%s -> wanted a refusal naming %r, got %r" % (label, want, text.strip()[:200]))
+    calls = open(os.path.join(d, "aws-calls")).read().splitlines() if os.path.exists(os.path.join(d, "aws-calls")) else []
+    return calls, list(RK["posts"]), list(SLEPT), out, err.getvalue()
+
+
+calls, posts, slept, out, _ = ks("kms_sign: a good Rekor answer gives the record and its entries file", None)
+env = json.load(open(out)) if os.path.exists(out) else {}
+ent = json.load(open(out[:-len(".json")] + ".rekor.json")) if os.path.exists(out[:-len(".json")] + ".rekor.json") else {}
+(ok if len(env.get("signatures", [])) == 1 and len(ent.get("entries", [])) == 1 and base64.b64decode(env.get("payload", "")) == STATEMENT
+ else bad)("kms_sign: the record holds the staged payload and exactly one signature; <record>.rekor.json holds the bundle's entry")
+kinds = [("sign" if c.startswith("kms sign") else "gpk" if "get-public-key" in c else "version" if c.startswith("--version") else c) for c in calls]
+(ok if kinds == ["version", "gpk", "sign"] and "--signing-algorithm " + PKCS1 in calls[2] and "--message-type DIGEST" in calls[2] and len(posts) == 1 else bad)(
+    "kms_sign: the aws CLI is asked for its version, the key (once) and one kms sign naming %s on a DIGEST, and Rekor gets one POST: %s %d" % (PKCS1, kinds, len(posts)))
+(ok if slept == [] else bad)("kms_sign: a first try that works waits for nothing")
+ks("kms_sign: a Rekor entry for another payload than the staged one is refused", "payload", answer={"payload_override": b"another statement"})
+ks("kms_sign: a Rekor answer with no entry is refused", "exactly one entry", script=[], answer={"entries": 0})
+ks("kms_sign: a Rekor entry naming another signature than the one made is refused", "signature", answer={"sig_override": b"another signature"})
+calls, posts, slept, out, _ = ks("kms_sign: a Rekor outage for three tries and then an answer succeeds", None, script=[503, 503, 503])
+(ok if slept == [1, 2, 4] and len(posts) == 4 and sum(c.startswith("kms sign") for c in calls) == 1 else bad)("kms_sign: it waited 1, 2 and 4 seconds, posted four times and asked KMS to sign once: %s %d" % (slept, len(posts)))
+calls, posts, slept, out, errtxt = ks("kms_sign: Rekor down for all seven tries is one refusal naming Rekor", "rekor", script=[503] * 7)
+(ok if slept == [1, 2, 4, 8, 16, 32] and len(posts) == 7 and not os.path.exists(out) and sum(c.startswith("kms sign") for c in calls) == 1 else bad)(
+    "kms_sign: one try and six retries (waits 1, 2, 4, 8, 16, 32), one KMS sign, and no record left: %s %d" % (slept, len(posts)))
+ks("kms_sign: the refusal after seven Rekor failures names the last failure", "status 503", script=[503] * 7)
+ks("kms_sign: the refusal says one try and six retries", "one try and six retries", script=[503] * 7)
+calls, posts, slept, out, _ = ks("kms_sign: a network error then an answer succeeds", None, script=["neterr"])
+(ok if slept == [1] and len(posts) == 2 else bad)("kms_sign: a network error is retried after 1 second: %s %d" % (slept, len(posts)))
+# KA-2 p4 r2 (A3, round 1 ruling): the GET of the entry a 409 names goes through the SAME retry rule as the POST (network error, 429 and 5xx on the waits 1, 2, 4, 8, 16, 32; any other 4xx and 3xx at once), and KMS Sign stays outside it
+def n_sign(c): return sum(x.startswith("kms sign") for x in c)
+calls, posts, slept, out, _ = ks("kms_sign: POST 409, then the existing entry answers 503 once and then 200, succeeds", None, script=["409"], gscript=[503])
+(ok if slept == [1] and len(posts) == 1 and len(RK["gets"]) == 2 and n_sign(calls) == 1 else bad)(
+    "kms_sign: 409 then GET 503 then GET 200: one wait of 1 second, one POST, two GETs of the same entry, KMS asked to sign once: %s %d %d %d" % (slept, len(posts), len(RK["gets"]), n_sign(calls)))
+(ok if len(set(RK["gets"])) == 1 and RK["gets"][0].endswith("/api/v1/log/entries/" + "a" * 80) else bad)("kms_sign: both GETs name the entry id of the Location header under the pinned Rekor: %s" % RK["gets"][:2])
+calls, posts, slept, out, _ = ks("kms_sign: POST 409, then a network error on the existing entry and then 200, succeeds", None, script=["409"], gscript=["neterr"])
+(ok if slept == [1] and len(RK["gets"]) == 2 and n_sign(calls) == 1 else bad)("kms_sign: a network error on the GET of the existing entry is retried after 1 second: %s %d" % (slept, len(RK["gets"])))
+calls, posts, slept, out, _ = ks("kms_sign: POST 409, then 429 on the existing entry and then 200, succeeds", None, script=["409"], gscript=[429, 429])
+(ok if slept == [1, 2] and len(RK["gets"]) == 3 and n_sign(calls) == 1 else bad)("kms_sign: a 429 on the GET of the existing entry is retried on the waits 1 and 2: %s %d" % (slept, len(RK["gets"])))
+calls, posts, slept, out, _ = ks("kms_sign: the existing entry unreadable for all seven tries is one refusal naming Rekor", "rekor", script=["409"], gscript=[503] * 7)
+(ok if slept == [1, 2, 4, 8, 16, 32] and len(RK["gets"]) == 7 and len(posts) == 1 and n_sign(calls) == 1 and not os.path.exists(out) else bad)(
+    "kms_sign: one try and six retries on the GET (waits 1, 2, 4, 8, 16, 32), the POST made once, KMS asked once, no record left: %s %d %d" % (slept, len(RK["gets"]), n_sign(calls)))
+calls, posts, slept, out, _ = ks("kms_sign: a 404 on the existing entry is refused at once, without a wait", "rekor", script=["409"], gscript=[404])
+(ok if slept == [] and len(RK["gets"]) == 1 and n_sign(calls) == 1 else bad)("kms_sign: the 404 on the GET was fetched once and waited for nothing: %s %d" % (slept, len(RK["gets"])))
+# KA-2 p4 r2 (A2): Rekor writes the verifier back as the canonical PEM of the key it parsed (rekor_canon_pem, as rekor 1.5.3 does), so a --public-key file with another line wrapping (or CRLF-free spelling) of the SAME key is accepted;
+# another KEY in the entry's verifier is still refused (the compare is on the key, not on text)
+REWRAP = os.path.join(work, "kms-release-rewrapped.pub"); body64 = "".join(l for l in kms_pem.splitlines() if not l.startswith("-----"))
+open(REWRAP, "w").write("-----BEGIN PUBLIC KEY-----\n" + "\n".join(body64[i:i + 32] for i in range(0, len(body64), 32)) + "\n-----END PUBLIC KEY-----\n")
+(ok if open(REWRAP).read() != kms_pem and rekor_canon_pem(b64(open(REWRAP, "rb").read())) == kms_pem else bad)("A2 fixture: the rewrapped file differs from the canonical PEM as text, and Rekor's canonicalization of it is the canonical PEM")
+calls, posts, slept, out, _ = ks("kms_sign: a --public-key file that is the same key in 32-column PEM is accepted (the Rekor entry carries the canonical PEM)", None, public_key=REWRAP)
+(ok if len(posts) == 1 and n_sign(calls) == 1 and os.path.exists(out) else bad)("kms_sign: the rewrapped key file gives one POST, one KMS sign and the record: %d %d" % (len(posts), n_sign(calls)))
+ks("kms_sign: an entry whose verifier is another KEY than --public-key is refused", "public key", answer={"verifier_override": other_kms_pem})
+# KA-2 p4 r2 (A2/C1, the hashedrekord kind): rekor_entry_check compares the entry's key with the --public-key file as DER, as the dsse twin does. Rekor stores the canonical PEM of the key it parsed, so an entry that carries the
+# canonical PEM is the entry of a --public-key file that holds the same key in 32-column PEM; another key is still another key
+def hr_item(pem_text, sig=b"sig-bytes", digest="ab" * 32):
+    spec = {"data": {"hash": {"algorithm": "sha256", "value": digest}}, "signature": {"content": b64(sig), "publicKey": {"content": b64(pem_text.encode())}}}
+    body = json.dumps({"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": spec}, sort_keys=True, separators=(",", ":")).encode()
+    return {"logIndex": "1", "integratedTime": "1700000000", "canonicalizedBody": b64(body)}
+why = cv.rekor_entry_check(hr_item(kms_pem), "ab" * 32, b"sig-bytes", open(REWRAP, "rb").read())
+(ok if why is None else bad)("A2/C1 kms_rekor_entry path: a hashedrekord entry that carries the canonical PEM is accepted for a --public-key file of the same key in 32-column PEM (refused with: %s)" % why)
+why = cv.rekor_entry_check(hr_item(other_kms_pem), "ab" * 32, b"sig-bytes", open(REWRAP, "rb").read())
+(ok if why and "another public key" in why else bad)("A2/C1 kms_rekor_entry path: a hashedrekord entry that carries another key is still refused (%s)" % why)
+# KA-2 p4 r2 (A4): the --dsse-statement bytes are read by the strict JSON reader before any aws call or key setup: NaN, a UTF-16 file and a duplicate key are refused with no aws call, no POST and no bundle; the bytes signed stay the file's own
+def a4(label, raw):
+    d = os.path.join(work, "a4-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:40]); fb = os.path.join(d, "fb"); os.makedirs(d, exist_ok=True)
+    fake_aws(fb, d, [PKCS1]); sp, bp = os.path.join(d, "statement.json"), os.path.join(d, "x.bundle"); open(sp, "wb").write(raw)
+    RK.update(script=[], posts=[], after=None, answer={}, gscript=None, gets=[]); SLEPT.clear(); err = io.StringIO(); how = None
+    try:
+        with contextlib.redirect_stderr(err):
+            cv.kms_dsse_bundle(os.path.join(fb, "aws"), cv.RELEASE_KEY_REF, sp, bp, SIGNING_CONFIG, KMSPUB)
+    except (SystemExit, cv.Refuse) as ex:
+        how = "refused"
+    except Exception as ex:
+        how = "crashed %s" % type(ex).__name__
+    return how, os.path.exists(os.path.join(d, "aws-calls")), len(RK["posts"]), os.path.exists(bp), err.getvalue(), bp
+for lab, raw in (("NaN in the statement", b'{"_type":"https://in-toto.io/Statement/v1","predicate":NaN}'), ("a UTF-16 statement", '{"subject":[]}'.encode("utf-16")),
+                 ("a duplicate key in the statement", b'{"subject":[],"subject":{}}')):
+    how, asked, npost, made, etxt, bp = a4(lab, raw)
+    (ok if how == "refused" and not asked and npost == 0 and not made else bad)(
+        "kms-sign --dsse-statement: %s is refused before any aws call (outcome %s, aws asked %s, POSTs %d, bundle written %s)" % (lab, how, asked, npost, made))
+spaced = b'{ "subject" : [ ] ,\n  "predicateType" : "x",  "predicate" : { } }\n'
+how, asked, npost, made, etxt, bp = a4("a valid statement with its own spacing", spaced)
+(ok if how is None and asked and npost == 1 and made and base64.b64decode(json.load(open(bp))["dsseEnvelope"]["payload"]) == spaced else bad)(
+    "kms-sign --dsse-statement: a valid statement is signed verbatim (the payload is the file's own bytes, spacing and all): outcome %s, bundle written %s" % (how, made))
+# KA-2 p4 r2 (C8): every read that can refuse happens before KMS is asked to sign: a public key file that openssl reads but the Rekor request cannot use (no newline after the END line; a space at the end of a base64 line), and a pinned Rekor key
+# that cannot be read, end with 0 KMS Sign calls. (A CRLF file is not such a file: the text read of release_pub_pem turns CRLF into LF, and kms_sign signs and posts with it; measured on the round 1 head.)
+for tag, mk in (("no newline after the END line", lambda t: t.rstrip("\n")), ("a space at the end of a base64 line", lambda t: t.replace("\n", " \n", 2))):
+    badpem = os.path.join(work, "kms-release-%s.pub" % tag.split()[0] + tag.split()[-1]); open(badpem, "w").write(mk(kms_pem))
+    (ok if sh("openssl", "pkey", "-pubin", "-in", badpem, "-outform", "DER") == kms_der else bad)("C8 fixture: openssl reads the key file with %s as the KMS key" % tag)
+    calls, posts, slept, out, _ = ks("kms_sign: a public key file with %s is refused naming the public key" % tag, "public key", public_key=badpem)
+    (ok if n_sign(calls) == 0 and posts == [] and not os.path.exists(out) else bad)("kms_sign: the key file with %s is refused with 0 KMS Sign calls, 0 POSTs and no record: signs %d, POSTs %d" % (tag, n_sign(calls), len(posts)))
+_pin_ok = cv.pinned_rekor_pem
+def _pin_bad(cfg): raise cv.Refuse("sign", "the pinned Rekor key cannot be read")
+cv.pinned_rekor_pem = _pin_bad
+calls, posts, slept, out, _ = ks("kms_sign: a pinned Rekor key that cannot be read is refused naming it", "pinned rekor")
+cv.pinned_rekor_pem = _pin_ok
+(ok if n_sign(calls) == 0 and posts == [] and not os.path.exists(out) else bad)("kms_sign: the unreadable pinned Rekor key is refused with 0 KMS Sign calls, 0 POSTs and no record: signs %d, POSTs %d" % (n_sign(calls), len(posts)))
+calls, posts, slept, out, _ = ks("kms_sign: a Rekor 400 is refused at once, without a wait", "rekor", script=[400])
+(ok if slept == [] and len(posts) == 1 else bad)("kms_sign: the 400 was posted once and waited for nothing: %s %d" % (slept, len(posts)))
+calls, posts, slept, out, _ = ks("kms_sign: a KMS refusal is refused at once, without a Rekor post or a wait", "aws kms sign failed", sign_rc=255)
+(ok if slept == [] and posts == [] and sum(c.startswith("kms sign") for c in calls) == 1 else bad)("kms_sign: the KMS refusal was tried once, nothing was posted, nothing waited: %s %d" % (slept, len(posts)))
+ks("kms_sign: an aws CLI missing is a refusal", "aws", aws=os.path.join(work, "no-such-aws"))
+ks("kms_sign: a key that does not list the algorithm is refused", "does not support", algs=("RSASSA_PSS_SHA_256",))
+d = os.path.join(work, "ks-exists"); os.makedirs(d, exist_ok=True)
+open(os.path.join(d, "statement.json"), "wb").write(STATEMENT); open(os.path.join(d, "r.json"), "w").write("old")
+fake_aws(os.path.join(d, "fb"), d, [PKCS1]); RK.update(script=[], posts=[], after=None, answer={})
+try:
+    cv.kms_sign(os.path.join(d, "statement.json"), os.path.join(d, "r.json"), SIGNING_CONFIG, os.path.join(d, "fb", "aws"), KMSPUB)
+    bad("kms_sign: an existing record is not overwritten")
+except cv.Refuse as ex:
+    (ok if "exists" in ex.reason and not os.path.exists(os.path.join(d, "aws-calls")) and not RK["posts"] else bad)("kms_sign: an existing record is refused before aws is asked (%s)" % ex.reason)
+
+# ---- #822 round 1 (W2, R2, E1): sign-record checks the key reference in one place, refuses before KMS when either path exists, writes the entries file first and the record last (the record is the commit point).
+# REQ-CHAIN-002-AC3 stays the proof AC for these cases (no sentence of it is made false).
+# R2: refuse when either path exists (a symlink or a directory counts), before aws is asked
+def kr(label, setup, want):
+    d = os.path.join(work, "kr-" + label.replace(" ", "_")[:40]); os.makedirs(os.path.join(d, "rec"), exist_ok=True)
+    sp, out = os.path.join(d, "statement.json"), os.path.join(d, "rec", "a-collection.json")
+    open(sp, "wb").write(STATEMENT)
+    setup(d, out)
+    fake_aws(os.path.join(d, "fb"), d, [PKCS1]); RK.update(script=[], posts=[], after=None, answer={})
+    try:
+        cv.kms_sign(sp, out, SIGNING_CONFIG, os.path.join(d, "fb", "aws"), KMSPUB); got = None
+    except cv.Refuse as ex:
+        got = ex.reason
+    except OSError as ex:
+        got = "OSError " + type(ex).__name__
+    asked = os.path.exists(os.path.join(d, "aws-calls"))
+    good_ = got is not None and want.lower() in got.lower() and not asked and not RK["posts"]
+    (ok if good_ else bad)("%s (refused: %s, aws asked %s)" % (label, got, asked))
+    return d, out, asked
+def s_dir(d, out): os.makedirs(out[:-len(".json")] + ".rekor.json")
+d, out, c = kr("kms_sign: a directory at the entries path is refused before aws", s_dir, "exists")
+def s_link(d, out):
+    open(os.path.join(d, "target"), "w").write("keep"); os.symlink(os.path.join(d, "target"), out[:-len(".json")] + ".rekor.json")
+d, out, c = kr("kms_sign: a symlink at the entries path is refused before aws", s_link, "exists")
+(ok if open(os.path.join(d, "target")).read() == "keep" and not os.path.exists(out) else bad)("kms_sign: the symlink's target is untouched and no record is left")
+def s_file(d, out): open(out[:-len(".json")] + ".rekor.json", "w").write("old")
+d, out, c = kr("kms_sign: an existing entries file is refused before aws", s_file, "exists")
+(ok if open(out[:-len(".json")] + ".rekor.json").read() == "old" else bad)("kms_sign: the existing entries file is not overwritten")
+# R2 order: a failure after Rekor answers leaves nothing behind. The fake Rekor plants a directory where the entries file goes (the record would have been written first)
+def plant_entries(): os.makedirs(RK["out"][:-len(".json")] + ".rekor.json")
+calls, posts, slept, out, _ = ks("kms_sign: the entries path is taken while Rekor answers", "nothing is left behind", after=plant_entries)
+(ok if not os.path.lexists(out) else bad)("kms_sign: when the entries file cannot be written, no record is left behind (record exists=%s)" % os.path.lexists(out))
+# and the other way: the record path taken after Rekor answers leaves no entries file
+def plant_record(): os.makedirs(RK["out"])
+calls, posts, slept, out, _ = ks("kms_sign: the record path is taken while Rekor answers", "nothing is left behind", after=plant_record)
+(ok if not os.path.lexists(out[:-len(".json")] + ".rekor.json") else bad)("kms_sign: when the record cannot be written, the entries file this call made is removed")
+# W2: sign-record refuses an unset or different RELEASE_KMS_KEY_REF with exit 2 before cosign; the equal value reaches cosign
+import re, shutil
+PKCS1 = "RSASSA_PKCS1_V1_5_SHA_256"
+def sr_run(label, refval, want_rc, want_cosign, algs=(PKCS1,), aws_rc=0, text=None, want_aws=None):
+    # the real sign-record in a subprocess with a fake aws whose KMS Sign is refused: the run ends there, before any Rekor POST (no network); a fake cosign records that nothing calls it
+    d = os.path.join(work, "w2-" + label.replace(" ", "_")[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
+    open(os.path.join(fb, "cosign"), "w").write("#!/bin/sh\necho called >> %s/calls\nexit 1\n" % d); os.chmod(os.path.join(fb, "cosign"), 0o755)
+    if algs is not None: fake_aws(fb, d, list(algs), aws_rc, sign_rc=255)
+    open(os.path.join(d, "payload"), "wb").write(STATEMENT)
+    env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
+    if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
+    r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "sign-record", "--payload", os.path.join(d, "payload"),
+                        "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json"), "--public-key", KMSPUB],
+                       env=env, capture_output=True, text=True)
+    called = os.path.exists(os.path.join(d, "calls"))
+    asked = os.path.exists(os.path.join(d, "aws-calls"))
+    good = r.returncode == want_rc and called == want_cosign and (text is None or text in r.stderr) and (want_aws is None or asked == want_aws)
+    (ok if good else bad)("sign-record: RELEASE_KMS_KEY_REF %s -> exit %d, cosign %s (got exit %d, cosign called %s, aws asked %s: %s)" % (
+        label, want_rc, "called" if want_cosign else "not called", r.returncode, called, asked, r.stderr.strip()[:160]))
+sr_run("unset", None, 2, False)
+sr_run("another alias", "awskms:///alias/other", 2, False)
+sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, False)
+sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, False, want_aws=True, text="aws kms sign failed")       # KMS Sign is asked once (the fake refuses it) and cosign is never called
+# KA-0 (interim guard, goes with KA-2): before KMS is asked to sign, the release key must list RSASSA_PKCS1_V1_5_SHA_256 (kms-sign names the algorithm on every call, so its place in the list does not matter;
+# the cosign-path half, "listed FIRST", is deleted with the cosign path). A key that lists it, in any place, passes the guard and reaches the KMS Sign call (which the fake refuses: exit 1, "aws kms sign failed")
+sr_run("KA-0 key lists another algorithm first, PKCS1 second: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed", want_aws=True)
+sr_run("KA-0 key lists PKCS1 second of three: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed")
+sr_run("KA-0 key does not list PKCS1 at all", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
+sr_run("KA-0 empty algorithm list", cv.RELEASE_KEY_REF, 2, False, algs=(), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
+sr_run("KA-0 aws CLI fails", cv.RELEASE_KEY_REF, 1, False, aws_rc=255, text="aws kms get-public-key failed")
+sr_run("KA-0 aws CLI missing", cv.RELEASE_KEY_REF, 1, False, algs=None, text="cannot run the aws CLI")
+sr_run("KA-0 a wrong alias is refused before aws is asked", "awskms:///alias/other", 2, False, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=False)
+
+# W2, second half (Q/W2 ruling): the one check is also the subcommand `key-ref-check`, which release-sign.sh and release-sign-apks.sh call before any tool (exit 2 everywhere);
+# with --algorithm-guard it is the KA-0 check release-sign.sh needs before its kms-sign calls
+def kc_run(label, refval, args, want_rc, text=None, algs=(PKCS1,), want_aws=None):
+    d = os.path.join(work, "kc-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
+    if algs is not None: fake_aws(fb, d, list(algs))
+    env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
+    if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
+    r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "key-ref-check"] + args, env=env, capture_output=True, text=True)
+    asked = os.path.exists(os.path.join(d, "aws-calls"))
+    good = r.returncode == want_rc and (text is None or text in r.stderr) and (want_aws is None or asked == want_aws)
+    (ok if good else bad)("key-ref-check %s -> exit %d (got exit %d, aws asked %s: %s)" % (label, want_rc, r.returncode, asked, r.stderr.strip()[:160]))
+kc_run("unset", None, [], 2, text="RELEASE_KMS_KEY_REF")
+kc_run("another alias", "awskms:///alias/other", [], 2, text="not a KMS key reference of the release key", want_aws=False)
+kc_run("not a KMS reference", "alias/fosterstack-release-signing", [], 2, text="not a KMS key reference of the release key")
+kc_run("empty", "", [], 2, text="RELEASE_KMS_KEY_REF")
+kc_run("equal proceeds, no aws asked without the guard", cv.RELEASE_KEY_REF, [], 0, want_aws=False)
+kc_run("guard: PKCS1 first proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 0, want_aws=True)
+kc_run("guard: another algorithm first, PKCS1 listed second proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 0, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=True)
+kc_run("guard: algorithm not listed", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256", want_aws=True)
+kc_run("guard: another alias is refused before aws", "awskms:///alias/other", ["--algorithm-guard", "--aws", "aws"], 2, want_aws=False)
+kc_run("guard without --aws asks the aws CLI by name", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, want_aws=True)
+kc_run("guard without --aws, another algorithm first, PKCS1 listed second proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=True)
+kc_run("guard without --aws, algorithm not listed", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256", want_aws=True)
 
 # KMS rule 4 / build-apk rule 22: production code holds no test hook. The flags that swapped the trust root or the clock are gone from every
 # subcommand, and verify_record takes no `now`.
