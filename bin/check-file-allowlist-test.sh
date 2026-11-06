@@ -123,8 +123,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 212 allow patterns: chain-v030's 210, plus bin/build-freeze.sh (the freeze job) and the queue-gate-judge pattern (cache#542)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 212, 6
+# 211 allow patterns: chain-v030 (210 plus the freeze job and queue-gate-judge patterns, 212) minus the bin/dispatch-fixer.sh pattern (cache#760)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 211, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -172,7 +172,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "8480efd5b6c254ebb9df01148b84bd949d06a813c5f821ca97ec4fbe5e74dc6d"
+PINNED_SHA256 = "6a0ff3fd3ddf01500542e11153a3a7cbab2bf5ca0f7afd4b60b0e7d9f44c8dc2"
 if rstart and rend:
     import hashlib
     _b = _rawlines

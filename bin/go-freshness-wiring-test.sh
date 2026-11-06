@@ -30,7 +30,7 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 # every secret (toJSON) or inherited secrets are exactly these; a new consumer must come through review and be listed.
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("agent-review-gate.yml", "record"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
-           ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
+           ("main-candidate-rescan.yml", "panel-scout"),
            ("main-candidate-rescan.yml", "panel-google"),  # the release.yml promotion job (scans) is gone: Check holds no secret (PR 3), Release is the release job (PR 4)
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
            # panel-scout/panel-google above; it never mints or uses the auditor App's token

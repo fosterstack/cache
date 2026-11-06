@@ -64,15 +64,15 @@ check "merge_queue rule: SQUASH is drift" 1 "merge queue.*SQUASH" "$w/queue-squa
 python3 - "$repo/.github/workflows/ci.yml" "$w/step.sh" <<'PY'
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
-steps = wf["jobs"]["drift-fixer-dispatch"]["steps"]
+steps = wf["jobs"]["drift-issue"]["steps"]
 run = [s["run"] for s in steps if s.get("name", "").startswith("open or update the `required-check drift` issue")]
 assert len(run) == 1, "drift-issue step not found"
 guard = wf["jobs"]["required-check-guard"]
 # the job that runs a pull request's or a queue group's scripts holds no issue write and exports nothing
 assert guard["permissions"] == {"contents": "read"} and "outputs" not in guard, "the guard job holds more than read"
-disp = wf["jobs"]["drift-fixer-dispatch"]
+disp = wf["jobs"]["drift-issue"]
 assert "push" in disp["if"] and "refs/heads/main" in disp["if"], "the issue write is not push-to-main only"
-assert disp["permissions"] == {"contents": "read", "issues": "write"}, "the dispatch job's permissions changed"
+assert disp["permissions"] == {"contents": "read", "issues": "write"}, "the drift-issue job's permissions changed"
 open(sys.argv[2], "w").write(run[0])
 PY
 mkdir -p "$w/stub"
@@ -99,7 +99,7 @@ step() { # name rules issues_json want_regex [dont_want_regex]
 echo '[]' > "$w/no-issues.json"
 echo '[{"number":7,"title":"required-check drift"},{"number":8,"title":"required-check drift (old)"}]' > "$w/open-issue.json"
 step "drift under bash -e opens the issue"            "$w/missing.json" "$w/no-issues.json"  '^gh issue create --title required-check drift'
-grep -qx "issue=9" "$w/out" 2>/dev/null && { echo "ok: the new issue's number is the job output (for the fixer dispatch)"; pass=$((pass+1)); } || { echo "FAIL: drift issue output"; fail=$((fail+1)); }
+grep -qx "issue=9" "$w/out" 2>/dev/null && { echo "ok: the new issue's number is the job output"; pass=$((pass+1)); } || { echo "FAIL: drift issue output"; fail=$((fail+1)); }
 step "drift with the issue open updates it, no dup"   "$w/missing.json" "$w/open-issue.json" '^gh issue edit 7 ' '^gh issue create'
 grep -qx "issue=7" "$w/out" 2>/dev/null && { echo "ok: the updated issue's number is the job output"; pass=$((pass+1)); } || { echo "FAIL: updated issue output"; fail=$((fail+1)); }
 step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'

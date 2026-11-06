@@ -107,9 +107,8 @@ bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
     "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
-    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift",
-                             {"contents": "read", "issues": "write"}, "agent", None,
-                             "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
+    "drift-issue": ("open the required-check drift issue", {"contents": "read", "issues": "write"}, None, None,
+                    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
     "dependency-review": (None, {"contents": "read"}, None, None,
                           "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
@@ -177,7 +176,6 @@ case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
-case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
@@ -593,6 +591,11 @@ case_conc supply-chain-daily-cancels bad supply-chain "d['jobs']['daily-audit'][
 case_conc ci-live-test-cancels bad ci "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
 case_conc ci-live-test-group-changed bad ci "d['jobs']['live-test']['concurrency']['group'] = 'other'"
 case_conc ci-live-test-group-dropped bad ci "d['jobs']['live-test'].pop('concurrency')"
+
+# The fixer is retired (row 76): no job in ci.yml dispatches it.
+if grep -q "drift-fixer-dispatch" "$root/.github/workflows/ci.yml"; then
+  echo "FAIL: ci.yml holds the retired drift-fixer-dispatch job"; failn=$((failn+1))
+else echo "ok: ci.yml has no drift-fixer-dispatch job"; pass=$((pass+1)); fi
 
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
