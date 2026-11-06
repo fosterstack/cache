@@ -86,15 +86,19 @@ scanners report (critical through low, and unknown), so a CVE disclosed against
 bytes we already shipped raises a tracked issue (or a new comment on the open
 one for that image and scanner) rather than waiting for someone to look.
 
+## FIPS 140-3
+
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. How to check it, and the certificate links, are in [`docs/fips.md`](docs/fips.md).
+
 ## Approved-only cryptography
 
 Enforcement is delegated to the validated module rather than to a list.
 
 CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
 build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
-refuses any non-approved algorithm at runtime. Any reach for non-approved
-cryptography — ours or a dependency's — fails that commit's `fips140-only`
-check.
+makes non-approved algorithms fail at runtime, as a best-effort test aid.
+When the mode catches a reach for non-approved cryptography — ours or a
+dependency's — that commit's `fips140-only` check fails.
 
 Two limits of that claim, stated so it cannot be over-read: the check proves
 the paths the test suite executes, built in FIPS mode; and its status as a
@@ -115,7 +119,7 @@ in-boundary crypto imports are permitted, and third-party cryptographic
 implementations are denied outright, because `GOFIPS140` does not govern
 code outside the module.
 
-**What each half proves, stated plainly.** `fips140=only` proves the paths
+**What each half proves, stated plainly.** `fips140=only` checks the paths
 the tests execute; it says nothing about a path no test reaches. The
 allowlist is a static check: it sees imports, not behaviour. Together they
 cover more than either does alone, and neither is a proof of total coverage.

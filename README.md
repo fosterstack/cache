@@ -146,7 +146,7 @@ run — there is no primary platform.
 | Tag | Shell | Use |
 |---|---|---|
 | `X.Y.Z` | none | Production |
-| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
+| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module ([details](docs/fips.md)) |
 
 Both images hold only the `fscache` binary and the few packages it needs
 (base layout, time zone data): there is no base image, no CA certificate
@@ -158,6 +158,8 @@ container from the outside ([below](#debugging-a-running-container)); see also
 There is no debug image from v0.3.0 <!-- pinned: historical -->; see
 [the images have no shell](docs/verify-images.md#the-images-have-no-shell) and
 [troubleshooting without a shell](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
+
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. Details: [FIPS 140-3](docs/fips.md).
 
 There are no macOS or Windows binaries: all release archives are Linux, and on
 a Mac you run the container image. Container images ship as multi-arch manifests, so `docker pull`
@@ -291,7 +293,7 @@ before implementation. CI fails if the matrix drifts from its sources.
 - [Install (binaries, systemd, platforms)](docs/install.md)
 - [One-command Docker deploy](docs/docker-deploy.md) · [Deploying on Kubernetes](docs/kubernetes.md)
 - [Installing on disconnected networks](docs/offline-install.md)
-- [Verify a release](docs/verify-release.md) · [Using our VEX](docs/using-our-vex.md)
+- [FIPS 140-3](docs/fips.md) · [Verify a release](docs/verify-release.md) · [Using our VEX](docs/using-our-vex.md)
 - [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
 - [Releasing](RELEASING.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
@@ -299,13 +301,12 @@ before implementation. CI fails if the matrix drifts from its sources.
 
 - Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
   time zone data), patched by a new image, not on a running one.
-- Approved-only cryptography is enforced by the validated module itself, not
-  by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
-  Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A
-  `depguard` allowlist covers the static side, permitting only in-boundary
-  crypto imports and denying third-party crypto outright. Both are described
-  in [`SECURITY.md`](SECURITY.md), including what each does and does not
-  prove.
+- CI runs the full test suite under `GODEBUG=fips140=only`, where Go's FIPS 140-3
+  module makes non-approved algorithms fail. That mode is a best-effort test
+  aid, and the released `-fips` build runs with FIPS mode on. A `depguard`
+  allowlist covers the static side, permitting only in-boundary crypto imports
+  and denying third-party crypto outright. Both are described in
+  [`SECURITY.md`](SECURITY.md), including what each does and does not prove.
 - **No telemetry and no required FosterStack connection.** The server
   reports nothing to us — no usage reporting, no licence check, no update
   ping — and today's free core initiates no outbound connections at all, so
