@@ -66,4 +66,4 @@ cosign verify-blob --key <RELEASE_KEY> --bundle fips.full.lock.json.bundle fips.
 
 TO-VERIFY: the trust boundary, written once the chain has run end to end.
 
-Witness records from the build stages are extra evidence anyone with Witness can check; they are outside the steps above.
+Witness records of the Build, Rebuild and Check stages are signed by the Sign stage, the same identity as the provenance above; they are extra evidence anyone with Witness can check and are outside the steps above.

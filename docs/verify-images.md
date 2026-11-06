@@ -74,13 +74,17 @@ stages of the chain. See "Verify the whole chain" below.
 ## 2b. Verify the whole chain
 
 From v0.3.0 the chain is five stages (Build, Sign, Rebuild, Check, Release; <!-- pinned: historical -->
-see [`RELEASING.md`](../RELEASING.md)). Each stage verifies the signed record
-of the one before it, and the records are attached to the release so you can
+see [`RELEASING.md`](../RELEASING.md)). Rebuild, Check and Release each verify the
+signed records of the stages before them; Sign checks the building jobs'
+records (Build's against the artifacts it receives, Rebuild's against Build's
+digest list) and signs them. The records are attached to the release so you can
 verify them too: the Witness records of Build (`build-collection.json`,
 `digests.json`, `items.json`, `admission-baseline.json`), Rebuild (`rebuild-collection.json`,
 `verdict.json`) and Check (`scanners-collection.json`,
 `acceptance-collection.json`, `runtime-collection.json`,
-`arm64-collection.json`). `release-manifest.json`, the OpenVEX, CSAF and
+`arm64-collection.json`). The jobs that build or run workloads hold no signing identity: Build's,
+Rebuild's and Check's records are signed keyless by the Sign stage (`stage-sign.yml`
+at the release tag). `release-manifest.json`, the OpenVEX, CSAF and
 inspector-filters files are covered by the signed `release-files.sha256`;
 the archives are covered by the signed `checksums.txt`. The commands for
 those two lists are in [`RELEASING.md`](../RELEASING.md#archives-and-metadata-files).
@@ -98,7 +102,7 @@ added (`vendor-evidence.json.bundle`, `production.sbom.json.bundle`), except
 the policy's, `release-policy.bundle`. Verify one the same way as
 `checksums.txt` in section 4: `cosign verify-blob --bundle NAME.bundle FILE`
 with the pinned identity. The Witness records themselves (the `*-collection.json`
-files) are extra evidence that anyone with Witness can check; the release guide,
+files; Build's, Rebuild's and Check's signed by `stage-sign.yml`) are extra evidence that anyone with Witness can check; the release guide,
 [`docs/verify-release.md`](verify-release.md), does not cover them, and
 [`RELEASING.md`](../RELEASING.md) describes the stages that make them.
 
