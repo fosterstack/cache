@@ -3445,9 +3445,9 @@ requirements:
       release name of the stage that reads it (apk or build for Build, rapk or rebuild for Rebuild) is refused by `collection name ...`, so spelling
       variants and Unicode lookalikes are refused by name too. THIS RULE REFUSES HONEST CONFUSION EARLY, with a clear message; it is not the security
       boundary. A run of scan.yml (a pull request, or a push of a tag) can name its own record `build`, because the step name is chosen by the workflow that
-      runs Witness. The boundary is the Build Config URI pin of check_identity (the calling workflow must be release.yml at the tag, which scan.yml is not),
-      already tested in bin/chain-verify-test.sh (build_coll_scan and the other Sign-identity cases), plus the refusal of the snapshot version (AC15) and of
-      a policy for 0.0.0. The mode guard step compares case-sensitively in bash because GitHub's `==` in an expression is case-insensitive (inputs.mode ==
+      runs Witness. The boundary is the release key (a record is accepted only with a signature that verifies against the release key, which a scan.yml run does not
+      hold), already tested in bin/chain-verify-test.sh (build_coll_scan and the other signature cases), plus the refusal of the snapshot version (AC15) and
+      of a policy for 0.0.0. The mode guard step compares case-sensitively in bash because GitHub's `==` in an expression is case-insensitive (inputs.mode ==
       'Snapshot' is true), so the guard is load-bearing: a looser guard would let a mixed-case mode skip both Witness steps.
       Snapshot additions from cache-3f (Oct 9): the local v0.0.0-rc.1 tag (AC12) exists because cache's driver reads the Go buildinfo mod line and wants
       v<version> with vcs.revision equal to HEAD (rule 24). scan.yml also runs on a push of a v* tag, where HEAD carries that tag; the advisor ruled (Oct 9)

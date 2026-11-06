@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC6, REQ-REL-009-AC13
-# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057): the owner's
-# SSH signature (allowed-signers) on any tag; the release.yml-on-main gitsign identity on a PATCH tag only (vX.Y.Z,
-# Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
-# tag object, or the CI identity on a minor, major or rc tag is refused. The route only picks the verifier; the
-# verifier (git verify-tag against allowed-signers, or gitsign verify-tag with the identity pinned) still has to pass.
+# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): only the owner's
+# SSH signature (allowed-signers), on any tag. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
+# release.yml gitsign identity), or an ambiguous tag object is refused. The route only picks the verifier; the verifier
+# (git verify-tag against allowed-signers) still has to pass.
 # The second half of this file judged the wiring of stage-admission.yml (policy from protected main; gitsign verify-tag pinning the identity,
 # issuer, repository, ref and tagged commit; the baseline rules). PR 2 of the v0.3.0 chain removed that workflow: admission is the first step of
 # Build's apk job (bin/build-admit.py) and the same properties are judged by bin/chain-build-admit-test.sh (REQ-CHAIN-004-AC4, AC5).
