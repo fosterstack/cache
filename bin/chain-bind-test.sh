@@ -776,7 +776,7 @@ def make_keys_dir():
     def ssl(*a, **kw):
         return subprocess.run(("openssl",) + a, check=True, capture_output=True, **kw).stdout
     for n in ("root", "rel"):
-        ssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", "%s/%s.key" % (d, n))
+        ssl("genpkey", *(("-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256") if n == "root" else ("-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")), "-out", "%s/%s.key" % (d, n))
         ssl("pkey", "-in", "%s/%s.key" % (d, n), "-pubout", "-out", "%s/%s.pub" % (d, n))
     der = ssl("pkey", "-pubin", "-in", d + "/rel.pub", "-outform", "DER")
     body = json.dumps({"public_key": open(d + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"
@@ -1073,7 +1073,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 226
+EXPECT = 246
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

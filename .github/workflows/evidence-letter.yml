@@ -99,9 +99,14 @@ jobs:
       - name: install cosign (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
 
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
+
       - name: sign the letter and attach it to the latest release
         env:
           GH_TOKEN: ${{ github.token }}
           MONTH: ${{ needs.draft.outputs.month }}
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/evidence-letter-publish.sh "letter/evidence-letter-$MONTH.md"

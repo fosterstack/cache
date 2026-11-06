@@ -4,26 +4,27 @@ Reads docs/verify-release.cannot-run.json (rows {command, reason}, the exact-tex
 each command against what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then
 docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
 registry, with the image-production / image-fips digest of witness-build/digests.json filled in; any other command
-runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <RELEASE_KEY> = the
-verified release public key file (verified_key below; nothing else can fill it).
+runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME.
 
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
-verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify form, no other shell
-syntax (no $ outside single quotes, no unquoted brace, glob or tilde), and no placeholder left unfilled. Every verify
-form carries exactly one key flag whose value is <RELEASE_KEY> and no flag but --key, --bundle, --type and
---check-claims. A command that fails
-fails the run (exit 1) after all have run. The step holds the job's GITHUB_TOKEN (the Release job's own
-contents/packages/id-token grant) and no registry credential.
+verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify
+form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. Every verify form carries
+exactly one key flag whose value is release.rsa.pub (the release key, placed by place_release_key) and no flag but
+--key, --bundle, --type and --check-claims. A command that fails
+fails the run (exit 1) after all have run. The step holds no token and no registry credential.
 
 Every command runs with release-published/ (the assets just downloaded from the published release) as its working
 directory, so the guide's bare file names resolve as a customer's do (REQ-CHAIN-007-AC20). A command made only of jq is
 accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run
-time only after that verify exited 0.
+time only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv,
+so nothing (brace, glob, tilde, variable, backslash-newline) is expanded after the check.
 """
-import json, os, re, shlex, subprocess, sys
+import hashlib, json, os, re, shlex, subprocess, sys, types
 
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
+VERIFIER = "bin/chain-verify.py"   # holds the bundle check; loaded only when a listed command names a bundle
+LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the chain that runs
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
@@ -40,8 +41,6 @@ FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "ver
 # A verify form carries only --key, --bundle, --type and --check-claims (read_flags below): any other flag
 # (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes which log or trust root the default check reads,
 # or skips it.
-# exactly one PEM public key and nothing else: BEGIN, base64 lines, END (a second block or any other line fails)
-PEM = re.compile(r"^-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+\n-----END PUBLIC KEY-----\n?$")
 SYNTAX = "();<>|&"   # a shell word made only of these is an operator; "|" alone is the one we allow
 
 
@@ -79,11 +78,9 @@ def split_pipe(words):
     return segs
 
 
-def quote_error(c, bash=True):
-    """Why bash would run something else than the words we judge (a backquote, an expansion, a comment, a newline,
-    and, when the command goes to bash, an unquoted brace, glob or tilde), or None. A jq-only command never goes to
-    bash (run_jq), so it passes bash=False. We walk the quotes ourselves because shlex does not know bash's
-    expansions."""
+def quote_error(c):
+    """Why a shell would run something else than the words we judge (a backquote, an expansion, a comment, a newline),
+    or None. We walk the quotes ourselves because shlex does not know a shell's expansions."""
     if "`" in c:
         return "a backquote"
     quote, i = None, 0
@@ -111,8 +108,6 @@ def quote_error(c, bash=True):
             return "a # outside quotes (a shell comment would hide what follows from this check and not from bash)"
         elif ch in "\n\r":
             return "a newline outside quotes (bash runs what follows as another command)"
-        elif bash and ch in "{}*?[]~":
-            return "a brace, glob or tilde outside quotes: bash would expand it after this check"
         i += 1
     return None
 
@@ -130,7 +125,7 @@ def form_error(c, jq_only=False):
     """None when the command is a pipe of verify forms and jq with at least one verify form, else why not.
     With jq_only the command is a pure jq pipe (judged by jq_files after this): only the character-level refusals
     apply, because jq opens no network and no repository."""
-    why = quote_error(c, bash=not jq_only)
+    why = quote_error(c)
     if why:
         return why
     try:
@@ -186,7 +181,7 @@ def read_flags(words):
 
 def key_error(c):
     """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
-    whose value is <RELEASE_KEY> and no flag outside --key, --bundle, --type and --check-claims; else why not. The words
+    whose value is release.rsa.pub and no flag outside --key, --bundle, --type and --check-claims; else why not. The words
     are the shell's
     (a quoted spelling like --insecure-ignore-tlo''g is the flag); the placeholder is a marker no file name equals."""
     for seg in split_pipe(words_of(c, PHM)):
@@ -197,9 +192,9 @@ def key_error(c):
             return "the %sflag %s has no value: the next word is a flag" % (
                 "key " if novalue == "--key" else "", novalue)
         if len(keys) != 1:
-            return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
-        if keys[0] != "\u2039RELEASE_KEY\u203a":
-            return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
+            return "it needs exactly one key flag whose value is release.rsa.pub (found %d)" % len(keys)
+        if keys[0] != "release.rsa.pub":
+            return "its key flag names %r, not release.rsa.pub" % keys[0]
         if unknown:
             return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % unknown
     return None
@@ -377,23 +372,43 @@ def verify_files(c):
     return out
 
 
+def run_pipe(segs):
+    """Runs the argv of each segment of a pipe WITHOUT a shell: the words the judge read are the argv, so nothing
+    (brace, glob, tilde, variable, backslash-newline) can change them after the check. Every command of the pipe must
+    exit 0 (pipefail); a command that cannot start fails the run."""
+    procs, prev = [], subprocess.DEVNULL
+    try:
+        for n, argv in enumerate(segs):
+            last = n == len(segs) - 1
+            p = subprocess.Popen(argv, stdin=prev, stdout=None if last else subprocess.PIPE, cwd=ASSETS)
+            if prev is not subprocess.DEVNULL:
+                prev.close()
+            prev = p.stdout
+            procs.append(p)
+    except OSError as e:
+        print("release-postverify: %s cannot be started (%s)" % (segs[len(procs)][0], type(e).__name__),
+              file=sys.stderr)
+        for p in procs:
+            p.kill()
+        for p in procs:
+            p.wait()
+        return 127
+    codes = [p.wait() for p in procs]
+    return next((rc for rc in codes if rc != 0), 0)
+
+
 def run_jq(run):
-    """Runs a judged jq-only command WITHOUT a shell: the validated words are the argv, so no expansion (brace, glob,
-    tilde, variable) can add an option or a file after the check. Every jq of a pipe must exit 0 (pipefail)."""
+    """Runs a judged jq-only command (see run_pipe)."""
     files, why, segs = jq_files(run)
     if files is None:
         print("release-postverify: %s" % why, file=sys.stderr)
         return 1
-    procs, prev = [], subprocess.DEVNULL
-    for n, argv in enumerate(segs):
-        last = n == len(segs) - 1
-        p = subprocess.Popen(argv, stdin=prev, stdout=None if last else subprocess.PIPE, cwd=ASSETS)
-        if prev is not subprocess.DEVNULL:
-            prev.close()
-        prev = p.stdout
-        procs.append(p)
-    codes = [p.wait() for p in procs]
-    return next((rc for rc in codes if rc != 0), 0)
+    return run_pipe(segs)
+
+
+def run_verify(run):
+    """Runs a judged command made of verify forms (see run_pipe): the argv are the shell words the judge read."""
+    return run_pipe(split_pipe(words_of(run, PHM)))
 
 
 def read_commands():
@@ -457,30 +472,6 @@ def judge(c, verified):
     return None
 
 
-KEYNAME = "release-key.verified.pub"
-
-
-def verified_key():
-    """The absolute path of the verified release public key file; a refusal when there is none. The file is read only
-    from $RUNNER_TEMP (absolute, and not inside the checkout, which also keeps out every tracked file), never a key
-    reference, and it holds exactly one PEM public key. The writer is the manifest-check step of the Release job, which
-    checks the key manifest against the root key; that step is not on this base, so today the file is absent and
-    Release refuses (fail closed)."""
-    tmp = os.environ.get("RUNNER_TEMP", "")
-    if not os.path.isabs(tmp):
-        refuse("<RELEASE_KEY> needs $RUNNER_TEMP, an absolute path, and it is %r" % tmp)
-    tmp, checkout = os.path.realpath(tmp), os.path.realpath(os.getcwd())
-    if tmp == checkout or tmp.startswith(checkout + os.sep):
-        refuse("$RUNNER_TEMP is inside the checkout: the verified release key is never read from the repository")
-    path = os.path.join(tmp, KEYNAME)
-    if os.path.islink(path) or not os.path.isfile(path):
-        refuse("<RELEASE_KEY> needs the verified release key file %s, and there is none" % path)
-    text = open(path, errors="replace").read()
-    if not (len(text) < 2000 and PEM.match(text)):
-        refuse("%s is not one PEM public key" % path)
-    return path
-
-
 def fill(c, values):
     """The command with every placeholder replaced; a placeholder with no value, or a value that is not one plain
     word, is refused."""
@@ -497,8 +488,6 @@ def fill(c, values):
 def make_plan(cmds, digests, tag):
     """[(registry, command, filled command, files a jq-only command reads)]: one pass per registry, in order."""
     base = {"TAG": tag}
-    if any("<RELEASE_KEY>" in c for c in cmds):
-        base["RELEASE_KEY"] = verified_key()
     plan = []
     for reg in REPOSITORIES:
         values = dict(base, IMAGE_REF="%s@%s" % (reg, digests["image-production"]),
@@ -527,7 +516,7 @@ def run_plan(plan):
         if files is not None:
             rc = run_jq(run)
         else:
-            rc = subprocess.run(["bash", "-o", "pipefail", "-c", run], stdin=subprocess.DEVNULL, cwd=ASSETS).returncode
+            rc = run_verify(run)
         if rc != 0:
             failed.append((reg, c, rc))
             print("::error::post-publish verification failed against %s: `%s` exited %d" % (reg, c, rc),
@@ -535,6 +524,108 @@ def run_plan(plan):
         elif files is None:
             passed |= verify_files(c)
     return failed
+
+
+def bundle_files(c):
+    """The --bundle values of the verify forms of a (filled) command: the bundle files this run reads. Not
+    file_operands' walk: that one takes the word after an unknown flag as its value, which is the safe reading when it
+    decides which files jq may read and the unsafe one here, where a boolean flag before --bundle would hide it. Here
+    every --bundle word takes the next word and every --bundle=X word its value; a --bundle with no word after it is
+    refused."""
+    try:
+        words = words_of(c, PHM)
+    except ValueError:
+        return []
+    out = set()
+    for seg in split_pipe(words):
+        form = next((f for f in FORMS if tuple(seg[:len(f)]) == f), None)
+        rest = seg[len(form):] if form else []
+        for i, w in enumerate(rest):
+            if w == "--bundle" and i + 1 < len(rest):
+                out.add(rest[i + 1])
+            elif w == "--bundle":
+                refuse("`%s`: --bundle has no file name after it" % c)
+            elif w.startswith("--bundle="):
+                out.add(w.partition("=")[2])
+    return sorted(out)
+
+
+def load_verifier():
+    """bin/chain-verify.py as a module, never run as a program: its bytes must carry the sha256 listed for it in
+    .github/policy/chain-scripts.json, and those same bytes are compiled and run (no bytecode cache stands in)."""
+    try:
+        with open(VERIFIER, "rb") as f:
+            src = f.read()
+        with open(LISTED, "rb") as f:
+            listed = {r["path"]: r["sha256"] for r in json.load(f)["scripts"]}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        refuse("%s cannot be loaded (%s): a bundle is named and cannot be checked" % (VERIFIER, type(e).__name__))
+    if listed.get(VERIFIER) != hashlib.sha256(src).hexdigest():
+        refuse("%s does not match its sha256 in %s: refusing to run it" % (VERIFIER, LISTED))
+    mod = types.ModuleType("chain_verify")
+    mod.__file__ = os.path.abspath(VERIFIER)
+    try:
+        exec(compile(src, mod.__file__, "exec"), mod.__dict__)
+    except (Exception, SystemExit) as e:
+        # SystemExit: the verifier's own helper loader exits when a helper fails its sha256
+        refuse("%s cannot be loaded (%s: %s): a bundle is named and cannot be checked"
+               % (VERIFIER, type(e).__name__, e))
+    return mod
+
+
+# what a bundle signed with a key holds at the top, and in its verificationMaterial
+# (no certificate, whatever the spelling)
+BUNDLE_KEYS = {"mediaType", "verificationMaterial", "messageSignature", "dsseEnvelope"}
+MATERIAL_KEYS = {"publicKey", "tlogEntries", "timestampVerificationData"}
+
+
+def refuse_certificate_bundles(plan):
+    """Every --bundle operand of the filled commands must be a plain file name. A named file that is present is read as
+    strict JSON and refused unless it is a bundle signed with a key: a certificate is refused by the check
+    bin/chain-verify.py holds, then any key outside the two allowed sets. A list that names no present bundle loads
+    nothing, and a named file that is absent is not read: the command that names it fails the run
+    (REQ-CHAIN-007-AC20)."""
+    names = []
+    for _reg, _c, run, _files in plan:
+        names += [n for n in bundle_files(run) if n not in names]
+    root = os.path.realpath(ASSETS)
+    present = []
+    for n in names:
+        if not JQ_FILE.fullmatch(n):
+            refuse("%s: not a plain file name in %s/ (letters, digits, . _ - only)" % (n, ASSETS))
+        path = os.path.realpath(os.path.join(ASSETS, n))
+        if os.path.commonpath([root, path]) != root:   # a plain name that is a link out
+            refuse("%s: resolves outside %s/" % (n, ASSETS))
+        if os.path.lexists(path):
+            present.append((n, path))
+    if not present:
+        return
+    check = load_verifier()
+    for n, path in present:
+        try:
+            with open(path, "rb") as f:
+                bundle = check.strict_json(f.read())
+        except (OSError, ValueError) as e:
+            refuse("%s: cannot be read as strict JSON (%s)" % (n, type(e).__name__))
+        material = bundle.get("verificationMaterial") if isinstance(bundle, dict) else None
+        if not isinstance(material, dict):
+            refuse("%s: not a bundle: an object with an object verificationMaterial is required" % n)
+        why = check.bundle_certificate_why(material)
+        if why:
+            refuse("%s: %s" % (n, why))
+        for key in sorted(set(material) - MATERIAL_KEYS):
+            refuse("%s: verificationMaterial.%s is not allowed (a bundle signed with a key holds %s)"
+                   % (n, key, ", ".join(sorted(MATERIAL_KEYS))))
+        for key in sorted(set(bundle) - BUNDLE_KEYS):
+            refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
+def place_release_key():
+    key = "build/keys/release.rsa.pub"
+    if os.path.exists(ASSETS + "/release.rsa.pub"):
+        refuse("%s/release.rsa.pub exists: a published asset must not stand in for the committed key" % ASSETS)
+    if not os.path.isfile(key) or os.path.getsize(key) == 0:
+        refuse("%s is missing or empty: the commands that verify with --key release.rsa.pub need it" % key)
+    with open(key, "rb") as src, open(ASSETS + "/release.rsa.pub", "wb") as dst:
+        dst.write(src.read())
 
 
 def main():
@@ -546,6 +637,8 @@ def main():
     if not os.path.isdir(ASSETS):
         refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can "
                "resolve its files; nothing is run" % ASSETS)
+    refuse_certificate_bundles(plan)
+    place_release_key()
     failed = run_plan(plan)
     if failed:
         refuse("post-publish verification failed: %d of %d runs failed: %s"

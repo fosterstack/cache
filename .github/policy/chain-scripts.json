@@ -57,41 +57,33 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2bea5f9192ddca1d92df21fcc39c02dbe21d2bd746f1cabf4affde3527acc61e",
+      "sha256": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
       "tools": [
         "make",
         "at",
         "exec",
-        "git"
+        "git",
+        "aws",
+        "timeout"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
-      "env_mentions": [
-        {
-          "name": "PATH",
-          "text": "no cosign on PATH, or not runnable",
-          "why": "a code comment naming where Python looks for cosign; nothing is set"
-        },
-        {
-          "name": "PATH",
-          "text": "cosign not found on PATH",
-          "why": "the refusal message when cosign cannot be started; nothing is set"
-        }
-      ]
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then has the DSSE kind of kms-sign sign the provenance statement once (the aws CLI its caller names, KMS signing with the algorithm named, one dsse Rekor entry)); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs; `aws` is the aws CLI that the kms-sign subcommand runs at the fixed path its caller gives (kms get-public-key and kms sign, REQ-BUILDAPK-001-AC7), and `timeout` is the keyword argument of its subprocess and urllib calls, not a command; tool choice for aws (rules 12-15): it is the one tool present on the runner image that takes the signing algorithm on the call (kms sign --signing-algorithm; cosign 3.1.3 signs with the first algorithm the key lists), boto3 is absent from the runner's python, and hand-made SigV4 requests would be a longer path with more of our own code; the tool is the pinned aws CLI (bin/install-scanner.sh aws-cli, under RUNNER_TEMP) and each signing caller passes its path with --aws"
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "1a513a40dda87d4c8cf09d0c2070e433b27fcdc33117ab6412ca3156f2d8286a",
+      "sha256": "15c886f0ea9d4dc9e00465ab710448c075e4f43b251a75d8d3a45c0809d07b66",
       "tools": [
         "at",
+        "aws",
         "curl",
         "git",
         "go",
         "source",
         "tar",
-        "trap"
+        "trap",
+        "unzip"
       ],
       "runs": [],
       "signs": "other",
@@ -313,24 +305,29 @@
         "at",
         "bash",
         "command",
-        "curl",
-        "exec",
+        "env",
         "git",
+        "python3",
         "script",
         "sh",
-        "timeout"
+        "trap",
+        "aws",
+        "exec"
       ],
       "runs": [
+        "bin/chain-verify.py",
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "0b95fcac85c4e52273299b557d78fb9677bb2ec1901a137bb3ebe22dc879dccd",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key; Witness's own environment holds no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE for any step, and the wrapped command is the plain bash SCRIPT, so no AWS role or token-path name stands in the command-run record (attestors environment, git, material, product; never slsa; the steps whose scripts sign with the key themselves, release-sign and release-apks, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive keys of the record, and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the AWS variables themselves, REQ-CHAIN-007-AC15; the token made for it is removed when Witness returns), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
+      "sha256": "d72e0e84301adffc7e750e342b0e8eb3863a0989e14606d8dba2fdd2137ead54",
       "reads_env": [
         "GH_TOKEN",
-        "APK_RELEASE_SIGNING_KEY",
         "DOCKERHUB_USERNAME",
-        "DOCKERHUB_TOKEN"
+        "DOCKERHUB_TOKEN",
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "RELEASE_KMS_KEY_REF"
       ],
       "arg_map": {
         "release-verify": "bin/release-verify.sh",
@@ -342,14 +339,9 @@
       },
       "exceptions": [
         {
-          "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
-        },
-        {
           "rule": "witness-target",
-          "text": "timeout -k 20 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout -k 20 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+          "text": "bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2 (handoff 0713): the wrapped command is `bash STEP-SCRIPT`; the target is one of the arg_map scripts, bound by the stage line"
         },
         {
           "rule": "script-name",
@@ -370,11 +362,10 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "be4c8cdcf99c8f47ecc8659f1776034eb5df9725fb0ded860c06e929f2eecb08",
       "reads_env": [
         "GH_TOKEN",
-        "APK_RELEASE_SIGNING_KEY",
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN"
       ],
@@ -390,7 +381,8 @@
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
-        "arm64": "bin/check-phase-arm64.sh"
+        "arm64": "bin/check-phase-arm64.sh",
+        "release-verify": "bin/release-verify.sh"
       },
       "exceptions": [
         {
@@ -408,21 +400,26 @@
     {
       "path": "bin/witness-sign-staged.sh",
       "tools": [
+        "at",
         "bash",
         "cp",
         "make",
         "mkdir",
         "python3",
-        "script",
-        "sh"
+        "script"
       ],
       "runs": [
-        "bin/loopback-get.sh",
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/with-aws-token.sh"
       ],
       "signs": "other",
-      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
-      "sha256": "1fdd8eaf6aa2cc24bd61c77f5a88a79454ca828b951cf3618956ce7b692dab2e"
+      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
+      "sha256": "42eeef9bbeb1a49b89227578ff7be9e679e8a35e7ee97ec9826087d6c56cc318",
+      "reads_env": [
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "RELEASE_KMS_KEY_REF"
+      ]
     },
     {
       "path": "bin/rebuild-records-digests.sh",
@@ -630,7 +627,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "02a406ecb3f04b71a4660161a1c92398d116771fe676585edbae4c8828d1e7d9"
+      "sha256": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -1609,24 +1606,23 @@
       "tools": [
         "bash",
         "jq",
-        "python3",
-        "trap"
+        "python3"
       ],
       "runs": [
         "bin/apk-tool.py",
         "bin/release-sign-apks.sh"
       ],
       "signs": "other",
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (melange sign of Build's apks only; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
-      "sha256": "bb859d4254e1d4cced43922b4c381be86e6a723fd4ef3bb515b496bec2e4828f",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (chain-verify.py kms-sign signs each apk's control section with the release KMS key named by RELEASE_KMS_KEY_REF, through the aws CLI, and posts one Rekor entry; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
+      "sha256": "29fc6f44658e2243d51b9118d6cf50c3839e892ccc4ff6d6564b04fde38e8b15",
       "reads_env": [
-        "APK_RELEASE_SIGNING_KEY"
+        "RELEASE_KMS_KEY_REF"
       ],
       "exceptions": [
         {
           "rule": "deny",
-          "line": "if [ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ]; then echo \"release-apks: APK_RELEASE_SIGNING_KEY is unset\" >&2; exit 2; fi",
-          "line_sha256": "b2768dc581254bd195b47373c7599227b761f888db2b03a64d8e9294f56ffdbb",
+          "line": "if [ -z \"${RELEASE_KMS_KEY_REF:-}\" ]; then echo \"release-apks: RELEASE_KMS_KEY_REF is unset\" >&2; exit 2; fi",
+          "line_sha256": "55301f2b6fd02ac18652a24c1c62f82e6723be5b539ec9e8be9598bd68fade4d",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1717,16 +1713,18 @@
         "git",
         "jq",
         "python3",
+        "sha256sum",
         "trap"
       ],
       "runs": [
+        "bin/chain-verify.py",
         "bin/release-metadata.py",
         "bin/vendor-provenance.py",
         "bin/vex-forms.py"
       ],
       "signs": "other",
-      "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "04eadba6c1483964a1a766da09226e69ac9500e7fd7a6af9c36657ba640bd293",
+      "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "sha256": "4e68f5b569736ef7ec01e5988d71b2a5d8d454252c68d48dda9ff0784e526ad0",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1761,7 +1759,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "b46bbe571ce4a4146cb3ae2a846e44230f05cf875e88546d4f918e9bbf6c579f",
+      "sha256": "a8e4d06800fa7897bf30471df00c2093025a323dbed5079cefc2ff7ebe8a58de",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1848,35 +1846,42 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "c55e049c80aa4a2d0873d6eae090793ba132ec5630b7544cf0194b405ab76d4d",
-      "reads_env": [
-        "GH_TOKEN"
-      ],
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "[ -n \"${GH_TOKEN:-}\" ] || { echo \"release-postverify: GH_TOKEN is unset\" >&2; exit 2; }",
-          "line_sha256": "69ef7a2b92d28fd0326c990cc64034e02be75883511cce8a2b83552418ea8c9a",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
+      "sha256": "4f89daaa659d30a16dc5c4bcb31e9535d65c259227ec6416b677d92902aa621e",
+      "reads_env": []
     },
     {
       "path": "bin/release-postverify.py",
       "tools": [
         "at",
-        "bash",
         "command",
         "cosign",
+        "exec",
         "gh",
         "jq",
         "just"
       ],
-      "runs": [],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
       "signs": false,
-      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "5e9302d64e92a743ab2e3b0b7b910f5b9830f2dc5404cc502579c0289d23fd9b",
+      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
+      "sha256": "38cd7ca08342b6639ea1aa98da7b68bfca6a1de79bb4198bcdd0971d938ee627",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "            return \"a # outside quotes (a shell comment would hide what follows from this check and not from bash)\"",
+          "line_sha256": "4f0ed76b7e3308c8638ba6e3ed8d151699a3f12ba6fb7f3f220b2db554f3dd21",
+          "count": 1,
+          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        },
+        {
+          "rule": "deny",
+          "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
+          "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
+          "count": 1,
+          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        }
+      ],
       "env_mentions": [
         {
           "name": "ENV",
@@ -1893,7 +1898,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
+      "sha256": "9639953d932d81037990feee2e023398dc39e5c5a7677a4e693f740e441ccd78"
     },
     {
       "path": "bin/vex-forms.py",
@@ -2121,7 +2126,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
+      "sha256": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
       "exceptions": [
         {
           "rule": "deny",
@@ -2202,7 +2207,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "fc97e57e3832ed10cdfc6fa4c56849ebfaaf48e1398673459cc0e5e61dba144c",
+      "sha256": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2218,14 +2223,16 @@
         "env",
         "find",
         "make",
-        "at"
+        "at",
+        "aws"
       ],
       "runs": [
-        "bin/apk-tool.py"
+        "bin/apk-tool.py",
+        "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "cache P4's release signing: re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "ba3c434fe1d2162e61a797907e487fe9f31fcbfe237cc0e9f4e7599efee6876f",
+      "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) by chain-verify.py kms-sign (KMS Sign through the aws CLI, RSASSA_PKCS1_V1_5_SHA_256 named on every call) on each apk's control section, posts one Rekor entry, and checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (chain-verify.py bundle-check) (REQ-CHAIN-007-AC6); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); refuses, with exit 2 and before any tool, a RELEASE_KMS_KEY_REF that is not the verifier's own key reference, byte for byte (chain-verify.py key-ref-check); run by bin/release-apks.sh",
+      "sha256": "62d7ede89743eca860013455a51fefa39707f9877ac5a8dc48c900adbfd321bb",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2234,20 +2241,8 @@
         },
         {
           "rule": "script-name",
-          "text": "bin/install-build-tools.sh",
-          "why": "prose naming the installer: the error message that tells the operator how to install melange; never run from here (the script names it once since cache#349 and the one exception waives it)"
-        },
-        {
-          "rule": "script-name",
           "text": "build-apk.sh",
           "why": "a comment naming the sibling script whose way of naming its helpers this file follows (repo-relative literal paths); prose, never run from here"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] ||",
-          "line_sha256": "8edde846c25cb6d9bdc4d9a3363070a5509b1e5b2a8a9689dfc27e7017734d39",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
         },
         {
           "rule": "deny",
@@ -2269,13 +2264,41 @@
           "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
-        }
-      ],
-      "env_mentions": [
+        },
         {
-          "name": "PATH",
-          "text": "child_env = {\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"}",
-          "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
+          "rule": "deny",
+          "line": "[ -n \"${RELEASE_KMS_KEY_REF:-}\" ] || die \"RELEASE_KMS_KEY_REF is unset\"",
+          "line_sha256": "3e23d106068d1d4d456cf029404aa906be4c5f81b2a11d4c4910d189d566142a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -s \"$w/kms.sig\" ] && [ -s \"$w/sig.bundle\" ] || die \"kms-sign left no signature or no bundle for ${rel#./}; $kept\" 1",
+          "line_sha256": "fd2c1a6447bdf06b155ebe14a3058ff0cf8808f7303127136a2572bdab629fc5",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  read -r dg _ < <(\"$OPENSSL\" dgst -sha256 -r \"$w/control.gz\") && [ -n \"$dg\" ] || die \"cannot hash the control stream of ${rel#./}; $kept\" 1",
+          "line_sha256": "e210e997ff5fb2bd11aacf20a19e9d197bfdc94d40f02c2e598637786e53b767",
+          "count": 1,
+          "why": "a test command ([ ... ]) on this line holds a quoted expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, the digest of the control stream is read from openssl dgst -sha256 and tested non-empty)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py digest \"$copy/$rel\")\" = \"$want\" ] ||",
+          "line_sha256": "d91dab191e1259a85fa3e890d695087c7df14c5ae1b92a501340e86f8bc5b268",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py digest \"$build_dir/$rel\")\" = \"$want\" ] ||",
+          "line_sha256": "2f2b1f1c0f5a4c6ce331069ff0d8ac06809093b5bfa1949e8868312073bdb81d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
         }
       ]
     },
@@ -2355,7 +2378,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "706af8f7098d61743ce12c21cbd6b8163afa0e55d7fee42377bf3405744345e3",
+      "sha256": "504727af0ee14276e11b5376467c068bdd8f116fc86081194490bf4212f1d87e",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2625,6 +2648,29 @@
       "signs": false,
       "runs": [],
       "reason": "the one builder of the docker-save tar of an OCI layout's linux/ARCH image, which check-scan.sh gives to the scanners: it copies each blob to a private stage, re-hashes it and packs only the config and layers (REQ-CHAIN-006-AC4)"
+    },
+    {
+      "path": "bin/with-aws-token.sh",
+      "tools": [
+        "at",
+        "bash",
+        "jq",
+        "python3",
+        "sh",
+        "trap"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/loopback-get.sh"
+      ],
+      "signs": "other",
+      "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record, sign or kms-sign (the signing functions, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
+      "sha256": "82c661621cdfbee2b75595de440f6d883d69dc3f0da63b65c59dfb88f46c4792",
+      "reads_env": [
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "RELEASE_KMS_KEY_REF"
+      ]
     }
   ],
   "ambient_env": [
@@ -2675,27 +2721,6 @@
       "name": "GH_TOKEN",
       "script": "bin/release-assets.sh",
       "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "GH_TOKEN",
-      "script": "bin/release-postverify.sh",
-      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "APK_RELEASE_SIGNING_KEY",
-      "script": "bin/witnessed.sh",
-      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret APK_RELEASE_SIGNING_KEY from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "APK_RELEASE_SIGNING_KEY",
-      "script": "bin/release-apks.sh",
-      "why": "Release (rule 56, advisor 0386 J): the stored secret APK_RELEASE_SIGNING_KEY, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
       "file": ".github/workflows/stage-promote.yml",
       "job": "release"
     },

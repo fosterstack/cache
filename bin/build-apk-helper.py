@@ -264,8 +264,8 @@ def check_environment():
         raise Refused("SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)")
     if iso_time(epoch) is None:
         raise Refused("SOURCE_DATE_EPOCH %s is not a date" % epoch)
-    if os.environ.get("APK_RELEASE_SIGNING_KEY"):
-        raise Refused("the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is "
+    if os.environ.get("RELEASE_KMS_KEY_REF"):
+        raise Refused("the release signing key must not be in a build's environment (RELEASE_KMS_KEY_REF is "
             "defined)")
     if os.environ.get("GOPROXY", "off") != "off":
         raise Refused("GOPROXY must be off or unset (its value is not printed: it can carry a credential)")

@@ -28,10 +28,12 @@ for f in (openvex, insp, csaf):
     check("names and downloads %s from the release page" % f,
           re.search(r"releases/download/v\$\{VER\}/" + re.escape(f), code) is not None)
 # how to check it is ours: the signed release manifest (pinned like docs/verify-images.md), then its sha256 of each file
-check("verifies the release manifest attestation, pinned to the promotion workflow and the tag",
+check("verifies the release manifest attestation with the release key (v0.3.0+: --key release.rsa.pub, no certificate identity or issuer)",
       "cosign verify-attestation" in code and "--type https://fosterstack.com/attestations/release-manifest/v1" in code
-      and 'stage-promote.yml@refs/tags/v${VER}"' in code and "--certificate-identity-regexp" not in code
-      and "token.actions.githubusercontent.com" in code)
+      and "--key release.rsa.pub" in code and "--certificate-identity" not in code
+      and "--certificate-oidc-issuer" not in code)
+check("fetches release.rsa.pub from the release's tag in the one-line form of docs/verify-images.md",
+      'curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"' in code)
 check("checks each file against the manifest's sha256", ".vex[]" in code and "sha256sum -c" in code)
 # a failed cosign must stop the reader in any shell (Codex #169 r1, SEC-169-03): its output is saved to a file by the
 # command itself, never piped onward, so the command's own exit status is what the reader sees
@@ -39,7 +41,11 @@ verify = next((b for b in blocks if "cosign verify-attestation" in b), "")
 check("cosign's output goes to a file, not into a pipe", re.search(r"cosign verify-attestation[^|]*?> \S+\n", verify, re.S) is not None
       and not re.search(r"cosign verify-attestation[^>]*\|", verify, re.S), verify)
 check("no head/tail truncation that could hide a failure or a second attestation", not re.search(r"\| *(head|tail)\b", verify))
-check("no new key or signature is introduced", "--key" not in code and "sign-blob" not in code)
+check("no new key or signature is introduced: no sign-blob, and no --key other than release.rsa.pub",
+      "sign-blob" not in code and all(k == "release.rsa.pub" for k in re.findall(r"--key[= ]+(\S+)", code)))
+mut = code.replace("--key release.rsa.pub", '--certificate-identity="x" --certificate-oidc-issuer=\'y\'')
+check("mutant: the identity and issuer flags put back in place of --key are caught by the key check",
+      not ("--key release.rsa.pub" in mut and "--certificate-identity" not in mut))
 # the exact commands: the generator's constants, with <file> bound to the named file (copy-pasteable, run verbatim by
 # the rule-12 live test)
 check("the Inspector command is GUIDE_INSPECTOR_COMMAND verbatim",

@@ -36,12 +36,9 @@ curl -fsSLO "${BASE}/checksums.txt.bundle"
 Verify before the transfer, while you still have a network. Both steps matter:
 
 ```sh
-# 1. Prove the checksums file is ours
-cosign verify-blob \
-  --bundle checksums.txt.bundle \
-  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  checksums.txt
+# 1. Prove the checksums file is ours (the release key is in the repository at the release tag)
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
 # 2. Prove your archive matches it — just the one line you care about
 LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
@@ -106,14 +103,13 @@ Sigstore/Rekor infrastructure rather than something you'd need connectivity
 for on the disconnected side too:
 
 ```sh
-cosign verify-blob \
-  --bundle checksums.txt.bundle \
-  --certificate-identity="https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  checksums.txt
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
 LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -   # confirms the archive(s) you're about to move
 ```
+
+A release before v0.3.0 carries a short-lived certificate instead of a key: verify it as shown in [Install FosterStack Cache](install.md). <!-- pinned: historical -->
 
 For a container tarball, verify the pulled image before exporting it (same
 `cosign verify` invocation as [Verify our images](verify-images.md)) — do

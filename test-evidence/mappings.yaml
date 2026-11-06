@@ -1153,6 +1153,8 @@ mappings:
   - ac: REQ-CHAIN-004-AC10
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC11
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1174,6 +1176,7 @@ mappings:
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1447,6 +1450,7 @@ mappings:
   - ac: REQ-CHAIN-007-AC12
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/witness-kms-test.sh" }
   - ac: REQ-CHAIN-007-AC13
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
@@ -1457,6 +1461,7 @@ mappings:
   - ac: REQ-CHAIN-007-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/witness-kms-test.sh" }
   - ac: REQ-CHAIN-007-AC16
     evidence:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
@@ -1733,6 +1738,10 @@ mappings:
   - ac: REQ-BUILDAPK-001-AC9
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+      - { type: shell-test, ref: "bin/check-file-allowlist-test.sh" }
   - ac: REQ-IMAGE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }

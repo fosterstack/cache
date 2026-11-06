@@ -39,7 +39,7 @@
 #  I3 bin/build-apk.sh --variant standard|fips --arch x86_64|aarch64 --version X.Y.Z --source-dir DIR --repo DIR --keyring FILE
 #        --go-archive DIR --melange-lock FILE --out DIR [--recipe FILE] [--render-dir DIR] [--apk-cache-dir DIR]
 #     and  --print-source-date-epoch --source-dir DIR.  Env required: SOURCE_DATE_EPOCH (digits). Refused: --signing-key,
-#     APK_RELEASE_SIGNING_KEY in the environment, GOPROXY other than off, HTTP(S)_PROXY. It runs, in this order,
+#     RELEASE_KMS_KEY_REF in the environment, GOPROXY other than off, HTTP(S)_PROXY. It runs, in this order,
 #       sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 #       sudo [env SOURCE_DATE_EPOCH=..] unshare -n melange build ... (the only network cut; melange called directly on the VM)
 #     signs with the committed assembly key build/keys/assembly.rsa, then writes OUT/<arch>/*.apk, OUT/fscache-modules.spdx.json
@@ -138,6 +138,9 @@ def tarb(members):
             i = tarfile.TarInfo(n); i.size = len(d); i.mtime = 0; i.mode = 0o644
             t.addfile(i, io.BytesIO(d))
     return b.getvalue()
+def sigtar(members):
+    """the signature segment as melange and apk-tools make it: header and data blocks only, NO end-of-archive blocks (apk reads the three streams as one tar)"""
+    return tarb(members)[:sum(512 + (len(d) + 511) // 512 * 512 for _, d in members)]
 def gz(b):
     o = io.BytesIO()
     with gzip.GzipFile(fileobj=o, mode="wb", mtime=0) as g: g.write(b)
@@ -162,7 +165,7 @@ def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigal
         sigbytes = realsig(ctrl, key, "sha256" if sigalg == "RSA256" else "sha1")
     else:
         sigbytes = ("sig-%s-%s" % (signer, name)).encode()
-    sig = gz(tarb([(".SIGN." + sigalg + "." + signer, sigbytes)])) if signer else b""
+    sig = gz(sigtar([(".SIGN." + sigalg + "." + signer, sigbytes)])) if signer else b""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "wb").write(sig + ctrl + data)
     return sig, ctrl, data
@@ -387,7 +390,7 @@ def stubsign(path, signame, key=None):
     rest = b"".join(p[0] for p in (parts[1:] if has_sig else parts))
     ctrl = (parts[1:] if has_sig else parts)[0][0]
     sigbytes = realsig(ctrl, key, "sha256") if key and os.path.exists(key) and not os.environ.get("STUB_FAKE_SIG") else b"stub-signature"
-    open(path, "wb").write(gz(tarb([(".SIGN.RSA256." + signame, sigbytes)])) + rest)
+    open(path, "wb").write(gz(sigtar([(".SIGN.RSA256." + signame, sigbytes)])) + rest)
 def tamper(path):
     b = bytearray(open(path, "rb").read()); b[len(b) - 12] ^= 0xFF; open(path, "wb").write(bytes(b))
 def split(raw):
