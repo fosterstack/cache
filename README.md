@@ -1,6 +1,6 @@
 # FosterStack Cache
 
-We build tools that help you secure your build pipeline. It made sense to start with the build cache. We built FosterStack Cache by meticulously following the security guidance that matters: CISA Secure by Design, NIST SP 800-204C and 800-204D, and SLSA. Where the guidance stops, we kept going: hermetic, reproducible builds, a distroless image, and more. [Read the full list](docs/everything-we-do-for-security.md).
+We build tools that help you secure your build pipeline. It made sense to start with the build cache. We built FosterStack Cache by meticulously following the security guidance that matters: NIST SP 800-204C and 800-204D, and SLSA. Where the guidance stops, we kept going: hermetic, reproducible builds, a distroless image, and more. [Read the full list](docs/everything-we-do-for-security.md).
 
 [![CI](https://github.com/fosterstack/cache/actions/workflows/ci.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fosterstack/cache/actions/workflows/codeql.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/codeql.yml)
@@ -12,7 +12,7 @@ through the Apache Maven Build Cache Extension (acceptance-tested on every
 push and release). Ships as
 a single static binary or a minimal container image (no shell, no base image), MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
-image is keylessly signed (Sigstore); every binary archive is covered by a
+image is signed with the release signing key and recorded in the Sigstore transparency log; every binary archive is covered by a
 signed checksums file; the release pipeline's Sign stage signs a SLSA
 provenance statement that names every image by digest. ["Verifying a release"][releasing-verify] has the commands.
 
