@@ -150,7 +150,7 @@ jobs:
           import json, sys
           t = sys.argv[1]
           d = json.load(open(t + "/decision.json"))
-          body = "No patch was cut: these commits since %s are not fix-only ). A minor release, or a maintainer's patch-fix label on the PR, resolves each.\n\n" % (d.get("since") or "the latest tag")
+          body = "No patch was cut: these commits since %s are not fix-only. A minor release, or a maintainer's patch-fix label on the PR, resolves each.\n\n" % (d.get("since") or "the latest tag")
           LIMIT, total, placed = 60000, len(d["not_clean"]), 0
           foot = lambda left: "\n... and %d more of %d commits; the decide job log lists them all\n" % (left, total)
           for e in d["not_clean"]:

@@ -2,8 +2,8 @@ name: Daily main-candidate rescan
 
 # The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
 # published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
-# same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
-# 1-9, REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
+# same build + image-assembly stages the release chain uses, then runs the scanner panel
+# (REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
 # images (production and fips, each on both architectures), Google Artifact Analysis on the two variants on linux/amd64, tallied together by bin/panel.py —
 # package counts and quorum, the published VEX as the only exception, "seen by N of M", a tracking issue for
 # findings seen by two or more scanners; unique findings are listed for the daily auditor, whose run audits them
@@ -218,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
-    environment: agent   # the read-only Docker Hub token for Scout lives here (Oct 2)
+    environment: agent   # the read-only Docker Hub token for Scout lives here
     permissions:
       contents: read
       packages: read   # the attested candidates in the scratch package, read only
@@ -316,7 +316,7 @@ jobs:
   scout-root-cause:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    environment: agent   # the read-only Docker Hub token for Scout lives here (Oct 2)
+    environment: agent   # the read-only Docker Hub token for Scout lives here
     permissions:
       contents: read
       # packages: write reaches every package linked to this repository (the token cannot be narrower); the job runs only
@@ -379,7 +379,7 @@ jobs:
   scout-older-versions:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    environment: agent   # the read-only Docker Hub token for Scout lives here (Oct 2)
+    environment: agent   # the read-only Docker Hub token for Scout lives here
     permissions:
       contents: read
     steps:

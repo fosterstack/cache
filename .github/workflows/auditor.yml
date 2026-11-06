@@ -134,7 +134,7 @@ jobs:
           runs=$(gh run list --workflow main-candidate-rescan.yml --branch main --limit 50 \
                    --json databaseId,headSha,conclusion,createdAt)
           # the newest rescan of main, whatever head it scanned and whatever its conclusion (a red rescan is the day that
-          # needs us): the panel's judgment is bound to THAT run's head and image digests (item a)
+          # needs us): the panel's judgment is bound to THAT run's head and image digests
           rid=$(printf '%s' "$runs" | jq -r 'sort_by(.createdAt)|last|.databaseId // empty')
           [ -n "$rid" ] || { echo "::error::no main-candidate-rescan run to consume" >&2; exit 1; }
           echo "main_head=${main_head}" >> "$GITHUB_OUTPUT"
@@ -390,7 +390,7 @@ jobs:
       # seat's GitHub identity token itself, fresh for every exchange (the job's id-token: write), so a long debate
       # never outlives its tokens. Identifiers and model names come only from the environment's secrets
       # (REQ-AUD-6 AC1); nothing public names a vendor. The panel's own per-run token budget is written below.
-      - name: Judge the rescan's unique findings 
+      - name: Judge the rescan's unique findings
         id: panel
         if: ${{ always() && steps.rescan.outcome == 'success' }}
         env:
@@ -414,7 +414,7 @@ jobs:
           set -euo pipefail
           # the panel judges only a COMPLETED rescan of main (finished, any conclusion, with its evidence) from the last
           # day, bound to the head and image digests it scanned; main having moved past it is a warning, never a failure
-          # (item a). A stale, unfinished or evidence-less run fails visibly.
+          # A stale, unfinished or evidence-less run fails visibly.
           [ "${RESCAN_STATUS}" = completed ] || { echo "::error::scanner panel: the rescan run did not finish in time" >&2; exit 1; }
           age=$(( $(date -u +%s) - $(date -u -d "${RESCAN_CREATED}" +%s) ))
           [ "$age" -le 86400 ] || { echo "::error::scanner panel: the rescan run is ${age}s old (more than a day)" >&2; exit 1; }

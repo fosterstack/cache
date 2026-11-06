@@ -666,7 +666,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/release-notes-signed-test.sh"
   },
   {
-   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise (Oct 2)",
+   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise",
    "run": "bash bin/go-freshness-wiring-test.sh"
   },
   {
