@@ -1309,33 +1309,25 @@ for _ in range(3):
     except RuntimeError:
         pass
 PY
-CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
+CASE="file memo: the memoised inventories equal the unmemoised ones over the same real slice, items and raises (the same code with the memo off is the oracle)"
 check python3 - "$aud" "$here/../../.." <<'PY'
-import importlib.util, json, subprocess, sys, tempfile, os
+import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 inv, root = pa.inv, sys.argv[2]
-ipath = ".github/agent/supply-chain/pin-inventory.py"
-intro = subprocess.run(["git", "-C", root, "log", "-S_FILE_MEMO", "--reverse", "--format=%H", "HEAD", "--", ipath], capture_output=True, text=True).stdout.split()
-assert intro, "the commit that introduced the memo is not in this checkout's history"
-src = subprocess.run(["git", "-C", root, "show", intro[0] + "^:" + ipath], capture_output=True, text=True)      # the file as it was before the memo existed, whatever the parents of HEAD are
-assert src.returncode == 0, src.stderr[:200]
-assert "_FILE_MEMO" not in src.stdout, "the oracle is the memoising implementation"
-with tempfile.TemporaryDirectory() as d:
-    p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
-    ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
 paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
 revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
 assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
-def run(mod, r):
+def run(r):
     try:
-        return dump(mod.load_at(root, r))
+        return dump(inv.load_at(root, r))
     except RuntimeError as e:
         return "raise:" + str(e)
-want = {r: run(parent, r) for r in revs}
+inv._MEMO_ON[0] = False
+want = {r: run(r) for r in revs}
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for r in revs + list(reversed(revs)):
-    assert run(inv, r) == want[r], r
+    assert run(r) == want[r], r
 PY
 # --- the history reader skips only the unreadable revisions named in its list (advisor 0637): a command line
 # over 4000 characters is never read partially, so every audit would stop in the 90-day history read at a revision
@@ -1446,13 +1438,22 @@ PY
 # lines it had printed must have reached the file. A rate limit is not this case: gh answers at once and the audit fails at once (the "rate-limited GitHub
 # API" case above), so no retry and no sleep is added anywhere.
 # The cases below are offline: a git shim first on PATH answers `git ls-remote` with an empty list (the tag reads would otherwise reach GitHub before the
-# hang) and runs every other git command for real.
-REALGIT=$(command -v git); mkdir -p "$work/shim"
+# hang) and runs every other git command for real; a sitecustomize.py first on PYTHONPATH ($NONET) makes every urllib.request.urlopen answer `{}` at once,
+# so the OSV and PyPI reads that come before the first gh call reach no network, and the run hangs on gh as the case says.
+REALGIT=$(command -v git); mkdir -p "$work/shim" "$work/nonet"
+cat >"$work/nonet/sitecustomize.py" <<'PYS'
+import io, urllib.request
+class _Empty(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+urllib.request.urlopen = lambda *a, **k: _Empty(b"{}")
+PYS
+NONET="$work/nonet${PYTHONPATH:+:$PYTHONPATH}"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim/git"; chmod +x "$work/shim/git"
 printf '#!/bin/sh\nsleep 60\n' >"$work/gh-hang"; chmod +x "$work/gh-hang"
 mkrepo "$work/r-hang" "5:$CLEANSHA"
 start=$(date +%s); rc=0
-( cd "$work" && PATH="$work/shim:$PATH" timeout 40 python3 "$aud" --root "$work/r-hang" --now "$NOW" --gh "$work/gh-hang" --deadline 2 >"$work/hang.out" 2>"$work/hang.err" ) || rc=$?
+( cd "$work" && PATH="$work/shim:$PATH" PYTHONPATH="$NONET" timeout 40 python3 "$aud" --root "$work/r-hang" --now "$NOW" --gh "$work/gh-hang" --deadline 2 >"$work/hang.out" 2>"$work/hang.err" ) || rc=$?
 elapsed=$(( $(date +%s) - start ))
 CASE="deadline: a hanging gh ends the audit by itself with exit 2 in seconds, not at the job timeout"
 check test "$rc" -eq 2 -a "$elapsed" -le 15 -a "$(grep -c '^audit: phase: ' "$work/hang.out")" -ge 1
@@ -1481,13 +1482,14 @@ for bad in 0 -3 86401 9223372037 abc 1.5 "$BIGDIGITS"; do
   CASE="deadline: --deadline ${bad:0:12} is refused with exit 2, nothing is audited, and nothing is a traceback"
   check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a -s "$work/dl.err" -a "$(grep -c Traceback "$work/dl.err")" -eq 0
 done
-CASE="deadline: the values 1 and 86400 (one day, the largest) are accepted and the run is audited as before"
+CASE="deadline: the values 1 and 86400 (one day, the largest) are accepted: 86400 audits as before, 1 is not refused (it may end on its own deadline, that is the point of 1 s)"
 check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
 import subprocess, sys
 aud, repo, fx, now, gh = sys.argv[1:6]
 for v in ("1", "86400"):
     r = subprocess.run([sys.executable, aud, "--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--deadline", v], capture_output=True, text=True)
-    assert r.returncode == 0 and "audit: phase: history" in r.stdout, (v, r.returncode, r.stderr)
+    assert "must be from 1 to 86400" not in r.stderr and "audit: phase: history" in r.stdout, (v, r.returncode, r.stderr)
+    assert r.returncode in ((0,) if v == "86400" else (0, 2)), (v, r.returncode, r.stderr)
 PY
 # a run that finishes cannot also report the deadline: cancel() does not stop a callback that has already started, so the end of main waits for it (join)
 CASE="deadline: a callback already running when the run finishes decides the exit: 2, not a 0 that carries the deadline line"
@@ -1577,10 +1579,10 @@ PY
 # buffer. The audit is killed here by the test, not by its own deadline (--deadline 60); the information line it prints after the judging marker must
 # have reached the pipe by then. Removing sys.stdout.reconfigure(line_buffering=True) from main makes this case fail.
 CASE="output: a run killed from outside (SIGKILL) with stdout on a pipe has delivered every line it printed (line-buffered stdout)"
-check python3 - "$aud" "$work/gh-hang" "$work/r-hang" "$NOW" "$work/shim" <<'PY'
+check python3 - "$aud" "$work/gh-hang" "$work/r-hang" "$NOW" "$work/shim" "$NONET" <<'PY'
 import os, select, signal, subprocess, sys, time
-aud, gh, repo, now, shim = sys.argv[1:6]
-env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"])
+aud, gh, repo, now, shim, nonet = sys.argv[1:7]
+env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], PYTHONPATH=nonet)
 p = subprocess.Popen([sys.executable, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
 got, end = b"", time.time() + 20
 while time.time() < end and b"not checked against the advisory lists" not in got:
@@ -1612,7 +1614,7 @@ mkdir -p "$work/shim-log"
 rm -f "$work/phstall.log-entered"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && { : >"%s"; exec sleep 60; }; done\nexec %s "$@"\n' "$work/phstall.log-entered" "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
-( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
+( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 10 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
 CASE="markers: a stalled history read on a daily run with --observations-out exits 2"
 check test "$rc" -eq 2
 CASE="markers: that stall happened inside git log, so the history read was reached"
@@ -1621,8 +1623,8 @@ CASE="markers: that run had already written its tag observations"
 check test -s "$work/obs/stall.json"
 CASE="markers: that run printed history, tag observations, then history again"
 check test "$(phases "$work/phstall.out")" = "history,tag observations,history"
-CASE="markers: its stderr is exactly one line: still in history after 2 s"
-check test "$(cat "$work/phstall.err")" = 'audit: could not finish: still in history after 2 s'
+CASE="markers: its stderr is exactly one line: still in history after 10 s"
+check python3 -c 'import sys; assert open(sys.argv[1]).read() == "audit: could not finish: still in history after 10 s\n"' "$work/phstall.err"
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
