@@ -320,7 +320,7 @@ if (ps.get("permissions") or {}) != {"contents": "read", "packages": "read"}:
 st_text = text("panel-scout")
 if re.search(r"--vex-location|local://|docker-daemon:|skopeo", st_text):
     bad.append("panel-scout reads a local image or a local VEX file (Scout applies our statements only through the index's attestation)")
-sc, scan, diag = step("rule 4 self-check"), step("Docker Scout every image"), step("attestation diagnostics")
+sc, scan, diag = step("Scout applies our attestation to a fixture index"), step("Docker Scout every image"), step("attestation diagnostics")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
 else:

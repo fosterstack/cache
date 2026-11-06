@@ -234,9 +234,9 @@ CHAIN_STEPS = {
     "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)": "bash bin/chain-release-wiring-test.sh",
     "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)": "bash bin/chain-release-scripts-test.sh",
     "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)": "bash bin/chain-release-metadata-test.sh",
-    "the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)": "bash bin/vex-guide-test.sh",
-    "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)": "bash bin/vex-live-test-test.sh",
-    "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)": "bash .github/agent/tests/vex-live-pins-test.sh",
+    "the customer guide — every scanner's file, check and exact command, no competitor named": "bash bin/vex-guide-test.sh",
+    "the live test's plan, test copy, fixture and wiring, offline": "bash bin/vex-live-test-test.sh",
+    "the live test's page and its driver are read by the action-pin checker": "bash .github/agent/tests/vex-live-pins-test.sh",
 }
 # the two guard steps of the suite floors carry an `if` or an `env` on purpose: judged as whole steps, every key and value
 GUARD_STEPS = [
@@ -422,7 +422,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-forms-test.sh"
   },
   {
-   "name": "the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)",
+   "name": "the Docker Scout root-cause round's documents, matrix and judge",
    "run": "bash bin/scout-root-cause-test.sh"
   },
   {
@@ -531,11 +531,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-guide-test.sh"
   },
   {
-   "name": "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)",
+   "name": "the live test's plan, test copy, fixture and wiring, offline",
    "run": "bash bin/vex-live-test-test.sh"
   },
   {
-   "name": "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)",
+   "name": "the live test's page and its driver are read by the action-pin checker",
    "run": "bash .github/agent/tests/vex-live-pins-test.sh"
   },
   {
@@ -662,19 +662,19 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/acceptance-maven-413-test.sh"
   },
   {
-   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)",
+   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (the literal path is judged under .github/agent/)",
    "run": "bash .github/agent/tests/release-notes-signed-test.sh"
   },
   {
-   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)",
+   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise (Oct 2)",
    "run": "bash bin/go-freshness-wiring-test.sh"
   },
   {
-   "name": "the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)",
+   "name": "the workflow consolidation (mutation runs weekly inside go-freshness)",
    "run": "bash bin/workflow-consolidation-test.sh"
   },
   {
-   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)",
+   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011)",
    "run": "bash bin/job-isolation-test.sh"
   },
   {
