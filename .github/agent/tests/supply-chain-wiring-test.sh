@@ -210,20 +210,21 @@ def judge_wf(d, real=False):
 
 def judge_db(d):
     bad = []
-    ups = {u.get("package-ecosystem"): u for u in d.get("updates", [])}
-    for eco in ("github-actions", "pip"):
-        cd = (ups.get(eco) or {}).get("cooldown")
+    ups = {(u.get("package-ecosystem"), u.get("directory")): u for u in d.get("updates", [])}
+    for eco, directory in (("github-actions", "/"), ("pip", "/.github/agent")):
+        cd = (ups.get((eco, directory)) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
-    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
-            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
-    for eco, entry in want.items():
-        if eco in ups and ups[eco] != entry:
-            bad.append(f"the {eco} entry is not unchanged")
-    for eco in ("gomod", "docker"):
-        if eco not in ups:
+    want = {("gomod", "/"): {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
+            ("docker", "/build/docker"): {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: unchanged, except that gomod may group its updates
+    for (eco, directory), entry in want.items():
+        found = next((u for u in d.get("updates", []) if u.get("package-ecosystem") == eco and (eco == "docker" or u.get("directory") == "/")), None)
+        if found is None:
             bad.append(f"the {eco} entry is missing")
-        elif "cooldown" in ups[eco]:
+            continue
+        if {k: v for k, v in found.items() if k != "groups"} != entry:
+            bad.append(f"the {eco} entry is not unchanged")
+        if "cooldown" in found:
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
     return bad
 

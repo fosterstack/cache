@@ -26,8 +26,6 @@ updates:
           - "github/codeql-action*"
         update-types:
           - "major"
-      # Minor and patch updates of all actions, codeql-action included, arrive as ONE pull request
-      # instead of one each; a major never joins (it stays a lane task).
       actions-minor-patch:
         patterns:
           - "*"
@@ -39,8 +37,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Minor and patch updates of Go modules arrive as ONE pull request instead of one each;
-    # a major never joins (it stays a lane task).
     groups:
       gomod-minor-patch:
         patterns:
@@ -54,10 +50,9 @@ updates:
     directory: "/tools/requirements"
     schedule:
       interval: "weekly"
-    # Same 7-day wait as the govulncheck tool module: its bumps change what validates the requirements.
+    # Its bumps change what validates the requirements, so they wait 7 days like the actions and pip pins.
     cooldown:
       default-days: 7
-    # Minor and patch updates arrive as ONE pull request instead of one each; a major never joins (it stays a lane task).
     groups:
       gomod-minor-patch:
         patterns:
@@ -66,15 +61,21 @@ updates:
           - "minor"
           - "patch"
 
-  # The pinned Go source scanner of the release chain's Check stage (advisor Oct 12, ruling G): tools/govulncheck is its own module (go.mod and go.sum are the pin), so a
-  # new version reaches it through this reviewed path, with the same 7-day wait as the actions and the pip pins. Dependabot moves go.mod and go.sum; ci.yml's `go install
-  # golang.org/x/vuln/cmd/govulncheck@vX` is by hand, and bin/chain-install-witness-test.sh is red until the two agree (so a bump cannot merge half done).
-  - package-ecosystem: "gomod"
-    directory: "/tools/govulncheck"
+  # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
+  # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and
+  # .ko.yaml where no ecosystem looks. The FROM lines are written
+  # image:tag@sha256 because Dependabot's docker ecosystem does not update
+  # a bare image@sha256 line; with a tag to track it bumps the digest. A
+  # base bump is patch/minor for the auto-merge lane; the reproducibility
+  # check and release-artifact acceptance are the gates that catch a bad
+  # base. The debug image's busybox comes from static:debug-nonroot and
+  # moves with it — no separate tracking.
+  - package-ecosystem: "docker"
+    directory: "/build/docker"
     schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
+      # daily so a base-image CVE fix waits a day, not a week (auditor defers base
+      # rebuilds to Dependabot per REQ-AUD-2 AC3; the auditor never edits a base digest).
+      interval: "daily"
 
   # The hash-pinned adjudicator SDK (anthropic) the auditor's real model client imports.
   # Dependabot bumps the pin + regenerates hashes; the workflow installs it with
