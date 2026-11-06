@@ -2274,6 +2274,42 @@ err = err.decode()
 assert p.returncode == 120, (p.returncode, err)
 assert "Traceback" not in err and "BrokenPipeError" not in err, err
 PY
+# the deadline sets stderr non-blocking so a full pipe cannot stop the exit; the flag sits on the pipe the whole step shares, so it must be put back
+CASE="deadline: the audit leaves the caller's stderr in the blocking mode it found it"
+check python3 - "$aud" <<'PY'
+import os, subprocess, sys
+aud = sys.argv[1]
+r, w = os.pipe()
+code = ("import importlib.util, os, sys; sys.path.insert(0, os.path.dirname(sys.argv[1])); "
+        "s = importlib.util.spec_from_file_location('pa', sys.argv[1]); m = importlib.util.module_from_spec(s); "
+        "s.loader.exec_module(m); m._deadline_passed(1)")
+p = subprocess.run([sys.executable, "-c", code, aud], stderr=w, timeout=60)
+msg = os.read(r, 4096)
+assert p.returncode == 2 and b"could not finish" in msg, (p.returncode, msg)
+assert os.get_blocking(w), "the deadline left O_NONBLOCK on the caller's stderr"
+PY
+# a real exit code 1 or 2 becomes 120 when the final flush of stdout fails (CPython does the same at shutdown); the handler adds that nothing else is printed
+CASE="output: a real exit code becomes 120, quietly, when the final flush of a closed stdout fails; with the reader open it stays"
+check python3 - "$aud" <<'PY'
+import subprocess, sys
+aud = sys.argv[1]
+# the child runs the file's own __main__ block with a main() that leaves text in the buffer and returns 1
+code = ("import os, sys; src = open(sys.argv[1]).read(); block = src[src.index('if __name__ == \"__main__\":'):]\n"
+        "def main():\n    sys.stdout.write('pending')\n    return 1\n"
+        "sys.stdin.readline()\n"
+        "exec(block, {'__name__': '__main__', 'main': main, 'sys': sys, 'os': os})")
+def run(close_reader):
+    p = subprocess.Popen([sys.executable, "-c", code, aud], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if close_reader:
+        p.stdout.close()
+        p.stdout = None
+    _, err = p.communicate(b"\n", timeout=60)
+    return p.returncode, err.decode()
+rc, err = run(False)
+assert rc == 1, ("with the reader open the real exit code stays", rc, err)
+rc, err = run(True)
+assert rc == 120 and "Traceback" not in err and "BrokenPipeError" not in err, ("a failed final flush ends with 120", rc, err)
+PY
 # the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
 phases() { python3 - "$1" <<'PY'
 import sys

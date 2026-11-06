@@ -1344,12 +1344,17 @@ def _deadline_passed(seconds):
     """The run did not finish: say where it was, and end it. os._exit, because a timer thread's sys.exit would only
     end that thread; one write to fd 2 and no stdout flush, so neither a full stdout or stderr pipe nor a held stream
     lock can stop it."""
+    was_blocking = True
     try:
-        # non-blocking: the flag lands on the step's shared pipe, harmless because the process exits next line
+        # non-blocking, so a full stderr pipe cannot stop the exit; the flag sits on the step's shared pipe, so it is put back below
+        was_blocking = os.get_blocking(2)
         os.set_blocking(2, False)
         os.write(2, f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n".encode())
     finally:
-        os._exit(2)
+        try:
+            os.set_blocking(2, was_blocking)
+        finally:
+            os._exit(2)
 
 
 def main(argv=None):
@@ -1637,7 +1642,8 @@ if __name__ == "__main__":
         sys.stdout.flush()
     except BrokenPipeError:
         # the reader of stdout is gone: stdout goes to /dev/null so the flush at exit does not fail a second time;
-        # the exit code stays 120, what Python gave a block-buffered run in this case
+        # the exit code stays 120, what Python gave a block-buffered run in this case: a real exit code 1 or 2 becomes 120
+        # here, as CPython's own shutdown does when the final flush fails (a lane that needs the real code reads the log)
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         code = 120
     sys.exit(code)
