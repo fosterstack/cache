@@ -21,7 +21,7 @@ func TestServeUncleanStartKeepsTmpLeafKeys(t *testing.T) {
 	freshRegistry(t)
 	dir := t.TempDir()
 	t.Setenv("FSCACHE_DATA_DIR", dir)
-	t.Setenv("FSCACHE_ADDR", freePort(t))
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
 	blobDir := filepath.Join(dir, "blobs")
 	keys := []string{".tmp-x", "a/b/.tmp-y", ".tmp-0123456789abcdef0123456789abcdef"}
 
