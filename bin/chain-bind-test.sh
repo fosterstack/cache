@@ -609,7 +609,7 @@ check("bind --local: a *.local.json that is not JSON is a usage error, never a p
 # ---- sign-records (the Witness move: Sign checks the building jobs' local records, then re-signs the payloads keyless) ------------------------------------------
 import re as _re
 TAGSHA = "f" * 40
-ATT = ["environment", "git", "material", "product"]
+ATT = ["environment", "git", "material", "command-run", "product"]      # the five kinds pinned Witness 0.12.0 `run` writes, in its order
 GOODENV = {"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": TAGSHA}
 
 
@@ -622,12 +622,24 @@ def run_env(args, cwd, env):
     return p.returncode, p.stdout, p.stderr
 
 
-def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False):
+SR_REF = "refs/tags/v0.3.0"        # the ref the environment attestor of a made record carries (Sign's own, unless a case sets another)
+
+
+def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False, ref=None, stdout="built\n", env_raw=None):
     """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
+    ref = ref or SR_REF
     subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
     if commit:
         subs.append({"name": "https://witness.dev/attestations/git/v0.1/commithash:" + commit, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + commit}})
-    atts = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": ({"variables": env_vars} if k == "environment" and env_vars else {})} for k in attestors]
+    def attestation(k):
+        if k == "environment":
+            if env_raw is not None:      # variables that are not an object (a list or a string): the check must refuse, never fail with a traceback
+                return {"variables": env_raw}
+            return {"variables": dict({"GITHUB_REF": ref}, **(env_vars or {}))}
+        if k == "command-run":      # the real shape (pinned Witness 0.12.0): the command, its whole output and its exit code
+            return {"cmd": ["bash", "bin/build-stage.sh"], "stdout": stdout, "stderr": "", "exitcode": 0}
+        return {}
+    atts = [dict({"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": attestation(k)}, **({"starttime": "2026-10-31T00:00:00Z", "endtime": "2026-10-31T00:00:01Z"} if k == "command-run" else {})) for k in attestors]
     statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
                  "subject": subs, "predicate": {"name": name, "attestations": atts}}
     payload = json.dumps(statement).encode()
@@ -728,6 +740,31 @@ REPO_ROOT = root
 REPO_TEMPLATE = root + "/.github/policy/release-policy.template.json"
 
 
+def make_keys_dir():
+    """A key manifest made here (handoff 0713): an offline root key and a release key from openssl, the manifest signed by the root key. The
+    committed manifest does not exist yet (the owner makes the root key), and sign-records checks one before it reads a record."""
+    d = work + "/keys"
+    os.makedirs(d)
+    def ssl(*a, **kw):
+        return subprocess.run(("openssl",) + a, check=True, capture_output=True, **kw).stdout
+    for n in ("root", "rel"):
+        ssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", "%s/%s.key" % (d, n))
+        ssl("pkey", "-in", "%s/%s.key" % (d, n), "-pubout", "-out", "%s/%s.pub" % (d, n))
+    der = ssl("pkey", "-pubin", "-in", d + "/rel.pub", "-outform", "DER")
+    body = json.dumps({"public_key": open(d + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"
+    open(d + "/release-key-manifest.json", "wb").write(body)
+    sig = ssl("dgst", "-sha256", "-sign", d + "/root.key", d + "/release-key-manifest.json")
+    open(d + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    shutil.copy(d + "/root.pub", d + "/release-key-root.pub")
+    return d
+
+
+KEYS_DIR = make_keys_dir()
+for _f in ("release-policy.template.json", "sigstore-trust.json", "rekor.pub"):      # the key files sit beside the template: no flag points elsewhere
+    shutil.copy(root + "/.github/policy/" + _f, KEYS_DIR + "/" + _f)
+REPO_TEMPLATE = KEYS_DIR + "/release-policy.template.json"
+
+
 def sr(label, root, stage, want_rc, words=(), env=None, args=None, at=None):
     rc, out, err = run_env(args or sr_args(stage, root), root, dict(GOODENV, **(env or {})))
     first = err.split("\n", 1)[0].lower()
@@ -757,12 +794,56 @@ d, _ = sr_tree("sr4"); os.remove(d + "/witness-build/items.json")
 sr("sign-records build: a required name the record holds but Sign did not receive (items.json) is refused", d, "build", 1, ["items.json"])
 d, _ = sr_tree("sr5"); put(d, "witness-build/digests.json", b'{"apk":"sha256:' + b"d" * 64 + b'"}')
 sr("sign-records build: a data file whose bytes differ from the record's product is refused", d, "build", 1, ["digests.json"])
-d, _ = sr_tree("sr6"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=ATT + ["command-run"])
-sr("sign-records build: an attestor beyond environment, git, material and product is refused", d, "build", 1, ["command-run"])
-d, _ = sr_tree("sr6b"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=["environment", "git", "product"])
-sr("sign-records build: a record without the material attestor is refused (the attestors are exactly the four)", d, "build", 1, ["material"])
+for _st, _label in (("build", "Build"), ("rebuild", "Rebuild"), ("check", "Check")):
+    d, _ = sr_tree("sr6-" + _st, _st)
+    sr("sign-records %s: a real-shaped record (environment, git, material, command-run, product, as Witness 0.12.0 writes it) is accepted" % _st, d, _st, 0)
+d, _ = sr_tree("sr6a"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=["environment", "git", "material", "product"])
+sr("sign-records build: a record without command-run is refused (every record comes from `witness run -- command`; the attestors are exactly the five)", d, "build", 1, ["command-run"])
+d, _ = sr_tree("sr6c"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=ATT + ["command-run"])
+sr("sign-records build: command-run twice is refused (a repeated attestor)", d, "build", 1, ["repeated"])
+for _extra in ("github", "slsa"):
+    d, _ = sr_tree("sr6-" + _extra); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=ATT + [_extra])
+    sr("sign-records build: an added %s attestor is refused" % _extra, d, "build", 1, [_extra])
+d, _ = sr_tree("sr6b"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=["environment", "git", "command-run", "product"])
+sr("sign-records build: a record without the material attestor is refused (the attestors are exactly the five)", d, "build", 1, ["material"])
+d, _ = sr_tree("sr6d"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), stdout="log line\nGITHUB_TOKEN=ghp_" + "a" * 36 + "\n")
+sr("sign-records build: a GitHub token printed in command-run's stdout is refused (the record scan covers the new attestor)", d, "build", 1, ["env"])
+# the REAL records: made by the pinned Witness 0.12.0 through bin/witnessed-local.sh (steps build and apk, one commit, GITHUB_REF refs/tags/v0.3.0, a clean
+# environment), committed under test-evidence/witness-real/; their products are the bytes of the fixture tree (BUILD_DATA, BUILD_ART, the apk leg)
+REAL_SHA = "5a3e9d23730aaa052794e767258134daba956e54"
+def write_real(step, dest):
+    """Rebuild the DSSE envelope of a committed real record (test-evidence/witness-real/<step>-collection.real.txt: header lines, then the base64 payload wrapped)."""
+    fields, payload, in_payload = {}, [], False
+    for line in open(REPO_ROOT + "/test-evidence/witness-real/%s-collection.real.txt" % step).read().split("\n"):
+        if line.startswith("#") or not line:
+            continue
+        if line == "payload:":
+            in_payload = True
+        elif in_payload:
+            payload.append(line)
+        else:
+            key, _, value = line.partition(": ")
+            fields[key] = value
+    json.dump({"payload": "".join(payload), "payloadType": fields["payloadType"], "signatures": [{"keyid": fields["keyid"], "sig": fields["sig"]}]}, open(dest, "w"))
+
+
+def real_tree(name):
+    d, _ = sr_tree(name)
+    write_real("build", d + "/witness-build/build-collection.local.json")
+    write_real("apk", d + "/witness-apk-ubuntu-24.04/apk-collection.local.json")
+    return d
+d = real_tree("srreal1")
+sr("sign-records build: the records the pinned Witness really writes (environment, git, material, command-run, product) are accepted", d, "build", 0, env={"GITHUB_SHA": REAL_SHA})
+d = real_tree("srreal2")
+sr("sign-records build: the same real records at another tag (GITHUB_REF refs/tags/v0.3.1) are refused by the ref in their environment attestor", d, "build", 1, ["ref"], env={"GITHUB_SHA": REAL_SHA, "GITHUB_REF": "refs/tags/v0.3.1"})
+d = real_tree("srreal3")
+sr("sign-records build: the same real records at another commit than Sign's are refused", d, "build", 1, ["commit"], env={"GITHUB_SHA": "e" * 40})
 d, _ = sr_tree("sr7"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_vars={"GITHUB_TOKEN": "x"})
 sr("sign-records build: a record that names a token variable is refused (record-env)", d, "build", 1, ["env", "GITHUB_TOKEN"])
+d, _ = sr_tree("sr7l"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_raw=["GITHUB_REF=refs/tags/v0.3.0"])
+sr("sign-records build: environment variables that are a list are refused (no traceback)", d, "build", 1, ["ref"])
+d, _ = sr_tree("sr7s"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_raw="GITHUB_REF=refs/tags/v0.3.0")
+sr("sign-records build: environment variables that are a string are refused (no traceback)", d, "build", 1, ["ref"])
 d, _ = sr_tree("sr8"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/snapshot-apk-collection.local.json")
 sr("sign-records build: a snapshot step file name is refused", d, "build", 1, ["snapshot"])
 d, _ = sr_tree("sr9"); coll_record(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", "build", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "out/x86_64/APKINDEX.tar.gz": b"idx"})
@@ -788,8 +869,15 @@ rc, out, err = run_env(sr_args("build", d), d, GOODENV)
 check("sign-records: an existing --out is a usage error (exit 2), nothing overwritten", rc == 2 and "Traceback" not in err and os.listdir(d + "/staged") == [], "exit %s" % rc)
 d, _ = sr_tree("sr19")
 sr("sign-records: GITHUB_REF that is neither a pushed tag nor a dispatch on a branch is refused", d, "build", 1, ["github_ref"], env={"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "push"}, at="sign")
+SR_REF = "refs/heads/dry"
 d, _ = sr_tree("sr20")
+SR_REF = "refs/tags/v0.3.0"
 sr("sign-records: a dry run (workflow_dispatch on a branch) is accepted", d, "build", 0, env={"GITHUB_REF": "refs/heads/dry", "GITHUB_EVENT_NAME": "workflow_dispatch"})
+for _lab, _r in (("the rc tag", "refs/tags/v0.3.0-rc1"), ("another tag", "refs/tags/v0.3.1"), ("a branch", "refs/heads/v0.3.0")):
+    SR_REF = _r
+    d, _ = sr_tree("sr20x")
+    SR_REF = "refs/tags/v0.3.0"
+    sr("sign-records: a record made at %s is refused at Sign's tag (the KMS key never signs a collection of another ref)" % _lab, d, "build", 1, ["ref"])
 d, _ = sr_tree("sr21", "rebuild")
 rc, out, err = sr("sign-records rebuild: a valid set (Rebuild's record and one rapk leg) is accepted without Rebuild's apks or images", d, "rebuild", 0)
 check("sign-records rebuild: the final names are rebuild-collection.json and rapk-collection.json", rc == 0 and sorted(l.split("\t")[1] for l in out.strip().split("\n")) == ["signed/witness-rapk-ubuntu-24.04/rapk-collection.json", "signed/witness-rebuild/rebuild-collection.json"], out)
@@ -957,7 +1045,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 206
+EXPECT = 221
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

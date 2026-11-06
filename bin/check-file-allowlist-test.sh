@@ -112,8 +112,11 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
+bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
+bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
+bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 67: errs.append("declared list is not 67 paths: %d" % len(DECLARED))
+if len(DECLARED) != 75: errs.append("declared list is not 75 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -123,8 +126,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 211 allow patterns: chain-v030 (210 plus the freeze job and queue-gate-judge patterns, 212) minus the bin/dispatch-fixer.sh pattern (cache#760)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 211, 6
+# 216 allow patterns: chain-v030 less the bin/dispatch-fixer.sh pattern (cache#760), plus the evidence-letter patterns of the monthly letter (REQ-REL-013)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 216, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -172,7 +175,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "6a0ff3fd3ddf01500542e11153a3a7cbab2bf5ca0f7afd4b60b0e7d9f44c8dc2"
+PINNED_SHA256 = "7cb850e94483b9a456f71b91525bf903b8fc32785ea9e00d64e3e5d6e021157f"
 if rstart and rend:
     import hashlib
     _b = _rawlines

@@ -6,6 +6,8 @@ The expected results are computed here by the ORACLE, from the inputs of the tre
                                                                         repository's REAL bin/chain-verify.py, env REAL_CV); TAG v0.3.0 | v0.3.0-rc.1
   python3 chain-test-harness.py expect DIR KIND digests|items [TAG]     the oracle's digests.json / items.json for that tree
   python3 chain-test-harness.py fragment ARCH TAG | apkname VARIANT TAG   the oracle's items-apk fragment; the apk file name (PROPOSED, cache-3f)
+  python3 chain-test-harness.py keys DIR                                 a throwaway key manifest in DIR (handoff 0713): release-key-root.pub, release-key-manifest.json
+                                                                        and .sig, signed by a root key made here; the committed manifest is the owner's and does not exist yet
 
 THE FAKE APK (PROPOSED/UNVERIFIED, cache is still changing which sections `apk-tool.py digest` covers): a text file whose first line is the
 SIGNATURE (`SIG:<key>`) and whose rest is the control and data sections. `apk-tool.py digest` is sha256 of the rest, so it differs from the
@@ -20,7 +22,7 @@ THE ITEMS (PROPOSED/UNVERIFIED layout; cache-3f's note fixes the apk digest, the
       image-<image>-manifest-<amd64|arm64>,
       sbom-<image>, archive-checksums.
 """
-import hashlib, json, os, re, shutil, sys
+import base64, hashlib, json, os, re, shutil, subprocess, sys
 
 RUNNERS = [("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64")]
 SDE = "1700000000"
@@ -368,6 +370,22 @@ sys.exit(2)
 '''
 
 
+def make_test_manifest(dest):
+    """A key manifest for tests: an offline root key and a release key from openssl, the manifest signed by the root key. Returns the release key's private key path."""
+    os.makedirs(dest, exist_ok=True)
+    def ssl(*a):
+        return subprocess.run(("openssl",) + a, check=True, capture_output=True).stdout
+    for n in ("root", "rel"):
+        ssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", "%s/%s.key" % (dest, n))
+        ssl("pkey", "-in", "%s/%s.key" % (dest, n), "-pubout", "-out", "%s/%s.pub" % (dest, n))
+    der = ssl("pkey", "-pubin", "-in", dest + "/rel.pub", "-outform", "DER")
+    body = json.dumps({"public_key": open(dest + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"
+    open(dest + "/release-key-manifest.json", "wb").write(body)
+    open(dest + "/release-key-manifest.sig", "w").write(base64.b64encode(ssl("dgst", "-sha256", "-sign", dest + "/root.key", dest + "/release-key-manifest.json")).decode() + "\n")
+    shutil.copy(dest + "/root.pub", dest + "/release-key-root.pub")
+    return dest + "/rel.key"
+
+
 def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
     for name, body in (("build-admit.py", FAKE_ADMIT), ("build-version-check.py", FAKE_VERSION_CHECK), ("build-archives.py", FAKE_ARCHIVES),
@@ -407,8 +425,9 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
         write(d + "/build-in/items.json", json.dumps(expected(d, kind, "items", tag), sort_keys=True, indent=1))
     if "-rc" in tag:        # the REAL template and trust files, so the real `policy make` of the rc cases has everything it reads
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for n in ("release-policy.template.json", "sigstore-trust.json", "fulcio-chain.pem", "tsa-chain.pem", "rekor.pub"):
+        for n in ("release-policy.template.json", "sigstore-trust.json", "rekor.pub"):      # `policy make` pins the Rekor key from the two files beside the template (ratify B)
             shutil.copy(os.path.join(root, ".github", "policy", n), d + "/.github/policy/" + n)
+        make_test_manifest(d + "/.github/policy")      # the template's own directory is where `policy make` looks for the manifest
     write(d + "/calls.log", "")
     return d
 
@@ -417,6 +436,8 @@ if __name__ == "__main__":
     c = sys.argv[1]
     if c == "mktree":
         mktree(sys.argv[2], sys.argv[3], sys.argv[4], *sys.argv[5:7])
+    elif c == "keys":
+        make_test_manifest(sys.argv[2])
     elif c == "fragment":                                       # fragment ARCH TAG: the oracle's items-apk fragment
         print(json.dumps(fragment(sys.argv[2], sys.argv[3]), sort_keys=True))
     elif c == "apkname":                                        # apkname VARIANT TAG: standard|fips, v0.3.0|v0.3.0-rc.1

@@ -21,11 +21,12 @@ ALL_ROWS = ATTEMPTS + ["positive_control"]
 ROW_STAGES = ("runner", "build", "sign", "rebuild", "check", "release")
 # (allowed stages, cause words) per attempt; a refusal counts only when stage and cause fit
 FITS = {
-    "mint_sign_cert": (("sign", "release"), ("stage-sign.yml", "identity")),
+    # keyed: a record made with a key the manifest does not name
+    "mint_sign_cert": (("sign", "release"), ("manifest key", "signature")),
     "read_sign_token": (("runner",), ("nothing usable",)),
     "read_sign_key": (("runner",), ("nothing usable",)),
     "hand_sign_code": (("sign",), ("digest", "format")),
-    "forge_provenance": (("sign", "release"), ("identity", "stage-sign.yml", "signature", "root")),
+    "forge_provenance": (("sign", "release"), ("manifest key", "signature")),
 }
 MISSING = ("no such file", "does not exist", "missing", "not found")
 UNREAD = ("cannot read", "unreadable", "permission denied")
@@ -124,35 +125,31 @@ def _transcript(path):
     return rest
 
 
-def sign_key_hash(record_path):
-    """sha256 of the public key (DER) in the certificate of Sign's own provenance: the key a stolen private key would have to match."""
+def sign_key_hash(policy_path):
+    """sha256 of the DER of the policy's release key (the manifest key): the key a stolen private key would have to
+    match."""
     try:
-        with open(record_path, "rb") as f:
-            sg = strict_json(f.read())["signatures"][0]
+        with open(policy_path, "rb") as f:
+            pem = strict_json(f.read())["release_key"]["public_key"]
         with tempfile.TemporaryDirectory() as d:
-            cp = os.path.join(d, "cert.pem")
-            with open(cp, "wb") as f:
-                f.write(b64d(sg["certificate"]))
-            pub = ssl_done(subprocess.run([OPENSSL, "x509", "-in", cp, "-pubkey", "-noout"],
-                capture_output=True)).stdout
             kp = os.path.join(d, "pub.pem")
-            with open(kp, "wb") as f:
-                f.write(pub)
+            with open(kp, "w") as f:
+                f.write(pem)
             return hashlib.sha256(ssl_done(subprocess.run([OPENSSL, "pkey", "-pubin", "-in", kp, "-outform", "DER"],
                 capture_output=True)).stdout).hexdigest()
     except Exception:
-        print("error: cannot read Sign's certificate from %s" % record_path, file=sys.stderr)
+        print("error: cannot read the release key from the policy %s" % policy_path, file=sys.stderr)
         sys.exit(2)
 
 
-def grade_key(rest, sign_record):
+def grade_key(rest, policy_path):
     """The search must have looked at files (a count above zero); it is accepted only if a key it found is Sign's key."""
     counts = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"searched: ([0-9]+) files", line.strip())] if m]
     if not counts or counts[0] < 1:
         print("error: the key search says it looked at no files, so an empty result proves nothing", file=sys.stderr)
         sys.exit(2)
     found = {m.group(1) for line in rest for m in [re.fullmatch(r"pubkey-sha256: ([0-9a-f]{64})", line.strip())] if m}
-    if sign_key_hash(sign_record) in found:
+    if sign_key_hash(policy_path) in found:
         print("ok")
         return
     refuse("runner", "nothing usable for Sign: none of the %d keys found on this runner is Sign's key" % len(found))
@@ -204,11 +201,11 @@ def cmd_hostile_material(a):
     rest = _transcript(a.file)
     if a.kind == "token":
         grade_token(rest)
-    elif not a.sign_record:
-        print("error: --sign-record (Sign's provenance.json) is needed to grade a key", file=sys.stderr)
+    elif not a.policy:
+        print("error: --policy (the release policy with the manifest key) is needed to grade a key", file=sys.stderr)
         sys.exit(2)
     else:
-        grade_key(rest, a.sign_record)
+        grade_key(rest, a.policy)
 
 
 def cmd_hostile_verdict(a):

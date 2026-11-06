@@ -149,11 +149,13 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
+  '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
   '^\.github/policy/rekor\.pub$'
+  '^\.github/policy/fulcio-chain\.pem$'
+  '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
@@ -333,6 +335,11 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
+  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
+  # two tests and the signatory text.
+  '^bin/evidence-letter\.py$'
+  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
+  '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
