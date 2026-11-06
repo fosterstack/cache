@@ -3,11 +3,13 @@
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
-# - decide runs on main only, in the main-only agent environment, with its own token read-only plus id-token (gitsign)
-#   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release (no base image exists: rules 61, 62)
+# - decide runs on main only, with no environment and its own token read-only plus checks and issues (the standing
+#   "not patch-clean" issue); it holds no id-token and no secret; the critical/high comparison scans the release (no
+#   base image exists: rules 61, 62)
 #   and the base-input-changed signal is read from the committed base-input list (.github/policy/base-inputs.json);
-# - the tag is signed keylessly by gitsign (pinned by checksum, no key) under release.yml's identity and pushed with the
-#   auditor App's token (exactly the auditor's scope), which reaches only the push step;
+# - decide cuts NO tag (handoff 0713 P8: no signer exists until the release KMS Sign job signs a patch tag, owner
+# question
+#   O4); its step `cut` records tagged=false;
 # - a failed patch-tag run opens one issue and is never retried;
 # - AC8 wired (advisor 0135): the notes are built before signing and are the signed tag's message; a separate job opens
 #   the changelog-and-clear PR (auto-merge on green) with its own App token; stage-promote posts a patch tag's notes.
@@ -50,30 +52,33 @@ if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&gith
     bad.append("decide does not run on main only: %s" % dec.get("if"))
 if dec.get("concurrency") != {"group": "patch-decide", "cancel-in-progress": "false"}:
     bad.append("decide runs are not serialized (a push and the daily run could both cut)")
-if dec.get("environment") != "agent":
-    bad.append("decide is not in the main-only agent environment")
-if dec.get("permissions") != {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}:
-    bad.append("decide's own token is not contents read + checks read + id-token + issues: %s" % dec.get("permissions"))
+if "environment" in dec:
+    bad.append("decide holds an environment: it uses only its own read-only token and needs no secret")
+if dec.get("permissions") != {"contents": "read", "checks": "read", "issues": "write"}:
+    bad.append("decide's own token is not contents read + checks read + issues (no id-token: nothing in decide signs; handoff 0713 P8): %s" % dec.get("permissions"))
 if d.get("concurrency"):
     bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
-if set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}:
-    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}))
+if set(dec) - {"if", "concurrency", "runs-on", "permissions", "outputs", "steps"}:
+    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "permissions", "outputs", "steps"}))
 steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
-if "bin/install-scanner.sh gitsign" not in text:
-    bad.append("gitsign is not installed through the pinned, checksum-verified installer")
-if "tag -s" not in text or "gpg.format=x509" not in text or "gpg.x509.program=gitsign" not in text:
-    bad.append("the tag is not signed with gitsign (x509)")
+if re.search(r"(?i)gitsign", yaml.safe_dump(dec)):
+    bad.append("decide still names gitsign (keyless signing is out; handoff 0713 P8)")
+# no unsigned tag, ever (advisor ruling 09:52Z): until the release KMS Sign job signs a patch tag (owner question O4), a
+# decided patch cuts NO tag. No step of decide
+# creates, signs or pushes a tag, none mints a token that could push one, and the one output `tagged` comes from a step
+# that sets it false and nothing sets true.
+if re.search(r"git\s+(-c\s+\S+\s+)*tag\b|\btag\s+-s\b|git\s+push|git\s+(-c\s+\S+\s+)*mktag|update-ref\s+refs/tags|git/(refs|tags)|gh\s+release\s+create|create-release", text):
+    bad.append("a step of decide creates, signs or pushes a tag: no tag may be cut until the release KMS Sign job signs it")
+if "tagged=true" in text.replace(" ", ""):
+    bad.append("a step of decide sets tagged=true: nothing in decide cuts a tag")
+cut_steps = [s for s in steps if s.get("id") == "cut"]
+if len(cut_steps) != 1 or "tagged=false" not in (cut_steps[0].get("run") or "").replace(" ", "") or (dec.get("outputs") or {}).get("tagged") != "${{ steps.cut.outputs.tagged }}":
+    bad.append("decide has no `cut` step that sets tagged=false and feeds the output `tagged`")
 if re.search(r"(?i)private[-_ ]key|cosign.key|signingkey\s+\S+\.(pem|key)", text):
     bad.append("a stored signing key appears")
-mint = [s for s in steps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
-want = {"app-id": "${{ secrets.AUDITOR_APP_ID }}", "private-key": "${{ secrets.AUDITOR_APP_PRIVATE_KEY }}",
-        "repositories": "cache", "permission-contents": "write"}
-if len(mint) != 1 or mint[0].get("with") != want:
-    bad.append("the App token is not minted with exactly contents write on cache: %s" % [m.get("with") for m in mint])
-users = [s.get("name") for s in steps if "steps.app-token.outputs.token" in str(s)]
-if users != ["push the signed tag (the App transports it)"]:
-    bad.append("the App token reaches a step other than the tag push: %s" % users)
+if [s for s in steps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]:
+    bad.append("decide mints an App token: nothing in it pushes a tag any more")
 if "patch-decide.py removed" not in text or "grype" not in text:
     bad.append("the critical/high comparison does not scan the release")
 # advisor 0063: before signing, wait (bounded) for the tagged commit's push-scoped required checks, judged as admission
@@ -100,12 +105,8 @@ if len(wait) != 1 or "patch-decide.py ready" not in (wait[0].get("run") or "") o
     bad.append("no bounded wait for the tagged commit's required checks (patch-decide.py ready) before a cut")
 gated = [s.get("name") or s.get("id") for s in steps
          if ("tag -s" in (s.get("run") or "") or s.get("id") == "app-token" or "git push" in (s.get("run") or ""))]
-ungated = [g for g, st in zip(gated, [s for s in steps if (s.get("name") or s.get("id")) in gated])
-           if "steps.checks.outputs.ready == 'true'" not in st.get("if", "")]
-if len(gated) != 3 or ungated:
-    bad.append("signing, the App token or the push does not wait for ready: %s" % (ungated or gated))
-if wait and gated and names.index(wait[0].get("name")) > min(names.index(g) for g in gated if g in names):
-    bad.append("the wait comes after signing")
+if gated:
+    bad.append("decide still has a signing, App-token or push step: %s" % gated)
 co = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
 # the checkout supplies the code the marker gate runs: no other repository, ref or path, no env, nothing beyond the two reviewed inputs
 if len(co) != 1 or set(co[0]) - {"name", "uses", "with"} or set(co[0].get("with") or {}) != {"fetch-depth", "persist-credentials"}:
@@ -176,28 +177,16 @@ if re.search(r"build/docker|(?i:dockerfile)|\bFROM\b|--base-grype|base_ok|base-o
     bad.append("the decide job still reads an image recipe or scans a base image (none exists: rules 61, 62)")
 # AC8 wired (advisor 0135)
 nstep = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
-sign = [s for s in steps if "tag -s" in (s.get("run") or "")]
-if len(nstep) != 1 or "steps.decide.outputs.cut == 'true'" not in nstep[0].get("if", "") or not sign or \
-        names.index(nstep[0].get("name")) > names.index(sign[0].get("name")):
-    bad.append("the notes are not built (on a cut) before signing")
+if len(nstep) != 1 or "steps.decide.outputs.cut == 'true'" not in nstep[0].get("if", ""):
+    bad.append("the notes are not built on a cut")
 elif "--next-notes docs/next-release-notes.md" not in nstep[0]["run"] or "--published" not in nstep[0]["run"] or \
         "removed-unknown" not in nstep[0]["run"]:
     bad.append("the notes step skips the next-release entries, the published guard, or an unscannable release")
-# Sonnet #159 r2 B1: tag-notes trusts only decide's own tagger; the workflow's git identity is exactly RELEASE_TAGGER
+# the notes are written, but no tag carries them until a signer cuts one (handoff 0713 P8): the signed-tag message, the
+# tagger identity and the push are gone with the signer
 import os as _os
-_pd = open(_os.path.join(_os.environ["ROOT"], "bin", "patch-decide.py")).read()
-_who = re.search(r'RELEASE_TAGGER = "([^"<]+) <([^>]+)>"', _pd)
-if not _who or not sign or 'git config user.name "%s"' % _who.group(1) not in sign[0]["run"] or \
-        'git config user.email "%s"' % _who.group(2) not in sign[0]["run"]:
-    bad.append("decide's git identity is not the tagger tag-notes trusts (RELEASE_TAGGER)")
-if sign and ("--cleanup=verbatim" not in sign[0]["run"] or '-F "$RUNNER_TEMP/notes.md"' not in sign[0]["run"]):
-    bad.append("the signed tag does not carry the notes verbatim")
 if scan and "event_name" in scan[0].get("if", ""):
     bad.append("the release is scanned on push only: a daily patch's notes would list no fixes")
-push = [s for s in steps if "git push" in (s.get("run") or "")]
-if (dec.get("outputs") or {}).get("tagged") != "${{ steps.push.outputs.tagged }}" or not push or \
-        push[0].get("id") != "push" or "tagged=true" not in push[0]["run"]:
-    bad.append("decide does not say that it tagged")
 pn = jobs.get("patch-notes") or {}
 if pn.get("needs") != "decide" or pn.get("if", "").replace(" ", "") != "${{needs.decide.outputs.tagged=='true'&&!inputs.dry-run}}":
     bad.append("the notes PR job does not run exactly when decide tagged")
@@ -209,6 +198,7 @@ if pn.get("permissions") != {"contents": "read"}:
 psteps = pn.get("steps") or []
 ptext = "\n".join(l for s in psteps for l in (s.get("run") or "").splitlines() if not l.lstrip().startswith("#"))   # comments are not commands
 pmint = [s for s in psteps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+want = {"app-id": "${{ secrets.AUDITOR_APP_ID }}", "private-key": "${{ secrets.AUDITOR_APP_PRIVATE_KEY }}", "repositories": "cache", "permission-contents": "write"}      # the patch-notes job's own App token
 if len(pmint) != 1 or pmint[0].get("with") != dict(want, **{"permission-pull-requests": "write"}):
     bad.append("the notes PR job's App token is not exactly contents + pull-requests write on cache")
 for w in ("patch-decide.py tag-notes", "patch-decide.py changelog", "gh pr create", "gh pr merge --auto --squash"):
@@ -365,7 +355,7 @@ J='d["jobs"]'; D="$J['decide']"
 case_ real                    ok  ""
 case_ chain-on-main           bad "$J['build'].pop('if')"
 case_ decide-anywhere         bad "$D['if'] = '\${{ always() }}'"
-case_ decide-no-env           bad "$D.pop('environment')"
+case_ decide-env-agent        bad "$D.__setitem__('environment', 'agent')"
 case_ rcproof-absent          bad "$D.__setitem__('steps', [s for s in $D['steps'] if 'rc-proof' not in (s.get('run') or '')])"
 case_ rcproof-conditional     bad "[s.__setitem__('if', 'always()') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
 case_ rcproof-continue        bad "[s.__setitem__('continue-on-error', 'true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
@@ -384,9 +374,18 @@ case_ rcproof-checkout-ref    bad "[s.__setitem__('with', dict(s['with'], ref='r
 case_ rcproof-checkout-path   bad "[s.__setitem__('with', dict(s['with'], path='elsewhere')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ rcproof-checkout-env    bad "[s.__setitem__('env', {'GIT_DIR': '/tmp/x'}) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ decide-writes           bad "$D['permissions']['contents'] = 'write'"
-case_ app-widened             bad "[s['with'].__setitem__('permission-pull-requests', 'write') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
-case_ token-to-decide-step    bad "[s.setdefault('env', {}).__setitem__('GH_TOKEN', '\${{ steps.app-token.outputs.token }}') for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"
-case_ unsigned-tag            bad "[s.__setitem__('run', s['run'].replace('tag -s', 'tag -a')) for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
+case_ add-tag-step            bad "$D['steps'].append({'name': 'x', 'run': 'git tag -a v0.0.0 -m x'})"
+case_ add-signed-tag-step     bad "$D['steps'].append({'name': 'x', 'run': 'git tag -s v0.0.0 -m x'})"
+case_ add-push-step           bad "$D['steps'].append({'name': 'x', 'run': 'git push origin refs/tags/v0.0.0'})"
+case_ add-id-token            bad "$D['permissions']['id-token'] = 'write'"
+case_ add-gitsign-install     bad "$D['steps'].append({'name': 'x', 'run': './bin/install-scanner.sh gitsign'})"
+case_ add-app-token-mint      bad "$D['steps'].append({'name': 'x', 'uses': 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510', 'with': {'app-id': '1', 'private-key': 'k'}})"
+case_ decide-refs-api         bad "$D['steps'].append({'run': 'gh api repos/fosterstack/cache/git/refs -f ref=refs/tags/v9.9.9 -f sha=abc'})"
+case_ decide-release-create   bad "$D['steps'].append({'run': 'gh release create v9.9.9'})"
+case_ decide-gh-api-tag       bad "$D['steps'].append({'run': 'gh api -X POST repos/fosterstack/cache/git/tags -f tag=v9.9.9'})"
+case_ cut-sets-true           bad "[s.__setitem__('run', s['run'].replace('tagged=false', 'tagged=true')) for s in $D['steps'] if s.get('id') == 'cut']"
+case_ cut-step-missing        bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'cut']"
+case_ tagged-output-detached  bad "$D['outputs'].__setitem__('tagged', '\${{ steps.checks.outputs.ready }}')"
 case_ fail-cancelled-form     ok  "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
 case_ fail-no-failure-term    bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && needs.release.result == 'cancelled' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}\")"
 case_ fail-group-negated      bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && !(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}\")"
@@ -401,7 +400,6 @@ case_ fail-no-dispatch bad "$J['patch-failed'].__setitem__('if', \"\${{ always()
 case_ fail-failure-form ok "$J['patch-failed'].__setitem__('if', \"\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
 case_ fail-no-status-call     bad "$J['patch-failed'].__setitem__('if', \"\${{ (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
 case_ a-rerun-path            bad "$J['patch-failed']['steps'][0]['run'] += '\\ngh run rerun \$GITHUB_RUN_ID'"
-case_ gitsign-unpinned        bad "[s.__setitem__('run', s['run'].replace('bin/install-scanner.sh gitsign', 'go install github.com/sigstore/gitsign@latest')) for s in $D['steps'] if 'install-scanner.sh gitsign' in (s.get('run') or '')]"
 case_ no-failure-issue        bad "$J.pop('patch-failed')"
 case_ decide-concurrent       bad "$D.pop('concurrency')"
 case_ precheck-copy-unchecked bad "[s.__setitem__('run', s['run'].replace('cmp -s', 'true')) for s in $D['steps'] if s.get('id') == 'basecheck']"
@@ -415,8 +413,6 @@ case_ notes-debug-literal      bad "[s.__setitem__('run', s['run'].replace('patc
 case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
 case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
-case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
-case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ no-schedule             bad "d['on'].pop('schedule')"
@@ -431,8 +427,6 @@ case_ baseline-latest-tag     bad "[s.__setitem__('run', s['run'].replace('--rel
 case_ scan-failure-dropped    bad "[s.__setitem__('run', s['run'].replace('removed-unknown', 'removed-x')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ ready-checkout-policy   bad "[s.__setitem__('run', s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
 N="$J['patch-notes']"
-case_ notes-after-sign        bad "st=$D['steps']; i=[k for k,x in enumerate(st) if 'patch-decide.py notes' in (x.get('run') or '')][0]; st.append(st.pop(i))"
-case_ tag-default-cleanup     bad "[s.__setitem__('run', s['run'].replace('--cleanup=verbatim ', '')) for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
 case_ scan-push-only          bad "[s.__setitem__('if', \"\${{ github.event_name == 'push' && steps.facts.outputs.since != '' }}\") for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ notes-no-guard          bad "[s.__setitem__('run', s['run'].replace('--published', '--x')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
 case_ notes-unknown-scan      bad "[s.__setitem__('run', s['run'].replace('removed-unknown', 'x')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
@@ -440,7 +434,6 @@ case_ notes-job-wide-token    bad "[s['with'].__setitem__('permission-issues', '
 case_ notes-job-pushes-main   bad "[s.__setitem__('run', s['run'] + '\ngit push origin HEAD:main') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-job-no-automerge  bad "[s.__setitem__('run', s['run'].replace('gh pr merge --auto --squash', 'true')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-version-unexported bad "$D['outputs'].pop('version')"
-case_ tagger-drift            bad "[s.__setitem__('run', s['run'].replace('fosterstack release', 'someone else')) for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
 case_ notes-job-git-push      bad "[s.__setitem__('run', s['run'].replace('auditor-signed-commit.py', 'git push origin \"\$branch\" #')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-job-git-commit    bad "[s.__setitem__('run', s['run'].replace('base=\$(git rev-parse HEAD)', 'git commit -qm x; base=\$(git rev-parse HEAD)')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-job-git-switch    bad "[s.__setitem__('run', s['run'].replace('branch=\"patch-notes/', 'git switch -c x; branch=\"patch-notes/')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"

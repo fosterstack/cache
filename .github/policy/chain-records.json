@@ -19,11 +19,6 @@
    "type": "https://fosterstack.com/attestations/release-manifest/v1",
    "claim": "the release manifest (images by digest in both registries, the VEX files' hashes, the requirements baseline and the test evidence, the archives and apks as Build attested them) attached to each public image digest as an OCI referrer, signed keyless with a Rekor entry; the GHCR referrer is required and the Docker Hub mirror is best-effort with a warning",
    "consumer": "customer"
-  },
-  {
-   "type": "urn:gitsign:tag-signature",
-   "claim": "the keyless signature of the automatic patch tag, checked by admission",
-   "consumer": "build"
   }
  ]
 }

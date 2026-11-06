@@ -35,12 +35,10 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
            # panel-scout/panel-google above; it never mints or uses the auditor App's token
            ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),
-           # automatic patch releases (REQ-REL-009, PR B/#159): decide is main-only + gitsign (id-token) AND mints
-           # the auditor App's token (contents write only) to push the signed tag; patch-notes mints the same App's
-           # token (contents + pull-requests) to open the changelog PR after that tag — both deliberate, reviewed
-           # consumers of that credential (Sonnet #158 r3, REL-DECIDE-01: the earlier comment wrongly said decide
-           # never touches the App's secrets)
-           ("release.yml", "decide"), ("release.yml", "patch-notes"),
+           # automatic patch releases (REQ-REL-009, PR B/#159): decide holds no environment and no secret and cuts no tag
+           # (handoff 0713 P8); patch-notes alone mints the auditor App's token (contents + pull-requests) for the
+           # changelog PR
+           ("release.yml", "patch-notes"),
            # REQ-DEP-005-AC3: queue-publish mints the App token with checks:write only to publish the merge-queue
            # verdict (queue-judge holds no credential) - a new consumer, reviewed and listed here
            ("agent-review-gate.yml", "queue-publish"),

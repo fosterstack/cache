@@ -28,11 +28,6 @@
   },
   {
    "workflow": "release.yml",
-   "job": "decide",
-   "reason": "the CI patch tag: runs gitsign inline (keyless tag signature, listed in chain-signers.json); calls no stage file"
-  },
-  {
-   "workflow": "release.yml",
    "job": "sign",
    "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
   },
