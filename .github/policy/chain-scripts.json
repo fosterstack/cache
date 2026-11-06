@@ -739,7 +739,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "081ca94876636fe49a293a469ecb1a8321a8ad19050c6fa822533b371832bf10"
+      "sha256": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",

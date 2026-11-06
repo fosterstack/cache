@@ -873,7 +873,7 @@ def ns_shell(path, name):
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
-    "bin/admission-tag-signer.py": "081ca94876636fe49a293a469ecb1a8321a8ad19050c6fa822533b371832bf10",
+    "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
     "bin/apk-tool.py": "9c5e1d6e66796173425ac8e417b5d920fc2c3a3d72f5409dcf260670df8ba796",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",

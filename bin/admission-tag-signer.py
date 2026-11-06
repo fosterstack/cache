@@ -228,6 +228,10 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("route", allow_abbrev=False)      # `--tag` must not be read as a short `--tag-object`
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
+    # Older tagged callers (the workflow at v0.2.2 and the chain's earlier admission caller) still pass these two;
+    # admission runs the tagged commit's caller against this router from main. Accepted, never read.
+    r.add_argument("--tag", help=argparse.SUPPRESS)
+    r.add_argument("--tags", help=argparse.SUPPRESS)
     b = sub.add_parser("baseline")
     b.add_argument("--tag", required=True)
     b.add_argument("--owner-baselines", required=True, help="the directory owner-baselines wrote")
