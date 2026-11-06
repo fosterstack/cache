@@ -38,7 +38,9 @@ def sh(*a):
 def genkey(name, *opts):
     sh("openssl", "genpkey", *opts, "-out", p(name + ".key"))
     sh("openssl", "pkey", "-in", p(name + ".key"), "-pubout", "-out", p(name + ".pub"))
-for n in ("root", "otherroot", "rel", "rel2"): genkey(n, "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+for n in ("root", "otherroot"): genkey(n, "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+for n in ("rel", "rel2"): genkey(n, "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")   # the release key is RSA-4096 (KMS RSASSA_PKCS1_V1_5_SHA_256)
+genkey("p256", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
 genkey("rekor", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")      # this run's Rekor key: rekor.pub beside the template, pinned by sigstore-trust.json
 genkey("ed", "-algorithm", "ED25519")
 genkey("rsa", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048")
@@ -85,6 +87,7 @@ write_set("key-number", good(public_key=7))
 write_set("ed-key", good(public_key=pem("ed"), key_id=der_sha("ed")))
 write_set("rsa-key", good(public_key=pem("rsa"), key_id=der_sha("rsa")))
 write_set("p384-key", good(public_key=pem("p384"), key_id=der_sha("p384")))
+write_set("p256-key", good(public_key=pem("p256"), key_id=der_sha("p256")))
 write_set("two-keys", good(public_key=pem("rel") + pem("rel2")))
 write_set("junk-key", good(public_key="not a key"))
 write_set("pad-key", good(public_key="x\n" + pem("rel")))
@@ -182,9 +185,10 @@ expect_refuse "a public_key that is not a string" "public_key" key-number
 expect_refuse "a public_key that is not a key" "public_key" junk-key
 expect_refuse "two keys in one public_key" "public_key" two-keys
 expect_refuse "text around the PEM block" "public_key" pad-key
-expect_refuse "an ed25519 key (the KMS key is ECDSA P-256)" "public_key|p-256" ed-key
-expect_refuse "an RSA key" "public_key|p-256" rsa-key
-expect_refuse "an ECDSA P-384 key" "public_key|p-256" p384-key
+expect_refuse "an ed25519 key (the KMS key is RSA-4096)" "public_key|rsa-4096" ed-key
+expect_refuse "an RSA-2048 key" "public_key|rsa-4096" rsa-key
+expect_refuse "an ECDSA P-384 key" "public_key|rsa-4096" p384-key
+expect_refuse "an ECDSA P-256 key" "public_key|rsa-4096" p256-key
 
 # ---- time: the clock of the run against the manifest's window, never a time inside a record --------------------------------
 expect_refuse "valid_from after the verification time" "not yet valid" notyet

@@ -8,7 +8,7 @@ DESIGN RULE (PR 1's ten lost rounds): NO denylists, NO shell analysis, NO subseq
 GRAMMAR over an allowlist: a stage file is exactly the steps in JOBS, a stage script is exactly the lines of expected_lines(KIND),
 the job graph is exactly the keys and targets in CHAIN. Anything else is a fault by construction.
 
-  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, `timeout -k 20 540` included
+  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, (no timeout since handoff 0713)
   directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
@@ -23,10 +23,9 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
     outside melange (34 closure files:
                                              13 shell files by exact lines, 21 files held whole by sha256)
 
-=== Rule 68 seam (advisor ruling, Oct 9; owner's amendment of rule 68: every command run under Witness is wrapped in `timeout 540`) ===========
-Fulcio's keyless certificate lives 10 minutes and Witness verifies it at the timestamp's time (harness spike (d)), so no witnessed command may
-outlive it. The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
-(keyless Fulcio, the timestamp authority, the attestors, the output path, `timeout 540`). Every stage calls it; no stage file and no listed script
+=== Rule 68 seam (advisor ruling, Oct 9; the Release helper no longer carries the ten-minute bound of the earlier certificate: Witness signs with a throwaway key, the release key signs afterwards) ===========
+The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
+(the throwaway key, the attestors, the output path) and then calls the one signing function; the building steps' local helper keeps `timeout -k 20 540`. Every stage calls it; no stage file and no listed script
 names `witness run`. The seam in this file is exactly three functions: witness_seam (the stage's one run line), helper (the helper's exact lines)
 and directwitness (nothing else runs Witness). If harness spike (d) changes the wrapping (witness wraps only short steps; or a second witness run
 signs a record of the first), only those three functions and the fixture generators (witness_block, witnessed_text in
@@ -588,66 +587,75 @@ STEPS = ("apk", "build", "rapk", "rebuild",
          "scanners", "acceptance", "runtime", "arm64",
          "release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify")      # the closed list (PR 3 adds Check's three steps, PR 4 the six of Release); the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
-# The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
-# signer before it runs the command: in-toto-witness cmd/run.go:51). SOURCE-CHECKED, one read: in-toto-witness cmd/keyloader.go:85 and
-# go-witness signer/fulcio/fulcio.go:295-300 read the path with a single os.ReadFile. DOCUMENTED FALLBACK if that ever changes: write the token to a file
-# and delete it before
-# the command starts, which is not possible with `exec witness run`, so the fallback is the older file form (a token file under $RUNNER_TEMP):
-#   curl ... -o "$RUNNER_TEMP/tok.json"; jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"; echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"
-#   with --signer-fulcio-token-path "$RUNNER_TEMP/tok". Changing to it changes only TOKEN and TOKEN_PATH below.
-OIDC_TOKEN = [
-    "oidc_token() {",
-    '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" '
-    '"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value',
-    "}",
-]
-TOKEN = OIDC_TOKEN + [
-    "tok=$(oidc_token)",
-    'echo "::add-mask::$tok"',
-]
-# the one extra token the step release-sign alone holds (advisor ruling, Oct 12; REQ-CHAIN-007-AC15): fetched with audience sigstore, masked, exported as
-# SIGSTORE_ID_TOKEN; a failed or empty fetch stops the helper before anything runs
-SIGTOK = [
-    "unset SIGSTORE_ID_TOKEN",
-    'if [ "$step" = release-sign ]; then',
-    "  sig=$(oidc_token)",
-    '  [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }',
-    '  echo "::add-mask::$sig"',
-    '  export SIGSTORE_ID_TOKEN="$sig"',
-    "fi",
-]
-TOKEN_PATH = '<(printf %s "$tok")'
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "SIGSTORE_ID_TOKEN"]   # never github (raw OIDC token) or slsa (Sign's alone)
+# Handoff 0713: the collection is signed with the release KMS key by its alias, by the one signing function (chain-verify.py sign-record), after Witness has run with a throwaway key. The identity
+# token (audience sts.amazonaws.com, the audience the AWS trust requires) is written to a file in a private directory under RUNNER_TEMP that a trap removes; the AWS SDK reads it through
+# AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN. Witness itself runs with no token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE, for every step (on release-sign it holds RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE,
+# AWS_REGION and RELEASE_KMS_KEY_REF, none of them an AWS role or token-path name); the scripts of release-sign and release-apks, which sign with the key themselves, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive names)
+# and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the two AWS variables themselves; the wrapped command is the plain `bash SCRIPT`, because the command-run record keeps it and record-env refuses a record that names the variables; the token made for the script is removed when Witness returns;
+# a fresh token is fetched just before the one signing function is called; both variables are sensitive keys of the record.
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
+RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
 
 
 def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
-            'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + SIGTOK + [
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
-            "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
-            "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
-            "--signer-fulcio-token-path %s -t https://timestamp.sigstore.dev/api/v1/timestamp "
+            'mkdir -p "witness-${step#snapshot-}"',
+            ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
+            ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
+            ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
+            "umask 077",
+            'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
+            "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
+            "role=$AWS_ROLE_ARN region=$AWS_REGION kref=$RELEASE_KMS_KEY_REF",
+            "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL",
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
+            "oidc_token() {",
+            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
+            '  tok=$(cat "$td/token")',
+            '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
+            '  echo "::add-mask::$tok"',
+            "}",
+            'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
+            'signers=" release-sign release-apks "',
+            'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
+            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
+            'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
+            'local_record="$td/$step-collection.json"',
+            "rc=0",
+            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"' % (TOKEN_PATH, keys)]
+            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
+            'rm -rf "$td/step"',
+            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
+            'if [ "$rc" -eq 0 ]; then',
+            '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
+            "  oidc_token",
+            '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
+            'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
+            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json '
+            '--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub || rc=$?',
+            "fi",
+            'rm -rf "$td"',
+            '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
+            'exit "$rc"']
 
 
-LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"
+LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|scanners|acceptance|runtime|arm64"
 
 
 def local_lines():
     """The exact lines of bin/witnessed-local.sh (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md, option 1): the building steps record under Witness
-    with a throwaway ed25519 key made in the job and destroyed before it ends; no identity token, no Fulcio, no timestamp. Sign re-signs the payload keyless. Key hygiene, not the
+    with a throwaway ed25519 key made in the job and destroyed before it ends; no identity token, no certificate, no timestamp. Sign checks the record and signs its payload with the release KMS key. Key hygiene, not the
     trust boundary: the record carries no trust until Sign has checked its product digests (backslash continuations are joined before comparing)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in %s) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac' % LOCAL_STEPS,
             'mkdir -p "witness-${step#snapshot-}"',
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN",
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN",
             "umask 077",
             'kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")',
             "trap 'rm -rf \"$kd\"' EXIT HUP INT TERM",
@@ -678,7 +686,15 @@ def helper(path):
     """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags and `timeout 540` live."""
     raw = read_exact(path)
     commands, faults = commands_of(raw)
-    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + compare(commands, witnessed_lines(), "the helper")
+    # #822 round 3 (REQ-CHAIN-007-AC12, AC15): the command-run attestor records the wrapped command, and record-env refuses a record that names the AWS role or token-file variables; so no AWS_ name and no
+    # release-creds launcher stands in the wrapped command (after `--`), and --trace (which would put the child's environment in the record) is never given. The exact lines above already pin both; these name the reason.
+    why = []
+    if "--trace" in raw:
+        why.append("the helper gives Witness --trace (the command-run record would hold the wrapped script's environment)")
+    for c in commands:
+        if c.startswith("witness run ") and " -- " in c and ("AWS_" in c.split(" -- ", 1)[1] or "release-creds" in c.split(" -- ", 1)[1]):
+            why.append("the wrapped command of the helper names an AWS_ variable or a launcher literal (the command-run record would hold the name, and record-env refuses it)")
+    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + why + compare(commands, witnessed_lines(), "the helper")
 
 
 def directwitness(files):
@@ -881,20 +897,20 @@ def ns_shell(path, name):
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
-    "bin/apk-tool.py": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
+    "bin/apk-tool.py": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/build-admit.py": "0d8a8273d334bcf90e64bec45aa5d469e152cc2b24e0a7b517fec18a6c226f8f",
-    "bin/build-apk-helper.py": "fc97e57e3832ed10cdfc6fa4c56849ebfaaf48e1398673459cc0e5e61dba144c",
+    "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
     "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
-    "bin/chain-verify.py": "2bea5f9192ddca1d92df21fcc39c02dbe21d2bd746f1cabf4affde3527acc61e",
+    "bin/chain-verify.py": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
-    "bin/chain_items.py": "02a406ecb3f04b71a4660161a1c92398d116771fe676585edbae4c8828d1e7d9",
+    "bin/chain_items.py": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e",
     "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
     "bin/install-host-bwrap.py": "d980094338b3a8f12019d0066090bc564ce50f5d3bd06d6a3205b221cbffdf9d",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
@@ -1626,9 +1642,9 @@ stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml sup
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "customer-words-edited.yml", "evidence-letter.yml"})
-    only = ("(the only new files of v0.3.0 are stage-sign.yml, rule 52, customer-words-edited.yml, decision 98, Oct 3, "
-            "and evidence-letter.yml, the owner's Oct 3 amendment in ops/docs/ratify/2026-10-02-owner-load.md)")
+    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "evidence-letter.yml", "customer-words-edited.yml"})
+    only = ("(the only new files of v0.3.0 are stage-sign.yml, rule 52, and evidence-letter.yml, "
+            "the owner's Oct 3 amendment in ops/docs/ratify/2026-10-02-owner-load.md)")
     bad = ["workflow file %s was added %s" % (f, only) for f in added]
     return bad + ["%s still exists (PR 2 removes it, rules 50 and 61)" % f for f in ("stage-image.yml", "stage-admission.yml") if f in have]
 

@@ -32,7 +32,7 @@ Two small things, and nothing else:
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import bisect, codecs
-import fnmatch, hashlib, json, os, re
+import fnmatch, hashlib, json, os, re, shlex
 
 def jload(path):
     """json.load that REFUSES a repeated object key at any depth (round 1 (6)): a plain reader keeps only the last of two equal keys, so the
@@ -578,9 +578,9 @@ PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
-AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./-]+")
+AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./:-]+")
 
-# Release's NAMED SECRETS (rule 56: only Release holds a stored secret; advisor 0386 J): ONE closed list of five rows, in code, so that a sixth row, another name, another place
+# Release's NAMED SECRETS (rule 56: only Release holds a stored secret; advisor 0386 J): ONE closed list of four rows, in code, so that a fifth row, another name, another place
 # or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  bin/witnessed.sh receives every
 # name at the place it is bound (it is the wrapper), GH_TOKEN being bound at exactly the two places below.
 _SB, _SP, _WIT = ".github/workflows/stage-build.yml", ".github/workflows/stage-promote.yml", "bin/witnessed.sh"
@@ -588,13 +588,33 @@ _WITL = "bin/witnessed-local.sh"      # the Witness wrapper of the BUILDING step
 _HUB = {(_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
 SECRET_ROWS = {
     "GH_TOKEN": {(_SB, "apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                      # row 1: the run's own token, admission only
-                 (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}},   # row 5
-    "APK_RELEASE_SIGNING_KEY": {(_SP, "release"): {_WIT, "bin/release-apks.sh"}},                          # row 2
+                 (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},   # row 5
     "DOCKERHUB_USERNAME": _HUB,                                                                             # row 3
     "DOCKERHUB_TOKEN": _HUB,                                                                                # row 4
 }
-SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}", "APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}",
+SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
                 "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}"}
+# W1 (#822 round 1): the three NON-SECRET federation entries of the signing steps: the AWS role of the release Sign identity, its region and the release key's reference. They are step env
+# literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (stage-sign.yml's three jobs, Release's six witnessed steps), reaching only the scripts below,
+# and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
+_SS = ".github/workflows/stage-sign.yml"
+_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
+           (_SP, "release"): {_WIT, "bin/release-verify.sh", "bin/release-apks.sh", "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}}
+FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
+
+
+def fed_value(name):
+    if name == "AWS_ROLE_ARN":
+        return "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+    if name == "AWS_REGION":
+        return "us-east-1"
+    try:
+        m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
+    except OSError:
+        m = None
+    return m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"
+
+
 # the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
 PLACE_PERMS = {(_SB, "apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
                (_SP, "release"): {"contents": "write", "packages": "write", "id-token": "write"}}
@@ -634,7 +654,7 @@ class EnvNames(set):
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
     whole is allowed only through this map."""
     def __init__(self, *a):
-        super().__init__(*a); self.ambient = {}; self.pinned = {}; self.ambient_bind = {}; self.closed = False   # closed: the tree has a Release (stage-promote.yml job release), so the five named-secret rows are enforced
+        super().__init__(*a); self.ambient = {}; self.pinned = {}; self.ambient_bind = {}; self.closed = False   # closed: the tree has a Release (stage-promote.yml job release), so the four named-secret rows are enforced
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
                 "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
                 "timeout", "nice", "command", "builtin", "watch", "at", "find"}
@@ -704,7 +724,25 @@ def signing_files(base, errs=None):
             if isinstance(d, dict) and ({"jobs", "runs"} & set(d)): out.add(f)
     return sorted(out)
 
-def unresolved_signing(e, ctx):
+KMS_REF = ("$RELEASE_KMS_KEY_REF", "${RELEASE_KMS_KEY_REF}")
+SIGN_VALUE_FLAGS = {"--bundle", "--signing-config", "--output-signature", "--output-certificate", "--rekor-url", "--timestamp-server-url", "--identity-token"}
+
+def without_kms_key(ctx):
+    """The words of a sign-blob call with the one `--key "$RELEASE_KMS_KEY_REF"` taken out. Only an option before `--` counts, and not as the value of another option."""
+    try: words = shlex.split(ctx)
+    except ValueError: return ctx
+    rest, seen, i = [], False, 0
+    while i < len(words):
+        w = words[i]
+        if w == "--": rest += words[i:]; break
+        if not seen and ((w == "--key" and words[i + 1:i + 2] and words[i + 1] in KMS_REF) or w in ["--key=" + r for r in KMS_REF]):
+            seen = True; i += 2 if w == "--key" else 1; continue
+        takes_value = w in SIGN_VALUE_FLAGS or w == "--key"
+        rest += words[i:i + 2] if takes_value else [w]
+        i += 2 if takes_value else 1
+    return " ".join(rest)
+
+def unresolved_signing(e, ctx, rel=""):
     """Why a signing call's record type cannot be resolved from its text, or None (Codex #249 r7 B7: an explicit error, never an
     assumption). witness run: a config file (-c/--config), a WITNESS_* environment setting, or any attestor value that is not a literal.
     cosign sign-blob and sigstore (python) sign: an argument that is a variable, substitution or glob (the blob, and so its type,
@@ -716,6 +754,9 @@ def unresolved_signing(e, ctx):
             return "witness run with an unresolved attestor list (a config file or WITNESS_ setting) (fail closed)"
         if any(not lit for _v, lit in witness_attestors(ctx)):
             return "witness run with an unresolved attestor list (fail closed)"
+    if n == "cosign sign-blob" and rel == "bin/release-sign.sh":
+        # the release KMS key is named by one pinned variable (handoff 0713 P3): as the value of --key it is the key, not the blob, so it does not make the blob unresolved
+        ctx = without_kms_key(ctx)
     if n in ("cosign sign-blob", "sigstore python sign") and (UNRESOLVED.search(ctx) or re.search(r"[*?]", ctx)):
         return "%s with an unresolved argument (its blob, and so its type, cannot be known) (fail closed)" % n
     return None
@@ -796,7 +837,7 @@ def load_scripts(base):
         return {}, ["chain-scripts.json has no `scripts` list"], set()
     names = doc.get("env_names", [])
     env_names = EnvNames()
-    try:       # the five rows are enforced once the tree has a Release: stage-promote.yml with a job named release (a tree without one has nothing to bind them to)
+    try:       # the four rows are enforced once the tree has a Release: stage-promote.yml with a job named release (a tree without one has nothing to bind them to)
         env_names.closed = re.search(r"(?m)^  release:\s*$", open(os.path.join(base, ".github/workflows/stage-promote.yml"), errors="replace").read()) is not None
     except OSError:
         env_names.closed = False
@@ -873,7 +914,7 @@ def load_scripts(base):
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", nm) or FORBID_ENV.fullmatch(nm):
                 errs.append("chain-scripts.json: ambient_env name %r is not an allowed variable name (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % nm); continue
             if env_names.closed and e["file"] in CHAIN_STAGE_FILES and (e["file"], e["job"]) not in SECRET_ROWS.get(nm, {}):
-                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s (rule 56: five rows, each bound to exact scripts)" % (nm, sc, e["file"], e["job"], CLOSED)); continue
+                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s (rule 56: four rows, each bound to exact scripts)" % (nm, sc, e["file"], e["job"], CLOSED)); continue
             if sc not in rows:
                 errs.append("chain-scripts.json: ambient_env %s names script %r, which is not a listed script" % (nm, sc)); continue
             if not isinstance(rows[sc].get("reads_env"), list) or nm not in rows[sc]["reads_env"]:
@@ -881,7 +922,7 @@ def load_scripts(base):
             if not why.strip():
                 errs.append("chain-scripts.json: ambient_env %s for %s has no reason (why)" % (nm, sc)); continue
             if env_names.closed and e["file"] in CHAIN_STAGE_FILES and (e["file"] not in {f for f, _j in SECRET_ROWS.get(nm, {})} or (e["file"], e["job"]) not in SECRET_ROWS.get(nm, {}) or sc not in SECRET_ROWS[nm][(e["file"], e["job"])]):
-                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s (rule 56: five rows, each bound to exact scripts)" % (nm, sc, e["file"], e["job"], CLOSED)); continue
+                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s (rule 56: four rows, each bound to exact scripts)" % (nm, sc, e["file"], e["job"], CLOSED)); continue
             if env_names.closed and nm in SECRET_VALUE and nm != "GH_TOKEN" and e["file"] not in CHAIN_STAGE_FILES:
                 errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s" % (nm, sc, e["file"], e["job"], CLOSED)); continue
             if (nm, sc, e["file"], e["job"]) in seen_at:
@@ -1177,7 +1218,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
             if (run is None) == (uses is None): errs.append("%s: must have exactly one of run/uses" % sp); continue
             for k in env:
                 if FORBID_ENV.fullmatch(k): errs.append("%s: env %s is never allowed (it can make a shell or interpreter load other code)" % (sp, k))
-                elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json%s" % (sp, k, (" and " + CLOSED) if closed and full in CHAIN_STAGE_FILES else ""))
+                elif k not in env_names and k not in amb and not (k in FED_ROWS and full in CHAIN_STAGE_FILES): errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json%s" % (sp, k, (" and " + CLOSED) if closed and full in CHAIN_STAGE_FILES else ""))
             if uses is not None:
                 if env: errs.append("%s: an action step passes env" % sp)
                 ref = str(uses).partition(" #")[0]      # actions/setup-go is not allowed: Go is installed by the checksum-pinned `bash bin/install-scanner.sh go`
@@ -1211,7 +1252,16 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                 # Round 1 (1): an AMBIENT name is valid in a step only if the step reaches a listed script the name is listed for AND its value is
                 # one plain expression; both checks run whether or not the run line also reads the name whole (a whole read of an ambient name in a
                 # step that does not reach its script is an error). An ambient name is never an ordinary env_names name.
-                if closed and full in CHAIN_STAGE_FILES and k in SECRET_ROWS:     # the five rows: name, place, scripts and value are exact
+                if full in CHAIN_STAGE_FILES and k in FED_ROWS:      # W1: a federation entry: an exact literal, at its places only, reaching only its scripts
+                    used = set(r) | argp
+                    scripts = FED_ROWS[k].get((full, jn))
+                    if scripts is None or not used <= scripts:
+                        errs.append("%s: %s is allowed only on the signing steps of stage-sign.yml and the witnessed steps of stage-promote.yml job release: found in %s job %s, reaching %s" % (
+                            sp, k, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
+                    elif v != fed_value(k):
+                        errs.append("%s: %s must be exactly the literal %r, found %r" % (sp, k, fed_value(k), v))
+                    continue
+                if closed and full in CHAIN_STAGE_FILES and k in SECRET_ROWS:     # the four rows: name, place, scripts and value are exact
                     used = set(r) | argp
                     scripts = SECRET_ROWS[k].get((full, jn))
                     if scripts is None or not used <= scripts:

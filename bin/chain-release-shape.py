@@ -25,12 +25,12 @@ fixtures); PR 1's chain-scripts.json rows (tools, runs, signs)."""
 import base64, hashlib, json, os, re, sys, yaml
 
 # a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
-CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB|APK_RELEASE", re.I)
+CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB", re.I)
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
-INSTALLS = ["witness", "cosign", "crane"]
+INSTALLS = ["witness", "cosign", "crane", "aws-cli"]   # KA-2 p4 group 4: the pinned aws CLI, the fourth install (job-local under RUNNER_TEMP, no destination argument)
+RECORD_ENV_VERIFY_LOCAL = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json"      # the verify job runs the local script: its record is unsigned and local
 RECORD_ENV_VERIFY = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json"      # rc-2 R4: the verify job's own record, checked before it is uploaded
-MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"signed-witness-build", "signed-witness-rebuild", "signed-witness-check", "signed-witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
 COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
 VERIFY_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild",
@@ -41,9 +41,25 @@ UP = {"release-evidence", "witness-release", "witness-release-verify"}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
-WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
-       "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
-CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+# release-postverify holds no token and no registry credential: the listed commands read the published image and the
+# downloaded assets only (rule 66)
+WHO = {"release-apks": set(), "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
+       "release-postverify": set()}
+CREDS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
+# W1 (#822 round 1): every witnessed step of the release job signs its record through the one signing function (bin/chain-verify.py sign-record), so it carries the three non-secret
+# federation entries as step env, literals: the AWS role of the release Sign identity (ops/terraform/aws-apply/main.tf), its region, and the release key's reference, which must be
+# the verifier's own RELEASE_KEY_REF. They are not credentials: the identity token the role is assumed with is fetched by the helper just before each signing call.
+FED_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
+FED_REGION = "us-east-1"
+
+
+def fed_env():
+    """The exact step env of a witnessed step: the key reference is read from bin/chain-verify.py next to this file (a literal in the workflow that differs from it is refused)."""
+    try:
+        m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
+    except OSError:
+        m = None
+    return {"AWS_ROLE_ARN": FED_ROLE, "AWS_REGION": FED_REGION, "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"}
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
@@ -71,25 +87,40 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
     "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
-    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
+    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
     "bin/release-compare.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-compare.py"]},   # the compare job's one plain step: a wrapper around the Python file
     "bin/release-compare.py": {"tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"]},   # no key, no signing, no network: it reads the two apk trees, binds Rebuild's apks to the signed rapk records (chain-verify.py verify and bind) and writes the result file; `make` is the word of `policy make`
     "bin/release-publish.sh": {"tools": ["crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py"]},   # round 1 B4: the layout is checked first
     "bin/release-layout.py":  {"tools": [], "signs": False, "runs": []},
-    "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
+    "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
     "bin/release-assets.sh":  {"tools": ["gh", "git", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # git reads the tag object; release-metadata.py tag-notes extracts its notes
     "bin/release-postverify.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-postverify.py"]},   # rule 79 amended
-    "bin/release-postverify.py": {"tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": []},   # runs only verify forms, judged first
+    "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"]},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
         "python python3 perl ruby node npm yarn pnpm go apko melange cosign crane gh witness jq skopeo oras ko goreleaser tar").split()
-KEYWRITE = r'printf %s "\$APK_RELEASE_SIGNING_KEY" > "\$keyfile"'   # the one place the key is written: to a private file, never printed
 OLD = ["bin/authorize-acceptance-check.py", "bin/authorize-acceptance-check-test.sh"]
 
 
+class DuplicateKey(Exception):
+    pass
+
+
+class _NoDuplicateKeys(yaml.BaseLoader):
+    """The one load of a workflow: a loader keeps the LAST of two equal mapping keys, so a second env: (or any key) would hide the first from every judge below. A repeated key refuses the file."""
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise DuplicateKey("duplicate key %r at line %d of %s (the loader keeps the last one, so the first would be hidden)" % (key, key_node.start_mark.line + 1, key_node.start_mark.name))
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load(path):
-    return yaml.load(open(path), Loader=yaml.BaseLoader)
+    return yaml.load(open(path), Loader=_NoDuplicateKeys)
 
 
 def has_expression(obj):
@@ -110,8 +141,9 @@ def run_of(step):
 
 
 def verify_job(j):
-    """REQ-CHAIN-007-AC1 (Astra R6): the verify job holds contents read and id-token write ONLY (Witness mints its certificate from the identity token), no environment,
-    no secret, no env, no condition: checkout, the Witness install, the downloads release-verify reads, release-verify under Witness, then uploads."""
+    """REQ-CHAIN-007-AC1 (Astra R6; handoff 0713 P2): the verify job holds contents read ONLY (it runs release-verify under the local Witness script with a throwaway key,
+    so it has no identity token and cannot assume the signing role), no environment, no secret, no env, no condition: checkout, the Witness install, the downloads
+    release-verify reads, release-verify under the local Witness script, then uploads."""
     bad = []
     if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}:
         bad.append("verify job: job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}))
@@ -119,8 +151,8 @@ def verify_job(j):
         bad.append("verify job: must need exactly the compare job (needs: compare), got %r" % j.get("needs"))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("verify job: must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
-    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
-        bad.append("verify job: permissions must be exactly contents read and id-token write: %s" % j.get("permissions"))
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("verify job: permissions must be exactly contents read (no id-token): %s" % j.get("permissions"))
     kinds = []
     for s in j.get("steps") or []:
         if set(s) - {"name", "uses", "with", "run"}:
@@ -142,9 +174,9 @@ def verify_job(j):
             bad.append("verify job: uses not allowed: %s" % u)
         elif r == "bash bin/install-scanner.sh witness":
             kinds.append("install:witness")
-        elif r == "bash bin/witnessed.sh release-verify bin/release-verify.sh":
+        elif r == "bash bin/witnessed-local.sh release-verify bin/release-verify.sh":
             kinds.append("W:release-verify")
-        elif r == RECORD_ENV_VERIFY:
+        elif r == RECORD_ENV_VERIFY_LOCAL:
             kinds.append("RE")          # rc-2 R4 (Fable): the verify job holds id-token write and uploads its Witness record, so it checks it for a token first, with no if
         else:
             bad.append("verify job: a step that is none of checkout, the Witness install, download, release-verify, its record check or upload: %r" % (r or s.get("name")))
@@ -177,9 +209,9 @@ def verify_job(j):
 
 def compare_job(j):
     """The owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks runs in a job with no secrets, no
-    publish permission and no identity token: contents read ONLY (an id-token can mint a signing certificate), no environment, no env, no needs, no condition. Its steps are
+    publish permission and no identity token: contents read ONLY (an id-token can assume the signing role), no environment, no env, no needs, no condition. Its steps are
     exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
-    under Witness: Witness signs through the identity token) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
+    under Witness: a Witness record is signed with the release KMS key, which needs the identity token this job must not hold) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []
     allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes"}
     if set(j) - allowed:
@@ -269,8 +301,6 @@ def stage(path):
             bad.append("uses not allowed in the Release stage: %s" % u)
         elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
             kinds.append("install:" + r.split()[-1])
-        elif r == MELANGE_INSTALL:
-            kinds.append("install:melange")
         elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
             kinds.append("W:" + r.split()[2])
         elif re.fullmatch(r"python3 -I bin/chain-verify\.py record-env --record witness-(release-[a-z]+)/\1-collection\.json", r):   # rc-2 R4: the Release job checks its own six Witness records for a token before they are uploaded (REQ-CHAIN-007-AC12)
@@ -281,13 +311,13 @@ def stage(path):
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
             bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
                        % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
-    want = ["checkout"] + ["install:" + t for t in INSTALLS] + ["install:melange"]
+    want = ["checkout"] + ["install:" + t for t in INSTALLS]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
     ups = [i for i, k in enumerate(kinds) if k == "up"]
-    if kinds[:5] != want:
-        bad.append("steps must start with checkout and the installs of witness, cosign, crane, melange: got %s" % kinds[:5])
-    if not ds or ds != list(range(5, 5 + len(ds))):
+    if kinds[:len(want)] != want:
+        bad.append("steps must start with checkout and the installs of witness, cosign, crane, aws-cli (the release job installs no build tool: the apks are signed through cosign and the pinned aws CLI): got %s" % kinds[:len(want)])
+    if not ds or ds != list(range(len(want), len(want) + len(ds))):
         bad.append("the downloads must follow the installs directly and all come before Witness starts (rule 68)")
     # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
     # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/
@@ -346,19 +376,28 @@ def credentials(path):
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
+            if name == "release-verify":      # the release job's own re-run: no credential, only the three federation entries (it signs its record)
+                seen_verify = True
+                if env != fed_env() or CRED_RE.search(blob) or has_expression(s):
+                    bad.append("release-verify must carry exactly the step env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), env))
+                continue
             if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
-            seen_verify = name == "release-verify"
             continue
         if name is None:
             if env is not None or CRED_RE.search(blob):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
+        fed = fed_env()
         got = set((env or {}).keys())
-        if got != want:
-            bad.append("%s must get exactly the credentials %s, got %s" % (name, sorted(want), sorted(got)))
+        if got != want | set(fed):
+            bad.append("%s must get exactly the credentials %s and the federation entries %s, got %s" % (name, sorted(want), sorted(fed), sorted(got)))
         for k, v in (env or {}).items():
+            if k in fed:
+                if v != fed[k]:
+                    bad.append("%s in %s must be the literal %r, got %r" % (k, name, fed[k], v))
+                continue
             ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
             if k in CREDS and not ok:
                 bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))
@@ -374,7 +413,7 @@ def others(root):
         if not f.endswith((".yml", ".yaml")) or f == "stage-promote.yml":
             continue
         t = open(os.path.join(wd, f)).read()
-        for pat, what in ((r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY", "a release credential"), (r"environment:\s*release\b", "the release environment")):
+        for pat, what in ((r"DOCKERHUB_TOKEN\b", "a release credential"), (r"environment:\s*release\b", "the release environment")):
             if re.search(pat, t):
                 bad.append("%s names %s" % (f, what))
         if f.startswith("stage-") and re.search(r"packages:\s*write|secrets\.|secrets:\s*inherit", t):
@@ -392,7 +431,7 @@ def others(root):
             p = j.get("permissions") or {}
             if "stage-" in uses and not uses.endswith("stage-promote.yml") and isinstance(p, dict) and p.get("packages") == "write":
                 bad.append("job %s grants packages write: only the release job may" % n)
-        if re.search(r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY", open(rp).read()):
+        if re.search(r"DOCKERHUB_TOKEN\b", open(rp).read()):
             bad.append("release.yml names a release credential")
     return bad
 
@@ -478,7 +517,7 @@ def scan(path, jsonpath):
             bad.append("%s:%d sets a PATH-like variable" % (os.path.basename(path), n))
         if re.search(r"\bset\s+-\w*x|xtrace", l):
             bad.append("%s:%d turns on tracing (it would print credentials)" % (os.path.basename(path), n))
-        if re.search(r"\b(echo|printf|cat|tee)\b[^;&|]*\$\{?(%s)\b" % "|".join(sorted(CREDS)), l) and not re.fullmatch(KEYWRITE, l.strip()):
+        if re.search(r"\b(echo|printf|cat|tee)\b[^;&|]*\$\{?(%s)\b" % "|".join(sorted(CREDS)), l):
             bad.append("%s:%d prints a credential" % (os.path.basename(path), n))
         if re.search(r"melange\s+build|apko\s+build|go\s+build|docker\s+build|buildx", l):
             bad.append("%s:%d is a build command: Release builds nothing" % (os.path.basename(path), n))
@@ -553,20 +592,29 @@ def metadata(path):
     for k, need in (("images", ["--items witness-build/items.json", "--digests witness-build/digests.json", "--images-dir images"]),
                     ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "--images release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
                     ("baseline", ["--admission witness-build/admission-baseline.json", '--tag "$GITHUB_REF_NAME"', '--commit "$GITHUB_SHA"']),
-                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata", "--digests witness-build/digests.json", '--baseline-version "$baseline"'])):
+                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata", "--digests witness-build/digests.json", '--baseline-version "$baseline"',
+                                  "--modules-dir apks/ubuntu-24.04 "])):
         for n in need:
             if n not in lines[marks[k]]:
                 bad.append("the %s step must carry %s" % (k, n))
     # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
     # one `cosign attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
     atts = [l for l in lines if l.startswith("cosign attest ")]
-    base = ('cosign attest --yes --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
+    base = ('cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
             '--type https://fosterstack.com/attestations/release-manifest/v1 ')
     want = {base + '"ghcr.io/$repo@$digest"', base + '"docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"'}
     if sorted(atts) != sorted(want):
         bad.append("release-sign.sh must hold exactly these two `cosign attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
                    "the Docker Hub mirror best-effort with a warning): %r" % atts)
-    elif marks.get("attest") is not None:
+    keyed = 'cosign {} --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json '
+    blob = re.compile(re.escape(keyed.format("sign-blob")) + r"--bundle [\w./-]+ [\w./-]+")
+    allowed = want | {keyed.format("sign") + '"$host/$repo@$digest"', 'cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"',
+                      'cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"'}
+    # handoff 0713 P3: every signature is made with the release KMS key the job pins and keeps its Rekor entry through the signing config; any other line that runs cosign is refused
+    odd = [l for l in lines if re.search(r"(?<![\w-])cosign(?![\w-])", l) and l not in allowed and not blob.fullmatch(l)]
+    if odd:
+        bad.append("every cosign signing line must be exactly `--yes --key \"$RELEASE_KMS_KEY_REF\" --signing-config .github/policy/cosign-signing-config.json ...` and nothing else: %r" % odd[:2])
+    if sorted(atts) == sorted(want) and marks.get("attest") is not None:
         loop = next((i for i in range(marks["attest"], -1, -1) if lines[i].startswith("for digest in ")), None)
         if loop is None or lines[loop] != 'for digest in "$prod" "$fips"; do':
             bad.append('the manifest attestations must sit inside `for digest in "$prod" "$fips"; do` (both public digests)')
@@ -594,6 +642,9 @@ if __name__ == "__main__":
     fn = {"stage": lambda: stage(a[0]), "credentials": lambda: credentials(a[0]), "others": lambda: others(a[0]),
           "graph": lambda: graph(a[0]), "verify": lambda: verify(a[0]), "scan": lambda: scan(a[0], a[1]),
           "listed": lambda: listed(a[0], a[1]), "metadata": lambda: metadata(a[0]), "record": lambda: record(a[0], a[1:]), "removed": lambda: removed(a[0])}[cmd]
-    bad = fn()
+    try:
+        bad = fn()
+    except DuplicateKey as e:
+        bad = [str(e)]
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

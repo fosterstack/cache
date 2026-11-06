@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-005-AC1
+# proves: REQ-DEP-005-AC1, REQ-BUILDAPK-001-AC10
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
 # scoping of the daily CVE auditor's suppression outputs (.snyk,
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
@@ -102,7 +102,7 @@ build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-g
 build/vm-keys/kernel-key-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
-bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh
+bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh bin/with-aws-token.sh
 bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
@@ -121,7 +121,7 @@ bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signator
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 94: errs.append("declared list is not 94 paths: %d" % len(DECLARED))
+if len(DECLARED) != 89: errs.append("declared list is not 89 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -131,8 +131,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 225 allow patterns: chain-v030 plus #816 (0710) and #840 (VM build inputs); read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 225, 6
+# 228 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 228, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "7ae0487b6887365f2a13742a906aa94f8bb0463dee903f54b7e6cc592303937e"
+PINNED_SHA256 = "523a4aef7cf439f0b8a66fd139bc0638c4e16dc7a4f0736c08ab7e14b23fc488"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -755,6 +755,11 @@ runeach fail "feature/x" "v030: uppercase key refused"   "build/keys/Assembly.rs
 runeach fail "feature/x" "v030: key one directory up refused" "build/assembly.rsa" "assembly.rsa" "keys/assembly.rsa.pub"
 runeach fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
 runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
+passfam "feature/x" "v030: a retired release key public half under the day it was retired (SECURITY.md)" "build/keys/retired/2027-11-01/release.rsa.pub"
+runeach fail "feature/x" "v030: a retired key outside a dated directory refused" "build/keys/retired/release.rsa.pub" "build/keys/retired/x/release.rsa.pub" "build/keys/retired/27-11-01/release.rsa.pub" "build/keys/retired/2027-11-01-extra/release.rsa.pub"
+runeach fail "feature/x" "v030: only release.rsa.pub is admitted in a retired directory" "build/keys/retired/2027-11-01/other.rsa.pub" "build/keys/retired/2027-11-01/release.rsa" "build/keys/retired/2027-11-01/assembly.rsa.pub" "build/keys/retired/2027-11-01/release.rsa.pub.bak"
+runeach fail "feature/x" "v030: nothing nested below a dated retired directory" "build/keys/retired/2027-11-01/sub/release.rsa.pub" "build/keys/retired/2027-11-01/release.rsa.pub/x"
+runeach fail "feature/x" "v030: retired traversal refused" "build/keys/retired/../release.rsa" "build/keys/retired/2027-11-01/../x.rsa"
 
 passfam "feature/x" "v030: the recipe template" "build/melange.yaml.tmpl"
 runeach fail "feature/x" "v030: other template names refused" "build/melange-fips.yaml.tmpl" "build/apko.yaml.tmpl" "build/melange.yaml.tmpl.bak" "build/x/melange.yaml.tmpl" "melange.yaml.tmpl" "build/Melange.yaml.tmpl" "build/../melange.yaml.tmpl"
@@ -773,6 +778,7 @@ runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
   ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
+passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
 passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"

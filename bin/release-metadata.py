@@ -4,9 +4,11 @@
   release-metadata.py images   --digests D --images-dir I --items ITEMS --out F
         the image input of vex-forms, {variant: {index, children}}, made ONLY from Build's verified digest list and Build's
         images/<variant>.digest and images/<variant>.manifests; never from a registry
-  release-metadata.py manifest --digests D --images-dir I --items ITEMS --vex-dir DIR --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W --out F
+  release-metadata.py manifest --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR
+        --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W --out F
         release-manifest.json, deterministic (no clock): the images (`.images[].variant`, `.images[].digest` and both registry references,
-        the shape the daily rescan reads), the archives and the apks as Build attested them
+        the shape the daily rescan reads), the archives and the apks as Build attested them,
+        and the two Go module SBOMs by Build's digest
   release-metadata.py list     --version V --dir DIR --out F
         release-files.sha256: `<sha256>  <name>` for exactly release-manifest.json, the OpenVEX file, the CSAF file and the inspector-filters
         file of this version, in this order
@@ -151,6 +153,28 @@ def image_input(digests, images_dir, items_path):
     return out
 
 
+MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-modules-fips.spdx.json"))
+
+
+def module_sboms(items_path, modules_dir):
+    """The two Go module SBOMs in modules_dir must be the bytes of Build's items modules-sbom-<variant>.
+    Returns them as manifest entries."""
+    items = items_of(items_path)
+    out = []
+    for variant, name in MODULE_SBOMS:
+        path = os.path.join(modules_dir, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            refuse("%s is missing or not a regular file" % path)
+        have = "sha256:" + sha256_file(path)
+        want = items.get("modules-sbom-" + variant)
+        if want is None:
+            refuse("%s: modules-sbom-%s is missing (needed for %s)" % (items_path, variant, path))
+        if want != have:
+            refuse("%s: modules-sbom-%s is %s, but %s hashes to %s" % (items_path, variant, want, path, have))
+        out.append({"name": name, "digest": want})
+    return out
+
+
 def cmd_images(a):
     doc = image_input(digests_of(a.digests), a.images_dir, a.items)
     write_atomic(a.out, json.dumps(doc, indent=2, sort_keys=True) + "\n")
@@ -209,6 +233,7 @@ def cmd_manifest(a):
         base[key] = {"path": rel, "sha256": sha256_file(p)}
     base["requirements_baseline"] = {"path": base["requirements_baseline"]["path"], "version": a.baseline_version, "sha256": base["requirements_baseline"]["sha256"]}
     img = image_input(d, a.images_dir, a.items)
+    modules = module_sboms(a.items, a.modules_dir)
     vex = []
     for form, name in (("openvex", "fosterstack-cache.openvex.json"), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % a.version),
                        ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % a.version)):
@@ -223,6 +248,7 @@ def cmd_manifest(a):
                     "refs": ["%s@%s" % (REPO_GHCR, img[v]["index"]), "%s@%s" % (REPO_HUB, img[v]["index"])]} for v in VARIANTS],
         "archives": [{"name": k, "digest": d[k]} for k in sorted(d) if k.startswith("archive-")],
         "apks": [{"name": k, "digest": d[k]} for k in apks],
+        "module_sboms": modules,
         "requirements_baseline": base["requirements_baseline"],
         "test_evidence": base["test_evidence"],
         "vex": vex,
@@ -298,7 +324,7 @@ def cmd_gate(a):
     metadata files; checksums.txt lists existing files with their hashes; release-files.sha256 lists exactly the four metadata files with theirs;
     and every asset is covered: it is in checksums.txt or in release-files.sha256, or it is a bundle whose signed file is an asset, or it has its
     own bundle, or it is an apk (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
-    verified) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and
+    verified, with exactly one `*-collection.rekor.json` entries file beside it and none without its record) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and
     provenance.bundle.json (the record the Sign stage signed; all three are required). A symlink, a directory, or anything else is refused by name."""
     names = sorted(os.listdir(a.dir))
     for n in names:
@@ -340,7 +366,18 @@ def cmd_gate(a):
             refuse("%s does not match its hash in release-files.sha256" % n)
         covered.add(n)
     for n in names:
+        # a Witness record and its entries file belong together: exactly one <stem>.rekor.json beside each *-collection.json, and none without its record; this holds for every
+        # name, also one that checksums.txt or release-files.sha256 already covers (a hash does not pair an orphan)
+        if n.endswith("-collection.rekor.json"):
+            if n[:-len(".rekor.json")] + ".json" not in have:
+                refuse("%s is an entries file with no record beside it (%s)" % (n, n[:-len(".rekor.json")] + ".json"))
+            continue
+        if n.endswith("-collection.json") and n[:-len(".json")] + ".rekor.json" not in have:
+            refuse("%s has no entries file beside it (%s is missing)" % (n, n[:-len(".json")] + ".rekor.json"))
+    for n in names:
         if n in covered:
+            continue
+        if n.endswith("-collection.rekor.json"):
             continue
         if n.endswith(".bundle"):
             if signed_by(n) not in have:
@@ -432,7 +469,8 @@ def main(argv):
     sub = p.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("images"); i.add_argument("--digests", required=True); i.add_argument("--images-dir", required=True); i.add_argument("--items", required=True); i.add_argument("--out", required=True)
     m = sub.add_parser("manifest")
-    for k in ("digests", "images-dir", "items", "vex-dir", "baseline-version", "repo-root", "version", "commit", "ci-url", "workflow", "out"):
+    for k in ("digests", "images-dir", "items", "modules-dir", "vex-dir", "baseline-version", "repo-root", "version",
+              "commit", "ci-url", "workflow", "out"):
         m.add_argument("--" + k, required=True)
     b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)

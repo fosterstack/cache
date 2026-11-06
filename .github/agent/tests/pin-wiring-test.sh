@@ -224,6 +224,7 @@ CHAIN_STEPS = {
     "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)": "bash bin/chain-rekor-key-test.sh",
     "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)": "bash bin/chain-trust-files-test.sh",
     "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)": "bash bin/chain-manifest-test.sh",
+    "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup": "bash bin/witness-kms-test.sh",
     "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)": "bash bin/chain-no-keyless-tag-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)": "bash bin/build-sandbox-hostile-test.sh",
@@ -489,6 +490,8 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/chain-manifest-test.sh"
   },
   {
+   "name": "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup",
+   "run": "bash bin/witness-kms-test.sh"
    "name": "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)",
    "run": "bash bin/chain-no-keyless-tag-test.sh"
   },
@@ -1095,7 +1098,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-rekor-key-test.sh" "bash bin/chain-trust-files-test.sh" "bash bin/chain-manifest-test.sh" "bash bin/chain-no-keyless-tag-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/build-sandbox-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-no-keyless-tag-test.sh" "bash bin/chain-rekor-key-test.sh" "bash bin/chain-trust-files-test.sh" "bash bin/chain-manifest-test.sh" "bash bin/witness-kms-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/build-sandbox-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
