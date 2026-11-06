@@ -50,7 +50,7 @@
  "persona-uat-wiring-test.sh": 918,
  "pin-age-check-test.sh": 1999,
  "pin-audit-go-major-test.sh": 78,
- "pin-audit-test.sh": 173,
+ "pin-audit-test.sh": 215,
  "pin-wiring-test.sh": 654,
  "pip-pin-test.sh": 263,
  "queue-gate-judge-test.sh": 58,
