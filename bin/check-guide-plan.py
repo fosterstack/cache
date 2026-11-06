@@ -267,8 +267,8 @@ def key_error(c):
                 "key " if novalue == "--key" else "", novalue)
         if len(keys) != 1:
             return "it needs exactly one key flag whose value is <RELEASE_KEY> (found %d)" % len(keys)
-        if keys[0] != "\u2039RELEASE_KEY\u203a":
-            return "its key flag names %r, not <RELEASE_KEY>" % keys[0]
+        if keys[0] not in ("\u2039RELEASE_KEY\u203a", "release.rsa.pub"):
+            return "its key flag names %r, not <RELEASE_KEY> or release.rsa.pub" % keys[0]
         if unknown:
             return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % unknown
     return None
