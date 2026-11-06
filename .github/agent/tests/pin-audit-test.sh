@@ -2334,10 +2334,24 @@ CASE="markers: no stalled git child of that run is left running"
 gone='! kill -0 -- "-$1" 2>/dev/null'
 check bash -c "$gone" _ "$grp"
 # the same check must fail while a group is alive (it ran under dash once, where kill rejects "--" and the check could not fail)
-setsid sleep 30 & live=$!; sleep 0.5   # the group exists once setsid has run
-CASE="markers: the no-child check fails while its process group is still alive"
-check bash -c '! bash -c "$0" _ "$1"' "$gone" "$live"
-kill -- "-$live" 2>/dev/null || true
+# start_live DELAY: a sleeping process group that begins DELAY seconds from now; sets $live to its group id once the
+# group itself has written it to a marker file (a fixed wait could probe before the group exists)
+start_live() {
+  local m="$work/live.$1.marker" i
+  ( sleep "$1"; exec setsid sh -c 'echo $$ >"$0"; exec sleep 30' "$m" ) >/dev/null 2>&1 &
+  live_job=$!
+  for i in $(seq 100); do [ -s "$m" ] && break; sleep 0.1; done
+  live=$(cat "$m" 2>/dev/null)
+}
+for delay in 0 1; do
+  start_live "$delay"
+  CASE="markers: the no-child check fails while its process group is still alive (group starts after ${delay} s)"
+  check bash -c '! bash -c "$0" _ "$1"' "$gone" "$live"
+  [ -n "$live" ] && kill -- "-$live" 2>/dev/null
+  wait "$live_job" 2>/dev/null || true
+  CASE="markers: the no-child check passes once that group is ended (group started after ${delay} s)"
+  check bash -c "[ -n \"\$1\" ] && $gone" _ "$live"
+done
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
