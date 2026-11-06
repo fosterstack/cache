@@ -85,6 +85,8 @@ release, once the key exists, a person commits its public half as
 `build/keys/release.rsa.pub`, replacing the placeholder there (the output of
 `cosign public-key --key awskms:///alias/fosterstack-release-signing`).
 
+The key replacement lands together with the APK signing change (the release APKs are signed with the same key); until then the placeholder stays and the APK signing step cannot use a KMS key.
+
 ```sh
 git tag -s -m "..." vX.Y.Z
 git push origin vX.Y.Z

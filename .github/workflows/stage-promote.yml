@@ -201,6 +201,17 @@ jobs:
           path: apks/ubuntu-24.04-arm
       - name: release-verify under Witness
         run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - name: AWS, as the release signing role (federated; kms:Sign on the release signing key only)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          aws-region: us-east-1
+      - name: release signing key reference check
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+        run: bash bin/release-key-ref-check.sh
       - name: release-apks under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:
@@ -213,12 +224,6 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-publish bin/release-publish.sh
-      - name: AWS, as the release signing role (federated; kms:Sign on the release signing key only)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          aws-region: us-east-1
       - name: release-sign under Witness
         if: ${{ !contains(github.ref_name, '-') }}
         env:

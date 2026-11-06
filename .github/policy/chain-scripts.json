@@ -372,7 +372,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
+      "sha256": "fe262158a2b26bc5766f4fb1f3bfad430ae18627a42f154eea1665510fdda89a",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -1710,6 +1710,17 @@
       ]
     },
     {
+      "path": "bin/release-key-ref-check.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, before release-publish: stops the release when the key reference is unset or not a KMS reference with a nonempty alias, so a failed check leaves nothing published unsigned; offline, prints one line on refusal",
+      "sha256": "cf202e7ff044d4cd1dc15290f76ea4b06c4c86ecb8b7a8907e196133ab9e8abd",
+      "reads_env": [
+        "RELEASE_KMS_KEY_REF"
+      ]
+    },
+    {
       "path": "bin/release-sign.sh",
       "tools": [
         "cosign",
@@ -1725,7 +1736,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (reached through the AWS credentials step), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "45badb97bed004ac20f681164792607b996d3317d940da001cce56bc7d86a894",
+      "sha256": "1c68abaff8103158ad36326a1e59d54a8db6abd5f8f378156cb7126cc2997a56",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -2687,6 +2698,13 @@
       "name": "DOCKERHUB_TOKEN",
       "script": "bin/release-sign.sh",
       "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "RELEASE_KMS_KEY_REF",
+      "script": "bin/release-key-ref-check.sh",
+      "why": "Release: the reference of the release signing key (awskms:///alias/...), one literal in this step's env; the script only checks its form and never prints it",
       "file": ".github/workflows/stage-promote.yml",
       "job": "release"
     },

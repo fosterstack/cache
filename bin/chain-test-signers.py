@@ -592,7 +592,7 @@ SECRET_ROWS = {
     "APK_RELEASE_SIGNING_KEY": {(_SP, "release"): {_WIT, "bin/release-apks.sh"}},                          # row 2
     "DOCKERHUB_USERNAME": _HUB,                                                                             # row 3
     "DOCKERHUB_TOKEN": _HUB,                                                                                # row 4
-    "RELEASE_KMS_KEY_REF": {(_SP, "release"): {_WIT, "bin/release-sign.sh"}},                              # row 6: not a secret, one literal reference of the release signing key
+    "RELEASE_KMS_KEY_REF": {(_SP, "release"): {_WIT, "bin/release-sign.sh", "bin/release-key-ref-check.sh"}},                              # row 6: not a secret, one literal reference of the release signing key
 }
 SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}", "APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}",
                 "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}",

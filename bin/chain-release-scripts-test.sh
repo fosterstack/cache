@@ -551,6 +551,19 @@ refused_ref("awskms:///a\nb", "P3 a reference with a newline is refused before a
 refused_ref("awskms:///a\tb", "P3 a reference with a tab is refused before anything is made or signed", 1)
 refused_ref("awskms:///*", "P3 a reference that is only a glob character is refused before anything is made or signed", 1)
 refused_ref("awskms:///", "P3 a reference with an empty key name is refused before anything is made or signed", 1)
+refused_ref("awskms:///alias/", "F4 a reference with an empty alias name (awskms:///alias/) is refused before anything is made or signed", 1)
+refused_ref("awskms:///alias", "F4 a reference that is the word alias with no alias name is refused before anything is made or signed", 1)
+import subprocess
+def key_ref_check(val):
+    env = {"PATH": os.environ["PATH"]}
+    if val is not None:
+        env["RELEASE_KMS_KEY_REF"] = val
+    r = subprocess.run(["bash", os.path.join(os.environ["RELEASE_ROOT"], "bin/release-key-ref-check.sh")], env=env, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+for val, want, label in ((None, 2, "unset"), ("", 2, "empty"), ("awskms:///alias/", 1, "an empty alias"), ("awskms:///alias", 1, "the word alias alone"), ("awskms:///a b", 1, "a space"),
+                         ("awskms:///a\nb", 1, "a newline"), ("arn:aws:kms:us-east-1:111122223333:key/abc", 1, "not awskms:///"), (KMS, 0, "the release alias")):
+    rc, so, se = key_ref_check(val)
+    check(rc == want and so == "" and (se == "" if want == 0 else "RELEASE_KMS_KEY_REF" in se and se.count("\n") == 1), "F2 bin/release-key-ref-check.sh with %s exits %d and prints at most one line" % (label, want), "rc=%s %s" % (rc, first(se)))
 tn2 = tree(); before_n = files_of(tn2); rcn, son, sen = run(tn2, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
 check(rcn == 2 and files_of(tn2) == before_n, "P3 an absent RELEASE_KMS_KEY_REF leaves no file behind (nothing is made before the check)", "rc=%s %s" % (rcn, first(sen)))
 import yaml
@@ -981,7 +994,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "422"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "432"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

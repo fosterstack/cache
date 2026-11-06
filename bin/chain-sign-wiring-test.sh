@@ -3358,7 +3358,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='4abbea267b457909008e0cd7aaf796c73be938dc54f8f7f3ed03d8398fbcd976'
+FX_PIN='68daa025dd3c5e40139884a7f15719c8a5a208006a906b68e759c90040ab25cb'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5059,7 +5059,7 @@ case("an env on the action step is refused", True, run("stage-promote.yml", mut(
 def second(d): final(d); d["jobs"]["release"]["steps"].insert(sign_i(d), aws_step())
 case("a second AWS credentials step in the Release job is refused", True, run("stage-promote.yml", mut("stage-promote.yml", second)))
 def after_sign(d):
-    final(d); st = d["jobs"]["release"]["steps"]; i = sign_i(d); a = st.pop(i - 1); st.insert(sign_i(d) + 1, a)
+    final(d); st = d["jobs"]["release"]["steps"]; a = st.pop(next(k for k, x in enumerate(st) if str(x.get("uses", "")).startswith("aws-actions/"))); st.insert(sign_i(d) + 1, a)
 case("the AWS credentials step after release-sign is refused", True, run("stage-promote.yml", mut("stage-promote.yml", after_sign)))
 for label, ok_, got in out:
     print(("ok   " if ok_ else "FAIL ") + "P3 " + label + ("" if ok_ else " -> %r" % got))

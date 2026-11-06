@@ -68,6 +68,8 @@ KMS_REF = "awskms:///alias/fosterstack-release-signing"
 AWS = ("      - name: AWS, as the release signing role (federated; kms:Sign on the release signing key only)\n        if: ${{ !contains(github.ref_name, '-') }}\n"
        "        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0\n        with:\n"
        "          role-to-assume: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          aws-region: us-east-1\n")
+KEYCHK = ("      - name: release signing key reference check\n        if: ${{ !contains(github.ref_name, '-') }}\n"
+          "        env:\n          RELEASE_KMS_KEY_REF: " + KMS_REF + "\n        run: bash bin/release-key-ref-check.sh\n")      # F2: federation and the reference check come before anything is published
 # REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
 # no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read + id-token write
 # only (Witness needs the identity token), no environment, no secret, and reads only the result file; `release` needs both, is skipped for a release candidate, holds the environment and the three
@@ -88,8 +90,8 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + inst("witness") + inst("cosign") + inst("crane") + inst_m("melange")
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
-         + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
-         + wit("release-publish", REG) + AWS + wit("release-sign", dict(REG, RELEASE_KMS_KEY_REF=KMS_REF)) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
+         + wit("release-verify", {}) + AWS + KEYCHK + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
+         + wit("release-publish", REG) + wit("release-sign", dict(REG, RELEASE_KMS_KEY_REF=KMS_REF)) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
          + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"))      # rc-2 R4: the six records are checked for a token before any upload
          + up("release-evidence") + up("witness-release"))
 open(w + "/stage.yml", "w").write(stage)
@@ -231,6 +233,11 @@ PYX
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
 }
+m s_awslate  '(      - name: AWS, as the release signing role[^\n]*\n(?:        [^\n]*\n)+)(.*?        run: bash bin/witnessed\.sh release-publish bin/release-publish\.sh\n)'   '\2\1'   'AWS'  "F2 the AWS federation after release-publish (a failed role leaves images published unsigned)"
+m s_kclate   '(      - name: release signing key reference check\n(?:        [^\n]*\n)+)(.*?        run: bash bin/witnessed\.sh release-publish bin/release-publish\.sh\n)'   '\2\1'   'key reference'  "F2 the key reference check after release-publish"
+m s_nokc     '(      - name: release signing key reference check\n(?:        [^\n]*\n)+)'   ''   'key reference'  "F2 no key reference check step before release-publish"
+m s_kcenv    '=          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/release-key-ref-check.sh'   '          RELEASE_KMS_KEY_REF: awskms:///alias/other\n        run: bash bin/release-key-ref-check.sh'   'key reference'  "F2 the check step gives another reference than release-sign gets"
+m s_kcrun    '=run: bash bin/release-key-ref-check.sh\n'   'run: bash bin/release-key-ref-check.sh --skip\n'   'key reference'  "F2 the check step runs with an argument"
 m s_job2    'jobs:\n  compare:'                          'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  compare:' 'exactly'  "AC1 a fourth job"
 m s_selfh   'runs-on: ubuntu-24.04'                         'runs-on: self-hosted'                                   'ubuntu-24.04'       "AC1 a self-hosted runner"
 m s_envnone '    environment: release\n'                     ''                                                       'environment'        "AC1 no environment (the credentials would not be protected)"
@@ -304,11 +311,11 @@ m c_upopt   '=          name: apk-compare\n          path: apk-compare\n        
 m r_rapk    'name: dist\n          path: dist'                'name: rapk-ubuntu-24.04\n          path: rapks/ubuntu-24.04' 'download'  "SIGNER the release job downloads a rapk (Rebuild's apks reach the signer)"
 m v_nocmp   '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: apk-compare\n          path: apk-compare\n' '' 'download'  "SIGNER the verify job does not download the comparison result (the first occurrence: release-verify would have nothing to read)"
 m r_nocmp   '(name: apk-compare\n          path: apk-compare\n.*?)      - uses: [^\n]*\n        with:\n          name: apk-compare\n          path: apk-compare\n' '\1' 'download'  "SIGNER the release job does not download the comparison result"
-m s_rnorv    '=      - name: release-verify\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks\n' '      - name: release-apks\n' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
+m s_rnorv    '=      - name: release-verify\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: AWS' '      - name: AWS' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
 # round 1 (Codex seat B): the steps between the first and last Witness step are Witness steps and nothing else, and an install never comes after the first four
-m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: release-apks' 'between' "AC1 (Astra R4, round 1) a second melange install between release-verify and release-apks"
+m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: AWS' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: AWS' 'between' "AC1 (Astra R4, round 1) a second melange install between release-verify and release-apks"
 m s_latecos  '=run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n' 'run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n      - name: install cosign again\n        run: bash bin/install-scanner.sh cosign\n' 'between' "AC1 (Astra R4, round 1) an install between two Witness steps"
-m s_latedl   '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: release-apks' 'downloads' "AC1 (Astra R4, round 1) a download between release-verify and release-apks"
+m s_latedl   '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: AWS' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: AWS' 'downloads' "AC1 (Astra R4, round 1) a download between release-verify and release-apks"
 # round 1 (Codex PR 415): the verify job's proof upload is exactly witness-release-verify holding the record directory
 m s_vupname  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release\n          path: witness-release-verify' 'verify' "AC1 (Astra R6, round 1) the verify job's upload is named witness-release (it would collide with the release job's)"
 m s_vuppath  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release-verify\n          path: docs' 'verify' "AC1 (Astra R6, round 1) the verify job's upload holds a path other than its Witness record"
@@ -621,20 +628,25 @@ sign = next((i for i, s in enumerate(steps) if s.get("name") == "release-sign un
 aws = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("aws-actions/configure-aws-credentials@")]
 a = steps[aws[0]] if aws else {}
 case("the release job has exactly one AWS credentials step, before release-sign under Witness", len(aws) == 1 and sign is not None and aws[0] < sign, "aws steps at %s, release-sign at %s" % (aws, sign))
+pub = next((i for i, s in enumerate(steps) if s.get("name") == "release-publish under Witness"), None)
+kc = [i for i, s in enumerate(steps) if s.get("run") == "bash bin/release-key-ref-check.sh"]
+case("F2 the AWS credentials step comes before release-publish under Witness (a failed role assumption publishes nothing)", len(aws) == 1 and pub is not None and aws[0] < pub, "aws at %s, publish at %s" % (aws, pub))
+case("F2 exactly one key reference check step, after the AWS step and before release-publish", len(kc) == 1 and len(aws) == 1 and pub is not None and aws[0] < kc[0] < pub, "check at %s, aws at %s, publish at %s" % (kc, aws, pub))
+case("F2 the key reference check step gives RELEASE_KMS_KEY_REF the one literal alias reference and carries the release-sign condition", len(kc) == 1 and (steps[kc[0]].get("env") or {}) == {"RELEASE_KMS_KEY_REF": KMS} and sign is not None and steps[kc[0]].get("if") == steps[sign].get("if"), steps[kc[0]] if kc else None)
 case("the AWS credentials step is the pinned aws-actions/configure-aws-credentials v6.3.0 (the pin ci.yml and release.yml use)", str(a.get("uses")) == AWS and (AWS + " # v6.3.0") in raw, a.get("uses"))
 case("the AWS credentials step assumes exactly the release signing role in us-east-1 and takes nothing else", a.get("with") == {"role-to-assume": ROLE, "aws-region": "us-east-1"} and not a.get("env"), a.get("with"))
 case("the AWS credentials step carries the same condition as release-sign (a release candidate assumes no role)", sign is not None and a.get("if") == steps[sign].get("if") and a.get("if") is not None, a.get("if"))
 env = (steps[sign].get("env") or {}) if sign is not None else {}
 case("the release-sign step gives RELEASE_KMS_KEY_REF the one literal alias reference", env.get("RELEASE_KMS_KEY_REF") == KMS, env.get("RELEASE_KMS_KEY_REF"))
-case("no other step of the release job receives RELEASE_KMS_KEY_REF", [i for i, s in enumerate(steps) if "RELEASE_KMS_KEY_REF" in (s.get("env") or {})] == ([sign] if env.get("RELEASE_KMS_KEY_REF") else []) and bool(env.get("RELEASE_KMS_KEY_REF")), [s.get("name") for s in steps if "RELEASE_KMS_KEY_REF" in (s.get("env") or {})])
+case("no other step of the release job receives RELEASE_KMS_KEY_REF than release-sign and the key reference check", [i for i, s in enumerate(steps) if "RELEASE_KMS_KEY_REF" in (s.get("env") or {})] == sorted(([sign] if env.get("RELEASE_KMS_KEY_REF") else []) + [i for i, s in enumerate(steps) if s.get("run") == "bash bin/release-key-ref-check.sh"]) and bool(env.get("RELEASE_KMS_KEY_REF")), [s.get("name") for s in steps if "RELEASE_KMS_KEY_REF" in (s.get("env") or {})])
 head = raw.split("\nname:")[0]
 case("the stage file's header comment no longer calls the release signatures keyless", "keyless" not in head.lower(), re.findall(r".*keyless.*", head)[:1])
 pol = json.load(open(os.path.join(root, ".github/policy/chain-scripts.json")))
 row = next((r for r in pol["scripts"] if r["path"] == "bin/release-sign.sh"), {})
 case("chain-scripts.json: the bin/release-sign.sh row lists RELEASE_KMS_KEY_REF in reads_env and no longer says keyless", "RELEASE_KMS_KEY_REF" in row.get("reads_env", []) and "keyless" not in row.get("reason", "").lower(), row.get("reads_env"))
 amb = {(e["script"], e["file"], e["job"]) for e in pol["ambient_env"] if e["name"] == "RELEASE_KMS_KEY_REF"}
-case("chain-scripts.json: ambient_env lists RELEASE_KMS_KEY_REF for bin/release-sign.sh and the wrapper bin/witnessed.sh in stage-promote.yml job release",
-     amb == {("bin/release-sign.sh", ".github/workflows/stage-promote.yml", "release"), ("bin/witnessed.sh", ".github/workflows/stage-promote.yml", "release")}, sorted(amb))
+case("chain-scripts.json: ambient_env lists RELEASE_KMS_KEY_REF for bin/release-sign.sh, bin/release-key-ref-check.sh and the wrapper bin/witnessed.sh in stage-promote.yml job release",
+     amb == {("bin/release-sign.sh", ".github/workflows/stage-promote.yml", "release"), ("bin/release-key-ref-check.sh", ".github/workflows/stage-promote.yml", "release"), ("bin/witnessed.sh", ".github/workflows/stage-promote.yml", "release")}, sorted(amb))
 idj = json.load(open(os.path.join(root, ".github/policy/id-token-jobs.json")))["jobs"]
 rel = [e for e in idj if (e["workflow"], e["job"]) in (("release.yml", "release"), ("stage-promote.yml", "release"))]
 case("id-token-jobs.json: the two Release entries no longer name keyless cosign signatures", len(rel) == 2 and not any("keyless cosign" in e["reason"] for e in rel), [e["reason"][:60] for e in rel])
@@ -645,6 +657,10 @@ items = open(os.path.join(root, "bin/chain_items.py")).read()
 tn = re.search(r"TOKEN_NAMES = \((.*?)\)", items, re.S).group(1)
 miss2 = [n for n in ("RELEASE_KMS_KEY_REF", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN") if '"%s"' % n not in tn]
 case("bin/chain_items.py refuses a record that names the key reference or an AWS credential (TOKEN_NAMES)", not miss2, "missing " + ", ".join(miss2))
+cts = open(os.path.join(root, "bin/chain-test-shape.py")).read()
+sens = re.search(r"^SENSITIVE = \[(.*?)\]", cts, re.M).group(1)
+miss3 = [n.strip("'") for n in re.findall(r"--env-add-sensitive-key (\S+)", wit) if '"%s"' % n.strip("'") not in sens]
+case("F3 the SENSITIVE list of bin/chain-test-shape.py names every --env-add-sensitive-key of bin/witnessed.sh (the helper judge)", not miss3, "missing " + ", ".join(miss3))
 print("\n".join(out))
 PY
 while IFS= read -r l; do
@@ -702,7 +718,7 @@ rsx() { mkdir -p "$work/rsx_$1"; cp "$root/bin/$1.sh" "$work/rsx_$1/$1.sh"
   printf '\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle b.json f\n' >> "$work/rsx_$1/$1.sh"
   expect caught "P3 a keyed cosign sign-blob line added to bin/$1.sh is refused (only bin/release-sign.sh lists cosign)" "uses 'cosign'" scan "$work/rsx_$1/$1.sh" "$root/.github/policy/chain-scripts.json"; }
 for n in release-publish release-assets release-verify; do rsx "$n"; done
-EXPECT=337
+EXPECT=346
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

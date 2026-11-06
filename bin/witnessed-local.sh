@@ -27,7 +27,7 @@ kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")
 trap 'rm -rf "$kd"' EXIT HUP INT TERM
 openssl genpkey -algorithm ed25519 -out "$kd/key.pem"
 rc=0
-witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN --env-add-sensitive-key GH_TOKEN --env-add-sensitive-key GITHUB_TOKEN --env-add-sensitive-key APK_RELEASE_SIGNING_KEY --env-add-sensitive-key DOCKERHUB_USERNAME --env-add-sensitive-key DOCKERHUB_TOKEN --env-add-sensitive-key SIGSTORE_ID_TOKEN -o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?
+witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN --env-add-sensitive-key GH_TOKEN --env-add-sensitive-key GITHUB_TOKEN --env-add-sensitive-key APK_RELEASE_SIGNING_KEY --env-add-sensitive-key DOCKERHUB_USERNAME --env-add-sensitive-key DOCKERHUB_TOKEN --env-add-sensitive-key SIGSTORE_ID_TOKEN --env-add-sensitive-key RELEASE_KMS_KEY_REF --env-add-sensitive-key AWS_ACCESS_KEY_ID --env-add-sensitive-key AWS_SECRET_ACCESS_KEY --env-add-sensitive-key AWS_SESSION_TOKEN -o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?
 rm -rf "$kd"
 [ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }
 exit "$rc"
