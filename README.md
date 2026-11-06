@@ -12,7 +12,7 @@ through the Apache Maven Build Cache Extension (acceptance-tested on every
 push and release). Ships as
 a single static binary or a minimal container image (no shell, no base image), MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
-image is keylessly signed (Sigstore); every binary archive is covered by a
+image is signed with the release signing key and recorded in the Sigstore transparency log; every binary archive is covered by a
 signed checksums file; the release pipeline's Sign stage signs a SLSA
 provenance statement that names every image by digest. ["Verifying a release"][releasing-verify] has the commands.
 
