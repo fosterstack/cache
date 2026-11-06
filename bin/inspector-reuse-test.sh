@@ -1264,7 +1264,8 @@ PIN = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 norm = lambda s: " ".join((s or "").split())
 FORKP = "(" + FORK + ")"
 if which == "scan":
-    triggers = {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}
+    # merge_group is by design (REQ-DEP-005: the merge queue runs every required check)
+    triggers = {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}
     IF_SCAN = None                         # the Inspector job (the Witness adversarial pass): its own job, no matrix, so no matrix condition on any step
     IF_REST = FORK
     IF_SDAY = "always()"

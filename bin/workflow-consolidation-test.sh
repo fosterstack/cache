@@ -106,11 +106,13 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
-    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
-                             "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
+    "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
+    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift",
+                             {"contents": "read", "issues": "write"}, "agent", None,
+                             "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
+    "dependency-review": (None, {"contents": "read"}, None, None,
+                          "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -122,13 +124,13 @@ for jid, (name, perms, env, needs, cond) in MOVED.items():
         bad.append("job %s changed: %s" % (jid, got))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
-if d.get("permissions") != {"contents": "read"}:
+if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
 # the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
 LIVE = {"group": "vex-live-test", "cancel-in-progress": "false"}
 if any(j.get("concurrency") and not (jid == "live-test" and j.get("concurrency") == LIVE) for jid, j in jobs.items()):
     bad.append("ci.yml gained a job-level concurrency setting")   # the one top-level block is judged by judge_conc
-if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
+if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": "", "merge_group": ""}:
     bad.append("ci.yml's events changed: %s" % d.get("on"))
 for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
@@ -178,6 +180,8 @@ case_ci guard-widened            bad "d['jobs']['required-check-guard']['permiss
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
+case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
+case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
 case_ci live-test-cancels        bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
@@ -338,8 +342,8 @@ root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
+if on != {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
+    bad.append("scan.yml's events changed (pull requests, the merge queue, pushes to main and v* tags): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:

@@ -1862,6 +1862,39 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
+  - id: REQ-DEP-005
+    title: Every required check runs in the merge queue
+    statement: >
+      Every check the main branch requires shall also run in the merge queue,
+      on the queue's own commit, with the same pass bar. A check that reads the
+      pull request (pin age, dependency review, the review gate) shall read the
+      queue's commits instead and fail if it cannot. No required check shall be
+      skipped in the queue, except the landing marker check.
+    source: [.github/workflows/ci.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json, .github/workflows/agent-review-gate.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: 'owner RATIFIED Oct 22 2026, ops/docs/ratify/2026-10-22-merge-queue-checks.md; exception ruled by the owner Oct 28 2026 ("Yes: add the landing marker check as the second listed exception to my merge-queue rule.")'
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-DEP-005-AC1
+        given: any context in .github/policy/required-checks.json
+        when: the merge queue tests a group
+        then: "the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, except that marker-gate (the landing marker check) runs on the pull request only, by a job-level condition for the pull request event; the review gate's check is produced by the workflow_run job of AC3 instead; no pull_request or merge_group trigger of these workflows carries a path or branch filter; the allowlist check applies the same suppression rule in the queue as on the pull request (only a head branch auditor/* of this repository may change a suppression file) to the change of the queue entry the ref names, that is its commit compared with its first parent (each entry has its own run, and the queue's grouping is ALLGREEN, so every entry's run must pass), finding the pull request's head branch by one API lookup of the pull request the queue ref names, and a lookup that fails or is unclear fails the check; and a context the wiring test does not know fails the test, so a required check added later cannot be missed"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-005-AC2
+        given: a required check that reads the pull request (pin age and dependency review)
+        when: it runs on the merge_group event
+        then: it reads the queue's base and head commits instead of the pull request's, and it fails, never passes, when either is empty or the difference cannot be read; every step that names the pull request's base branch names the queue's too
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-005-AC3
+        given: the review gate (auditor-review-gate)
+        when: the merge queue tests a group
+        then: its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request, and is posted when the queue starts its CI run; it reads the queue's commits as git objects and runs nothing of them, and only when the queue branch it fetches ends at the head commit of the event; it demands a two-parent merge for every group commit (the queue's merge method must be MERGE; a squash or rebase queue fails every group; its grouping must be ALLGREEN, so that every entry's own run must pass, and the required-check guard fails when a merge_queue rule on main says otherwise) and the passed-audit record for the exact head of every pull request in the group; main's pin, allowlist (given the queue ref), pin-wiring and scanner judges pass over the queue head; it fails, never passes, when any of these cannot be read or does not hold; no scheduled job judges the queue's refs, and the pull request publisher and the scheduled sweep post nothing on a head that is the tip of a live queue branch, so a pull request cannot replace the queue's verdict; a verdict that is not posted leaves the check absent and the queue ejects the group; and the App token is held only by a separate job that publishes the verdict on the queue's head
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-DEP-004
     title: A held bump or drift dispatches the fixer
     statement: >
