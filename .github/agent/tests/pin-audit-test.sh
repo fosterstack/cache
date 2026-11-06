@@ -2251,7 +2251,6 @@ got += p.stdout.read()
 text = got.decode()
 assert "audit: phase: judging" in text and "not checked against the advisory lists" in text, text
 PY
-# a reader that is gone: the line-buffered marker print meets a closed stdout; that ends the run with exit 120 and no traceback.
 # The child waits (stdin) at a known point before its first write, the parent closes the reader, then releases it: so the write always meets a closed pipe.
 CASE="output: a run whose stdout reader has gone away ends with exit 120 and without a traceback"
 check python3 - "$aud" "$work/gh" "$work/r-clean" "$NOW" <<'PY'
@@ -2288,7 +2287,6 @@ msg = os.read(r, 4096)
 assert p.returncode == 2 and b"could not finish" in msg, (p.returncode, msg)
 assert os.get_blocking(w), "the deadline left O_NONBLOCK on the caller's stderr"
 PY
-# a real exit code 1 or 2 becomes 120 when the final flush of stdout fails (CPython does the same at shutdown); the handler adds that nothing else is printed
 CASE="output: a real exit code becomes 120, quietly, when the final flush of a closed stdout fails; with the reader open it stays"
 check python3 - "$aud" <<'PY'
 import subprocess, sys
@@ -2324,15 +2322,16 @@ CASE="markers: with --observations-out the history phase is printed again after 
 check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,history,judging,open pull requests,open pull request pins,nested references,exceptions"
 # a history read that stalls on a day that records observations: the deadline must name the history, not the phase before it
 mkdir -p "$work/shim-log"
-printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && { echo $$ >%s; exec sleep 60; }; done\nexec %s "$@"\n' "$work/shim-log/pid" "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && exec sleep 60; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
-( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
-# the audit ends itself with os._exit, which leaves the stalled git child (the shim's sleep) running: end it here, pass or fail
-if [ -s "$work/shim-log/pid" ]; then kill "$(cat "$work/shim-log/pid")" 2>/dev/null; fi; sleep 1
+( cd "$work" && PATH="$work/shim-log:$PATH" exec setsid timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) &
+grp=$!; wait "$grp" || rc=$?
+# the audit's os._exit leaves the stalled git child behind: end the whole process group this run started, pass or fail
+kill -- "-$grp" 2>/dev/null || true; sleep 1
 CASE="markers: a daily run with --observations-out whose history read passes --deadline exits 2 and its stderr says still in history"
 check test "$rc" -eq 2 -a "$(grep -cx 'audit: could not finish: still in history after 2 s' "$work/phstall.err")" -eq 1
 CASE="markers: no stalled git child of that run is left running"
-check sh -c 'test -s "$1" && ! kill -0 "$(cat "$1")" 2>/dev/null' _ "$work/shim-log/pid"
+check sh -c '! kill -0 -- "-$1" 2>/dev/null' _ "$grp"
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
