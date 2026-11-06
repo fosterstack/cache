@@ -1,12 +1,12 @@
 name: Evidence letter
 
-# The monthly signed evidence letter (REQ-REL-013; owner Oct 27, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md).
+# The monthly signed evidence letter (REQ-REL-013).
 # Once a month the first job, which has no identity token, fetches the month's release assets, checks their
 # signatures and makes the letter. The second job, the only one with an identity token, signs it with the KMS release
 # key, records its Rekor entry and attaches it to the latest published release. Only a run from main does either:
 # customers check the letter against the release key from our key manifest (docs/verify-release.md).
 # If any check fails, the first job fails and nothing is signed or published. It also fails until docs/controls.md
-# (the controls document, ratified rules 6 to 8) exists: the letter quotes it.
+# (the controls document) exists: the letter quotes it.
 
 on:
   schedule:

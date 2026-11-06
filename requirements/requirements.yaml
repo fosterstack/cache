@@ -1862,6 +1862,33 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
+  - id: REQ-DEP-004
+    title: A held bump or drift dispatches the fixer
+    statement: >
+      A held Dependabot major, or a required-check drift issue, shall send one
+      generic dispatch to the ops repository so an agent fixes our side; a
+      failed dispatch shall be a warning and never undo the hold.
+    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/ci.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: register row 76 (owner, Sep 29 2026), the cache side
+    confidence: implementation-only
+    deprecated: true
+    deprecated_reason: The fixer dispatch was removed from the repository (bin/dispatch-fixer.sh and the drift-fixer-dispatch job are gone); a held bump and a drift issue now stay as the issue the guard opened.
+    acceptance_criteria:
+      - id: REQ-DEP-004-AC1
+        given: a completed hold
+        when: the reviewer finishes it
+        then: it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-004-AC2
+        given: a required-check drift issue opened by the guard
+        when: hygiene has seen it
+        then: the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   - id: REQ-DEP-005
     title: Every required check runs in the merge queue
     statement: >

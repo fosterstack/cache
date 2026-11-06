@@ -702,7 +702,7 @@ check("F7 6: a good pair on a published release is verified once and exits 0",
 pr, lr = present([[("v0.4.0", False, pair("2026-11"))]], today="2027-01-05")
 check("F7 7: in January the month checked is the December before", one_line(pr) and "2026-12" in pr.stderr, pr.stderr)
 pr, lr = present([[V4]], FAIL_VERIFY="1")
-# F7 8 is the wiring case in .github/agent/tests/supply-chain-wiring-test.sh (the job reads only), not a case here
+# F7 8 is the wiring case in supply-chain-wiring-test.sh (the agent tests) (the job reads only), not a case here
 check("F7 9: a pair whose signature does not verify fails, in one line",
       one_line(pr) and pr.returncode == 1, (pr.stderr, lr))
 split = [("v0.4.0", False, pair("2026-10") + ["evidence-letter-2026-11.md"]),

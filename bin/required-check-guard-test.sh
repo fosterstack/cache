@@ -174,6 +174,7 @@ def audit(wf):
             "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
         ("ci.yml", "dependency-review", "the merge queue's base and head are named (REQ-DEP-005-AC2)"):
             "github.event_name == 'merge_group'",
+        ("ci.yml", "lint", "no shop words added to a file a customer can read"): "github.event_name == 'pull_request'",
         ("ci.yml", "gosec", "upload SARIF"): "always() && github.event.pull_request.head.repo.fork != true",
         ("scan.yml", "inspector", "Amazon Inspector - restore today's results (same-repo runs only)"):
             "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
@@ -233,6 +234,9 @@ def audit(wf):
         if not job: continue
         for st in job.get("steps") or []:
             blob = json.dumps(st)
+            # the title and body check reads the pull request's own text, which a queue commit has none of; its
+            # condition (an allowed one above) keeps it off the queue
+            if st.get("name") == "no shop words added to a file a customer can read": continue
             res("github.event.pull_request" not in blob or "github.event.merge_group" in blob
                 or "pull_request.head.repo.fork" in blob or "pull_request.head.repo.full_name" in blob,
                 "%s: step %r reads the pull request only where the queue's commits are read too"

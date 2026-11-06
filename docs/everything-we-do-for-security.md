@@ -33,10 +33,10 @@ vulnerability); this page is what we do.
 
 - **Every action in every workflow is pinned to a full commit digest.** A tag or a
   branch reference fails the check on every pull request, and the check also reads
-  the tag each digest claims to be ([pin checker](../.github/agent/bin/check-action-pins.py)).
+  the tag each digest claims to be (the pin checker, `check-action-pins.py`).
 - **Container images are named by digest.** An image a workflow runs, pulls or
   passes to an action must be a digest, never a tag, and the same checker fails
-  the pull request otherwise ([pin checker](../.github/agent/bin/check-action-pins.py)).
+  the pull request otherwise (the pin checker, `check-action-pins.py`).
 - **A new version waits seven days.** A pull request that moves a pinned version is
   held until that version has been public for seven days, by a server-side time
   ([supply-chain workflow](../.github/workflows/supply-chain.yml)). Two exceptions,

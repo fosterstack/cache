@@ -726,16 +726,16 @@ jobs:
           bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" \
             test-evidence/suite-floors.json
 
-      - name: "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)"
+      - name: "the release chain's Rekor check in key form: entries, retries, the pinned log key"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-rekor-key-test.sh bin/chain-rekor-key-test.sh
 
-      - name: "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)"
+      - name: "the release chain's trust files: exactly what the key and Rekor path reads"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-trust-files-test.sh bin/chain-trust-files-test.sh
 
-      - name: "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)"
+      - name: "the release key manifest: the root key's signature, the window, the revocation"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
 
-      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
+      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
 
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
@@ -873,10 +873,10 @@ jobs:
         run: bash bin/audit-record-test.sh
       - name: the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json queue-gate-judge-test.sh .github/agent/tests/queue-gate-judge-test.sh
-      - name: admission's tag signer — the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)
+      - name: admission's tag signer — the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
-      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue (handoff 0713 P8)
+      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-patch-wiring-test.sh bin/release-patch-wiring-test.sh
       - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json acceptance-maven-413-test.sh bin/acceptance-maven-413-test.sh
