@@ -222,7 +222,8 @@ def judge_db(d):
         if found is None:
             bad.append(f"the {eco} entry is missing")
             continue
-        if {k: v for k, v in found.items() if k != "groups"} != entry:
+        compared = {k: v for k, v in found.items() if k != "groups"} if eco == "gomod" else found
+        if compared != entry:
             bad.append(f"the {eco} entry is not unchanged")
         if "cooldown" in found:
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
@@ -394,6 +395,7 @@ mut_db("github-actions loses its cooldown", "github-actions entry has no 7-day c
 mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: eco(d, "pip").pop("cooldown"))
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))
 mut_db("gomod gets a cooldown", "gomod entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
+mut_db("docker gains a group", "docker entry is not unchanged", lambda d: eco(d, "docker").update(groups={"all": {"patterns": ["*"]}}))
 mut_db("docker gets a cooldown", "docker entry has a cooldown", lambda d: eco(d, "docker").update(cooldown={"default-days": "7"}))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
