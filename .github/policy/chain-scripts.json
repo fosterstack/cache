@@ -1725,7 +1725,7 @@
         "bin/vex-forms.py"
       ],
       "signs": "other",
-      "reason": "Release, step release-sign: cosign signatures made with the release KMS key (reached through the role and token file the Witness wrapper hands the step), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
       "sha256": "4e68f5b569736ef7ec01e5988d71b2a5d8d454252c68d48dda9ff0784e526ad0",
       "reads_env": [
         "DOCKERHUB_USERNAME",

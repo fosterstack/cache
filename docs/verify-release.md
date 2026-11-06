@@ -2,7 +2,7 @@
 
 DRAFT. Every line marked TO-VERIFY has not been run against a real release.
 For v0.2.x releases, use [Verify our images](verify-images.md).
-Every image and file of a v0.3.0 and later release is signed with the release key; each step below checks it with the release public key and a Rekor entry, not with a workflow identity.
+Every image and file of a v0.3.0 and later release is signed with the release key; each step below checks it with the release public key and a Rekor entry, not with a workflow identity. <!-- pinned: historical -->
 
 You need cosign, gh and jq. The steps cover both images: production and -fips.
 Set these once:
