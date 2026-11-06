@@ -510,7 +510,7 @@ PY
 
 # ---------- static checker (yaml/json/md on the file a rule lives in) ---------------------------------------------------
 cat >"$work/chk.py" <<'PY'
-import glob, json, os, re, sys, yaml
+import glob, json, os, re, subprocess, sys, yaml
 mode, path = sys.argv[1], sys.argv[2]
 arg = sys.argv[3] if len(sys.argv) > 3 else ""
 root = os.environ.get("ROOT", ".")
@@ -547,7 +547,16 @@ elif mode == "mel-fips":
         assert kv(b, "GOFIPS140", v), "fips recipe does not set GOFIPS140=%s (the version of the module build/locks/fips-module.txt names)" % v
     else: assert "GOFIPS140" not in b, "standard recipe mentions GOFIPS140"
 elif mode == "mel-fipsproof":
-    m = fipsmod(); p = pipe(load()); assert "go version -m" in p and re.search(r"GOFIPS140=%s(['\"\s]|$)" % re.escape(m), p), "no proof of the recorded %s" % m   # the id ends at a quote, whitespace or the end: a longer id with this one as its prefix is another module
+    # one whole-line grep (-x) on the build line, the id's dots escaped: a longer or shorter id is another module.
+    # Each bare '.' is the tab Go writes around "build" (the template allows no tab or bracket); -x anchors both ends.
+    m = fipsmod(); p = pipe(load()); want = "grep -Eqx '.build.GOFIPS140=%s' /tmp/fscache-gobuildinfo.txt" % m.replace(".", "\\.")
+    greps = [l.strip() for l in p.split("\n") if l.strip().startswith("grep ") and "/tmp/fscache-gobuildinfo.txt" in l]
+    assert "go version -m" in p and greps == [want], "the proof lines are %r, wanted exactly [%r]" % (greps, want)
+elif mode == "mel-proofrun":
+    # runs the recipe's own grep line (its text, the path swapped for arg) and exits with the grep's status
+    ln = [l.strip() for l in pipe(load()).split("\n") if l.strip().startswith("grep ") and "/tmp/fscache-gobuildinfo.txt" in l]
+    assert len(ln) == 1, "need exactly one proof grep line, got %d" % len(ln)
+    sys.exit(subprocess.run(["bash", "-c", ln[0].replace("/tmp/fscache-gobuildinfo.txt", arg)]).returncode)
 elif mode == "mel-go":
     d = load(); ps = pk(d["environment"])
     assert not any(re.match(r"go([-=.]|$)", p) for p in ps), "a Wolfi go package is installed"

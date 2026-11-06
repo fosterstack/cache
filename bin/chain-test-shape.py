@@ -255,7 +255,8 @@ MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
 # Rebuild's apk job installs the same pinned Go toolchain (release review R1, Oct 21: bin/build-apk.sh refuses to run in CI without the pinned Go at /usr/local/bin/fscache-go, REQ-CHAIN-005-AC2: Rebuild uses the same pinned tools as Build)
-# Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod) the way the chain installs Witness: a
+# Build's apk job installs the Go toolchain the melange build needs (bin/build-apk.sh refuses to run in CI without it)
+# the way the chain installs Witness: a
 # checksum-pinned `bash bin/install-scanner.sh go` run line, AFTER the Witness install (rule 68: Witness first) and before the downloads and the Witness step
 # (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
 # admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
@@ -270,6 +271,14 @@ ADMISSION_BASELINE = ('python3 -I bin/chain-verify.py admission-baseline --admis
     '--admission apk/ubuntu-24.04-arm/admission.json '
                       '--tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --out admission-baseline.json')
 INSTALL_GO = "bash bin/install-scanner.sh go"
+# rule 1 of the sandboxed build (ratify Oct 27): the requirements tool is Go source of the tagged commit, so its freeze
+# check runs in a job of its own, before Build's apk job:
+# contents: read, no secret, no token, no Witness. It writes freeze/freeze.txt (one `freeze-ok BASE` line per baseline
+# file at the tagged commit); the apk job downloads that
+# artifact and admission reads it. The pinned Go comes from the same line as Build's own install (INSTALL_GO): one pin
+# source.
+FREEZE_RUN = "bash bin/build-freeze.sh"
+FREEZE_ARTIFACT = {"name": "freeze", "path": "freeze"}
 # REQ-CHAIN-004-AC3 (rule 62, advisor 0393 item 1; advisor Oct 12 item 4): the VM runs melange and apko, each in the job that uses it: an apk job of Build and Rebuild installs
 # melange ONLY and an assemble job apko ONLY, from cache's bin/install-build-tools.sh, the pinned and checksummed installer (version and sha256 per tool and architecture, fixed
 # destination /usr/local/bin), one step, right after the Witness (and Go) install and so before admission; no secret, the same way as Witness and Go
@@ -294,6 +303,7 @@ SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snap
 SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Rebuild's verdict: named, so it can never be mistaken for a release verdict
 HOSTILE_IF = "${{ inputs.hostile }}"
 HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
+PROBE_RUN = "bash bin/chain-sandbox-probe.sh"      # the dry run's sandbox wall probe, a step of the apk job after its Witness steps
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 # Rebuild's assemble job exposes the sha256 of every record and of the verdict it made or consumed, for Sign (the Witness move, adversarial pass R2): a job output only that job can write
@@ -306,7 +316,10 @@ RAPK_CHECK_RUN = 'bash bin/rebuild-records-digests.sh --check "$RAPK_RECORDS" "$
 RAPK_JOBS = {"rapk": "ubuntu-24.04", "rapk-arm": "ubuntu-24.04-arm"}
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True,
+    # judged by freeze_job(): no Witness step, no mode, no tools
+    ("build", "freeze"): dict(kind="freeze", perm=PERM_PLAIN, gh=False, matrix=False, up=[("freeze", "freeze")]),
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze",
+    down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
@@ -347,7 +360,9 @@ def stage(path, family, allowed_path=None):
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
     if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed-local.sh)")
     jobs = d.get("jobs") or {}
-    names = ("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("apk", "assemble")
+    names = ("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("freeze", "apk", "assemble")
+    if "verify-freeze" in text: bad.append("a stage file names verify-freeze: only bin/build-freeze.sh, run by the "
+        "freeze job of Build, may run it")
     if set(jobs) != set(names):
         return bad + ["exactly the jobs %s required (one stage = one file = one identity), found %s" % (" and ".join(names), sorted(jobs))]
     allowed = None
@@ -357,7 +372,10 @@ def stage(path, family, allowed_path=None):
         except (OSError, ValueError):
             bad.append("the allowed-actions list %s is unreadable (fail closed)" % allowed_path)
     for name in names:
-        bad += ["%s: %s" % (name, m) for m in job(jobs[name], family, name, allowed)]
+        if name != "freeze" and "build-freeze" in json.dumps(jobs[name]):
+            bad.append("%s: only the freeze job runs bin/build-freeze.sh (it starts go of the tagged tree)" % name)
+        bad += ["%s: %s" % (name, m) for m in (freeze_job(jobs[name], allowed) if name == "freeze" else job(jobs[name],
+            family, name, allowed))]
     return bad
 
 
@@ -368,10 +386,59 @@ def pinned(uses, prefix, allowed):
     return allowed is None or u in allowed
 
 
+def freeze_job(j, allowed):
+    """The freeze job: a runner of its own, contents: read, no needs, no outputs, no env but the guard's, no secret.
+    Steps: checkout,
+    the mode guard (no if), then in release mode only the pinned Go, bin/build-freeze.sh and one upload. Nothing
+    else."""
+    bad = []
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
+    if set(j) - keys: bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
+    if j.get("runs-on") != "ubuntu-24.04": bad.append("the freeze job must run directly on the ubuntu-24.04 VM, got "
+        "%r" % j.get("runs-on"))
+    if j.get("permissions") != PERM_PLAIN: bad.append("permissions must be exactly %s (no token, no write), got "
+        "%s" % (PERM_PLAIN, j.get("permissions")))
+    steps = j.get("steps") or []
+    for s_ in steps:
+        u_ = (s_.get("uses") or "").split(" ")[0]
+        if allowed is not None and PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the "
+            "allowed-actions list" % u_)
+    want = 5
+    if len(steps) != want: bad.append("%d steps, the grammar has %d (checkout, the mode guard, the Go install, the "
+        "freeze script, the upload)" % (len(steps), want)); return bad
+    s = steps[0]
+    if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout",
+        allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
+        bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly "
+            "%s" % CHECKOUT_WITH)
+    s = steps[1]
+    if set(s) != {"name", "env",
+        "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
+        bad.append("step 2 must be exactly env %s, run: %s, and no if (the mode guard)" % (MODE_GUARD_ENV,
+            MODE_GUARD_RUN))
+    for k, cmd in ((2, INSTALL_GO), (3, FREEZE_RUN)):
+        s = steps[k]
+        if set(s) - {"run", "name", "if"} or str(s.get("run") or "").strip() != cmd or s.get("if") != MODE_RELEASE_IF:
+            bad.append("step %d must be exactly: run %s under if: %s (no env, no secret)" % (k + 1, cmd,
+                MODE_RELEASE_IF))
+    s = steps[4]
+    if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
+            or (s.get("with") or {}) != FREEZE_ARTIFACT or s.get("if") != MODE_RELEASE_IF):
+        bad.append("step 5 must be a pinned actions/upload-artifact with exactly name freeze and the ONE path freeze "
+            "under if: %s" % MODE_RELEASE_IF)
+    return bad
+
+
 def job(j, family, name, allowed):
     spec = JOBS[(family, name)]
     bad = []
-    keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if spec["matrix"] else (set() if spec.get("runner") else {"needs"}))
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
+    if spec["matrix"]:
+        keys |= {"strategy"} | ({"needs"} if spec.get("needs") else set())
+    elif not spec.get("runner"):
+        keys |= {"needs"}
+    if spec.get("needs") and j.get("needs") not in (spec["needs"], [spec["needs"]]):
+        bad.append("%s must need exactly %s, got %s" % (name, spec["needs"], j.get("needs")))
     if spec.get("expose") or spec.get("expose_records") or spec.get("expose_rapk"): keys.add("outputs")
     if set(j) - keys:
         bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
@@ -416,10 +483,15 @@ def job(j, family, name, allowed):
             run_ = str(x.get("run", "")).strip()
             kind = ("checkout" if k == 0 and set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/checkout", allowed) and (x.get("with") or {}) == CHECKOUT_WITH
                     else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
-                    else "install" if set(x) <= {"name", "run"} and run_ in PRE_INSTALLS else None)
+                    else "install" if set(x) <= {"name", "run"} and run_ in PRE_INSTALLS
+                    else "freeze-download" if (set(x) <= {"uses", "with", "name", "if"}
+                                               and pinned(x.get("uses"), "actions/download-artifact", allowed)
+                                               and (x.get("with") or {}) == FREEZE_ARTIFACT
+                                               and x.get("if") == MODE_RELEASE_IF) else None)
             if kind is None:
                 bad.append("step %d runs before admission (the first step that runs bin/witnessed-local.sh) and is not the checkout, the mode guard or a checksum-pinned "
-                           "install line: %s (nothing with an env, a token, a secret, a build command, a download or an upload may come before admission)"
+                           "install line or the one download of the freeze result: %s (nothing with an env, a token, "
+                           "a secret, a build command, another download or an upload may come before admission)"
                            % (k + 1, sorted(x)))
     i = 0
     s = steps[i]; i += 1
@@ -435,7 +507,8 @@ def job(j, family, name, allowed):
     if spec.get("setup_go"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != INSTALL_GO:
-            bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of admission's verify-freeze, right after Witness)" % (i, INSTALL_GO))
+            bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of the melange build, right "
+                "after Witness)" % (i, INSTALL_GO))
     for cmd in spec["tools"]:       # an apk job installs melange only, an assemble job apko only (advisor Oct 12, item 4)
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
@@ -447,8 +520,10 @@ def job(j, family, name, allowed):
                        "bin/install-build-tools.sh and before the downloads; no env, no if, no continue-on-error, no other argument, no other install)" % (i, cmd))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
-                or (s.get("with") or {}) != {"name": nm, "path": path_}):
+        # only the freeze result is downloaded in release mode alone
+        gated = s.get("if") == MODE_RELEASE_IF if nm == "freeze" else "if" not in s
+        if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
+                or (s.get("with") or {}) != {"name": nm, "path": path_} or not gated):
             bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
                        "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
     if spec.get("check_rapk"):       # A1: what assemble downloaded of each rapk record is what that rapk job uploaded (release mode only), checked before anything is built
@@ -470,6 +545,10 @@ def job(j, family, name, allowed):
         if set(s) - {"run", "name", "if"} or s.get("if") != MODE_SNAPSHOT_IF:
             bad.append("step %d (the snapshot Witness step) may carry only name, run and if: %s" % (i, MODE_SNAPSHOT_IF))
         bad += witness_seam(s.get("run") or "", snap, family)
+    if spec.get("probe"):        # the sandbox wall probe (sandboxed-build rules 3 and 5): the dry run's step, never in a release
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"name", "if", "run"} or s.get("if") != HOSTILE_IF or str(s.get("run") or "").strip() != PROBE_RUN:
+            bad.append("step %d must be exactly if: %s, run: %s (the dry run's sandbox wall probe; never in a release)" % (i, HOSTILE_IF, PROBE_RUN))
     if spec.get("expose"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
@@ -698,15 +777,17 @@ def listed(path, root):
 # text or does not parse is a finding (its children could not be followed). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on
 # the review list (its witness, go, crane and gitsign arms run in Build, so a change there gets the second review), and
-# install-build-tools.sh compiles nothing.
-# THE ONE KNOWN FINDING on the real tree: the admission step in bin/build-admit.py runs
-# `go -C tools/requirements run . verify-freeze` of the tagged tree. It is reported (rule 1 forbids it) while
-# its two lines are in the file; the decision is its own job before Build in stage-build.yml, in its own pull request.
-# Until that lands rule 1 is NOT done.
+# install-build-tools.sh compiles nothing. bin/build-freeze.sh is no root: a closure file that names it is a finding.
+# No finding is known on the real tree. The admission step in bin/build-admit.py runs no go: the requirements tool's
+# freeze check is the job `freeze` before Build (bin/build-freeze.sh), and admission reads its file.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
-            "bin/chain-hostile-step.sh", "bin/rebuild-records-digests.sh")
+            "bin/chain-hostile-step.sh", "bin/chain-sandbox-probe.sh", "bin/rebuild-records-digests.sh")
 NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+# The freeze job's script starts go of the tagged tree. It is no root of the closure; a closure file that names it or
+# lists
+# it in `runs` is a finding (ns_closure), and stage() lets only the freeze job run it.
+NS_FREEZE = "bin/build-freeze.sh"
 NS_NAME = re.compile(r"(?<![\w/.-])(?:\./)?(bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)")
 
 
@@ -755,14 +836,18 @@ def ns_closure(root):
         if p not in rows:
             bad.append("%s is started by a stage script but is not a row of chain-scripts.json" % p)
             continue
-        todo += rows[p].get("runs", [])
+        children = list(rows[p].get("runs", []))
         try:
             text = open(root + "/" + p, encoding="utf-8").read()
-            todo += [n for n in ns_named(p, text) if n != p and os.path.isfile(root + "/" + n)]
+            children += [n for n in ns_named(p, text) if n != p and os.path.isfile(root + "/" + n)]
         except (OSError, ValueError) as e:
             bad.append("%s cannot be followed: it %s (its children are not in the closure)" % (
                 p, "does not read as UTF-8 text" if isinstance(e,
                 UnicodeDecodeError) else str(e) if "parse" in str(e) else "cannot be read"))
+        if NS_FREEZE in children:
+            bad.append("%s reaches %s: only the freeze job runs it, and it starts go of the tagged tree" % (p,
+                NS_FREEZE))
+        todo += [n for n in children if n != NS_FREEZE]
     return sorted(seen), bad
 
 
@@ -794,28 +879,24 @@ def ns_shell(path, name):
 
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
-NS_KNOWN_FILE = "bin/build-admit.py"
-NS_KNOWN_LINES = (      # the two physical lines of the admission step's go run
-    '    rc, _, err = outcome(lambda: subprocess.run([ctx.go, "-C", "tools/requirements", "run", ".",'
-    ' "verify-freeze", base],',
-    '        capture_output=True, env=dict(os.environ, **{"GOTOOLCHAIN": "local"}), check=False))')
 NS_SHA = {
     "bin/admission-tag-signer.py": "03b66ea50f873de93047bfb4becd305ba6c81fcb1506584990ade81bd16bab40",
     "bin/apk-tool.py": "829d19762ea06ec615eb4e2a601112f4a05c9d4fcce3ec8ea1ddff7e7d00850f",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
-    "bin/build-admit.py": "bb6172792dcdb176d7971131d9112fdec21654d9c6b1af366af50f90cd535144",
-    "bin/build-apk-helper.py": "22f44e2d339f1d7208db2cdb5e53b5dab0f4acd4eead482bd05c858f0ff6a06b",
+    "bin/build-admit.py": "0a3c90e8451480bab06171bd51ef440e0630c4bfca9747a93c993c38d6194c81",
+    "bin/build-apk-helper.py": "fc97e57e3832ed10cdfc6fa4c56849ebfaaf48e1398673459cc0e5e61dba144c",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
+    "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
     "bin/chain-verify.py": "8913741c8e9470165392fe96c72e4611d96507423a8c6e7bbf625262df77a50c",
     "bin/chain_common.py": "c007d131524a5ca82c17f3ca0829bbfb52c19303f093e34a0ae1d3fd0b459238",
     "bin/chain_hostile.py": "377ac8e8f5440fb51616ae937416ba0a206c70bce93999270c2df5cfb9c92d0c",
     "bin/chain_items.py": "efeca58af8a332042878efc6cfaf58825fc45f5f4a59ce7e3ef7d7ad99ea5b3c",
     "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
-    "bin/install-host-bwrap.py": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4",
+    "bin/install-host-bwrap.py": "d980094338b3a8f12019d0066090bc564ce50f5d3bd06d6a3205b221cbffdf9d",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
     "bin/oci-digest.py": "876eedcb5b1eb7fb0c98a68e3d984ae2221be4600ea8063b79f5b0177f5b38ec",
@@ -825,7 +906,7 @@ NS_SHA = {
 
 
 def ns_held(path, raw):
-    """A closure file held whole by sha256; the one known finding is reported while its lines are in the file."""
+    """A closure file held whole by sha256."""
     want, got = NS_SHA.get(path), hashlib.sha256(raw).hexdigest()
     bad = []
     if want is None:
@@ -833,13 +914,6 @@ def ns_held(path, raw):
     elif got != want:
         bad.append("%s: sha256 %s is not the held %s; a file held whole changes only with a re-pin of NS_SHA in "
                    "bin/chain-test-shape.py (short-list review, with this file's diff)" % (path, got[:12], want[:12]))
-    if path == NS_KNOWN_FILE:
-        text = raw.decode("utf-8", "replace").split("\n")
-        for n in range(1, len(text)):
-            if (text[n - 1], text[n]) == NS_KNOWN_LINES:
-                bad.append("%s:%d `%s` runs go of the tagged tree outside melange (sandboxed-build rule 1 is NOT done: "
-                           "the admission step's go run is its own job before Build)"
-                           % (path, n, text[n - 1].strip()[:100]))
     return bad
 
 
@@ -1550,8 +1624,8 @@ stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml sup
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml"})
-    bad = ["workflow file %s was added (the only new file of v0.3.0 is stage-sign.yml, rule 52)" % f for f in added]
+    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "customer-words-edited.yml"})
+    bad = ["workflow file %s was added (stage-sign.yml is the only new signing file of v0.3.0, rule 52; customer-words-edited.yml is the one other new file, decision 98, Oct 3)" % f for f in added]
     return bad + ["%s still exists (PR 2 removes it, rules 50 and 61)" % f for f in ("stage-image.yml", "stage-admission.yml") if f in have]
 
 

@@ -455,19 +455,19 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61; 19 today, the list below): after the consolidation PRs the workflow directory holds exactly
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61; 19 after that; 20 today with customer-words-edited.yml, a new file under the Oct 3 amendment because ci.yml's pull_request must stay unfiltered, reported to the owner; the list below): after the consolidation PRs the workflow directory holds exactly
 # the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
 # stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
-stage-sign.yml supply-chain.yml"
+stage-sign.yml supply-chain.yml customer-words-edited.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 19:
-    print("the ratified list is not 19 files"); sys.exit(1)
+if len(want) != 20:
+    print("the ratified list is not 20 files"); sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):

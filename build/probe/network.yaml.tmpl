@@ -1,0 +1,20 @@
+# Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: network. Never published.
+# The probe renders it into a temporary folder (@BUSYBOX@, @RECORD@, @KEYDIR@ are replaced there) and runs it sealed.
+# 192.0.2.1 (TEST-NET-1) never answers, so the fetch alone cannot tell sealed from open: any route in
+# /proc/net/route means the namespace is open; the control reads the table, so a sandbox without it is a probe error,
+# never a held wall.
+package:
+  name: probe-network
+  version: 0.0.1
+  epoch: 0
+  description: test-only recipe of the sandbox wall probe, wall network
+  copyright:
+    - license: MIT
+environment:
+  contents:
+    packages:
+      - @BUSYBOX@
+pipeline:
+  - runs: |
+      if wget -T 3 -q -O /dev/null http://192.0.2.1:9/; then exit 1; fi
+      if grep -qv '^Iface' /proc/net/route; then exit 1; fi

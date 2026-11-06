@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27, REQ-SUP-001-AC34, REQ-SUP-001-AC35
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
 #   python3 bin/pin-age-check.py --root REPO --base REV --head REV --fixtures FILE [--json FILE] [--now ISO] [--min-days N]
 #   exit 0: nothing moved, or every moved version is old enough; exit 1: a moved version is too young or its age cannot be proven.
 #   An item is "<kind>:<name>@<version>"; kinds: action (version = the pinned commit), tool (the installer actions' version inputs and install-scanner.sh's
-#   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest).
+#   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest), apk (name@version of a row of build/locks/vm-kernel.lock; the row's sha256 is its sum).
 #   Fixtures: {"now": ISO, "times": {ITEM: {"time": ISO, "source": S}}, "first_seen": {ITEM: ISO}}. Sources that count: github-release, pypi, go-index,
 #   registry-push. A source of commit-date, tag-date or image-config is NEVER a proof (the publisher or the builder controls it).
 set -euo pipefail
@@ -5223,7 +5223,6 @@ ac.load_file_pins = lambda *x, **k: {}
 ac.FilePinSource = lambda *x: None
 ac.Live = lambda *x: None
 ac.check = lambda *x: [{"item": ITEM, "label": "", "ok": False, "proof": None, "reason": REASON}]
-ac.load_ruled_text = lambda *x, **k: {("scripts/run.sh", "a thing", LINE.split(":", 1)[0], "h1"): ("ruled", 1)}
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
     rc = ac._run(a, [item("moved")], None, 0)
@@ -5240,5 +5239,625 @@ items = [r["item"] for r in rows]
 # the data file keeps the raw text
 assert ITEM in items and "unmeasured:" + PATH in items and KEY in items, items
 PY
+# --- the kernel lock rows are in the inventory: a moved row is aged like any other pin (REQ-SUP-001-AC2, AC3) -----------------------------
+# The aged file is build/locks/vm-kernel.lock (the constant KERNEL_LOCK in pin-inventory.py): one row per line, "<name>=<version> sha256:<64 hex>", the name
+# may carry an "<arch>/" prefix; blank lines and "#" lines are ignored. An item is kind "apk", key "apk:<name>@<version>", and the row's sha256 is its sum, so
+# the same version with a new sha256 is a NEW item (its clock restarts). The Wolfi lock files and build/archive.json are NOT listed, on purpose (cases f, g).
+# The row format is read by ONE function of pin-inventory.py; if the real file differs, only that function and the row helpers below change.
+H1=$(printf '1%.0s' $(seq 64)); H2=$(printf '2%.0s' $(seq 64)); H3=$(printf '3%.0s' $(seq 64)); H4=$(printf '4%.0s' $(seq 64))
+rowx1="x86_64/linux-virt=6.18.60-r0 sha256:$H1"; rowx2="x86_64/linux-virt=6.18.61-r0 sha256:$H2"
+rowa1="aarch64/linux-virt=6.18.60-r0 sha256:$H3"; rowa2="aarch64/linux-virt=6.18.61-r0 sha256:$H4"
+rowx1b="x86_64/linux-virt=6.18.60-r0 sha256:$H2"       # the same version as rowx1, a different apk
+KX2="apk:x86_64/linux-virt@6.18.61-r0"; KA2="apk:aarch64/linux-virt@6.18.61-r0"; KX1="apk:x86_64/linux-virt@6.18.60-r0"
+D2=$(d 2); D8=$(d 8)
+# lcase NAME PATH [python edit run in the repo for the head commit]: a copy of the base repository whose base commit holds $work/NAME.b at PATH (when that
+# file exists) and whose head commit holds $work/NAME.h at PATH (when that file exists), then the optional edit.
+lcase() {
+  local n=$1 p=$2
+  rm -rf "${work:?}/${n:?}"; cp -R "$base" "$work/$n"
+  ( cd "$work/$n"
+    mkdir -p "$(dirname "$p")"
+    if [ -f "$work/$n.b" ]; then cp "$work/$n.b" "$p"; fi
+    git add -A; git -c user.name=t -c user.email=t@x commit -q --allow-empty -m base2
+    if [ -f "$work/$n.h" ]; then cp "$work/$n.h" "$p"; fi
+    if [ -n "${3:-}" ]; then python3 -c "$3"; fi
+    git add -A; git -c user.name=t -c user.email=t@x commit -q --allow-empty -m head )
+}
+K=build/locks/vm-kernel.lock
+printf '%s\n' "$rowx1" >"$work/lca.b";  printf '%s\n' "$rowx2" >"$work/lca.h";  lcase lca "$K"
+printf '%s\n' "$rowx1" >"$work/lcc.b";  cp "$work/lcc.b" "$work/lcc.h";         lcase lcc "$K" "import pathlib; pathlib.Path('README.md').write_text('hi')"
+printf '%s\n%s\n' "$rowx1" "$rowa1" >"$work/lcd.b"; printf '%s\n%s\n' "$rowx2" "$rowa2" >"$work/lcd.h"; lcase lcd "$K"
+printf '%s\n' "$rowx1" >"$work/lce.b";  printf '%s\n' "$rowx1b" >"$work/lce.h"; lcase lce "$K"
+printf 'bubblewrap=0.13.1-r0 sha256:%s\n' "$H1" >"$work/lcf.b"; printf 'bubblewrap=0.13.2-r0 sha256:%s\n' "$H2" >"$work/lcf.h"; lcase lcf build/locks/host-tools.lock
+printf '{"schema": 1, "artifact": "x@sha256:%s", "files": []}\n' "$H1" >"$work/lcg.b"; printf '{"schema": 1, "artifact": "x@sha256:%s", "files": []}\n' "$H2" >"$work/lcg.h"; lcase lcg build/archive.json
+printf '%s\n%s\n' "$rowx1" "$rowa1" >"$work/lch.b"; printf '# the kernel rows, edited\n\n%s\n\n%s\n\n' "$rowa1" "$rowx1" >"$work/lch.h"; lcase lch "$K"
+printf '%s\n%s\n' "$rowx1" "$rowa1" >"$work/lci.b"; printf '%s\n' "$rowx1" >"$work/lci.h"; lcase lci "$K"
+printf '%s\n' "$rowx1" >"$work/lcj.b";  printf '%s\n' "$rowx2" >"$work/lcj.h";  lcase lcj "$K"
+# case g needs the kernel file present in BOTH commits (so only build/archive.json moves): add it to the base commit and the head commit of lcg
+( cd "$work/lcg"; git checkout -q HEAD~1; mkdir -p build/locks; printf '%s\n' "$rowx1" >"$K"; git add -A; git -c user.name=t -c user.email=t@x commit -q -m base3
+  cp "$work/lcg.h" build/archive.json; git add -A; git -c user.name=t -c user.email=t@x commit -q -m head2; git checkout -q -B master )
+
+LCHK=$chk; LINV=$here/../supply-chain/pin-inventory.py
+# lrun NAME FIXTURES-JSON -> rc, $work/NAME.out, $work/NAME.json with the checker $LCHK
+lrun() {
+  echo "$2" >"$work/$1.fx.json"; rc=0
+  python3 "$LCHK" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/$1.fx.json" --now "$NOW" --json "$work/$1.json" >"$work/$1.out" 2>&1 || rc=$?
+}
+fx1() { echo "{\"times\": {}, \"first_seen\": {\"$1\": \"$2\"}}"; }
+lc_a() { lrun lca "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 1 && grep -qi 'too young' "$work/lca.out"; }
+lc_b() { lrun lca "$(fx1 "$KX2" "$D8")"; test "$rc" -eq 0 && grep -q "$KX2" "$work/lca.out"; }
+lc_c() { lrun lcc '{"times": {}}'; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lcc.out"; }
+lc_d() {
+  lrun lcd "{\"times\": {}, \"first_seen\": {\"$KX2\": \"$D8\", \"$KA2\": \"$D2\"}}"; test "$rc" -eq 1 && grep -q "$KA2" "$work/lcd.out" || return 1
+  python3 -I - "$work/lcd.json" "$KX2" "$KA2" <<'PY'
+import json, sys
+rows = {r["item"]: r["ok"] for r in json.load(open(sys.argv[1]))["moved"]}
+assert rows.get(sys.argv[2]) is True and rows.get(sys.argv[3]) is False, rows
+PY
+}
+lc_e() { lrun lce "$(fx1 "$KX1" "$D2")"; test "$rc" -eq 1 && grep -qi 'too young' "$work/lce.out"; }
+lc_f() { lrun lcf "$(fx1 "apk:bubblewrap@0.13.2-r0" "$D2")"; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lcf.out"; }
+lc_g() { lrun lcg '{"times": {}}'; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lcg.out"; }
+lc_h() { lrun lch '{"times": {}}'; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lch.out"; }
+lc_h2() { lrun lci '{"times": {}}'; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lci.out"; }
+lc_i() { lrun lcj '{"times": {}}'; test "$rc" -eq 1 && grep -qi 'age not provable' "$work/lcj.out"; }
+lc_u() {   # the inventory itself lists the row: kind apk, key, a sum that follows the apk's sha256
+  python3 -I - "$LINV" "$work/lce" "$work/lca" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def apks(root, rev):
+    return {k: v for k, v in inv.load_at(root, rev).items() if k.startswith("apk:")}
+a_base, a_head = apks(sys.argv[2], "HEAD~1"), apks(sys.argv[2], "HEAD")
+key = "apk:x86_64/linux-virt@6.18.60-r0"
+assert list(a_base) == [key] and list(a_head) == [key], (a_base, a_head)
+it = a_head[key]
+assert it.kind == "apk" and it.name == "x86_64/linux-virt" and it.version == "6.18.60-r0", (it.kind, it.name, it.version)
+assert a_base[key].sum and it.sum and a_base[key].sum != it.sum, "the same version with another sha256 must have another sum"
+two = apks(sys.argv[3], "HEAD")
+assert list(two) == ["apk:x86_64/linux-virt@6.18.61-r0"], two
+PY
+}
+# --- round 1 (seats A, B, D): the reader refuses what it cannot read, and the rows are judged like every other pin (G1 to G10) ------------------
+HXL=$(printf 'abcdef01%.0s' $(seq 8)); HXU=$(printf '%s' "$HXL" | tr a-f A-F); H63=${H1:0:63}; H65="${H1}a"
+cat >"$work/lw.py" <<'PY'
+import os, pathlib
+K = "build/locks/vm-kernel.lock"
+def _clear(p):
+    if os.path.islink(p) or os.path.exists(p):
+        os.unlink(p)
+def w(text, path=K):
+    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True); _clear(p)
+    p.write_bytes(text if isinstance(text, bytes) else text.encode())
+def link(target, path=K):
+    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True); _clear(p); os.symlink(target, p)
+def rm(path=K):
+    _clear(path)
+PY
+pyi() { printf "import sys; sys.path.insert(0, '%s'); from lw import *; %s" "$work" "$1"; }
+# lcase2 NAME 'python for the base commit' 'python for the head commit' (helpers w(text[,path]), link(target[,path]), rm([path]) from $work/lw.py)
+lcase2() {
+  local n=$1
+  rm -rf "${work:?}/${n:?}"; cp -R "$base" "$work/$n"
+  ( cd "$work/$n"
+    python3 -c "$(pyi "$2")"; git add -A; git -c user.name=t -c user.email=t@x commit -q --allow-empty -m base2
+    python3 -c "$(pyi "$3")"; git add -A; git -c user.name=t -c user.email=t@x commit -q --allow-empty -m head )
+}
+RM="pathlib.Path('README.md').write_text('hi')"
+# G1: the lock path is a symlink: refused (exit 2), the target's name is never parsed
+lcase2 lg1a "w('$rowx1\n')" "link('elsewhere.txt')"
+lcase2 lg1b "w('$rowx1\n')" "link('x86_64/linux-virt=6.18.62-r0 sha256:$H4')"          # the link's TARGET text is itself a valid row
+lcase2 lg1c "w('$rowx1\n')" "w('$rowx2\n', 'build/locks/real.lock'); link('real.lock')"   # a link to a real file holding a valid row
+lcase2 lg1w "w('$rowx1\n')" "$RM"
+( cd "$work/lg1w" && printf '%s\n' "$rowx2" >build/locks/real.lock && python3 -c "$(pyi "link('real.lock')")" )   # the symlink exists only in the working tree
+# G2: the same name=version twice
+lcase2 lg2a "w('$rowx1\n')" "w('$rowx2\nx86_64/linux-virt=6.18.61-r0 sha256:$H3\n')"
+lcase2 lg2b "w('$rowx1\n')" "w('x86_64/linux-virt=6.18.61-r0 sha256:$H3\n$rowx2\n')"
+lcase2 lg2c "w('$rowx1\n')" "w('$rowx2\n$rowx2\n')"
+# G3: the file exists and holds no row
+lcase2 lg3a "w('$rowx1\n')" "w('')"
+lcase2 lg3b "w('$rowx1\n')" "w('# only a comment\n')"
+lcase2 lg3c "w('$rowx1\n')" "w('\n\n   \n')"
+lcase2 lg3d "pass" "w('')"
+lcase2 lg3e "pass" "$RM"
+lcase2 lg3f "w('$rowx1\n')" "rm()"
+# G4: the row cache#840 wrote (no arch prefix)
+line4="linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e"
+lcase2 lg4 "pass" "w('$line4\n')"
+# G5: a row that cannot be read stops the check (exit 2), whatever else the file holds
+g5() { local id=$1 content=$2; lcase2 "lg5_$id" "w('$rowx1\n')" "w($content)"
+  eval "lc_g5_$id() { lrun lg5_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'its age cannot be judged' \"\$work/lg5_$id.out\"; }"; G5IDS="$G5IDS g5_$id"; }
+G5IDS=""
+g5 hex63  "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$H63\n'"
+g5 hex65  "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$H65\n'"
+g5 nosum  "'$rowx2\nx86_64/linux-virt=6.18.62-r0\n'"
+g5 upper  "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$HXU\n'"
+g5 eq2    "'$rowx2\nx86_64/linux-virt=6.18.62=r0 sha256:$H1\n'"
+g5 junk   "'$rowx2\nthis is not a row\n'"
+g5 nul    "b'$rowx2\nx86_64/linux-virt=6.18.62-r0\x00 sha256:$H1\n'"
+g5 tail   "'$rowx2\nx86_64/linux-virt=6.18.62-r0 sha256:$H1 # note\n'"
+# G6: apk versions the row grammar takes, is_pin takes too
+lcase2 lg6 "pass" "w('x86_64/openssl=1.1.1w-r0 sha256:$H1\nx86_64/tzdata=2023c-r0 sha256:$H2\n')"
+# G8: a tracked kernel lock that cannot be read in the working tree
+lcase2 lg8 "w('$rowx1\n')" "$RM"
+( cd "$work/lg8" && rm -f build/locks/vm-kernel.lock && mkdir build/locks/vm-kernel.lock )      # tracked path, a directory now: opening it fails like an unreadable file would
+# G9: the row cap is 500
+rows500=$(python3 -c "import hashlib; print(''.join('pkg%04d=1.0-r0 sha256:%s\n' % (i, hashlib.sha256(str(i).encode()).hexdigest()) for i in range(500)))")
+rows501=$(python3 -c "import hashlib; print(''.join('pkg%04d=1.0-r0 sha256:%s\n' % (i, hashlib.sha256(str(i).encode()).hexdigest()) for i in range(501)))")
+printf '%s' "$rows500" >"$work/rows500.txt"; printf '%s' "$rows501" >"$work/rows501.txt"
+lcase2 lg9a "w(open('$work/rows500.txt').read())" "w(open('$work/rows500.txt').read()); $RM"
+lcase2 lg9b "w(open('$work/rows501.txt').read())" "w(open('$work/rows501.txt').read()); $RM"
+
+fx0='{"times": {}}'
+lc_g1a() { lrun lg1a "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg1a.out"; }
+lc_g1b() { lrun lg1b "$(fx1 "apk:x86_64/linux-virt@6.18.62-r0" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg1b.out"; }
+lc_g1c() { lrun lg1c "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg1c.out"; }
+lc_g1w() {   # the working-tree path (rev None): a symlinked kernel lock is refused by tree_files and by load_at
+  python3 -I - "$LINV" "$work/lg1w" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+for fn in (lambda: inv.tree_files(sys.argv[2], None), lambda: inv.load_at(sys.argv[2], None)):
+    try:
+        fn()
+    except RuntimeError as e:
+        assert "vm-kernel.lock" in str(e), str(e)
+    else:
+        raise AssertionError("a symlinked kernel lock in the working tree was read")
+PY
+}
+lc_g2a() { lrun lg2a "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg2a.out"; }
+lc_g2b() { lrun lg2b "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg2b.out"; }
+lc_g2c() { lrun lg2c "$(fx1 "$KX2" "$D2")"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg2c.out"; }     # decision: two IDENTICAL rows are an error too
+lc_g3a() { lrun lg3a "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3a.out"; }
+lc_g3b() { lrun lg3b "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3b.out"; }
+lc_g3c() { lrun lg3c "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3c.out"; }
+lc_g3d() { lrun lg3d "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg3d.out"; }
+lc_g3e() { lrun lg3e "$fx0"; test "$rc" -eq 0 && grep -qi 'no pin moved' "$work/lg3e.out"; }            # a missing file stays allowed
+lc_g3f() { lrun lg3f "$fx0"; test "$rc" -eq 0 && ! grep -q 'apk:' "$work/lg3f.out"; }                   # so does a file that is removed
+lc_g4a() { lrun lg4 "$(fx1 "apk:linux-virt@6.18.60-r0" "$D2")"; test "$rc" -eq 1 && grep -qi 'too young' "$work/lg4.out"; }
+lc_g4b() { lrun lg4 "$(fx1 "apk:linux-virt@6.18.60-r0" "$D8")"; test "$rc" -eq 0 && grep -q 'apk:linux-virt@6.18.60-r0' "$work/lg4.out"; }
+lc_g4u() {
+  python3 -I - "$LINV" "$work/lg4" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+it = inv.load_at(sys.argv[2], "HEAD").get("apk:linux-virt@6.18.60-r0")
+assert it is not None and it.kind == "apk" and it.name == "linux-virt" and it.version == "6.18.60-r0" and it.sum, it
+PY
+}
+lc_g6a() {
+  lrun lg6 "{\"times\": {}, \"first_seen\": {\"apk:x86_64/openssl@1.1.1w-r0\": \"$D2\", \"apk:x86_64/tzdata@2023c-r0\": \"$D2\"}}"
+  test "$rc" -eq 1 && test "$(grep -ci 'too young' "$work/lg6.out")" -ge 2 && ! grep -qi 'not a pin' "$work/lg6.out"
+}
+lc_g6b() {
+  lrun lg6 "{\"times\": {}, \"first_seen\": {\"apk:x86_64/openssl@1.1.1w-r0\": \"$D8\", \"apk:x86_64/tzdata@2023c-r0\": \"$D8\"}}"
+  test "$rc" -eq 0 && grep -q 'apk:x86_64/openssl@1.1.1w-r0' "$work/lg6.out" && grep -q 'apk:x86_64/tzdata@2023c-r0' "$work/lg6.out"
+}
+lc_g6u() {
+  python3 -I - "$LCHK" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pac", sys.argv[1]); pac = importlib.util.module_from_spec(spec); spec.loader.exec_module(pac)
+for v in ("1.1.1w-r0", "2023c-r0", "6.18.60-r0", "20260909-r3", "0.13.1-r0", "1.0b-r0"):
+    assert pac.is_pin(v), v
+for v in ("main", "latest", "1.*", "3.x", ">=1.2", "~1.2.3", "nightly", "", "1.2.3 || 2.0", "3x", "1x", "2.x-r0"):
+    assert not pac.is_pin(v), v
+PY
+}
+lc_g8() {   # the working-tree read of the kernel lock fails: tree_files RAISES (as for PERSONA_TOOLS), it does not skip the file
+  python3 -I - "$LINV" "$work/lg8" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+try:
+    inv.tree_files(sys.argv[2], None)
+except RuntimeError as e:
+    assert "vm-kernel.lock" in str(e), str(e)
+else:
+    raise AssertionError("an unreadable kernel lock was skipped")
+PY
+}
+lc_g9a() { lrun lg9a "$fx0"; test "$rc" -eq 0 && grep -qi 'no pin moved' "$work/lg9a.out"; }          # exactly 500 rows are accepted
+lc_g9b() { lrun lg9b "$fx0"; test "$rc" -eq 2 && grep -q 'cannot run' "$work/lg9b.out"; }              # 501 are refused
+lc_g10a() { python3 -I - "$LINV" <<'PY'
+import sys
+head = "".join(open(sys.argv[1]).readlines()[:14])
+assert "apk" in head, "the item-kind list in the header of pin-inventory.py does not name apk"
+PY
+}
+lc_g10b() { python3 -I - "$here/pin-age-check-test.sh" <<'PY'
+import sys
+head = "".join(open(sys.argv[1]).readlines()[:16])
+assert "apk" in head, "the header of pin-age-check-test.sh does not name apk"
+PY
+}
+# --- round 2 (seat A): the ROW parser refuses a version that is not a pin, also when the row did not change ------------------------------------
+# A row whose version is main, 3x, 1x, latest or x is read by the row grammar but is no pin; if it sits unchanged in base and head nothing "moves" and the check
+# would pass with it in the file. The parser itself must refuse it (exit 2, "not a pin"), changed or not.
+rp() {   # ID VERSION
+  local id=$1 ver=$2
+  lcase2 "lrp_$id" "w('$rowx1\n')" "w('$rowx1\nx86_64/badver=$ver sha256:$H3\n')"      # the bad row is NEW in the head
+  lcase2 "lru_$id" "w('$rowx1\nx86_64/badver=$ver sha256:$H3\n')" "$RM"                # the bad row is in BOTH commits: the hole
+  eval "lc_rp_$id() { lrun lrp_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lrp_$id.out\" && grep -qi 'not a pin' \"\$work/lrp_$id.out\" && grep -q 'vm-kernel.lock' \"\$work/lrp_$id.out\"; }"
+  eval "lc_ru_$id() { lrun lru_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lru_$id.out\" && grep -qi 'not a pin' \"\$work/lru_$id.out\"; }"
+  RPIDS="$RPIDS rp_$id ru_$id"
+}
+RPIDS=""
+rp main main; rp 3x 3x; rp 1x 1x; rp latest latest; rp x x
+lc_rv() {   # the row parser itself: bad versions raise RuntimeError naming the file and saying "not a pin"; good ones become apk items
+  python3 -I - "$LINV" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pin_inventory", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+for v in ("main", "3x", "1x", "latest", "x"):
+    try:
+        inv.inventory({inv.KERNEL_LOCK: "x86_64/badver=%s sha256:%s\n" % (v, "3" * 64)})
+    except RuntimeError as e:
+        assert "not a pin" in str(e).lower() and "vm-kernel.lock" in str(e), (v, str(e))
+    else:
+        raise AssertionError("the row parser accepted the version %r" % v)
+for v in ("1.1.1w-r0", "2023c-r0", "6.18.60-r0"):
+    items = inv.inventory({inv.KERNEL_LOCK: "x86_64/linux-virt=%s sha256:%s\n" % (v, "4" * 64)})
+    assert list(items) == ["apk:x86_64/linux-virt@" + v] and items["apk:x86_64/linux-virt@" + v].kind == "apk", (v, list(items))
+real = "linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e\n"
+items = inv.inventory({inv.KERNEL_LOCK: real})
+assert list(items) == ["apk:linux-virt@6.18.60-r0"] and items["apk:linux-virt@6.18.60-r0"].sum, list(items)
+PY
+}
+LCOLD="a b c d e f g h h2 i u"
+LCNEW="g1a g1b g1c g1w g2a g2b g2c g3a g3b g3c g3d g3e g3f g4a g4b g4u$G5IDS g6a g6b g6u g8 g9a g9b g10a g10b rv$RPIDS"
+LCIDS="$LCOLD $LCNEW"
+lc_all() { LCFAIL=""; local i; for i in ${LCSEL:-$LCIDS}; do "lc_$i" >/dev/null 2>&1 || LCFAIL="$LCFAIL $i"; done; }
+CASE="kernel row a: one moved row, first seen 2 days ago: FAILS (exit 1) and says it is too young"; check lc_a
+CASE="kernel row b: the same row first seen 8 days ago passes (exit 0) and the check NAMES the item"; check lc_b
+CASE="kernel row c: no lock row moves (another file changes): exit 0, no apk item"; check lc_c
+CASE="kernel row d: two rows move, only the aarch64 one is young: exit 1, that item is the only one that fails"; check lc_d
+CASE="kernel row e: the same version with a new sha256 (a replaced apk) is a NEW item: young, so FAILS (exit 1)"; check lc_e
+CASE="kernel row f: a Wolfi lock file row moves, young: exit 0, no apk item (ruled exempt, not a silent gap)"; check lc_f
+CASE="kernel row g: only build/archive.json moves: exit 0, no apk item"; check lc_g
+CASE="kernel row h: rows reordered, a comment edited, blank lines added: nothing moved, exit 0"; check lc_h
+CASE="kernel row h2: a row removed: nothing moved, exit 0"; check lc_h2
+CASE="kernel row i: a moved row with no first-seen proof: exit 1 'age not provable' (never a pass)"; check lc_i
+CASE="kernel row u: the inventory lists the row as kind apk with key apk:<name>@<version>, and the sha256 is its sum"; check lc_u
+CASE="kernel row G1 a kernel lock that is a symlink (git mode 120000) is refused: exit 2, 'cannot run'"; check lc_g1a
+CASE="kernel row G1 a symlink whose TARGET TEXT is a valid row is refused (exit 2), its name is never parsed as a row"; check lc_g1b
+CASE="kernel row G1 a symlink to a real file holding a valid row is still refused (exit 2)"; check lc_g1c
+CASE="kernel row G1 a symlinked kernel lock in the working tree (rev None) is refused by tree_files and load_at"; check lc_g1w
+CASE="kernel row G2 two rows with one name=version and different digests: exit 2 (identity never merges)"; check lc_g2a
+CASE="kernel row G2 the same two rows in the other order: exit 2"; check lc_g2b
+CASE="kernel row G2 two IDENTICAL rows: exit 2 too (a duplicate row is an error)"; check lc_g2c
+CASE="kernel row G3 the kernel lock exists and is empty: exit 2 (the control may not cover nothing)"; check lc_g3a
+CASE="kernel row G3 the kernel lock holds only a comment: exit 2"; check lc_g3b
+CASE="kernel row G3 the kernel lock holds only blank lines: exit 2"; check lc_g3c
+CASE="kernel row G3 a NEW kernel lock that is empty: exit 2"; check lc_g3d
+CASE="kernel row G3 the kernel lock is missing and nothing moved: exit 0, says so"; check lc_g3e
+CASE="kernel row G3 the kernel lock is removed by the pull request: exit 0 (a missing file stays allowed)"; check lc_g3f
+CASE="kernel row G4 the row cache#840 wrote (no arch prefix), first seen 2 days ago: FAILS (exit 1) 'too young'"; check lc_g4a
+CASE="kernel row G4 the same row first seen 8 days ago passes (exit 0) and is named"; check lc_g4b
+CASE="kernel row G4 the inventory lists that exact row as apk:linux-virt@6.18.60-r0 with a sum"; check lc_g4u
+CASE="kernel row G5 an unreadable row (hex63) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_hex63
+CASE="kernel row G5 an unreadable row (hex65) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_hex65
+CASE="kernel row G5 an unreadable row (nosum) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_nosum
+CASE="kernel row G5 an unreadable row (upper) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_upper
+CASE="kernel row G5 an unreadable row (eq2) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_eq2
+CASE="kernel row G5 an unreadable row (junk) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_junk
+CASE="kernel row G5 an unreadable row (nul) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_nul
+CASE="kernel row G5 an unreadable row (tail) beside a good one: exit 2 'its age cannot be judged', never skipped"; check lc_g5_tail
+CASE="kernel row G6 rows with versions 1.1.1w-r0 and 2023c-r0, first seen 2 days ago: both FAIL as 'too young' (they are pins, not 'not a pin')"; check lc_g6a
+CASE="kernel row G6 the same rows first seen 8 days ago pass (exit 0) and are named"; check lc_g6b
+CASE="kernel row G6 is_pin takes 1.1.1w-r0, 2023c-r0 and the other apk versions, and still refuses main, latest, 1.*, 3.x, ranges, nightly"; check lc_g6u
+CASE="kernel row G8 a tracked kernel lock that cannot be read in the working tree RAISES, it is not skipped"; check lc_g8
+CASE="kernel row G9 exactly 500 rows are accepted (exit 0)"; check lc_g9a
+CASE="kernel row G9 501 rows are refused (exit 2)"; check lc_g9b
+CASE="kernel row G10 the item-kind list in the header of pin-inventory.py names apk"; check lc_g10a
+CASE="kernel row G10 the header of pin-age-check-test.sh names apk"; check lc_g10b
+CASE="kernel row G6b the row parser takes 1.1.1w-r0, 2023c-r0, 6.18.60-r0 and the real row cache#840 wrote, and REFUSES main, 3x, 1x, latest, x (RuntimeError naming the file, \"not a pin\")"; check lc_rv
+CASE="kernel row G6b a NEW row with the version main is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_main
+CASE="kernel row G6b the SAME row with the version main in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_main
+CASE="kernel row G6b a NEW row with the version 3x is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_3x
+CASE="kernel row G6b the SAME row with the version 3x in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_3x
+CASE="kernel row G6b a NEW row with the version 1x is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_1x
+CASE="kernel row G6b the SAME row with the version 1x in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_1x
+CASE="kernel row G6b a NEW row with the version latest is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_latest
+CASE="kernel row G6b the SAME row with the version latest in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_latest
+CASE="kernel row G6b a NEW row with the version x is refused: exit 2 'cannot run', says it is not a pin"; check lc_rp_x
+CASE="kernel row G6b the SAME row with the version x in base AND head (unchanged) is refused too: exit 2, never exit 0"; check lc_ru_x
+
+# --- mutants: one exact edit each, in a temp copy of the scripts; every mutant must make at least one case above fail --------------------------------
+# The edits anchor on these exact strings (the first is the line the code change must add to pin-inventory.py; the others are existing code):
+#   KERNEL_LOCK = "build/locks/vm-kernel.lock"                                  (pin-inventory.py: the one constant _wanted and the row reader both use)
+#   return _sumid(self.sums)                                                    (pin-inventory.py, Item.sum)
+#   if age + 1e-9 < min_days:                                                   (pin-age-check.py, judge_item)
+#           if not is_pin(m.group(2)):                                   (pin-inventory.py, _kernel_lock_items: the version of a row must be a pin)
+#   raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")    (pin-inventory.py, _kernel_lock_items)
+#   return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]    (pin-inventory.py, moved)
+mutate() {   # NAME FILE OLD NEW -> $work/mut/NAME/.github/agent/supply-chain, rc 3 when OLD is not found exactly once
+  local m="$work/mut/$1"; rm -rf "${m:?}"; mkdir -p "$m/.github/agent" "$m/.github/policy"
+  cp -R "$here/../supply-chain" "$m/.github/agent/supply-chain"
+  cp "$root/.github/supply-chain-exceptions.json" "$m/.github/" 2>/dev/null || true; cp "$root/.github/policy/base-inputs.json" "$m/.github/policy/" 2>/dev/null || true
+  python3 - "$m/.github/agent/supply-chain/$2" "$3" "$4" <<'PY'
+import sys
+p, old, new = sys.argv[1:4]
+s = open(p).read()
+sys.exit(3) if s.count(old) != 1 else open(p, "w").write(s.replace(old, new))
+PY
+}
+mutant() {   # NAME FILE OLD NEW [CASES]: the cases that must see it (default: the first eleven)
+  local rcm=0 sel=${5:-$LCOLD}; mutate "$1" "$2" "$3" "$4" || rcm=$?
+  CASE="kernel row mutant $1: the edit applies to the code"
+  if [ "$rcm" -ne 0 ]; then echo "PENDING-CODE: mutant $1 cannot apply (its anchor in $2 is missing or not unique): $3"; bad "$CASE"; return; fi
+  LCHK="$work/mut/$1/.github/agent/supply-chain/pin-age-check.py"; LINV="$work/mut/$1/.github/agent/supply-chain/pin-inventory.py"
+  LCSEL="$sel"; lc_all; LCSEL=""
+  CASE="kernel row mutant $1 is killed (a case above fails)"
+  if [ -n "$LCFAIL" ]; then ok "$CASE"; echo "mutant killed: $1 (failing cases:$LCFAIL)"; else bad "$CASE"; echo "mutant SURVIVED: $1"; fi
+  LCHK=$chk; LINV=$here/../supply-chain/pin-inventory.py
+}
+lc_all
+if [ -n "$LCFAIL" ]; then
+  CASE="kernel row mutants need a green baseline (cases failing now:$LCFAIL)"; echo "PENDING-CODE: the mutants below are not run until every case above passes on the real code"; bad "$CASE"
+else
+  mutant lock-path-dropped pin-inventory.py 'KERNEL_LOCK = "build/locks/vm-kernel.lock"' 'KERNEL_LOCK = "build/locks/no-such-file.lock"'
+  mutant sum-left-out pin-inventory.py 'return _sumid(self.sums)' 'return _sumid([]) if self.kind == "apk" else _sumid(self.sums)'
+  mutant wolfi-file-listed pin-inventory.py 'KERNEL_LOCK = "build/locks/vm-kernel.lock"' 'KERNEL_LOCK = "build/locks/host-tools.lock"'
+  mutant apk-judged-old-enough pin-age-check.py 'if age + 1e-9 < min_days:' 'if item.kind != "apk" and age + 1e-9 < min_days:'
+  mutant reorder-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum or (k.startswith("apk:") and list(base_items).index(k) != list(head_items).index(k))]'
+  mutant removal-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [base_items[k] for k in sorted(base_items) if k.startswith("apk:") and k not in head_items] + [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]'
+  mutant row-error-skipped pin-inventory.py 'raise RuntimeError(f"{path}:{n}: a lock row is not '"'"'<name>=<version> sha256:<64 hex>'"'"': its age cannot be judged")' 'continue' "$G5IDS"
+  # mutant row-version-passthrough: the version check of the row parser (the call of the predicate shared with is_pin) replaced by pass-through; the row cases must see it.
+  mutant row-version-passthrough pin-inventory.py '        if not is_pin(m.group(2)):' '        if False:' "rv$RPIDS"
+fi
+
+# --- HLF-BEGIN: REQ-SUP-001-AC35, the hash-locked fetch ruling kind (orchestrator ruling Nov 5, cache#840 F3 option c) -----------------------------------
+# The one kernel fetch line of bin/refresh-inputs.sh is ruled by a row that starts with HASH_LOCKED_RULING, and only when the line is the fixed shape, the file holds it
+# once, and the lock file build/locks/vm-kernel.lock at the HEAD tree is a regular file of 1 to 500 pinned rows. The host, the path prefix, the file and the lock file are
+# constants of the checker; a row carries its five usual fields and two of its own: `verifier` {file, line} and `verifier-line-sha256`. Everything here is self-contained: it needs only the base repository built above.
+# THE CODE CONTRACT the mutants below anchor on (pin-age-check.py): a constant HASH_LOCKED_RULING (the prefix, added to the accepted tuple of _run as `, HASH_LOCKED_RULING)) for r in rs):`),
+# and these tagged lines, each `<indent>if <condition>:  # HL:<tag>` with the refusal on the next line, exactly one line per tag:
+#   HL:gate      the _run line that blanks a row of this kind whose line fails _hash_locked_line_ok(...)
+#   HL:file      the file is not bin/refresh-inputs.sh            HL:host      the operand host is not dl-cdn.alpinelinux.org
+#   HL:path      the operand path is not /alpine/v3.24/main/x86_64/$f   HL:operands  there is not exactly one operand
+#   HL:raw       the file does not hold the canonical raw line (eight spaces of indent plus the flat line) as one whole line    HL:die  the text after || is not the fixed die message
+#   HL:flags     the flags are not the fixed list in the fixed order, or -g/-q/--proto =https/--tlsv1.2 is missing
+#   HL:lock      the lock file read from the head tree is missing or not a regular file (a malformed lock is refused by the inventory parser before the gate runs)
+#   HL:verifier  the row's verifier (the physical line of the fetch script that checks a download's sha256 against the lock) is not in the verifier's file exactly once, as a whole line with no whitespace twin, or that file is not the fetch file, or the row's line is not the file's line
+#   HL:verifier-sha  the sha256 of that line in the head file is not the row's verifier-line-sha256
+# and ONE line `<indent>rev = head  # HL:head` (the revision the lock file is read from).
+HLP='hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): '
+HLUR='https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f'
+HLKA='        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f"'
+HLKB='|| die "could not download the kernel package from the Alpine mirror" 1'
+HLK="$HLKA \"$HLUR\" $HLKB"
+HLOTHER='curl -fsSL https://example.com/x -o /tmp/x'
+HLVL='    if hashlib.sha256(raw).hexdigest() != want_sha:'  # the verifier: bin/refresh-inputs.sh verify_kernel at cache#840 2120c27:754; every body below gets it appended once unless HLNV=1
+HLROW='linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e'
+echo '{"times": {}}' >"$work/hl-none.fx.json"
+hl_row() { # OUT FILE LINE PREFIX: the row for the download segment of LINE, bound to LINE, as the scan flattens it (the same as mkrowpf), plus the verifier fields of the kind;
+  # env: HLVF (the verifier's file), HLVLINE (its line), HLVSHA (verifier-line-sha256), each default to the right value; HLVER and HLVSHA = - leave a field out, HLVER = raw JSON; HLVEXTRA=1 adds a key
+  HLVL="$HLVL" python3 - "$@" <<'PY'
+import hashlib, json, os, re, sys
+out, f, line, pref = sys.argv[1:5]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+flat = " ".join(line.split()); segs = [s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s)]
+rows = [{"file": f, "form": "a download", "key": H(sg), "line": H(flat), "ruling": pref + "pinned by file and whole line"} for sg in dict.fromkeys(segs)]
+e = os.environ; vl = e["HLVL"]; ver = e.get("HLVER") or {"file": e.get("HLVF", "bin/refresh-inputs.sh"), "line": e.get("HLVLINE", vl)}; sha = e.get("HLVSHA") or H(vl)
+if isinstance(ver, str): ver = None if ver == "-" else json.loads(ver)
+if isinstance(ver, dict) and e.get("HLVEXTRA"): ver["note"] = "x"
+for r in rows:
+    if ver is not None: r["verifier"] = ver
+    if sha != "-": r["verifier-line-sha256"] = sha
+json.dump({"exceptions": [], "unmeasured_text": rows}, open(out, "w"))
+PY
+}
+hl_repo() { # NAME FILE BODY LOCKBASE LOCKHEAD [link]: LOCK specs: text | - (absent) | = (unchanged, head only) | @link | @empty | @many (501 rows); link: FILE is a symlink at the head
+  rm -rf "${work:?}/$1"; cp -R "$base" "$work/$1"
+  python3 - "$work/$1" "$2" "$3" "$4" "$5" "${6:-}" <<'PY'
+import os, pathlib, subprocess, sys
+root, f, body, lb, lh, fmode = sys.argv[1:7]; R = pathlib.Path(root)
+g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+GOOD = "linux-virt=6.18.60-r0 sha256:3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e\n"
+lock = R / "build/locks/vm-kernel.lock"
+def put(spec):
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if lock.is_symlink() or lock.exists(): lock.unlink()
+    if spec == "-": return
+    if spec == "@link":
+        (lock.parent / "real.lock").write_text(GOOD); os.symlink("real.lock", lock)
+    elif spec == "@empty": lock.write_text("")
+    elif spec == "@many": lock.write_text("".join("pkg%d=1.0.%d-r0 sha256:%064x\n" % (i, i, i) for i in range(501)))
+    else: lock.write_bytes((spec if spec.endswith("\n") else spec + "\n").encode("utf-8", "surrogateescape"))   # a byte that is not UTF-8 arrives as a lone surrogate and goes out as that byte
+p = R / f; p.parent.mkdir(parents=True, exist_ok=True)
+put(lb); p.write_text("#!/bin/sh\n"); g("add", "-A"); g("commit", "-q", "-m", "base2")
+if lh != "=": put(lh)
+if fmode == "link":
+    (p.parent / "hl-target.sh").write_bytes(("#!/bin/sh\n" + body + "\n").encode("utf-8", "surrogateescape")); p.unlink(); os.symlink("hl-target.sh", p)
+else:
+    p.write_bytes(("#!/bin/sh\n" + body + "\n").encode("utf-8", "surrogateescape"))
+g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", "head")
+PY
+}
+HLN=(); declare -A HLW
+hl_case() { # NAME WANT FILE BODY LOCKBASE LOCKHEAD ROWLINE [PREFIX] [ROWFILE] [link]: WANT is the exit code (0 = ruled by the new kind)
+  HLN+=("$1"); HLW[$1]=$2
+  local body=$4; [ -n "${HLNV:-}" ] || body=$4$'\n'$HLVL
+  hl_repo "hl-$1" "$3" "$body" "$5" "$6" "${10:-}"
+  hl_row "$work/hl-$1.json" "${9:-$3}" "$7" "${8:-$HLP}"
+}
+hl_exec() { # CHECKER [stop]: HLBAD = the names of the cases that do not give the wanted exit code
+  HLBAD=""; local n w rc
+  for n in "${HLN[@]}"; do
+    w=${HLW[$n]}; rc=0
+    python3 "$1" --root "$work/hl-$n" --base HEAD~1 --head HEAD --fixtures "$work/hl-none.fx.json" --now "$NOW" --exceptions "$work/hl-$n.json" >"$work/hl-$n.out" 2>&1 || rc=$?
+    if [ "$rc" -ne "$w" ] || { [ "$w" -eq 0 ] && ! grep -q 'ruled text.*hash-locked fetch' "$work/hl-$n.out"; }; then
+      HLBAD="$HLBAD $n"; if [ "${2:-}" = stop ]; then return 0; fi
+    fi
+  done
+}
+F=bin/refresh-inputs.sh; V=$HLROW
+# the positive: the exact line of cache#840 (refresh-inputs.sh:1379 at 2120c271), a valid lock at the head that is the same as at the base (no package moves)
+hl_case ruled-ok 0 $F "$HLK" "$V" = "$HLK"
+# round 2 seat B, P4: the physical line 1379 of cache#840 (2120c271) bin/refresh-inputs.sh, typed out in full (cache1: exactly 8 leading spaces, no tab, no trailing space), not built from HLKA/HLKB
+HLREAL=$'        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f" || die "could not download the kernel package from the Alpine mirror" 1'
+hl_case real-840-line 0 $F "$HLREAL" "$V" = "$HLREAL"
+# the line: host, scheme, path, operands
+ln="$HLKA \"https://example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-other 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org.example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-suffix 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org@example.com/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case host-userinfo 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"http://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\$f\" $HLKB"; hl_case scheme-http 1 $F "$ln" "$V" = "$ln"
+for pv in "v3.25/main/x86_64" "edge/main/x86_64" "v3.24/community/x86_64" "v3.24/main/aarch64" "v3.24/main/x86_64/sub"; do
+  nm=path-${pv//\//-}; ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/$pv/\$f\" $HLKB"
+  hl_case "$nm" 1 $F "$ln" "$V" = "$ln"
+done
+ln="$HLKA \"$HLUR\" \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/other.apk\" $HLKB"; hl_case operand-second 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.60-r0.apk\" $HLKB"; hl_case operand-literal 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\$f/../x\" $HLKB"; hl_case operand-climbing 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\$f $HLKB"; hl_case operand-unquoted 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/\" $HLKB"; hl_case operand-no-variable 1 $F "$ln" "$V" = "$ln"
+# the flags: one missing, one added, in the wrong order
+for fv in "-q" "-g" "--proto =https" "--tlsv1.2" "--max-time 900"; do
+  nm=flag-missing-${fv%% *}; ln="${HLKA/ $fv/} \"$HLUR\" $HLKB"
+  hl_case "$nm" 1 $F "$ln" "$V" = "$ln"
+done
+for fv in "-K /tmp/c" "--resolve dl-cdn.alpinelinux.org:443:127.0.0.1" "--url https://example.com/x" "-x http://p:1" "-k"; do
+  nm=flag-added-${fv%% *}; ln="${HLKA/ -g / -g $fv } \"$HLUR\" $HLKB"
+  hl_case "$nm" 1 $F "$ln" "$V" = "$ln"
+done
+ln="${HLKA/ -q -fsSL -g / -fsSL -q -g } \"$HLUR\" $HLKB"; hl_case flags-reordered 1 $F "$ln" "$V" = "$ln"
+# the tail: `|| true`, no `|| die`, a pipe, a second command, a redirection
+ln="$HLKA \"$HLUR\" || true"; hl_case tail-or-true 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\""; hl_case tail-none 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB | sh"; hl_case tail-pipe 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB; id"; hl_case tail-semicolon 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB && id"; hl_case tail-and 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB "'`id`'; hl_case tail-backtick 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB "'$(id)'; hl_case tail-substitution 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\" $HLKB > /tmp/o"; hl_case tail-redirect 1 $F "$ln" "$V" = "$ln"
+# the row: another prefix, the prefix on another line, the same line in another file, hashes of another line
+HLVER=- HLVSHA=- hl_case row-prefix-pinned-fetch 1 $F "$HLK" "$V" = "$HLK" 'pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+HLVER=- HLVSHA=- hl_case row-prefix-live-fetch 1 $F "$HLK" "$V" = "$HLK" 'live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): '
+hl_case same-line-other-file 1 bin/other.sh "$HLK" "$V" = "$HLK"
+hl_case row-names-another-line 1 $F "$HLKA \"https://example.com/x/\$f\" $HLKB" "$V" = "$HLK"
+# the file: the line twice, a whitespace twin, a carriage return, a symlink
+hl_case line-twice 1 $F "$HLK"$'\n'"$HLK" "$V" = "$HLK"
+hl_case line-whitespace-twin 1 $F "$HLK"$'\n'"${HLK/ -q / -q	}" "$V" = "$HLK"
+hl_case line-with-cr 1 $F "$HLK"$'\r' "$V" = "$HLK"
+hl_case file-is-a-symlink 1 $F "$HLK" "$V" = "$HLK" "$HLP" "" link
+# round 1 rulings F1-F4 (cache#845): the file must hold the canonical RAW line byte for byte (the scan collapses whitespace, so every variant below keeps the row bound),
+# the whole command must match with token boundaries and balanced quotes, the quoted URL is compared literally, and /usr/bin/curl is the only spelling
+hl_case raw-trailing-space 1 $F "$HLK " "$V" = "$HLK"
+hl_case raw-trailing-tab 1 $F "$HLK"$'\t' "$V" = "$HLK"
+hl_case raw-extra-space-in-flags 1 $F "${HLK/ -q -fsSL/ -q  -fsSL}" "$V" = "$HLK"
+hl_case raw-extra-space-before-tail 1 $F "${HLK/ || die/  || die}" "$V" = "$HLK"
+hl_case raw-tab-between-flags 1 $F "${HLK/ -q -fsSL/ -q	-fsSL}" "$V" = "$HLK"
+hl_case raw-indent-changed 1 $F "${HLK#    }" "$V" = "$HLK"
+ln="$HLKA \"$HLUR\"$HLKB"; hl_case raw-no-space-before-tail 1 $F "$ln" "$V" = "$ln"   # the row is bound to this very line, so only the gate refuses it
+ln="$HLKA\"$HLUR\" $HLKB"; hl_case operand-glued-to-output-operand 1 $F "$ln" "$V" = "$ln"
+# round 2 seat B, P1: a URL operand without its closing quote is not an operand (the tokenizer falls through to \S+ and the last character was cut as if it were the quote)
+ln="$HLKA \"${HLUR}Z $HLKB"; hl_case operand-quote-unclosed-trailing-char 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"${HLUR}/ $HLKB"; hl_case operand-quote-unclosed-trailing-slash 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR\"\" $HLKB"; hl_case operand-extra-closing-quote 1 $F "$ln" "$V" = "$ln"
+ln="${HLKA%\"} \"$HLUR\" $HLKB"; hl_case output-operand-quote-unbalanced 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \" $HLUR\" $HLKB"; hl_case url-leading-space 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR \" $HLKB"; hl_case url-trailing-space 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR?\" $HLKB"; hl_case url-empty-query 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR#\" $HLKB"; hl_case url-empty-fragment 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"${HLUR/dl-cdn.alpinelinux.org/dl-cdn.alpinelinux.org:443}\" $HLKB"; hl_case url-port 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR?x=1\" $HLKB"; hl_case url-query-value 1 $F "$ln" "$V" = "$ln"
+ln="$HLKA \"$HLUR#x\" $HLKB"; hl_case url-fragment-value 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/could not download/could download}"; hl_case die-text-changed 1 $F "$ln" "$V" = "$ln"
+ln="${HLK%1}0"; hl_case die-exit-code-changed 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/268435456/536870912}"; hl_case flag-max-filesize-changed 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/--max-time 900/--max-time 9000}"; hl_case flag-max-time-changed 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/\$tmp\/dl\/x86_64\/\$f/\$tmp\/dl\/x86_64\/other}"; hl_case output-path-changed 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/\/usr\/bin\/curl/curl}"; hl_case curl-bare 1 $F "$ln" "$V" = "$ln"
+ln="${HLK/\/usr\/bin\/curl//bin/curl}"; hl_case curl-bin-curl 1 $F "$ln" "$V" = "$ln"
+# round 1 seat D ruling D1: the verifier line must be in the file exactly once, whole and unchanged; a lock that merely exists passes nothing (the cases above carry it once)
+HLNV=1 hl_case verifier-missing 1 $F "$HLK" "$V" = "$HLK"
+HLNV=1 hl_case verifier-commented-out 1 $F "$HLK"$'\n'"# $HLVL" "$V" = "$HLK"
+HLNV=1 hl_case verifier-indent-3 1 $F "$HLK"$'\n'"${HLVL# }" "$V" = "$HLK"
+HLNV=1 hl_case verifier-indent-5 1 $F "$HLK"$'\n'" $HLVL" "$V" = "$HLK"
+HLNV=1 hl_case verifier-tab-indent 1 $F "$HLK"$'\n'$'\t'"${HLVL#    }" "$V" = "$HLK"
+HLNV=1 hl_case verifier-trailing-space 1 $F "$HLK"$'\n'"$HLVL " "$V" = "$HLK"
+HLNV=1 hl_case verifier-with-cr 1 $F "$HLK"$'\n'"$HLVL"$'\r' "$V" = "$HLK"
+HLNV=1 hl_case verifier-other-operator 1 $F "$HLK"$'\n'"${HLVL/!=/==}" "$V" = "$HLK"
+hl_case verifier-twice 1 $F "$HLK"$'\n'"$HLVL" "$V" = "$HLK"
+hl_case verifier-whitespace-twin 1 $F "$HLK"$'\n'"${HLVL/if hashlib/if  hashlib}" "$V" = "$HLK"
+# round 2 seat A, P3: the verifier line is matched and hashed as BYTES. The row's line ends in a U+FFFD (EF BF BD) and its sha256 is over those UTF-8 bytes; a head file with the byte FF in its
+# place equals it only after replacement decoding, so it must not pass. An undecodable lock (FF in a comment) is refused: the check cannot read it (exit 2, as for a malformed row).
+HLFFFD=$'\xef\xbf\xbd'; HLV8="$HLVL#$HLFFFD"; HLV8SHA=$(printf %s "$HLV8" | sha256sum | cut -d' ' -f1)
+HLNV=1 HLVLINE="$HLV8" HLVSHA=$HLV8SHA hl_case verifier-fffd-exact-bytes 0 $F "$HLK"$'\n'"$HLV8" "$V" = "$HLK"
+HLNV=1 HLVLINE="$HLV8" HLVSHA=$HLV8SHA hl_case verifier-fffd-whitespace-twin 1 $F "$HLK"$'\n'"$HLV8"$'\n'"${HLV8/if hashlib/if  hashlib}" "$V" = "$HLK"
+HLNV=1 HLVLINE="$HLV8" HLVSHA=$HLV8SHA hl_case verifier-invalid-byte 1 $F "$HLK"$'\n'"$HLVL#"$'\xff' "$V" = "$HLK"
+# the row's two fields (round 1 seat D, orchestrator answer 10:08Z): the sha256 is a row field, the checker hashes the file's line and compares; absent or wrong fields rule nothing
+HLSHA=$(printf %s "$HLVL" | sha256sum | cut -d' ' -f1)
+HLSHAX=$([ "${HLSHA:0:1}" = 0 ] && echo 1 || echo 0)${HLSHA:1}   # the right sha with its first digit changed
+HLVSHA=$HLSHAX hl_case verifier-sha-wrong 1 $F "$HLK" "$V" = "$HLK"
+HLVER=- HLVSHA=- hl_case row-without-verifier-fields 1 $F "$HLK" "$V" = "$HLK"
+HLVF=bin/other.sh hl_case verifier-file-other 1 $F "$HLK" "$V" = "$HLK"
+HLVLINE="${HLVL/!=/==}" hl_case verifier-row-line-differs 1 $F "$HLK" "$V" = "$HLK"
+# the loader: a field that is malformed, alone, or on another kind of row stops the check
+HLVSHA="${HLSHA%?}" hl_case verifier-sha-63-hex 2 $F "$HLK" "$V" = "$HLK"
+HLVSHA="${HLSHA^^}" hl_case verifier-sha-upper-case 2 $F "$HLK" "$V" = "$HLK"
+HLVSHA=- hl_case verifier-sha-missing 2 $F "$HLK" "$V" = "$HLK"
+HLVER=- hl_case verifier-object-missing 2 $F "$HLK" "$V" = "$HLK"
+HLVEXTRA=1 hl_case verifier-extra-key 2 $F "$HLK" "$V" = "$HLK"
+HLVER='"bin/refresh-inputs.sh"' hl_case verifier-not-an-object 2 $F "$HLK" "$V" = "$HLK"
+HLVER='{"file": "bin/refresh-inputs.sh"}' hl_case verifier-without-line 2 $F "$HLK" "$V" = "$HLK"
+HLVER='{"file": "", "line": "x"}' hl_case verifier-empty-file 2 $F "$HLK" "$V" = "$HLK"
+hl_case other-kind-row-with-verifier-fields 2 $F "$HLK" "$V" = "$HLK" 'pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+# the lock: missing, removed at the head, a link, empty, 501 rows, a malformed row, a repeated row
+hl_case lock-missing 1 $F "$HLK" - = "$HLK"
+hl_case lock-removed-at-head 1 $F "$HLK" "$V" - "$HLK"
+hl_case lock-is-a-symlink 2 $F "$HLK" "$V" @link "$HLK"
+hl_case lock-empty 2 $F "$HLK" "$V" @empty "$HLK"
+hl_case lock-501-rows 2 $F "$HLK" "$V" @many "$HLK"
+hl_case lock-sha-63-hex 2 $F "$HLK" "$V" "${V%?}" "$HLK"
+hl_case lock-sha-65-hex 2 $F "$HLK" "$V" "${V}a" "$HLK"
+hl_case lock-sha-upper-case 2 $F "$HLK" "$V" "${V/3ff658cf/3FF658CF}" "$HLK"
+hl_case lock-row-without-sha 2 $F "$HLK" "$V" "linux-virt=6.18.60-r0" "$HLK"
+hl_case lock-row-version-not-a-pin 2 $F "$HLK" "$V" "${V/6.18.60-r0/latest}" "$HLK"
+hl_case lock-row-repeated 2 $F "$HLK" "$V" "$V"$'\n'"$V" "$HLK"
+# round 2 seat B, P5: a lock with carriage returns is refused again (as at 9ec03778)
+hl_case lock-crlf-head 1 $F "$HLK" "$V" "$V"$'\r' "$HLK"
+hl_case lock-crlf-base-and-head 1 $F "$HLK" "$V"$'\r' = "$HLK"
+hl_case lock-comment-invalid-byte-base 2 $F "$HLK" "# "$'\xff'$'\n'"$V" = "$HLK"
+hl_case lock-comment-invalid-byte-head 2 $F "$HLK" "$V" "# "$'\xff'$'\n'"$V" "$HLK"
+hl_exec "$chk"
+for n in "${HLN[@]}"; do
+  CASE="hash-locked fetch (AC35), $n: exit ${HLW[$n]}$([ "${HLW[$n]}" -eq 0 ] && echo ', ruled under the new prefix' || true)"
+  if [[ " $HLBAD " == *" $n "* ]]; then bad "$CASE"; else ok "$CASE"; fi
+done
+# --- mutants: one edit each of the tagged lines (see the contract above), in a temp copy of the scripts; every mutant must make at least one case above fail --------------------------
+hl_mutant() { # NAME MODE ARG: MODE tag (the line `if ...:  # HL:ARG` becomes `if False:`), head (`rev = head  # HL:head` reads HEAD~1), prefix (HASH_LOCKED_RULING leaves the accepted tuple)
+  local m="$work/hlmut/$1" rcm=0; rm -rf "${work:?}/hlmut/$1"; mkdir -p "$m"; cp -R "$here/../supply-chain/." "$m/"
+  python3 - "$m/pin-age-check.py" "$2" "$3" <<'PY' || rcm=$?
+import re, sys
+p, mode, arg = sys.argv[1:4]; s = open(p).read()
+if mode == "tag":
+    pat = re.compile(r"^(\s*)if (.*):(\s*)# HL:" + re.escape(arg) + r"[ \t]*$", re.M); n = len(pat.findall(s)); s = pat.sub(r"\1if False:\3# HL:" + arg, s)
+elif mode == "head":
+    pat = re.compile(r"^(\s*)rev = head(\s*)# HL:head[ \t]*$", re.M); n = len(pat.findall(s)); s = pat.sub(r'\1rev = "HEAD~1"\2# HL:head', s)
+else:
+    old = ", HASH_LOCKED_RULING)) for r in rs):"; n = s.count(old); s = s.replace(old, ")) for r in rs):")
+sys.exit(3) if n != 1 else open(p, "w").write(s)
+PY
+  CASE="hash-locked fetch mutant $1: the edit applies (its tagged line is in pin-age-check.py exactly once)"
+  if [ "$rcm" -ne 0 ]; then echo "PENDING-CODE: mutant $1 cannot apply ($2 $3)"; bad "$CASE"; return 0; fi
+  hl_exec "$m/pin-age-check.py" stop
+  CASE="hash-locked fetch mutant $1 is killed (a case above fails)"
+  if [ -n "$HLBAD" ]; then ok "$CASE"; echo "mutant killed: $1 (first failing case:$HLBAD)"; else bad "$CASE"; echo "mutant SURVIVED: $1"; fi
+}
+if [ -n "$HLBAD" ] || ! grep -q 'HASH_LOCKED_RULING' "$chk"; then
+  CASE="hash-locked fetch mutants need a green baseline and the code contract (cases failing now:${HLBAD:- none})"; echo "PENDING-CODE: the mutants below are not run until every case above passes on the real code"; bad "$CASE"
+else
+  hl_mutant gate-removed tag gate
+  hl_mutant file-check-dropped tag file
+  hl_mutant host-check-dropped tag host
+  hl_mutant path-check-dropped tag path
+  hl_mutant second-operand-accepted tag operands
+  hl_mutant flags-check-dropped tag flags
+  hl_mutant raw-line-check-dropped tag raw
+  hl_mutant die-text-check-dropped tag die
+  hl_mutant lock-check-dropped tag lock
+  hl_mutant verifier-check-dropped tag verifier
+  hl_mutant verifier-sha-check-dropped tag verifier-sha
+  hl_mutant lock-read-from-the-base head head
+  hl_mutant prefix-not-accepted prefix prefix
+fi
+# --- HLF-END
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

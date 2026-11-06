@@ -4,7 +4,7 @@ merge/consolidate fallbacks, the narrative guard, the scanner tables and main()'
 
 No network, no real git/gh/go: every subprocess call is intercepted by FakeRun and asserted on by
 its exact argv. Every write goes to a temp dir."""
-import base64, contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import base64, contextlib, importlib.util, io, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -58,6 +58,19 @@ class FakeRun:
         return [a for a, _ in self.calls]
 
 
+class FakeGhTitles(FakeRun):
+    """FakeRun that answers `gh issue list` by the --search title, wherever the flag stands in the argv (a rule key of the
+    form ("gh", "issue", "list", "--search", <title>)); every other command goes through FakeRun's prefix rules."""
+    def __call__(self, argv, **kw):
+        argv = list(argv)
+        if argv[:3] == ["gh", "issue", "list"] and "--search" in argv:
+            key = ("gh", "issue", "list", "--search", argv[argv.index("--search") + 1])
+            if key in self.rules:
+                self.calls.append((argv, kw)); rc, out, err = self.rules[key]
+                return subprocess.CompletedProcess(argv, rc, out, err)
+        return super().__call__(argv, **kw)
+
+
 SHA = "a" * 40
 OID = "b" * 40
 OLDHEAD = "c" * 40
@@ -81,7 +94,9 @@ class ApiRun(FakeRun):
     def __init__(self, rules=None, live=OLDHEAD, post=(0, "{}", ""), patch=(0, "{}", ""), delete=(0, "{}", ""), mutation=(0, GQL_OK, ""),
                  lookup=None, pr_head=OID, contents=None):
         defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
-                    ("git", "rev-parse"): (0, SHA + "\n", "")}
+                    ("git", "rev-parse"): (0, SHA + "\n", ""),
+                    # no open Dependabot PR (rc-5b A7) unless a test says so
+                    ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, "[]", "")}
         super().__init__({**defaults, **(rules or {})})
         self.live, self.post, self.patch, self.delete, self.mutation = live, post, patch, delete, mutation
         self.lookup = lookup or head_lookup()
@@ -1102,6 +1117,18 @@ class SuppressionPR(Base):
         # not a second fetch, not a read, not a checkout
         self.assertEqual(fr.argvs(), [])
 
+    def test_the_suppression_pr_title_and_body_are_plain_and_pass_the_customer_words_check(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.real(fr)
+        create = next(a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"])
+        title, body = create[create.index("--title") + 1], create[create.index("--body") + 1]
+        self.assertEqual(title, "auditor: update suppressions (1 statements)")
+        self.assertEqual(body, "Automated suppression update from the daily CVE auditor. Draft for review.")
+        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
+        check = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
+                               env={**os.environ, "PR_TITLE": title, "PR_BODY": body}, capture_output=True, text=True)
+        self.assertEqual((check.returncode, check.stdout), (0, ""), check.stderr)
+
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr), ("https://x/pull/9", None))
@@ -1294,7 +1321,7 @@ class FixPR(Base):
     ROW = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v1.0.0", "to": "v1.1.0"}}
     BR = "auditor/bump-example.com-m-1.1.0"       # keyed by TARGET, never by CVE or commit (LR-32)
 
-    def real(self, rules, automerge=False, api=None, repo="o/r", slug="app"):
+    def real(self, rules, automerge=False, api=None, repo="o/r", slug="app", row=None):
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY=repo)
         os.environ.pop("AUDITOR_APP_SLUG", None)
         if slug:
@@ -1306,7 +1333,7 @@ class FixPR(Base):
         if not os.path.exists(os.path.join(self.d("ws"), "go.mod")):      # what `go get` + `go mod tidy` leave in the checkout
             open(os.path.join(self.d("ws"), "go.mod"), "w").write("module m\n")
         with mock.patch.object(R.subprocess, "run", fr):
-            res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
+            res = self.quiet(R._deliver_fix_pr, row or self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
         return res, fr
 
     def test_dry_and_shim_automerge(self):
@@ -1323,11 +1350,77 @@ class FixPR(Base):
         self.assertIn("gh pr merge --auto --squash %s" % self.BR, lines)
         self.assertIn("go get example.com/m@v1.1.0", lines)
 
+    def test_a_major_is_never_armed_even_when_auto_merge_is_on(self):
+        os.environ["AUDITOR_AUTOMERGE"] = "yes"; would = []
+        major = {**self.ROW, "fix_bump": {**self.ROW["fix_bump"], "from": "v1.9.0", "to": "v2.0.0"}}
+        res, _ = self.quiet(R._deliver_fix_pr, major, "2026-09-22", "abcdef1234567890", True, would)
+        self.assertEqual((would[0]["note"], "--draft" in would[0]["cmd"]), ("draft", True))
+        log = os.path.join(self.tmp, "major.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
+        R._deliver_fix_pr(major, "2026-09-22", "abcdef1234567890", False, [])
+        lines = open(log).read().splitlines()
+        self.assertFalse(any("pr merge --auto" in l for l in lines))
+        self.assertTrue(any(l.startswith("gh pr create --draft") for l in lines))
+
+    MAJOR = {**ROW, "fix_bump": {**ROW["fix_bump"], "from": "v1.9.0", "to": "v2.0.0"}}
+
+    def test_a_reused_major_bump_pr_is_demoted_to_a_draft_with_auto_merge_off_before_anything_else(self):
+        u = "https://x/pull/7"
+        state = lambda armed, draft: {**self.REUSE, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0,
+            armed + "\n", ""),
+                                      ("gh", "pr", "view", u, "--json", "isDraft"): (0, draft + "\n", "")}
+        look = {"lookup": head_lookup(True, SHA)}
+        # armed and ready: both undone
+        res, fr = self.real(state("true", "false"), automerge=True, row=self.MAJOR, api=look)
+        self.assertEqual(res, (u, None, "delivered")); argv = fr.argvs()
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", u], argv)
+        self.assertIn(["gh", "pr", "ready", "--undo", u], argv)
+        self.assertLess(argv.index(["gh", "pr", "ready", "--undo", u]), [i for i,
+            a in enumerate(argv) if a[:3] == ["gh", "pr", "edit"]][0])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in argv))
+        # already a draft, unarmed: left alone
+        res, fr = self.real(state("false", "true"), automerge=True, row=self.MAJOR, api=look)
+        self.assertEqual(res, (u, None, "delivered"))
+        self.assertFalse(any(a[:3] in (["gh", "pr", "ready"], ["gh", "pr", "merge"]) for a in fr.argvs()))
+        # not a major: chain's rule, no demotion
+        res, fr = self.real(state("true", "false"), automerge=True, row=self.ROW, api=look)
+        self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
+
+    def test_a_major_bump_pr_is_demoted_before_its_branch_is_replaced_even_when_the_replacement_fails(self):
+        u = "https://x/pull/7"
+        armed = {**self.CHG, ("gh", "pr", "list"): (0, u + "\n", ""), ("gh", "pr", "view", u, "--json",
+            "autoMergeRequest"): (0, "true\n", ""),
+                 ("gh", "pr", "view", u, "--json", "isDraft"): (0, "false\n", "")}
+        res, fr = self.real(armed, automerge=True, row=self.MAJOR, api={"mutation": (1, "", "HTTP 403")})
+        self.assertEqual(res[2], "error"); argv = fr.argvs()
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", u], argv)
+        self.assertIn(["gh", "pr", "ready", "--undo", u], argv)
+        self.assertLess(argv.index(["gh", "pr", "ready", "--undo", u]), argv.index(["gh", "api", "graphql", "--input",
+            "-"]))
+        # not a major: only disarmed, as before
+        res, fr = self.real(armed, automerge=True, api={"mutation": (1, "", "HTTP 403")})
+        self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
+        # no PR yet: nothing to demote
+        res, fr = self.real({**self.CHG}, automerge=True, row=self.MAJOR)
+        self.assertFalse(any(a[:3] == ["gh", "pr", "ready"] for a in fr.argvs()))
+
+    def test_a_reused_major_bump_pr_that_cannot_be_demoted_fails_the_delivery_and_is_not_edited(self):
+        u = "https://x/pull/7"; look = {"lookup": head_lookup(True, SHA)}
+        base = {**self.REUSE, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0, "false\n", ""),
+                ("gh", "pr", "view", u, "--json", "isDraft"): (0, "false\n", "")}
+        for rules, word in (({**base, ("gh", "pr", "ready", "--undo"): (1, "", "HTTP 500")}, "draft"),
+                            ({**base, ("gh", "pr", "view", u, "--json", "isDraft"): (1, "", "HTTP 500")}, "isDraft"),
+                            ({**base, ("gh", "pr", "view", u, "--json", "autoMergeRequest"): (0, "true\n", ""),
+                              ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, "disable auto-merge")):
+            res, fr = self.real(rules, automerge=True, row=self.MAJOR, api=look)
+            self.assertEqual((res[0], res[2]), (None, "error")); self.assertIn(word, res[1])
+            self.assertFalse(any(a[:3] == ["gh", "pr", "edit"] for a in fr.argvs()))
+
     def test_git_failures(self):
         for pre, label in ((("git", "fetch"), "git fetch"), (("git", "checkout"), "git checkout")):
             res, fr = self.real({pre: (1, "", "nope")})
             self.assertEqual(res, (None, "%s: nope" % label, "error"))
-            self.assertEqual(fr.argvs()[0], ["git", "reset", "--hard"])
+            # (after the Dependabot lookup)
+            self.assertEqual([a for a in fr.argvs() if a[0] == "git"][0], ["git", "reset", "--hard"])
         # (changed: `git commit` / `git push` are never run; the commit is made through the API and its failures are signed-commit failures)
         res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "rev-parse"): (1, "", "bad ref")})
         self.assertEqual(res, (None, "git rev-parse: bad ref", "error"))
@@ -1460,6 +1553,343 @@ class FixPR(Base):
         with mock.patch.object(R.subprocess, "run", fr):
             res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
         self.assertEqual(res[2], "error"); self.assertIn("go.mod", res[1])            # no go.mod at all: nothing to stage, never "unresolvable"
+
+    def test_open_dependabot_prs_and_the_title_match(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        prs = [{"number": 5, "title": "Bump example.com/m from 1.0.0 to 1.1.0", "url": "https://x/pull/5"},
+            {"number": 6, "title": "build(deps): bump other.org/z from 1 to 2", "url": "u"}]
+        fr = FakeRun({("gh", "pr", "list"): (0, json.dumps(prs), "")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            got, err = R._open_dependabot_prs(self.d("ws"))
+        self.assertEqual((got, err), (prs, None))
+        self.assertEqual(R._dependabot_match(got, "example.com/m", "1.1.0"), (5, "https://x/pull/5"))
+        self.assertEqual(R._dependabot_match(got, "example.com/m", "1.1.1"), None)                  # another version
+        # a module that is only a prefix
+        self.assertEqual(R._dependabot_match(got, "example.com", "1.1.0"), None)
+        # the conventional-commit prefix still matches
+        self.assertEqual(R._dependabot_match(got, "other.org/z", "2"), (6, "u"))
+        self.assertEqual(R._dependabot_match(None, "m", "1"), None)
+        other_dir = [{"number": 8, "title": "Bump example.com/m from 1.0.0 to 1.1.0 in /tools/govulncheck",
+            "url": "u8"}]
+        # another directory's go.mod is not ours
+        self.assertIsNone(R._dependabot_match(other_dir, "example.com/m", "1.1.0"))
+        for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (0, "not json", "")}):
+            with mock.patch.object(R.subprocess, "run", FakeRun(rules)):
+                got, err = R._open_dependabot_prs(self.d("ws"))
+            self.assertIsNone(got); self.assertIn("gh pr list", err)
+
+    def test_a_real_run_defers_to_an_open_dependabot_pr_and_survives_a_failed_lookup(self):
+        dep = {("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, json.dumps([{"number": 5,
+            "title": "Bump example.com/m from 1.0.0 to 1.1.0", "url": "https://x/pull/5"}]), "")}
+        res, fr = self.real({**self.CHG, **dep})
+        self.assertEqual(res, ("https://x/pull/5", None, "deferred"))
+        # nothing was built or opened
+        self.assertFalse(any(a[:2] in (["git", "checkout"], ["go", "get"]) for a in fr.argvs()))
+        # a deferral touches no pull request: the auditor's own draft is never closed, edited, readied or armed
+        changes = ("close", "edit", "ready", "merge", "create")
+        self.assertFalse(any(a[:2] == ["gh", "pr"] and a[2] in changes for a in fr.argvs()))
+        self.assertFalse(any(a[:3] == ["gh", "issue", "create"] for a in fr.argvs()))     # ... and opens no issue
+        res, fr = self.real({**self.CHG, ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (1, "",
+            "HTTP 500"), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(res, ("https://x/pull/9", None, "delivered-unchecked"))
+
+    def test_only_a_changed_major_is_held_so_a_v0_minor_is_not(self):
+        m = "example.com/m"
+        # advisor Oct 24: v0.9 -> v0.10 is not a major
+        self.assertFalse(R._is_major_bump(m, "v0.9.0", "v0.10.0"))
+        self.assertFalse(R._is_major_bump(m + "/v2", "v2.1.0", "v2.2.0"))
+        # not versions: held
+        for bad in ("v1.2.3-", "v1.2.3+", "v1.2.3-..", "v1.2.3-a..b", "v1.2.3+x y", "v1.2"):
+            self.assertTrue(R._is_major_bump(m, "v1.2.3", bad), bad)
+        for good in ("v1.2.4-rc.1", "v1.2.4+incompatible", "v1.2.4-0.20200101000000-abcdef123456"):
+            self.assertFalse(R._is_major_bump(m, "v1.2.3", good), good)
+        self.assertTrue(R._is_major_bump(m, "v0.9.0", "v1.0.0"))            # v0 -> v1 is
+        self.assertTrue(R._is_major_bump(m, "v1.9.0", "v2.0.0"))
+        self.assertTrue(R._is_major_bump(m, "v1.0.0", "garbage"))           # unreadable: held, never treated as a patch
+
+    def test_a_dry_run_and_a_disabled_delivery_do_not_claim_an_issue_was_opened_and_a_dry_run_checks_the_deferral(self):
+        row = lambda: {"id": "CVE-2099-50", "fix_bump": {"cve": "CVE-2099-50", "module": "example.com/m",
+            "from": "v0.9.0", "to": "v1.0.0"}}
+        r1 = row(); would = []
+        self.quiet(R._deliver_bumps, [r1], "2026-09-22", "abcdef1234567890", True, would)
+        self.assertIn("would be opened (dry run)", r1["action"])
+        self.assertNotIn("needs a manual change (issue", r1["action"])
+        self.assertTrue(any(w["kind"] == "held-major issue" for w in would))
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"; os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        r2 = row()
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
+            self.quiet(R._deliver_bumps, [r2], "2026-09-22", "abcdef1234567890", False, [])
+        self.assertIn("issue NOT opened (delivery disabled)", r2["action"])
+        # a dry run that can read GitHub says it would defer to the open Dependabot PR
+        os.environ["AUDITOR_GIT_SHIM_LOG"] = os.path.join(self.tmp, "dd.log")
+        os.environ["AUDITOR_SHIM_DEPENDABOT_PRS"] = json.dumps([{"number": 41,
+            "title": "Bump example.com/m from 0.9.0 to 1.0.0"}])
+        try:
+            r3 = row(); would = []
+            self.quiet(R._deliver_bumps, [r3], "2026-09-22", "abcdef1234567890", True, would)
+        finally:
+            os.environ.pop("AUDITOR_SHIM_DEPENDABOT_PRS", None)
+        self.assertIn("deferred to Dependabot PR", r3["action"])
+        self.assertTrue(any("deferred to Dependabot PR #41" in (w.get("note") or "") for w in would))
+
+    def test_the_held_major_issue(self):
+        would = []
+        self.assertEqual(R._emit_held_issue("t", "b", True, would, cves=["C"], target="x"), (True, "dry"))
+        self.assertEqual(len(would), 1)
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None); os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"
+        self.assertEqual(R._emit_held_issue("t", "b", False, []), (True, "skipped"))
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+        def go(rules):
+            fr = FakeRun(rules)
+            with mock.patch.object(R.subprocess, "run", fr):
+                return R._emit_held_issue("t", "b", False, []), fr
+        res, fr = go({("gh", "issue", "list"): (0, "[]", ""), ("gh", "issue", "create"): (0, "https://x/issues/12\n",
+            "")})
+        self.assertEqual(res, (True, 12))
+        create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]][0]
+        # never an owner-decision issue
+        self.assertNotIn("--label", create); self.assertNotIn("--assignee", create)
+        res, fr = go({("gh", "issue", "list"): (0, json.dumps([{"number": 3, "title": "t"}]), "")})
+        self.assertEqual(res, (True, 3)); self.assertIn(["gh", "issue", "comment", "3", "--body", "b"], fr.argvs())
+        self.assertEqual(go({("gh", "issue", "list"): (1, "", "boom")})[0], (False, None))
+        self.assertEqual(go({("gh", "issue", "list"): (0, "[]", ""), ("gh", "issue", "create"): (1, "", "boom")})[0],
+            (False, None))
+        self.assertEqual(go({("gh", "issue", "list"): (0, "[]", ""), ("gh", "issue", "create"): (0, "", "")})[0], (True,
+            ""))
+        self.assertEqual(go({("gh", "issue", "list"): (0, "{bad", "")})[0], (False, None))
+        log = os.path.join(self.tmp, "fx.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
+        self.assertEqual(R._emit_held_issue("t", "b", False, []), (True, "shim-created"))
+        self.assertEqual(R._emit_held_issue("t", "b", False, []), (True, "shim-updated"))
+        os.environ["AUDITOR_SHIM_ISSUE_FAIL"] = "1"
+        try:
+            self.assertEqual(R._emit_held_issue("u", "b", False, []), (False, None))
+        finally:
+            os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL", None)
+
+    # ---- bot public text round 2: the held-major issue says it in plain words, and an issue opened under the old title is still found
+    HELD_MOD, HELD_FROM, HELD_TO = "example.com/m", "v0.9.0", "v1.0.0"
+    HELD_NEW_TITLE = "auditor: major bump example.com/m -> v1.0.0 needs a manual change"
+    HELD_OLD_TITLE = "auditor: major bump example.com/m -> v1.0.0 held as a harness lane task"   # what #836 opened; found, never created again
+    HELD_BODY = ("The daily CVE auditor found a fixed version of example.com/m that is a MAJOR transition (v0.9.0 -> v1.0.0). "
+                 "A major bump means an API changed, so the auditor opened the draft PR but did not arm it; a person has to make "
+                 "the change on our side.\n\n- Vulnerabilities: CVE-2099-61\n- Draft PR: https://x/pull/3\n")
+
+    def held_row(self):
+        return {"id": "CVE-2099-61", "fix_bump": {"cve": "CVE-2099-61", "module": self.HELD_MOD, "from": self.HELD_FROM,
+                                                  "to": self.HELD_TO}}
+
+    def held_run(self, rules, env=None):
+        """_deliver_bumps over one major row with the real-gh path and a fake gh; returns (row, errs, fake)."""
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None); os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+        os.environ.update(env or {})
+        row = self.held_row(); fr = FakeGhTitles(rules)
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
+                mock.patch.object(R.subprocess, "run", fr):
+            errs, self.held_out = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])
+        return row, errs, fr
+
+    def list_rule(self, title, rc=0, rows=()):
+        return {("gh", "issue", "list", "--search", title): (rc, json.dumps(list(rows)) if rc == 0 else "", "boom" if rc else "")}
+
+    def held_lists(self, fr):
+        return [a[a.index("--search") + 1] for a in fr.argvs() if a[:3] == ["gh", "issue", "list"]]
+
+    def words_ok(self, text):
+        """the text as a PR_BODY under the repository's own customer-words check (empty diff on stdin): rc 0, nothing printed"""
+        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
+        c = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
+                           env={**os.environ, "PR_TITLE": "x", "PR_BODY": text}, capture_output=True, text=True)
+        self.assertEqual((c.returncode, c.stdout), (0, ""), c.stderr)
+
+    def test_the_held_major_issue_title_notes_and_body_are_plain_words(self):
+        created = {("gh", "issue", "create"): (0, "https://x/issues/12\n", "")}
+        row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE), **self.list_rule(self.HELD_OLD_TITLE), **created})
+        self.assertEqual(errs, [])
+        create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]
+        self.assertEqual(len(create), 1)
+        self.assertEqual(create[0][create[0].index("--title") + 1], self.HELD_NEW_TITLE)
+        body = create[0][create[0].index("--body") + 1]
+        self.assertEqual(body, self.HELD_BODY)
+        self.assertIn("MAJOR transition: needs a manual change (issue 12)", row["action"])
+        self.assertNotIn("harness lane", row["action"])
+        for text in (self.HELD_NEW_TITLE, body, row["action"]):
+            self.assertNotRegex(text, r"(?i)\b(owner|lane)\b")
+        self.words_ok(self.HELD_NEW_TITLE + "\n" + body + "\n" + row["action"])
+        # delivery switched off: the note says so in the same words
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"
+        r2 = self.held_row()
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
+            self.quiet(R._deliver_bumps, [r2], "2026-09-22", "abcdef1234567890", False, [])
+        self.assertIn("MAJOR transition: needs a manual change, issue NOT opened (delivery disabled)", r2["action"])
+        self.words_ok(r2["action"])
+
+    def test_an_open_held_issue_under_the_old_title_is_commented_and_nothing_is_created(self):
+        old = {"number": 41, "title": self.HELD_OLD_TITLE}
+        row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE), **self.list_rule(self.HELD_OLD_TITLE, rows=[old])})
+        self.assertEqual(errs, [])
+        self.assertEqual(self.held_lists(fr), [self.HELD_NEW_TITLE, self.HELD_OLD_TITLE])          # the new title first, then the old
+        self.assertIn(["gh", "issue", "comment", "41", "--body", self.HELD_BODY], fr.argvs())
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]])
+        self.assertIn("MAJOR transition: needs a manual change (issue 41)", row["action"])
+
+    def test_an_open_held_issue_under_the_new_title_is_commented_and_the_old_title_is_not_searched(self):
+        new = {"number": 42, "title": self.HELD_NEW_TITLE}
+        row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE, rows=[new]), **self.list_rule(self.HELD_OLD_TITLE)})
+        self.assertEqual(errs, [])
+        self.assertEqual(self.held_lists(fr), [self.HELD_NEW_TITLE])
+        self.assertIn(["gh", "issue", "comment", "42", "--body", self.HELD_BODY], fr.argvs())
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]])
+
+    def test_the_held_issue_search_matches_the_title_exactly_for_each_title(self):
+        other = [{"number": 7, "title": self.HELD_NEW_TITLE + " (v2)"}, {"number": 8, "title": "auditor: something else"}]
+        row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE, rows=other),
+                                       **self.list_rule(self.HELD_OLD_TITLE, rows=other),
+                                       ("gh", "issue", "create"): (0, "https://x/issues/13\n", "")})
+        self.assertEqual(errs, [])
+        self.assertEqual(self.held_lists(fr), [self.HELD_NEW_TITLE, self.HELD_OLD_TITLE])
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "comment"]])            # a near title is not the issue
+        create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]
+        self.assertEqual([c[c.index("--title") + 1] for c in create], [self.HELD_NEW_TITLE])        # created with the NEW title only
+
+    def raw_list_rule(self, title, stdout, rc=0):
+        return {("gh", "issue", "list", "--search", title): (rc, stdout, "")}
+
+    def assert_held_stops(self, rules, why):
+        row, errs, fr = self.held_run({**rules, ("gh", "issue", "create"): (0, "https://x/issues/15\n", ""),
+                                       ("gh", "issue", "comment"): (0, "", "")})
+        self.assertIn("held-major issue", errs, why)
+        self.assertTrue(row.get("pending_delivery"), why)
+        self.assertFalse([a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], why)
+
+    def test_an_unreadable_issue_list_reply_for_either_held_title_stops_delivery_before_any_create(self):
+        # F1: empty stdout, {} and "" (exit 0) for one title and [] for the other used to create an issue and report success (12 combinations with the panel's)
+        for reply in ("", "{}", '""'):
+            for bad, good in ((self.HELD_NEW_TITLE, self.HELD_OLD_TITLE), (self.HELD_OLD_TITLE, self.HELD_NEW_TITLE)):
+                self.assert_held_stops({**self.raw_list_rule(bad, reply), **self.raw_list_rule(good, "[]")}, (reply, bad))
+
+    def test_a_held_issue_list_reply_that_is_not_an_array_of_number_and_title_objects_fails_closed(self):
+        for reply in ("null", "5", "true", '"x"', '{"number": 3, "title": "t"}', "[1]", '["a"]', "[null]", "[[]]",
+                      '[{"title": "%s"}]' % self.HELD_NEW_TITLE, '[{"number": 3}]', '[{"number": 3, "title": "ok"}, 7]'):
+            for bad, good in ((self.HELD_NEW_TITLE, self.HELD_OLD_TITLE), (self.HELD_OLD_TITLE, self.HELD_NEW_TITLE)):
+                self.assert_held_stops({**self.raw_list_rule(bad, reply), **self.raw_list_rule(good, "[]")}, (reply, bad))
+
+    def test_with_real_delivery_off_an_empty_answer_makes_no_create_and_does_not_fail(self):
+        # plan mode: nothing is asked of gh at all; the empty answer of the plan is not a failure
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"; os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        row = self.held_row(); fr = FakeGhTitles({})
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
+                mock.patch.object(R.subprocess, "run", fr):
+            errs = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])[0]
+        self.assertEqual(errs, [])
+        self.assertFalse([a for a in fr.argvs() if a[:2] == ["gh", "issue"]])
+        self.assertIn("needs a manual change, issue NOT opened (delivery disabled)", row["action"])
+
+    def test_every_held_issue_search_asks_for_at_least_100_issues(self):
+        row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE), **self.list_rule(self.HELD_OLD_TITLE),
+                                       ("gh", "issue", "create"): (0, "https://x/issues/16\n", "")})
+        lists = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "list"]]
+        self.assertEqual([a[a.index("--search") + 1] for a in lists], [self.HELD_NEW_TITLE, self.HELD_OLD_TITLE])
+        for a in lists:
+            self.assertIn("--limit", a, a)
+            self.assertGreaterEqual(int(a[a.index("--limit") + 1]), 100, a)        # bin/rescan-statement.py:89-92: read every page, never the default 30
+
+    def test_the_proposals_note_carries_no_requirement_id_and_no_internal_word(self):
+        import ast
+        src = open(os.path.join(BIN, "auditor-run.py")).read()
+        notes = [n.value for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                 and n.value.startswith("MODEL PROPOSALS")]
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn("REQ-", notes[0]); self.assertNotIn("audit-lane", notes[0])
+        self.assertIn("a reviewer promotes it", notes[0])
+        self.words_ok(notes[0])
+
+    BAD_NUMBERS = (None, False, True, "", "7", 0, -3, 1.5, [], {})          # none of these is an issue number: a positive integer, a bool is not one
+
+    def test_an_issue_list_row_whose_number_is_not_a_positive_integer_stops_delivery_before_any_create(self):
+        # seat A (cache#837 r2): the validator only checked that "number" exists, so null, false, "" and objects passed and a matching row
+        # with number "" went on to a create, another garbage value to a comment on an invalid issue identifier
+        for number in self.BAD_NUMBERS:
+            for bad, good in ((self.HELD_NEW_TITLE, self.HELD_OLD_TITLE), (self.HELD_OLD_TITLE, self.HELD_NEW_TITLE)):
+                for rows in ([{"number": number, "title": bad}], [{"number": number, "title": "auditor: another issue"}]):
+                    why = (number, bad, rows[0]["title"])
+                    self.assert_held_stops({**self.raw_list_rule(bad, json.dumps(rows)), **self.raw_list_rule(good, "[]")}, why)
+                    self.assertIn("held-major issue discovery FAILED", self.held_out, why)
+
+    def test_an_issue_list_row_with_a_positive_integer_number_still_works(self):
+        # the controls: a matching row is commented, a non-matching row with a valid number is ignored and the issue is created
+        new = [{"number": 42, "title": self.HELD_NEW_TITLE}]
+        row, errs, fr = self.held_run({**self.raw_list_rule(self.HELD_NEW_TITLE, json.dumps(new)), **self.raw_list_rule(self.HELD_OLD_TITLE, "[]")})
+        self.assertEqual(errs, [])
+        self.assertIn(["gh", "issue", "comment", "42", "--body", self.HELD_BODY], fr.argvs())
+        other = [{"number": 8, "title": "auditor: another issue"}]
+        row, errs, fr = self.held_run({**self.raw_list_rule(self.HELD_NEW_TITLE, json.dumps(other)),
+                                       **self.raw_list_rule(self.HELD_OLD_TITLE, json.dumps(other)),
+                                       ("gh", "issue", "create"): (0, "https://x/issues/17\n", "")})
+        self.assertEqual(errs, [])
+        create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]
+        self.assertEqual([c[c.index("--title") + 1] for c in create], [self.HELD_NEW_TITLE])
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "comment"]])
+
+    def test_a_failed_issue_list_for_either_held_title_holds_and_creates_nothing(self):
+        for failing in (self.HELD_NEW_TITLE, self.HELD_OLD_TITLE):
+            ok = self.HELD_OLD_TITLE if failing == self.HELD_NEW_TITLE else self.HELD_NEW_TITLE
+            rules = {**self.list_rule(ok), **self.list_rule(failing, rc=1),
+                     ("gh", "issue", "create"): (0, "https://x/issues/14\n", "")}
+            row, errs, fr = self.held_run(rules)
+            self.assertIn("held-major issue", errs, failing)
+            self.assertTrue(row.get("pending_delivery"), failing)
+            self.assertFalse([a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], failing)
+
+    def test_the_shim_ledger_also_finds_a_held_issue_opened_under_the_old_title(self):
+        log = os.path.join(self.tmp, "held-old.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
+        open(log, "w").write("gh issue create --title %s --body x\n" % shlex.quote(self.HELD_OLD_TITLE))
+        row = self.held_row()
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
+            self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])
+        lines = open(log).read().splitlines()
+        self.assertEqual([l for l in lines if l.startswith("gh issue create")], ["gh issue create --title %s --body x" %
+                                                                                  shlex.quote(self.HELD_OLD_TITLE)])
+        self.assertEqual(len([l for l in lines if l.startswith("gh issue comment --title")]), 1)
+
+    def test_a_held_issue_lookup_that_cannot_run_gh_stops_delivery_and_says_so(self):
+        # gh missing from PATH, or any OSError out of subprocess.run: the outer handler of _emit_held_issue reports it, creates and
+        # comments nothing, and the run is INCOMPLETE (the bad-JSON path no longer reaches this handler)
+        for exc in (FileNotFoundError(2, "No such file or directory: 'gh'"), PermissionError(13, "Permission denied: 'gh'")):
+            os.environ.pop("AUDITOR_GIT_SHIM_LOG", None); os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+            row = self.held_row(); fr = FakeGhTitles({("gh", "issue", "list"): exc})
+            with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")), \
+                    mock.patch.object(R.subprocess, "run", fr):
+                errs, out = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])
+            self.assertIn("held-major issue", errs, exc)
+            self.assertTrue(row.get("pending_delivery"), exc)
+            self.assertIn("held-major issue open/update failed: %s" % exc, out)
+            self.assertIn("the held-major issue FAILED to open (run INCOMPLETE)", row["action"])
+            self.assertEqual(self.held_lists(fr), [self.HELD_NEW_TITLE])                  # stopped at the first search
+            self.assertFalse([a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], exc)
+
+    def test_the_shim_ledger_creates_the_held_issue_with_the_new_title(self):
+        log = os.path.join(self.tmp, "held-new.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
+        row = self.held_row()
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
+            self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])
+        creates = [l for l in open(log).read().splitlines() if l.startswith("gh issue create")]
+        self.assertEqual(len(creates), 1)
+        self.assertIn(shlex.quote(self.HELD_NEW_TITLE), creates[0])
+
+    def test_a_major_whose_held_issue_fails_makes_the_run_incomplete(self):
+        log = os.path.join(self.tmp, "mj.log")
+        os.environ["AUDITOR_GIT_SHIM_LOG"] = log
+        os.environ["AUDITOR_SHIM_ISSUE_FAIL"] = "1"
+        row = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v0.9.0",
+            "to": "v1.0.0"}}
+        try:
+            errs = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])[0]
+        finally:
+            os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL", None)
+        self.assertEqual(errs, ["held-major issue"])
+        self.assertTrue(row["pending_delivery"])
+        self.assertIn("FAILED to open", row["action"])
 
     def test_go_get_unresolvable_and_tidy_error(self):
         res, fr = self.real({("go", "get"): (1, "", "unknown revision")})
@@ -2003,6 +2433,90 @@ class DefectLogLoading(unittest.TestCase):
         self.assertIn("known-defect log invalid — log.json: top level is list", out.getvalue())
         self.assertNotIn("manifest invalid", out.getvalue())
         closed.assert_called_once_with()
+
+
+class OwnerIssueSearch(Base):
+    """The standing issue is looked up by exact title: the search reads up to 100 issues, and an answer that is not a
+    list of numbered, titled issues stops delivery before any comment or create."""
+    T = OwnerIssue.T
+    GOOD = {"number": 12, "title": T}
+
+    def search(self, reply, rc=0):
+        """The issue emitter with real delivery on and a fake gh answering `reply`: (result, output, fake)."""
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", AUDITOR_ISSUES_TOKEN="issues-tok")
+        fr = FakeRun({("gh", "issue", "list"): (rc, reply, "boom" if rc else ""),
+                      ("gh", "issue", "create"): (0, "https://x/issues/15\n", ""),
+                      ("gh", "issue", "comment"): (0, "", "")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            res, out = self.quiet(R._emit_owner_issue, self.T, "body", False, [])
+        return res, out, fr
+
+    def writes(self, fr):
+        return [a for a in fr.argvs() if a[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])]
+
+    def assert_stops(self, reply):
+        with self.subTest(reply=reply):
+            res, out, fr = self.search(reply)
+            self.assertEqual(res, (False, None))
+            self.assertIn("owner-issue discovery FAILED", out)
+            self.assertEqual(self.writes(fr), [])
+
+    def test_the_standing_issue_search_asks_for_at_least_100_issues(self):
+        res, _out, fr = self.search("[]")
+        lists = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "list"]]
+        self.assertEqual(len(lists), 1)
+        self.assertIn("--limit", lists[0])
+        self.assertGreaterEqual(int(lists[0][lists[0].index("--limit") + 1]), 100)
+
+    def test_an_empty_or_unreadable_standing_issue_list_stops_delivery_before_any_write(self):
+        for reply in ("", "{}", '""', "null", "5", "true", '"x"', "not json", '{"number": 12, "title": "t"}'):
+            self.assert_stops(reply)
+
+    def test_a_standing_issue_list_row_that_is_not_a_numbered_titled_issue_stops_delivery(self):
+        for number in (None, False, True, "", "7", 0, -3, 1.5, [], {}):
+            self.assert_stops(json.dumps([{"number": number, "title": self.T}]))
+        for title in (None, 5, ["t"], {}):
+            self.assert_stops(json.dumps([{"number": 12, "title": title}]))
+        for row in ({"title": self.T}, {"number": 12}, 7, "a", None, []):
+            self.assert_stops(json.dumps([row]))
+
+    def test_one_bad_row_stops_delivery_even_beside_the_issue_that_was_looked_for(self):
+        self.assert_stops(json.dumps([self.GOOD, {"number": "7", "title": "other"}]))
+        self.assert_stops(json.dumps([{"number": 0, "title": "other"}, self.GOOD]))
+
+    def test_a_readable_standing_issue_list_comments_the_exact_title_or_creates(self):
+        near = {"number": 3, "title": self.T + " (v2)"}
+        res, _out, fr = self.search(json.dumps([near, self.GOOD]))
+        self.assertEqual(res, (True, 12))
+        self.assertIn(["gh", "issue", "comment", "12", "--body", "body"], fr.argvs())
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]])
+        res, _out, fr = self.search(json.dumps([near]))
+        self.assertEqual(res, (True, 15))
+        self.assertEqual(len([a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]]), 1)
+        self.assertFalse([a for a in fr.argvs() if a[:3] == ["gh", "issue", "comment"]])
+        res, _out, fr = self.search("[]")
+        self.assertEqual(res, (True, 15))
+
+    def test_a_standing_issue_lookup_that_cannot_run_gh_stops_delivery_and_says_so(self):
+        missing = FileNotFoundError(2, "No such file or directory: 'gh'")
+        denied = PermissionError(13, "Permission denied: 'gh'")
+        for exc in (missing, denied):
+            os.environ.update(AUDITOR_ALLOW_REAL_GH="1", AUDITOR_ISSUES_TOKEN="issues-tok")
+            fr = FakeRun({("gh", "issue", "list"): exc})
+            with mock.patch.object(R.subprocess, "run", fr):
+                res, out = self.quiet(R._emit_owner_issue, self.T, "body", False, [])
+            self.assertEqual(res, (False, None), exc)
+            self.assertIn("owner-issue open/update failed: %s" % exc, out)
+            self.assertEqual(self.writes(fr), [], exc)
+
+    def test_with_real_delivery_off_the_standing_issue_is_planned_and_gh_is_not_asked(self):
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"
+        fr = FakeRun({})
+        with mock.patch.object(R.subprocess, "run", fr):
+            res, out = self.quiet(R._emit_owner_issue, self.T, "body", False, [])
+        self.assertEqual(res, (True, "skipped"))
+        self.assertIn("would open/update owner issue (real gh disabled): " + self.T, out)
+        self.assertEqual(fr.argvs(), [])
 
 
 if __name__ == "__main__":

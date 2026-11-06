@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 71 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 86 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -97,9 +97,11 @@ build/baselayout/etc/group build/baselayout/etc/hosts build/baselayout/etc/nsswi
 build/baselayout/etc/passwd build/baselayout/etc/protocols build/baselayout/etc/services
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
+build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock build/locks/vm-kernel.lock
+build/vm-keys/kernel-key-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
-bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
+bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh
 bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
@@ -111,8 +113,11 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 bin/layout-archive.sh bin/layout-archive-test.sh
+bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
+build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
+build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
 """.split())
-if len(DECLARED) != 71: errs.append("declared list is not 71 paths: %d" % len(DECLARED))
+if len(DECLARED) != 86: errs.append("declared list is not 86 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -122,10 +127,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 211 allow patterns: chain-v030's 202 minus the bin/scout-vex-scan pattern (rc-5a K),
-# plus the two outbound-check patterns (0710), the recorded publisher signatures (REQ-SUP-001)
-# the three base-layout patterns, the two of the base-layout builder, and the recipe template and members list (0710)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 211, 6
+# 221 allow patterns: the merge of #816 (0710) and #840 (VM build inputs); the number is read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 221, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -173,7 +176,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "c5b7d8b428f7b0b63dd65de800a4d1879d5adedde59aef1039b8be74b3d21a14"
+PINNED_SHA256 = "042eeae538c035724f5580beaae1cb9d7f802e1beaddd5bbd4690975bd0056e2"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -759,6 +762,7 @@ runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
 runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
+passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
 passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
@@ -773,6 +777,8 @@ runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "b
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
 passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
+passfam "feature/x" "REQ-CHAIN-001-AC5: the sandbox wall probe, its offline test and its six recipe templates" "bin/chain-sandbox-probe.sh" "bin/build-sandbox-hostile-test.sh" "build/probe/control.yaml.tmpl" "build/probe/read-record.yaml.tmpl" "build/probe/write-record.yaml.tmpl" "build/probe/read-keydir.yaml.tmpl" "build/probe/read-token.yaml.tmpl" "build/probe/network.yaml.tmpl"
+runeach fail "feature/x" "REQ-CHAIN-001-AC5: sandbox probe near-miss siblings refused" "bin/chain-sandbox-probe.py" "bin/chain-sandbox-probes.sh" "bin/build-sandbox-hostile-test.py" "bin/build-sandbox-hostile-tests.sh" "build/probe/other.yaml.tmpl" "build/probe/control.yaml" "build/probe/control.yaml.tmpl.bak" "build/probe/sub/control.yaml.tmpl"
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"

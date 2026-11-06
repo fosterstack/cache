@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC18
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed-local.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -14,10 +15,15 @@
 # mutations a reviewer asked about, and the sweeps try every deletion, swap, suffix and insertion on every line; then the judge runs on the real tree.
 #
 # THE SHAPE (ratified Oct 9, owner, rule 50 wording: one stage = one workflow file = one identity; Build's two-machine matrix plus its assemble job fit):
-#   stage-build.yml: job `apk` (matrix over ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage-apk.sh), job `assemble` (the VM, needs apk:
-#   bin/build-stage-assemble.sh); stage-reproducibility.yml: the same two jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four scripts,
+# stage-build.yml: job `freeze` (contents read, no token, no Witness step: bin/build-freeze.sh, release mode only), job
+# `apk` (matrix over
+# ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage-apk.sh), job `assemble` (the VM, needs apk:
+# bin/build-stage-assemble.sh);
+# stage-reproducibility.yml: the same two Witness jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four
+# Witness scripts,
 #   so there is no dispatch to analyse, each a row of .github/policy/chain-scripts.json with its sha256 (PR 1's design).
-#   Each job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a fresh directory) -> ONE Witness
+# Each Witness job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a
+# fresh directory) -> ONE Witness
 #   step, one line through bin/witnessed-local.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
 #   names product subjects relative to it.
 # THE ARTIFACT LAYOUT (fix round 2): actions/upload-artifact roots an artifact at the common ancestor of its paths, so every upload names ONE path.
@@ -135,10 +141,23 @@ def stage_text(family):
         call += "      mode:\n        description: release or snapshot\n        type: string\n        default: release\n"
         call += "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
     out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
-    for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("apk", "assemble")):
+    for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("freeze", "apk", "assemble")):
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
-        out += ("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
+        if job == "freeze":      # rule 1: the freeze check in a job of its own (no Witness, no tools)
+            out += "    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n"
+            out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
+            out += "          persist-credentials: false\n          fetch-depth: 0\n"
+            IF = "        if: %s\n" % S.MODE_RELEASE_IF
+            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n"
+            out += "        run: %s\n" % S.MODE_GUARD_RUN
+            out += "      - name: install Go (pinned by checksum)\n%s        run: %s\n" % (IF, S.INSTALL_GO)
+            out += "      - name: the freeze check of every baseline file\n%s        run: %s\n" % (IF, S.FREEZE_RUN)
+            out += "      - uses: %s # v7.0.1\n%s        with:\n" % (UPLOAD, IF)
+            out += "          name: freeze\n          path: freeze\n"
+            continue
+        out += ("    needs: freeze\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n"
+                "        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
                 else "    runs-on: %s\n" % sp["runner"] if sp.get("runner")
                 else "    needs: [rapk, rapk-arm]\n    runs-on: ubuntu-24.04\n" if family == "rebuild"
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
@@ -157,10 +176,15 @@ def stage_text(family):
         out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
-        for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
+        for name, path in sp["down"]:
+            ifl = "        if: %s\n" % S.MODE_RELEASE_IF if name == "freeze" else ""
+            out += "      - uses: %s # v5.0.0\n%s        with:\n" % (DOWNLOAD, ifl)
+            out += "          name: %s\n          path: %s\n" % (name, path)
         if sp.get("check_rapk"):
             out += "      - name: check the rapk records against their jobs' outputs\n        if: %s\n        env:\n" % S.MODE_RELEASE_IF + "".join("          %s: %s\n" % kv for kv in S.RAPK_CHECK_ENV.items()) + "        run: %s\n" % S.RAPK_CHECK_RUN
         out += witness_block(sp)
+        if sp.get("probe"):
+            out += "      - name: sandbox wall probe (dry run only)\n        if: %s\n        run: %s\n" % (S.HOSTILE_IF, S.PROBE_RUN)
         if sp.get("expose_rapk"): out += "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.exposerapk(sp["runner"]))
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
         if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the stage output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
@@ -313,16 +337,40 @@ st s_noid   "AC1 id-token: write on a building job (the building jobs hold no id
 st s_nochk  "AC1 the admission job without checks: read (the required-checks check could not run)" permissions '      checks: read\n' ''
 st s_wfperm "AC1 workflow-level permissions beyond contents: read" permissions 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: write\njobs'
 st s_push   "AC1 an extra trigger" workflow_call 'workflow_call:' 'push:\n  workflow_call:'
-st s_job3 "AC1 a third job (one stage = one file = two jobs)" "required (one stage = one file = one identity)" '  assemble:' \
+st s_job3 "AC1 a fourth job (one stage = one file = three jobs)" "required (one stage = one file = one identity)" \
+  '  assemble:' \
        '  third:\n    runs-on: ubuntu-24.04\n    steps: []\n  assemble:'
 st s_top    "AC1 a top-level env" top-level 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: read\nenv:\n  X: y\njobs'
-st s_unpin  "AC2 checkout not pinned by digest" checkout 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
-st s_unlist "AC2 an action digest that is not on the allowed-actions list" "allowed-actions" \
+# The AC2 checkout and allow-list mutants hit the apk job (the one that holds GH_TOKEN): the anchor is the apk job's own
+# permissions tail and its checkout. The s_fz_ copies hit the freeze job, the first job of the file.
+APKCO='      pull-requests: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 '\
+'# v7.0.1\n'
+APKWITH='        with:\n          persist-credentials: false\n'
+APKUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n       '\
+'   name: apk-'
+st s_unpin  "AC2 apk's checkout not pinned by digest" "apk: step 1" "$APKCO" \
+  "${APKCO/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/checkout@v7}"
+UPDIG=043fb46d1a93c77aae656e7c1c64a875d1fc6a0a; UPOTHER=1111111111111111111111111111111111111111
+st s_unlist "AC2 an apk upload digest that is not on the allowed-actions list" "apk: action" "$APKUP" \
+       "${APKUP/$UPDIG/$UPOTHER}"
+st s_cred   "AC2 apk's persisted credentials" "apk: step 1" "$APKCO$APKWITH" "$APKCO${APKWITH/false/true}"
+st s_ref    "AC2 apk's checkout of another ref" "apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          ref: main\n"
+st s_repo   "AC2 apk's checkout of another repository" "apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          \
+repository: evil/fork\n"
+st s_token  "AC2 apk's checkout with a token" "apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          token: \${{ \
+secrets.X }}\n"
+st s_fz_unpin  "AC2 the freeze job's checkout not pinned by digest" "freeze: step 1" \
+       'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
+st s_fz_unlist "AC2 the freeze job's upload digest that is not on the allowed-actions list" "freeze: action" \
        'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' 'actions/upload-artifact@1111111111111111111111111111111111111111'
-st s_cred   "AC2 persisted credentials" "exactly" 'persist-credentials: false' 'persist-credentials: true'
-st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          ref: main'
-st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
-st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
+st s_fz_cred   "AC2 the freeze job's persisted credentials" "freeze: step 1" 'persist-credentials: false' \
+  'persist-credentials: true'
+st s_fz_ref    "AC2 the freeze job's checkout of another ref" "freeze: step 1" 'persist-credentials: false' \
+       'persist-credentials: false\n          ref: main'
+st s_fz_repo   "AC2 the freeze job's checkout of another repository" "freeze: step 1" 'persist-credentials: false' \
+       'persist-credentials: false\n          repository: evil/fork'
+st s_fz_token  "AC2 the freeze job's checkout with a token" "freeze: step 1" 'persist-credentials: false' \
+       'persist-credentials: false\n          token: ${{ secrets.X }}'
 ADMUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: ${{ inputs.mode == '"'release'"' && matrix.runner == '"'ubuntu-24.04'"' }}\n        with:\n          name: admission\n          path: admission.json\n'
 st s_adm_gone "AC8 Build's admission record is not uploaded (Release could not read the baseline a patch tag used)" "admission" "$ADMUP" ''
 st s_adm_all  "AC8 admission.json uploaded from every apk leg (one fixed name from a matrix clashes)" "admission" " && matrix.runner == 'ubuntu-24.04'" ''
@@ -330,7 +378,8 @@ st s_adm_name "AC8 admission.json uploaded under another name" "admission" 'name
 st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission ran: the upload would fail)" "admission" "inputs.mode == 'release' && matrix.runner" "matrix.runner"
 GOINST='      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n'
 WINST='      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n'
-st s_go_gone  "AC4 the Go toolchain install of admission is missing from Build's apk job" "install-scanner.sh go" "$GOINST" ''
+st s_go_gone  "AC4 the Go toolchain install of the melange build is missing from Build's apk job" "install-scanner.sh \
+go" "$GOINST" ''
 MELINST='      - name: install melange (pinned by checksum)\n        run: bash bin/install-build-tools.sh melange\n'
 APKINST='      - name: install apko (pinned by checksum)\n        run: bash bin/install-build-tools.sh apko\n'
 st s_bt_gone   "004-AC3 the melange install is missing from Build's apk job (rule 62: the VM runs melange)" "install-build-tools.sh melange" "$MELINST" ''
@@ -344,6 +393,60 @@ st s_bt_tool   "004-AC3 a third build tool through the same installer" "download
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
 st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+# rule 1 of the sandboxed build: the freeze job's grammar (mode guard first, every other step and apk's download
+# release-only)
+# and the two places the freeze script may not appear
+RIF='if: ${{ inputs.mode == '"'release'"' }}\n'
+FZGO='      - name: install Go (pinned by checksum)\n        '"$RIF"'        run: bash bin/install-scanner.sh go\n'
+FZRUN='      - name: the freeze check of every baseline file\n        '"$RIF"'        run: bash bin/build-freeze.sh\n'
+FZGUARD='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        '\
+'run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
+st s_fz_goif  "AC4 the freeze job's Go install without its release-mode if" "freeze: step 3" "$FZGO" "$GOINST"
+st s_fz_runif "AC4 the freeze job's script step without its release-mode if" "freeze: step 4" \
+       '        '"$RIF"'        run: bash bin/build-freeze.sh' '        run: bash bin/build-freeze.sh'
+st s_fz_upif  "AC4 the freeze job's upload without its release-mode if" "freeze: step 5" \
+       '        '"$RIF"'        with:\n          name: freeze\n          path: freeze\n  apk:' \
+       '        with:\n          name: freeze\n          path: freeze\n  apk:'
+st s_fz_guard "AC4 the freeze job has no mode guard (a mixed-case mode value could pass the ifs)" "freeze: " \
+  "$FZGUARD" ''
+st s_fz_gcond "AC4 the freeze job's mode guard under an if" "freeze: step 2" \
+       "$FZGUARD" '      - name: the mode is release or snapshot\n        '"$RIF"'        env:\n          MODE: ${{ '\
+'inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
+st s_fz_dlif  "AC4 apk's download of the freeze result without its release-mode if" "name freeze" \
+       '        '"$RIF"'        with:\n          name: freeze\n          path: freeze\n      - name: apk' \
+       '        with:\n          name: freeze\n          path: freeze\n      - name: apk'
+st s_fz_apk   "AC4 bin/build-freeze.sh run by a step of the apk job (NS_SKIP leaves it unread: only the freeze job \
+may run it)" \
+       "only the freeze job runs bin/build-freeze.sh" "$WINST" '      - name: freeze in apk\n        run: bash '\
+'bin/build-freeze.sh\n'"$WINST"
+st s_fz_vf    "AC4 verify-freeze named by a step of the assemble job" "names verify-freeze" "$APKINST" \
+       '      - name: freeze in assemble\n        run: echo verify-freeze v0.3.0\n'"$APKINST"
+# the freeze job's own refusals (job keys, runner, permissions, env on its steps, its upload) and apk's needs
+FZHEAD='  freeze:\n    runs-on: ubuntu-24.04\n'
+FZPERM='    permissions:\n      contents: read\n    steps:\n'
+st s_fz_needs "AC4 a needs key on the freeze job" "freeze: job keys" "$FZHEAD" "$FZHEAD    needs: []\n"
+st s_fz_jenv  "AC4 an env on the freeze job" "freeze: job keys" "$FZHEAD" "$FZHEAD    env:\n      A: b\n"
+st s_fz_cont  "AC4 a container on the freeze job" "freeze: job keys" "$FZHEAD" "$FZHEAD    container: debian:12\n"
+st s_fz_runs  "AC4 the freeze job on another runner" "freeze: the freeze job must run" "$FZHEAD" '  freeze:\n    '\
+'runs-on: ubuntu-22.04\n'
+st s_fz_pw    "AC4 contents: write on the freeze job" "freeze: permissions" "$FZHEAD$FZPERM" \
+       "$FZHEAD"'    permissions:\n      contents: write\n    steps:\n'
+st s_fz_pid   "AC4 id-token: write on the freeze job" "freeze: permissions" "$FZHEAD$FZPERM" \
+       "$FZHEAD"'    permissions:\n      contents: read\n      id-token: write\n    steps:\n'
+st s_fz_env3  "AC4 an env on the freeze job's Go install" "freeze: step 3" "$FZGO" \
+       '      - name: install Go (pinned by checksum)\n        env:\n          K: v\n        '"$RIF"'        run: '\
+'bash bin/install-scanner.sh go\n'
+st s_fz_env4  "AC4 an env on the freeze job's script step" "freeze: step 4" "$FZRUN" \
+       '      - name: the freeze check of every baseline file\n        env:\n          K: v\n        '"$RIF"'        '\
+'run: bash bin/build-freeze.sh\n'
+FZUP='          name: freeze\n          path: freeze\n  apk:'
+st s_fz_path  "AC4 the freeze upload with another path" "freeze: step 5" "$FZUP" '          name: freeze\n          '\
+'path: .\n  apk:'
+st s_fz_over  "AC4 the freeze upload with overwrite" "freeze: step 5" "$FZUP" \
+       '          name: freeze\n          path: freeze\n          overwrite: true\n  apk:'
+st s_fz_apkn  "AC4 apk without needs: freeze" "apk must need exactly freeze" 'needs: freeze\n    runs-on: ${{ '\
+'matrix.runner }}' \
+       'needs: []\n    runs-on: ${{ matrix.runner }}'
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
 CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
@@ -385,11 +488,16 @@ st s_go_other "AC4 the Go install line names another target" "install-scanner.sh
 FXD_4='run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
 st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' "$FXD_4"
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
-st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
+st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n     '\
+'   run: bash bin/install-scanner.sh go\n      - name: install melange' 'name: install Go (pinned by checksum)\n      '\
+'  if: always()\n        run: bash bin/install-scanner.sh go\n      - name: install melange'
 # Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
 # bin/witnessed-local.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
 # checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
-st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" "before admission" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
+st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" \
+  "before admission" 'name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n      - '\
+'name: install melange' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token '\
+'}}\n        run: bash bin/install-scanner.sh go\n      - name: install melange'
 st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
 st s_pre_build "AC4 a build command before admission" "before admission" "$GOINST" "$GOINST      - name: build early\n        run: bash bin/build-apk.sh --variant standard\n"
 st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
@@ -423,11 +531,24 @@ st s_hin_str  "AC2 the hostile input is a string (a null caller input must not r
 st s_hin_req  "AC2 the hostile input is required" "on: must be" '        description: dry run only\n        type: boolean\n        default: false\n' \
               '        description: dry run only\n        type: boolean\n        default: false\n        required: true\n'
 st s_hstep_none "AC2 the hostile step is missing (PR 1's contract: a step gated by inputs.hostile in the Build job)" "hostile" "$HOSTILE_STEP" ''
-st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' \
-    '        run: bash'
-st s_hstep_alw  "AC2 the hostile step runs always()" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' '        if: always()\n        run: bash'
+st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh' \
+    '        run: bash bin/chain-hostile-step.sh'
+st s_hstep_alw  "AC2 the hostile step runs always()" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh' \
+    '        if: always()\n        run: bash bin/chain-hostile-step.sh'
 st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "hostile" 'name: hostile-attempts' 'name: attempts'
 st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
+# the sandbox wall probe (sandboxed-build rules 3 and 5): a step of the apk job, after its Witness steps, only in a dry run
+PROBE_STEP='      - name: sandbox wall probe (dry run only)\n        if: ${{ inputs.hostile }}\n        run: bash bin/chain-sandbox-probe.sh\n'
+st s_probe_none "AC2 the sandbox wall probe step is missing from the apk job" "probe" "$PROBE_STEP" ''
+st s_probe_noif "AC2 the probe step has no if (it would run in every release)" "probe" \
+    '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-sandbox-probe.sh' '        run: bash bin/chain-sandbox-probe.sh'
+st s_probe_alw  "AC2 the probe step runs always()" "probe" \
+    '        if: ${{ inputs.hostile }}\n        run: bash bin/chain-sandbox-probe.sh' '        if: always()\n        run: bash bin/chain-sandbox-probe.sh'
+st s_probe_run  "AC2 the probe step runs another script" "probe" 'run: bash bin/chain-sandbox-probe.sh' 'run: bash bin/chain-hostile-step.sh'
+st s_probe_env  "AC2 the probe step carries an env (the runner token must never reach it)" "probe" \
+    '        run: bash bin/chain-sandbox-probe.sh' '        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/chain-sandbox-probe.sh'
+st s_probe_ct   "AC2 the probe step continues on error (a held wall and an open wall would look alike)" "probe" \
+    '        run: bash bin/chain-sandbox-probe.sh' '        continue-on-error: true\n        run: bash bin/chain-sandbox-probe.sh'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
@@ -513,6 +634,10 @@ st s_after "AC2 a third-party action after Witness" "step" \
 st s_comp   "AC2 a local composite action step" "step" '      - name: apk under Witness' '      - uses: ./.github/actions/x\n      - name: apk under Witness'
 st s_docker "AC2 a docker:// step" "step" '      - name: apk under Witness' '      - uses: docker://alpine:3\n      - name: apk under Witness'
 rb() { replace "$work/rebuild.yml" "$work/$1.yml" "$4" "$5" && expect caught "$2" "$3" stage "$work/$1.yml" rebuild "$AL"; return 0; }
+rb s_fz_rb    "AC4 bin/build-freeze.sh run by a step of a Rebuild job (Rebuild runs no go of the tagged tree)" \
+       "only the freeze job runs bin/build-freeze.sh" '      - name: install Witness (pinned by checksum)\n' \
+       '      - name: freeze in rebuild\n        run: bash bin/build-freeze.sh\n      - name: install Witness (pinned '\
+'by checksum)\n'
 rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed-local.sh rebuild bin' \
        'witnessed-local.sh build bin'
 rb r_up   "005-AC4 Rebuild uploads anything but its verdict directory" "upload-artifact" 'name: witness-rebuild' 'name: dist'
@@ -584,13 +709,17 @@ rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      co
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
-# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml, minus the two files PR 2 removes
-mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old"
+# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml and customer-words-edited.yml, minus the two files PR 2 removes
+mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
+cp "$work/wf-ok"/* "$work/wf-cw/"; : > "$work/wf-cw/customer-words-edited.yml"
+cp "$work/wf-cw"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/stage-extra.yml"
 expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a second new workflow file" "was added" workflows "$work/wf-new"
+expect ok     "AC1 customer-words-edited.yml is the one other file allowed (decision 98, Oct 3)" "" workflows "$work/wf-cw"
+expect caught "AC1 customer-words-edited.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
 # ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
@@ -938,6 +1067,8 @@ def tar_bytes(entries):
                 ti.type = tarfile.LNKTYPE; ti.linkname = data; t.addfile(ti)
             elif kind == "dev":
                 ti.type = tarfile.CHRTYPE; ti.devmajor = 1; ti.devminor = 3; t.addfile(ti)
+            elif kind == "fifo":
+                ti.type = tarfile.FIFOTYPE; t.addfile(ti)
     return buf.getvalue()
 
 
@@ -1034,7 +1165,7 @@ case("AC17 a noarch package is accepted", setup=lambda d: apk(d + "/archive/" + 
 case("AC17 a file that is not an apk (not gzip) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "wb").write(b"not an apk"), want=1)
 case("AC17 an apk that is a symlink instead of a file is refused", setup=lambda d: (os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), os.symlink(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", d + "/archive/" + ARCH + "/libcap-2.78-r4.apk")), want=1)
 for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("a .. part", [("usr/../../evil", "file", b"E", None)]),
-                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
+                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
                    ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)]),
                    ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
                    ("two symlinks that together leave the directory (a -> . ; b -> a/../probe)", [("a", "sym", ".", None), ("b", "sym", "a/../probe", None)]),
@@ -1114,6 +1245,106 @@ case("AC17 aarch64 is accepted and reads archive/aarch64/", arch="aarch64", setu
 case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refused (exit 1) and leaves neither the host-tools directory, a staging directory nor a temporary wrapper", setup=lambda d: os.makedirs(d + "/bin/bwrap"), want=1, nothing_written=False,
      after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
 case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
+# REQ-CHAIN-004-AC18: a hard link to a regular file the SAME package already unpacked is copied, never linked;
+# every other hard link, a device or a fifo is refused; a lib64 alias stands beside files placed below it
+# only while no file path has two owners.
+CAPF = ("usr/lib/libcap.so.2.78", "file", b"CAP", None)
+GLIBC_BASE = [("usr/lib/libc.so.6", "file", b"LIBC", None),
+              ("usr/bin/ld.so", "sym", "../../lib64/ld-linux-x86-64.so.2", None)]
+
+
+def lc(extra, first=True):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", ([CAPF] if first else []) + extra)
+    return setup
+
+
+def gl(extra):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", "glibc", "2.43-r13", GLIBC_BASE + extra)
+    return setup
+
+
+def a_hard_copy(d, r):
+    a_basic(d, r)
+    h = d + "/host-tools/usr/lib/"
+    s, c = os.lstat(h + "libcap.so.2.78"), os.lstat(h + "libcap.so.2.hard")
+    assert not os.path.islink(h + "libcap.so.2.hard") and os.path.isfile(h + "libcap.so.2.hard"), "not a regular file"
+    assert open(h + "libcap.so.2.hard", "rb").read() == b"CAP", "the bytes differ"
+    assert s.st_ino != c.st_ino and s.st_nlink == 1 and c.st_nlink == 1, "the two names are one file (a real link)"
+
+
+case("AC18 a hard link to a regular file of the SAME package is accepted: a separate regular file, equal bytes",
+     setup=lc([("usr/lib/libcap.so.2.hard", "hard", "usr/lib/libcap.so.2.78", None)]), after=a_hard_copy)
+case("AC18 the copy made for a hard link keeps the target's executable bit",
+     setup=lc([("usr/bin/capx", "file", b"X", 0o755), ("usr/bin/capy", "hard", "usr/bin/capx", None)]),
+     after=lambda d, r: os.access(d + "/host-tools/usr/bin/capy", os.X_OK)
+     or (_ for _ in ()).throw(AssertionError("m")))
+for label, ent in (
+        ("an absolute path", [("usr/lib/h", "hard", "/etc/passwd", None)]),
+        ("a path with a .. part that leaves the directory", [("usr/lib/h", "hard", "../../etc/passwd", None)]),
+        ("a .. part that stays inside but is not normalised",
+         [("usr/lib/h", "hard", "usr/lib/../lib/libcap.so.2.78", None)]),
+        ("a path that does not exist in the package", [("usr/lib/h", "hard", "usr/lib/nothing", None)]),
+        ("a symlink of the same package", [("usr/lib/libcap.so.2", "sym", "libcap.so.2.78", None),
+                                           ("usr/lib/h", "hard", "usr/lib/libcap.so.2", None)]),
+        ("a directory of the same package", [("usr/lib/h", "hard", "usr/lib", None)]),
+        ("itself", [("usr/lib/h", "hard", "usr/lib/h", None)]),
+        ("a file that comes LATER in the same package (not yet unpacked)",
+         [("usr/lib/h", "hard", "usr/lib/later", None), ("usr/lib/later", "file", b"L", None)])):
+    case("AC18 a hard link to %s is refused (exit 1), nothing written" % label, setup=lc(ent), want=1)
+case("AC18 a hard link to a file ANOTHER package already unpacked (glibc, earlier) is refused, nothing written",
+     setup=lc([("usr/lib/h", "hard", "usr/lib/libc.so.6", None)]), want=1)
+case("AC18 a hard link to a file of a package that comes LATER in the lock is refused, nothing written",
+     setup=gl([("usr/lib/h", "hard", "usr/lib/libcap.so.2.78", None)]), want=1)
+case("AC18 a hard link whose target is a skipped absolute link is refused, nothing written",
+     setup=lc([("etc/mtab", "sym", "/proc/mounts", None), ("usr/lib/h", "hard", "etc/mtab", None)]), want=1)
+case("AC18 a device entry is still refused (exit 1), nothing written",
+     setup=lc([("usr/lib/dev", "dev", None, None)]), want=1)
+case("AC18 a fifo entry is still refused (exit 1), nothing written",
+     setup=lc([("usr/lib/fifo", "fifo", None, None)]), want=1)
+FFI = "libffi=3.8.0-r2\n"
+
+
+def libffi(files):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libffi-3.8.0-r2.apk", "libffi", "3.8.0-r2", files)
+    return setup
+
+
+def a_alias(d, r):
+    a_basic(d, r)
+    h = d + "/host-tools/usr/"
+    assert os.path.islink(h + "lib64") and os.readlink(h + "lib64") == "lib", "usr/lib64 is not the alias to lib"
+    assert open(h + "lib64/libffi.so.8", "rb").read() == b"FFI" and open(h + "lib/libffi.so.8", "rb").read() == b"FFI"
+
+
+def alias_and_ffi(d):
+    lc([("usr/lib64", "sym", "lib", None)])(d); libffi([("usr/lib64/libffi.so.8", "file", b"FFI", None)])(d)
+
+
+case("AC18 usr/lib64 as a symlink to lib and a file below it in another package: accepted, the file lands in lib",
+     setup=alias_and_ffi, lock=LOCK + FFI, after=a_alias)
+case("AC18 ...the same file below usr/lib64 and below usr/lib in two packages is refused (two owners), nothing written",
+     setup=lambda d: (lc([("usr/lib64", "sym", "lib", None), ("usr/lib/libffi.so.8", "file", b"ONE", None)])(d),
+                      libffi([("usr/lib64/libffi.so.8", "file", b"TWO", None)])(d)), lock=LOCK + FFI, want=1)
+for label, ent in (
+        ("a target outside the root (usr/lib64 -> ../../outside)", [("usr/lib64", "sym", "../../outside", None)]),
+        ("a chain that leaves the root (a -> . ; usr/lib64 -> ../a/../../out)",
+         [("a", "sym", ".", None), ("usr/lib64", "sym", "../a/../../out", None)]),
+        ("a directory entry over the link in the same package (usr/lib64 -> lib ; usr/lib64/)",
+         [("usr/lib64", "sym", "lib", None), ("usr/lib64", "dir", None, None)]),
+        ("a link over a directory entry in the same package (usr/lib64/ ; usr/lib64 -> lib)",
+         [("usr/lib64", "dir", None, None), ("usr/lib64", "sym", "lib", None)]),
+        ("a link over a file below it (usr/lib64/x ; usr/lib64 -> lib)",
+         [("usr/lib64/x", "file", b"X", None), ("usr/lib64", "sym", "lib", None)])):
+    case("AC18 a lib64 alias with %s is refused (exit 1), nothing written" % label, setup=lc(ent), want=1)
+case("AC18 a directory entry of another package over the lib64 alias is refused, nothing written",
+     setup=lambda d: (lc([("usr/lib64", "sym", "lib", None)])(d), libffi([("usr/lib64", "dir", None, None)])(d)),
+     lock=LOCK + FFI, want=1)
+case("AC18 a symlink placed by another package over a directory the first package holds is refused, nothing written",
+     setup=lambda d: (lc([("usr/lib64/x", "file", b"X", None)])(d), libffi([("usr/lib64", "sym", "lib", None)])(d)),
+     lock=LOCK + FFI, want=1)
 text = open(script).read()
 for word in sys.argv[3].split("|"):
     print(("ok   " if word not in text else "FAIL ") + "AC17 the host-tools script never names %r (no network, no package manager, no sudo, no other program)" % word)
@@ -2776,19 +3007,12 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 assert seen and not bad, bad
-for p in seen + [".github/policy/chain-scripts.json"]:
+for p in seen + [".github/policy/chain-scripts.json", "bin/build-freeze.sh"]:
     os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
     shutil.copy(os.path.join(root, p), os.path.join(dst, p))
-# The real tree has one known finding, the admission step's `go run`; the fixture drops it so each row proves its own.
-adm = dst + "/bin/build-admit.py"
-lines = open(adm).read().split("\n")
-hit = [n for n, l in enumerate(lines) if "[ctx.go," in l and '"verify-freeze"' in l]
-assert len(hit) == 1, "the admission call moved: move this replacement with it"
-lines[hit[0]:hit[0] + 2] = ["    rc, err = 0, b\"\""]      # the call is two physical lines
-open(adm, "w").write("\n".join(lines))
 PY
 # the lists of the closure files for the loops below, and a copy of the judge whose sha256 table matches this fixture
-# (the fixture drops one line of build-admit.py)
+# (the fixture is a copy of the real closure)
 python3 - "$root" "$shape" > "$work/ns.held.list" 2> "$work/ns.sh.list" <<'PY' || true
 import importlib.util, sys
 root, shape = sys.argv[1:3]
@@ -2796,7 +3020,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/loopback-get.sh", "bin/rebuild-records-digests.sh")      # held whole with the Python files
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh")      # held whole with the Python files
 for p in sorted(set(seen) | set(SIX)):
     held = p.endswith(".py") or p in SIX
     print(p, file=(sys.stdout if held else sys.stderr))
@@ -2813,7 +3037,7 @@ open(out, "w").write(s)
 PY
 # the fixture rows below run this judge; the real tree is judged by the real one again after them
 shape_real="$shape"; shape="$work/shape-fx.py"
-expect ok "nosource fixture: the closure of the stage scripts is clean without the one known finding" "" \
+expect ok "nosource fixture: the closure of the stage scripts is clean" "" \
   nosource "$work/ns"
 nsfresh() { # a fresh copy; when the fixture is missing the copy is an empty tree, so each row still ends in one verdict
   rm -rf "$work/nsm"; cp -R "$work/ns" "$work/nsm" 2> /dev/null || mkdir -p "$work/nsm/bin" "$work/nsm/.github/policy"
@@ -2863,7 +3087,28 @@ PY
   expect caught "$1 $2" "$3" nosource "$work/nsm"
 }
 CNT="commands, the grammar has"; EXP=": expected"
-# option 1: 21 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
+# the admission go run of the tagged tree, put back into build-admit.py, is a finding (the file is held whole by sha256)
+nsa PLANT "nosource the old admission go run put back into build-admit.py is a finding" "NS_SHA" bin/build-admit.py \
+  'rc, _, err = outcome(lambda: subprocess.run(\n    [ctx.go, "-C", "tools/requirements", "run", ".", '\
+'"verify-freeze", base],\n    check=False))'
+# bin/build-freeze.sh is no root and not skipped: a closure file that names it, or a `runs` entry that lists it, is a
+# finding
+nsa FZ1 "nosource a Python closure file that names bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
+  bin/build-archives.py 'x = "bin/build-freeze.sh"'
+nsa FZ2 "nosource a shell closure file that runs bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
+  bin/assemble-image.sh 'bash bin/build-freeze.sh'
+nsfresh
+python3 - "$work/nsm/.github/policy/chain-scripts.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+row = next(r for r in d["scripts"] if r["path"] == "bin/build-admit.py")
+row["runs"].append("bin/build-freeze.sh")
+json.dump(d, open(f, "w"), indent=2)
+PY
+expect caught "FZ3 nosource a runs entry that lists bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
+  nosource "$work/nsm"
+# option 1: 22 closure files are held whole by sha256 (NS_SHA), line 1 of each other shell file is held,
 # the stage lines run python3 -I
 while read -r f; do
   nsa "H-$f" "nosource a change to $f is a finding: the file is held whole by sha256" "NS_SHA" "$f" "# one more comment"
@@ -2902,7 +3147,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = {"bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
 py = {p for p in seen if p.endswith(".py")}
 held = py | SIX
 # the files the workflows run outside the stage scripts are in the closure
@@ -2913,7 +3158,7 @@ for p in sorted(held):
 for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
     assert p in py, p      # they reach the closure only through chain-verify.py's load_sibling literals
 PY
-then ok "nosource NS_SHA holds exactly the 15 Python closure files and the 6 workflow-run files with their \
+then ok "nosource NS_SHA holds exactly the 15 Python closure files and the 7 workflow-run files with their \
 committed sha256, and chain_common, chain_hostile and chain_items are found"
 else bad "nosource NS_SHA does not match the closure files"; fi
 # the bin/ scripts the run: lines of the two stage workflows start are exactly the roots of the closure
@@ -2929,6 +3174,7 @@ for wf in ("stage-build.yml", "stage-reproducibility.yml"):
         if re.match(r"\s+run:", line):
             ran.update(re.findall(r"bin/[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:sh|py)", line))
 roots = {p.replace(root + "/", "") for g in S.NS_ROOTS for p in glob.glob(root + "/" + g)} | set(S.NS_SKIP)
+roots.add(S.NS_FREEZE)      # the freeze job runs it; no closure file may
 assert ran == roots, (sorted(ran - roots), sorted(roots - ran))
 PY
 then ok "nosource the bin/ scripts on the run: lines of stage-build.yml and stage-reproducibility.yml are exactly \
@@ -3241,10 +3487,8 @@ expect ok "005-AC1/AC4 the real stage-reproducibility.yml is exactly the Rebuild
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 shape="$shape_real"
-real_json=$(CHAIN_FINDINGS=1 judge nosource "$root" 2>&1 >/dev/null | sed -n 's/^FINDINGS-JSON //p') || true
-if jq -e 'length == 1 and (.[0] | contains("bin/build-admit.py:479"))' <<< "${real_json:-null}" > /dev/null 2>&1; then
-  ok "nosource the real tree: the admission step's go run (bin/build-admit.py:479) is the ONE finding"
-else bad "nosource the real tree: wanted exactly one finding, bin/build-admit.py:479 -> ${real_json:0:300}"; fi
+expect ok "nosource the real tree: no finding (the admission step runs no go; the freeze check is the job freeze)" "" \
+  nosource "$root"
 ns_hits=""
 for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
   ns_hits+=$(grep -rnw "NS_$n" "$root/bin" || true)
@@ -3502,7 +3746,7 @@ expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode 
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
-expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
+expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml and customer-words-edited.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
 python3 - "$root" <<'PY' && ok "the four chain stage files (build, reproducibility, verify, promote) pin download-artifact and upload-artifact each to one and the same digest, which .github/policy/allowed-actions.json lists" || bad "the chain stage files pin download-artifact to different digests, or to one the allowlist does not list"
@@ -3535,12 +3779,15 @@ assert used >= 3, "the scan found no use of the host-tools root"
 PY
 # REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/,
 # admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
-# exactly those nine paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json; Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
+# exactly those ten paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json freeze/;
+# Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the
+# recipe check and build-apk.sh stay strict.
 TREE=$(mktemp -d)/tree.sh
 { echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'
   sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
 tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
-  mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > "$f/f"; done; echo '{}' > admission.json ); echo "$d"; }
+  mkdir archive host-tools out witness-apk freeze && for f in archive host-tools out witness-apk freeze; do echo x > \
+    "$f/f"; done; echo '{}' > admission.json; echo x > freeze/freeze.txt ); echo "$d"; }
 d=$(tree_repo)
 [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: the job's directories make the tree dirty without the block (the cause of vcs.modified=true)" || bad "REQ-BUILDAPK-001-AC4 tree: the cause did not reproduce"
 trc=127; if [ -f "$TREE" ]; then trc=0; bash "$TREE" "$d" > /dev/null 2>&1 || trc=$?; fi
@@ -3602,7 +3849,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1279
+EXPECT=1341
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -72,6 +72,10 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
+  # The customer-word check: it fails a pull request that adds shop words to a file a customer can read.
+  '^bin/check-customer-words\.py$'
+  '^bin/check-customer-words-test\.sh$'
+  '^\.github/policy/customer-words-allow\.txt$'
   # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
   '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
@@ -287,6 +291,11 @@ ALLOW_PATTERNS=(
   # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
   '^build/host-tools\.yaml$'
   '^build/locks/host-tools\.lock$'
+  # The VM build inputs (REQ-REFRESH-001-AC39 to AC41): the two package lists, their locks,
+  # the kernel lock and the kernel package key.
+  '^build/vm-(host|guest)\.yaml$'
+  '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/vm-keys/kernel-key-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
@@ -301,12 +310,17 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/build-freeze\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The sandbox wall probe of the dry run (sandboxed-build rules 3, 5, 6): the probe, its offline test and its six test-only recipe templates.
+  '^bin/chain-sandbox-probe\.sh$'
+  '^bin/build-sandbox-hostile-test\.sh$'
+  '^build/probe/(control|read-record|write-record|read-keydir|read-token|network)\.yaml\.tmpl$'
   # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
   # of bin/build-apk.sh, and the closed rule-23 variable list as data.
   '^bin/build-apk-helper\.py$'
