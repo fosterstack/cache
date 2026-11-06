@@ -1414,6 +1414,7 @@ def main(argv=None):
                 json.dump(state, f, sort_keys=True)
             os.replace(tmp, a.observations_out)
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
+            phase("history")    # the history read below is next: a stall there must not name the phase before it
         try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
@@ -1631,4 +1632,12 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # the reader of stdout is gone: stdout goes to /dev/null so the flush at exit does not fail a second time;
+        # the exit code stays 120, what Python gave a block-buffered run in this case
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 120
+    sys.exit(code)

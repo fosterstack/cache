@@ -2251,6 +2251,17 @@ got += p.stdout.read()
 text = got.decode()
 assert "audit: phase: judging" in text and "not checked against the advisory lists" in text, text
 PY
+# a reader that is gone: the line-buffered marker print meets a closed stdout; that ends the run quietly (no traceback), as a run with block-buffered stdout did
+CASE="output: a run whose stdout reader has gone away ends without a traceback"
+check python3 - "$aud" "$work/gh" "$work/r-clean" "$NOW" <<'PY'
+import subprocess, sys
+aud, gh, repo, now = sys.argv[1:5]
+p = subprocess.Popen([sys.executable, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+p.stdout.close()
+err = p.stderr.read().decode()
+p.wait(timeout=30)
+assert "Traceback" not in err and "BrokenPipeError" not in err, err
+PY
 # the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
 phases() { python3 - "$1" <<'PY'
 import sys
@@ -2261,8 +2272,15 @@ run phclean "$CLEAN" "$work/r-clean"
 CASE="markers: a clean daily run prints history, judging, open pull requests, open pull request pins, nested references, exceptions, in that order; exit 0 as before"
 check test "$rc" -eq 0 -a "$(phases "$work/phclean.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions"
 run phobs "$CLEAN" "$work/r-clean" --observations-out "$work/obs/state.json"
-CASE="markers: with --observations-out the tag observations phase comes after history and before judging"
-check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,judging,open pull requests,open pull request pins,nested references,exceptions"
+CASE="markers: with --observations-out the history phase is printed again after the tag observations, so a stalled history read names history"
+check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,history,judging,open pull requests,open pull request pins,nested references,exceptions"
+# a history read that stalls on a day that records observations: the deadline must name the history, not the phase before it
+mkdir -p "$work/shim-log"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && exec sleep 60; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
+echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
+( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
+CASE="markers: a daily run with --observations-out whose history read passes --deadline exits 2 and its stderr says still in history"
+check test "$rc" -eq 2 -a "$(grep -cx 'audit: could not finish: still in history after 2 s' "$work/phstall.err")" -eq 1
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
