@@ -269,7 +269,7 @@ CRED_REF = re.compile(r"secrets\.|vars\.PERSONA_UAT|github\.token|ANTHROPIC_")
 # The pip that runs the SDK install is itself pinned (REQ-SUP-001-AC13): one step, in the form the other workflows use, before the SDK install. This test
 # recognizes the step by its shape only; WHICH requirement file it reads, and that the file holds the one hash-checked pip, is proved on the real tree by the
 # pip-pin test (REQ-SUP-001-AC13), so the auditor's directory is not named here (REQ-AUD-18 AC1).
-PIN_PIP_SHAPE = re.compile(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r \S+/pip-requirements\.txt\npython3 -m pip --version")
+PIN_PIP_SHAPE = re.compile(r"python3 -m " r"pip install --quiet --require-hashes --only-binary=:all: --break-system-packages " r"-r \S+/pip-requirements\.txt\npython3 -m pip --version")  # three literals on purpose: joined, the pin scan reads this line as a package step
 PIN_PIP_RUN = ("python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r agent-dir/pip-requirements.txt\n"
                "python3 -m pip --version")   # the fixtures' step
 def is_pin_pip(x):

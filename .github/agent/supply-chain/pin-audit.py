@@ -719,6 +719,7 @@ class LiveNet:
         if pulls is None:
             raise Fail("could not list the open pull requests")
         for p in pulls:
+            phase(f"pull request #{p['number']}")
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
@@ -750,9 +751,20 @@ class LiveNet:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
         for p in json.loads(r.stdout or "[]"):
+            phase(f"pull request #{p['number']}")
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c",
                 "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
+            try:
+                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
+            except Fail as e:
+                print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
+                continue
+            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
+                key=lambda x: x.get("created_at", ""), reverse=True)
+            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
+            if not failed:      # only a pull request whose newest run failed can be held: the inventories below cost seconds each
+                continue
             f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
             if f.returncode:
                 continue
@@ -762,14 +774,6 @@ class LiveNet:
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
-            try:
-                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
-            except Fail as e:
-                print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
-                continue
-            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
-                key=lambda x: x.get("created_at", ""), reverse=True)
-            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
                 out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved,
                     "_base": mb, "_head": p["headRefOid"]})
@@ -1107,15 +1111,34 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
-# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is never read partially, pin-inventory MAX_LINE). Exactly these revisions
-# are skipped instead, by FULL lowercase 40-hex sha, each for one stated reason (advisor 0637): they are the Oct 20 2026 RED commits of the release-chain branch's PR 459, whose test
-# file bin/chain-sign-wiring-test.sh held a 12000-character fixture line (removed in the later rounds of that PR). They sit in that branch's history, so once it lands every pull request
-# that moves a version would stop at them for the 90-day lookback. Their trees differ from their neighbours' by that one test file, so no pin is lost by skipping them.
-# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a revision is added to this list only by a reviewed change that names it.
+# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is
+# never read partially, pin-inventory MAX_LINE). A revision is skipped instead only when it is named below by its
+# FULL lowercase 40-hex sha with its reason. A revision is listed only after a check that its pins are all in the
+# readable revisions' items (the listing change quotes it); each sits in a branch's history, so without the skip
+# every audit would stop at it for the 90-day lookback.
+# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
+# revision is added to this list only by a reviewed change that names it.
+P1P5_REASON = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
 SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
+    "27b14e37ed06bca44ae479a8880480fa5855605b": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "c4ac17f07ac894c014034ec7e535e4598e06ced8": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "c9e30be29823765fce4c8a23bb11a4340a73fd69": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "23f771008513913f5a1bf434af83530125621a53": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "c5b8f225a378db6fa72200bafcf9af7998ef23e5": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "9045a08f287801c75cbf385caae8038774ed9f10": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "115c746b17620f08c0fe52c789dea720c887d465": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
+    "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
+    "464b72fea4e356a9876bf9bd70f57cc84e07cab4": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
+    "7d538938ec3733112eb29b5f495502e8a74d7e33": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "16e2e1f9a010dfc966930b7963cec13326fa877c": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "28acfea97185023710ee2ba4596cbdb2ca68bfb0": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
+    "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
+    "fbecada5bf5c37ab9263ca82664b3382c3dd9457": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
 }
 
 
@@ -1128,14 +1151,18 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
+    memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     for r in revs:
-        try:
-            items.update(inv.load_at(root, r))
-        except RuntimeError as e:
-            # only the named revisions, and only for the cap's own refusal; every other error, and every unlisted revision, still ends the audit
-            if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
-                continue
-            raise
+        key = inv.tree_key(root, r)
+        if key not in memo:
+            try:
+                memo[key] = inv.load_at(root, r)
+            except RuntimeError as e:
+                # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
+                if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
+                    continue
+                raise
+        items.update(memo[key])
     return items
 
 
@@ -1199,6 +1226,7 @@ def rerun_held(gh, net, now):
     n = 0
     base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
     for pr in net.prs():
+        phase(f"pull request #{pr.get('number')}")
         try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
             items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
             for it in items:     # a key-built item (fixtures): its repository path is the part after file:
@@ -1227,6 +1255,35 @@ def _split_key(k):
     return (kind, name, version)
 
 
+PHASE = ["start"]   # the last phase marker printed: the deadline names it
+
+
+def phase(name):
+    """Print a phase marker (the logs of a run that never ends say where it was) and remember it."""
+    PHASE[0] = name
+    print(f"audit: phase: {name}")
+
+
+def deadline_for(a):
+    """Seconds the whole run may take: --deadline, else 900 for the daily run (a 20-minute job),
+    600 for --rerun-held and pull request mode (15-minute jobs)."""
+    if a.deadline is not None:
+        return a.deadline
+    return 600 if (a.rerun_held or a.base) else 900
+
+
+def _deadline_passed(seconds):
+    """The run did not finish: say where it was, and end it. os._exit, because a timer thread's sys.exit would only
+    end that thread; one write to fd 2 and no stdout flush, so neither a full stdout or stderr pipe nor a held stream
+    lock can stop it."""
+    try:
+        # non-blocking: the flag lands on the step's shared pipe, harmless because the process exits next line
+        os.set_blocking(2, False)
+        os.write(2, f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n".encode())
+    finally:
+        os._exit(2)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -1239,7 +1296,21 @@ def main(argv=None):
     ap.add_argument("--rerun-held", action="store_true")
     ap.add_argument("--observations-out", help="write the cumulative tag observations (state.json) FIRST, before judging anything")
     ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
+    ap.add_argument("--deadline", type=int,
+                    help="seconds the whole run may take before it ends itself with exit 2 "
+                         "(1 to 86400; default 900, or 600 for --rerun-held and --base)")
     a = ap.parse_args(argv)
+    if a.deadline is not None and not 1 <= a.deadline <= 86400:
+        print("audit: cannot do its job: --deadline must be from 1 to 86400 seconds", file=sys.stderr)
+        return 2
+    # under Actions stdout is a pipe: without this a killed run loses what it printed since its last full buffer.
+    # The guard is for callers that swap stdout for a StringIO (pin-audit-test.sh:691, pin-audit-go-major-test.sh:397)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    seconds = deadline_for(a)
+    timer = threading.Timer(seconds, _deadline_passed, args=(seconds,))
+    timer.daemon = True
+    timer.start()
     try:
         fx = None
         if a.fixtures:
@@ -1253,12 +1324,28 @@ def main(argv=None):
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
         if a.rerun_held:
+            phase("re-run of held pull requests")
             rerun_held(gh, net, now)
             return 0
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
+        phase("history")
         try:
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
+        except RuntimeError as e:
+            raise Fail(str(e))
+        if a.observations_out and not a.base:   # before the history is read: a history that cannot be read must not lose the observations
+            phase("tag observations")
+            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
+            tmp = a.observations_out + ".tmp"
+            # a deadline in the middle of the write must not leave half a file at the published path
+            with open(tmp, "w") as f:
+                json.dump(state, f, sort_keys=True)
+            os.replace(tmp, a.observations_out)
+            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
+            phase("history")
+        try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
                 hist = history_items(a.root, a.base, now) if audited else {}
@@ -1277,12 +1364,6 @@ def main(argv=None):
             except RuntimeError as e:
                 raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
-        if a.observations_out and not a.base:
-            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
-            with open(a.observations_out, "w") as f:
-                json.dump(state, f, sort_keys=True)
-            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
             seen_um = {}
             for (path, what, _line), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
@@ -1294,6 +1375,7 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
+        phase("judging")
         notes, findings, incomplete, log = [], [], False, RulingLog()
         held = list(audited)   # AC15: the pins the run inventories (main and its 90-day history); the pins of open pull requests are added below
         for it in audited:
@@ -1316,8 +1398,10 @@ def main(argv=None):
         pr_actions = []
         if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
             seen_keys = {i.key for i in audited}
+            phase("open pull requests")
             try:
                 open_prs = net.open_pr_items()
+                phase("open pull request pins")
             except (Fail, age.CouldNotLook) as e:
                 print(f"information: the open pull requests were not audited: {clean(e)}")
                 open_prs, incomplete = [], True
@@ -1343,6 +1427,7 @@ def main(argv=None):
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
         seen = {it.key for it in audited} | set(head)
         queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [(it, 0) for it in pr_actions if it.kind == "action"]
+        phase("nested references")
         while queue:
             def nested_safe(q):
                 try:
@@ -1400,6 +1485,7 @@ def main(argv=None):
             queue = nxt
         for n in notes:
             print(f"audit: {clean(n)}")
+        phase("exceptions")
         # AC15: the daily run over the checked-in file only
         lapsed, dead, dormant = ([], [], []) if (a.base or a.exceptions) else undecided_exceptions(exceptions, log, held, net)
         for e in lapsed:
@@ -1449,6 +1535,7 @@ def main(argv=None):
                          "body": body_of(first, None, False, False, today), "owner": False})
         if plan:
             if not a.report_only:
+                phase("issues")
                 file_issues(gh, plan, today)
             return 1
         unchecked = [i for i in audited if not net.covered(i)]
@@ -1466,6 +1553,9 @@ def main(argv=None):
     except (Fail, age.CouldNotLook) as e:
         print(f"audit: cannot do its job: {e}", file=sys.stderr)
         return 2
+    finally:
+        timer.cancel()
+        timer.join()   # a callback that already started ends the process with 2; this return must not win the race
 
 
 if __name__ == "__main__":
