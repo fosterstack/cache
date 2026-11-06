@@ -2251,15 +2251,27 @@ got += p.stdout.read()
 text = got.decode()
 assert "audit: phase: judging" in text and "not checked against the advisory lists" in text, text
 PY
-# a reader that is gone: the line-buffered marker print meets a closed stdout; that ends the run quietly (no traceback), as a run with block-buffered stdout did
-CASE="output: a run whose stdout reader has gone away ends without a traceback"
+# a reader that is gone: the line-buffered marker print meets a closed stdout; that ends the run with exit 120 and no traceback.
+# The child waits (stdin) at a known point before its first write, the parent closes the reader, then releases it: so the write always meets a closed pipe.
+CASE="output: a run whose stdout reader has gone away ends with exit 120 and without a traceback"
 check python3 - "$aud" "$work/gh" "$work/r-clean" "$NOW" <<'PY'
-import subprocess, sys
+import select, subprocess, sys
 aud, gh, repo, now = sys.argv[1:5]
-p = subprocess.Popen([sys.executable, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-p.stdout.close()
-err = p.stderr.read().decode()
-p.wait(timeout=30)
+code = ("import os, runpy, sys; os.write(2, b'ready\\n'); sys.stdin.readline(); sys.path.insert(0, os.path.dirname(sys.argv[1])); "
+        "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+p = subprocess.Popen([sys.executable, "-c", code, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    assert select.select([p.stderr], [], [], 30)[0] and p.stderr.readline() == b"ready\n", "the child never reached its wait"
+    p.stdout.close()
+    p.stdout = None
+    _, err = p.communicate(b"\n", timeout=60)
+finally:
+    if p.poll() is None:
+        p.kill()
+        p.wait()
+err = err.decode()
+assert p.returncode == 120, (p.returncode, err)
 assert "Traceback" not in err and "BrokenPipeError" not in err, err
 PY
 # the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
@@ -2276,11 +2288,15 @@ CASE="markers: with --observations-out the history phase is printed again after 
 check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,history,judging,open pull requests,open pull request pins,nested references,exceptions"
 # a history read that stalls on a day that records observations: the deadline must name the history, not the phase before it
 mkdir -p "$work/shim-log"
-printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && exec sleep 60; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && { echo $$ >%s; exec sleep 60; }; done\nexec %s "$@"\n' "$work/shim-log/pid" "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
 ( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
+# the audit ends itself with os._exit, which leaves the stalled git child (the shim's sleep) running: end it here, pass or fail
+if [ -s "$work/shim-log/pid" ]; then kill "$(cat "$work/shim-log/pid")" 2>/dev/null; fi; sleep 1
 CASE="markers: a daily run with --observations-out whose history read passes --deadline exits 2 and its stderr says still in history"
 check test "$rc" -eq 2 -a "$(grep -cx 'audit: could not finish: still in history after 2 s' "$work/phstall.err")" -eq 1
+CASE="markers: no stalled git child of that run is left running"
+check sh -c 'test -s "$1" && ! kill -0 "$(cat "$1")" 2>/dev/null' _ "$work/shim-log/pid"
 run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
