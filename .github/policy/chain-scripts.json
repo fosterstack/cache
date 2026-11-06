@@ -1450,7 +1450,7 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "1ffa454c5b8d3e00fe199d03a46439893e32b60585414c40664486bd9bdc9f2d",
+      "sha256": "b423e7d6634e9c4bfc0abaf4912fcff11aebebde961e37e36d925881ef53cbbe",
       "tools": [
         "at",
         "command",
@@ -1878,8 +1878,15 @@
           "rule": "deny",
           "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
           "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
-          "count": 1,
+          "count": 2,
           "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
+        },
+        {
+          "rule": "deny",
+          "line": "        # A backslash before a newline or CR is refused first: shlex keeps that newline in the next word, bash removes",
+          "line_sha256": "4187b4aac0472556c3601c4a0a242c00f3cd15bb9886d648c07df651a3d53a5e",
+          "count": 1,
+          "why": "a comment of the quote walk that says why a backslash before a newline is refused first (shlex keeps the newline, bash removes it); it names the shell the check guards against and runs nothing"
         }
       ],
       "env_mentions": [

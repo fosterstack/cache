@@ -521,6 +521,15 @@ if python3 - "$WF" <<'P'
 import sys
 t = open(sys.argv[1]).read()
 v = t.index("name: a findings verdict fails the run")
+line = t[v:t.index("exit 1", v)]
+expr = "${{ steps.issue.outputs.issue || '(none: the issue step failed or was skipped)' }}"
+sys.exit(0 if "see tracking issue #" + expr in line else 1)
+P
+then ok; else bad "the findings verdict line must end 'see tracking issue #' plus steps.issue.outputs.issue with the fallback '(none: the issue step failed or was skipped)'"; fi
+if python3 - "$WF" <<'P'
+import sys
+t = open(sys.argv[1]).read()
+v = t.index("name: a findings verdict fails the run")
 cond = [l for l in t[v:].split("\n")[1:3] if l.strip().startswith("if:")]
 sys.exit(0 if cond and "always()" in cond[0] and "steps.statement.outputs.outcome == 'findings'" in cond[0] else 1)
 P

@@ -17,7 +17,7 @@ cd "$(dirname "$0")/../../.."
 export DEPLOY_DOC="${DEPLOY_DOC:-docs/docker-deploy.md}" GRADLE_DOC="${GRADLE_DOC:-docs/gradle.md}" MAVEN_DOC="${MAVEN_DOC:-docs/maven.md}"
 export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
 export VERIFY_DOCS="${VERIFY_DOCS:-docs/install.md docs/using-our-vex.md docs/verify-images.md RELEASING.md}"
-export KEYLESS_UNTIL_DOCS_FOLD="${KEYLESS_UNTIL_DOCS_FOLD:-RELEASING.md}"
+export KEYLESS_UNTIL_DOCS_FOLD="${KEYLESS_UNTIL_DOCS_FOLD-}"
 export VERIFY_ONE="${VERIFY_ONE:-docs/verify-images.md}"
 export VERIFY_RELEASE_DOC="${VERIFY_RELEASE_DOC:-docs/verify-release.md}" VERIFY_CANNOT_RUN="${VERIFY_CANNOT_RUN:-docs/verify-release.cannot-run.json}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
@@ -105,10 +105,10 @@ if rb:
     i0, i1, i2, i3 = idx("--replicas=0"), idx("delete pvc fscache-data"), idx("kubectl apply"), idx("--replicas=1")
     ok(-1 < i0 < i1 < i2 < i3, "reset order is scale 0, delete the claim, re-apply the claim, scale 1 (positions %s)" % [i0, i1, i2, i3])
 # Verify steps (rule 6 of the simplest-correct-form rules; KA-2 p4 r2 C2): v0.3.0 and later are signed with the release key, so every verify doc holds a fenced `--key release.rsa.pub` step, and a fenced
-# `--certificate-identity` step (exact, never a regexp) is allowed only under a heading or in a paragraph that names the releases before v0.3.0. RELEASING.md is the one file still judged the old way (it keeps its identity
-# steps until the docs fold, FU-2): KEYLESS_UNTIL_DOCS_FOLD lists it, and an assertion pins the list to exactly that one entry (the fold empties it).
+# `--certificate-identity` step (exact, never a regexp) is allowed only under a heading or in a paragraph that names the releases before v0.3.0. The docs fold (FU-2) is done: RELEASING.md is judged like the
+# other docs, KEYLESS_UNTIL_DOCS_FOLD is empty, and an assertion pins it empty.
 fold = os.environ["KEYLESS_UNTIL_DOCS_FOLD"].split()
-ok(fold == ["RELEASING.md"], "KEYLESS_UNTIL_DOCS_FOLD holds exactly one entry, RELEASING.md (found %r)" % fold)
+ok(fold == [], "KEYLESS_UNTIL_DOCS_FOLD is empty: no doc is judged the old way (found %r)" % fold)
 def pre_v030_context(text, start):   # the nearest heading and the paragraph before a fence (fenced blocks dropped, so a shell comment is no heading)
     before = re.sub(r"^```.*?^```", "", text[:start], flags=re.S | re.M)
     heads = [l for l in before.splitlines() if re.match(r"#{1,6} ", l)]

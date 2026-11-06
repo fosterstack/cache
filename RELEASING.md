@@ -40,8 +40,8 @@ signing key or `packages: write`.
   attested, tested and promoted.
 - **Sign** (`stage-sign.yml`): its own job and workflow file; it never runs
   code from the build. It receives Build's records and the artifacts they name,
-  checks each record against them, signs the records keyless under its own
-  identity, and writes and signs the SLSA provenance. A second call of the same
+  checks each record against them, signs the records with the release
+  key (the KMS key), and writes and signs the SLSA provenance. A second call of the same
   file signs Rebuild's records; it receives no Rebuild apk or image. A third call
   signs Check's records; it receives only those records and the results they name.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
@@ -105,8 +105,8 @@ From v0.3.0, with every file below made by the Release stage from what Build <!-
 made (nothing is rebuilt). The images and the release files are signed with
 the release signing key, a key held in a cloud key service that the Release job
 reaches with short-lived credentials, each with an entry in Rekor. Sign's
-records and provenance are signed keyless (Fulcio certificate from GitHub OIDC,
-entry in Rekor). The apks are signed in Release's `release-apks` step, which
+records and provenance are signed with the same key through the cloud key
+service (entry in Rekor). The apks are signed in Release's `release-apks` step, which
 today reads a separate local apk release key; the intended state is the one
 release signing key, and it lands with the APK signing change:
 
@@ -181,13 +181,12 @@ cosign verify --key release.rsa.pub "ghcr.io/fosterstack/cache:${VER}"
 ```
 
 The same command verifies the `-fips` variant with `${VER}-fips`. Sign's
-provenance is signed keyless and is checked against Sign's workflow identity:
+provenance is signed with the release key and is checked against the release public key
+(there is no certificate identity or issuer to pin):
 
 ```sh
-cosign verify-blob-attestation --bundle provenance.bundle.json \
-  --type https://slsa.dev/provenance/v1 --check-claims=false \
-  --certificate-identity "https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v${VER}" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bundle.json \
+  --type https://slsa.dev/provenance/v1 --check-claims=false
 ```
 
 The whole

@@ -850,7 +850,7 @@ if a[:2] == ["kms", "sign"]:
     open(W + "/kmssign-argv.log", "a").write(" ".join(a) + "\n")
     msg = a[a.index("--message") + 1]
     key = "other" if os.environ.get("FAKE_BUNDLE") == "otherkey" else "rel"
-    sig = subprocess.run([SSL, "pkeyutl", "-sign", "-inkey", W + "/" + key + ".key", "-in", msg[len("fileb://"):]], capture_output=True, check=True).stdout
+    sig = subprocess.run([SSL, "pkeyutl", "-sign", "-inkey", W + "/" + key + ".key", "-pkeyopt", "digest:sha256", "-in", msg[len("fileb://"):]], capture_output=True, check=True).stdout
     print(json.dumps({"SigningAlgorithm": "RSASSA_PKCS1_V1_5_SHA_256", "Signature": base64.b64encode(sig).decode()})); sys.exit(0)
 sys.exit(3)
 FAKEAWS
