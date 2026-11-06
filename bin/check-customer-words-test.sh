@@ -131,6 +131,7 @@ lndir() {
 lndir .vex/guides cmd/guides-src;       check 2 "T5b a new link .vex/guides to a folder of pages exits 2" 'symbolic link at a customer file: \.vex/guides$'
 lndir docs cmd/docs-src docs/a.md;      check 2 "T5b docs/ replaced by a link to a folder exits 2" 'symbolic link at a customer file: docs$'
 lndir .vex/pages.json cmd/pages-src; check 2 "T5b a new link .vex/pages.json to a folder of pages exits 2" 'symbolic link at a customer file: \.vex/pages\.json$'
+lndir .vex cmd/vex-src .vex/README.md;  check 2 "T5b .vex replaced by a link to a folder exits 2" 'symbolic link at a customer file: \.vex$'
 lndir cmd/sub cmd/sub-src;              check 0 "T5b a link to a folder outside the customer paths passes"
 # a link at .github itself: only the PULL_REQUEST_TEMPLATE.md probe refuses it (the template is the one customer file in that folder)
 rm -rf "$work/r"; mkdir -p "$work/r/.github/policy" "$work/r/cmd/gh-src/policy"; cd "$work/r" || exit 2; git init -q
@@ -148,6 +149,8 @@ mk notes/x.md $'the owner\n' docs/x.md $'the owner\n';                 check 1 "
 mk - "" docs/quality/traceability.md $'approved by the owner\n';       check 1 "T6 owner added in docs/quality/traceability.md fails"
 mk - "" docs/a.md $'++ owner\n';                                        check 1 "T6 an added line that starts with ++ is still read" 'docs/a.md'
 mk - "" .vex/README.md $'owner\n';                                      check 1 "T6 .vex markdown fails"
+mk - "" .vex/fosterstack-cache.openvex.json $'{"note": "the owner"}\n'; check 1 "T6 a .vex json file fails"
+mk - "" .vex/fosterstack-cache.openvex.json $'{"note": "fine"}\n';     check 0 "T6 a clean .vex json file passes"
 mk - "" .github/PULL_REQUEST_TEMPLATE.md $'owner\n';                    check 1 "T6 the PR template fails"
 mk - "" docs/x.json $'{"t": "lane"}\n';                                 check 1 "T6 any extension under docs/ fails"
 mk - "" ".vex/a b.md" $'owner\n';                                      check 1 "T6 a .vex path with a space is read"

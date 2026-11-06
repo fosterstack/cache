@@ -17,7 +17,7 @@ BANNED = re.compile("|".join("(?:%s)" % p for p in (WORDS, REFS, RULES, IDS)), r
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 # a parenthesis an edit left open or closed alone, in a workflow comment, a name or a quoted string
 STRAY = re.compile(r'^#.*(?:\(\s| \))|^(?:-\s+)?name:.*(?:\(\s| \))|"[^"]*\s\)[^"]*"')
-CUSTOMER_FILE = re.compile(r"^(README|SECURITY|CONTRIBUTING|RELEASING)\.md$|^docs/|^\.vex/.*\.md$|^\.github/PULL_REQUEST_TEMPLATE\.md$|^\.github/workflows/[^/]+\.ya?ml$")
+CUSTOMER_FILE = re.compile(r"^(README|SECURITY|CONTRIBUTING|RELEASING)\.md$|^docs/|^\.vex/|^\.github/PULL_REQUEST_TEMPLATE\.md$|^\.github/workflows/[^/]+\.ya?ml$")
 
 
 def fail(msg):
